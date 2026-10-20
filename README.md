@@ -42,10 +42,27 @@ One page (plus a JSON API) that analyzes every STP instance (802.1D/RSTP/MST CIS
 | Inter-switch switchports without STP (BPDU filter / STP disabled) | warning |
 | Switches without STP data that sit on redundant L2 paths, switches without STP data | warning / info |
 | Root bridge / root port changes from the LibreNMS eventlog | warning / info |
+| **Loop evidence:** broadcast storm on inter-switch links (packet rate above the threshold and a large share of the port's packets or of the link) | critical from 10x the threshold or 10% of the link, else warning |
+| **Loop evidence:** heavy multicast on inter-switch links | warning |
+| **Syslog:** a switch detected a loop (loop protection, keepalive loopback) | critical |
+| **Syslog:** MAC address flapping | critical on several switches or for 10+ addresses, else warning |
+| **Syslog:** storm control triggered | critical on several switches, else warning |
+| **Syslog:** UDLD, BPDU guard, loop guard and root guard actions, native VLAN and duplex mismatch reported by CDP / PVST+, err-disabled ports | warning |
 
 Identical findings in many PVST VLANs are reported once with the list of VLANs. The page also lists every
 STP domain (root bridge ID, members, blocked ports, max hops, last topology change, timers), all
 blocked ports with their neighbor across the link, every bridge instance and recent STP events.
+
+**Loop evidence** shows what a loop leaves behind even when the spanning tree data looks fine (or a switch does not
+report it): the broadcast and multicast rates of the inter-switch links at the last poll, storms first, compared with
+the unicast traffic and the link speed; and the loop related messages the switches sent to LibreNMS' syslog in the last
+24 hours, grouped by device and check, with the ports, MAC addresses and VLANs they name and a link to those messages.
+Links to phones, access points and servers are not inter-switch links. The syslog checks recognize the messages of
+Cisco IOS / IOS-XE / NX-OS, Arista EOS, Junos and ProCurve / ArubaOS-Switch; each pattern is a setting, so other vendors
+can be added. A message counts for the first check that matches it, so a port err-disabled by BPDU guard is a BPDU guard
+finding.
+
+![Loop evidence](docs/images/stp-loop-evidence.png)
 
 ![Spanning tree diagnostics](docs/images/stp-diagnostics.png)
 
@@ -166,6 +183,9 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   including devices that are not on the map. Add more failures to check a pair, *Reset* to start over.
   `l2?fail=d:12,p:345` opens the map with device 12 and the link of port 345 failed (`api/simulate?fail=...` returns the
   same as JSON).
+* When the STP page reports a broadcast storm, start with the MAC flapping messages in **Loop evidence**: the ports a
+  switch names are the two sides of the loop. A sudden storm with clean spanning tree data usually means an unmanaged
+  switch or a hub on an access port.
 * If the automatic core is not your core, set **Core devices** in the settings; the switches next to the LibreNMS
   poller are a good choice when you want "what can the poller still reach".
 * `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links` and `api/redundancy` return the same data as JSON (same
@@ -185,6 +205,10 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Flapping threshold | 100 | transitions to forwarding |
 | Maximum diameter | 7 | bridge hops from the root |
 | Event history | 7 days | STP eventlog entries analyzed |
+| Storm threshold / share | 1,000 packets/s / 20 % | broadcast or multicast rate on an inter-switch port that is a storm when it is also this share of the port's packets or 1 % of the link (0 disables) |
+| Syslog window | 24 hours | loop related syslog messages this recent are analyzed |
+| Syslog patterns | Cisco, Arista, Junos, ProCurve messages | one regular expression per check (case-insensitive, matched against the program and the message) |
+| Disabled STP checks | – | check codes or categories (`root`, `config`, `changes`, `ports`, `loops`, `storms`, `syslog`), e.g. `timers_non_default multicast_storm` |
 | Interface error threshold | 10 | errors per poll on an inter-switch port (0 disables) |
 | Discard threshold | 1 % | share of the packets discarded (0 disables) |
 | Port-channel imbalance | 40 % | a member above this utilization carrying 3x the traffic of another member (0 disables) |
@@ -199,7 +223,8 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 
 Every map and diagnostic only uses devices the logged-in user may see (LibreNMS device permissions).
 Neighbors on devices the user cannot see are shown as unmanaged neighbors (their LLDP/CDP name only), and a
-root bridge on such a device is not reported as a rogue switch.
+root bridge on such a device is not reported as a rogue switch. The syslog evidence of the spanning tree page is only
+shown to users whose LibreNMS role may view syslog.
 
 ## How it works
 
@@ -209,7 +234,8 @@ root bridge on such a device is not reported as a rogue switch.
 * `src/Topology/L2Builder.php`, `src/Topology/L3Builder.php` – build the map graphs (link de-duplication,
   LAG/MLAG handling, VLAN membership, subnet classification, routing overlays, hierarchy tiers).
 * `src/Stp/StpIndex.php`, `src/Stp/StpAnalyzer.php` – STP role derivation (BRIDGE-MIB has no port role) and
-  the diagnostics.
+  the diagnostics; `src/Stp/LoopEvidence.php` – storms on inter-switch links and the loop related syslog messages
+  (`Data\LoopEvidenceRepository` reads the packet rates and searches the syslog).
 * `src/Links/LinkAnalyzer.php` – the link and VLAN checks (both ends of each link, port-channels, VLAN islands per
   L2 domain, descriptions and their configuration lines).
 * `src/Redundancy/RedundancyAnalyzer.php` – single points of failure (cut vertices and bridges toward the core,
@@ -228,6 +254,10 @@ vendor/bin/phpunit
 
 * STP data comes from the BRIDGE-MIB as polled by LibreNMS: MST instances other than the CIST are not
   available, and findings reflect the last poll (a check can fire during re-convergence).
+* Loop evidence from syslog only covers devices that send their syslog to LibreNMS (the page says how many do) and users
+  whose LibreNMS role may view syslog; the newest 100,000 messages of the window are searched. Storm rates come from the
+  broadcast and multicast counters the ports poller reads (IF-MIB ifXTable); devices that do not report them, and ports
+  not polled for a day, are left out. Heavy multicast can be intended (video, IPTV): disable `multicast_storm` there.
 * Stacks / virtual chassis that are not modelled as one device, and MLAG pairs without a detected
   port-channel, can produce a "possible bridging loop" warning – the finding says so.
 * Saved layouts live in the browser's local storage, they are not shared between users.

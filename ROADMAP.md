@@ -20,6 +20,7 @@ The plugin's conventions apply to all of them:
 |---|---|---|---|
 | 1 | [Link & VLAN diagnostics](README.md#link--vlan-diagnostics) | **done** | – |
 | 3 | [Redundancy & failure impact](README.md#redundancy--failure-impact) | **done** | – |
+| 10 | [Loop evidence on the STP page](README.md#spanning-tree-diagnostics) | **done** | – |
 | 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
 | 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
 | 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
@@ -28,7 +29,6 @@ The plugin's conventions apply to all of them:
 | 14 | [Rollout planner](#14-rollout-planner-change-and-upgrade-waves) | planned | S–M |
 | 12 | [Coverage report](#12-coverage-report) | planned | S |
 | 9 | [More L3 map layers](#9-more-l3-map-layers) | planned | S each |
-| 10 | [Loop evidence on the STP page](#10-loop-evidence-on-the-stp-page) | planned | S–M |
 | 8 | [Site / WAN view](#8-site--wan-view) | later | M |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
 | 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
@@ -148,12 +148,6 @@ The L3 counterpart of the spanning tree page.
   peer address → device), MPLS LSPs (`mpls_lsps`, from/to addresses) and pseudowires (`pseudowires`; local vs peer MTU
   gives a free MTU check).
 * Each is about the size of `L3Builder::addOspf()`.
-
-### 10. Loop evidence on the STP page
-
-* Broadcast / multicast storms on inter-switch links (`ports_statistics` broadcast and multicast packet rates).
-* Messages from the `syslog` table, for devices that send syslog to LibreNMS: MAC flapping, err-disable, BPDU / loop /
-  root guard, UDLD, CDP duplex and native VLAN mismatch. Vendor message patterns should be configurable.
 
 ## Later
 
