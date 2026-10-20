@@ -77,6 +77,17 @@ class Cidr
     }
 
     /**
+     * An IP address in the form LibreNMS stores it (IPv6 compressed, lower case; a zone index such
+     * as %eth0 dropped), null when it is not an address.
+     */
+    public static function canonical(string $address): ?string
+    {
+        $packed = @inet_pton(trim(explode('%', $address)[0]));
+
+        return $packed === false ? null : inet_ntop($packed);
+    }
+
+    /**
      * Addresses that never describe topology (loopback, link-local, unspecified...).
      */
     public static function isIgnorable(string $address): bool

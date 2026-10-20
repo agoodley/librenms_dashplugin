@@ -342,7 +342,7 @@ class L2Builder
             'device_id' => null,
             'label' => self::shortHost($name),
             'name' => $name,
-            'role' => DeviceRole::fromPlatform($link['b_platform'], $link['b_host']),
+            'role' => DeviceRole::fromNeighbor($link['b_platform'], $link['b_version'], $link['b_host']),
             'status' => 'unknown',
             'platform' => $link['b_platform'],
             'version' => mb_substr($link['b_version'], 0, 200),

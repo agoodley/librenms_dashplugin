@@ -2,13 +2,18 @@
 
 namespace Agoodley\LibrenmsTopology\Topology;
 
+use Agoodley\LibrenmsTopology\Data\L3LayerRepository;
+use Agoodley\LibrenmsTopology\Data\LoopEvidenceRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
 use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
 use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
+use Agoodley\LibrenmsTopology\Stp\LoopEvidence;
 use Agoodley\LibrenmsTopology\Stp\StpAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
+use Agoodley\LibrenmsTopology\Stp\SyslogPatterns;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
+use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 
 /**
@@ -92,7 +97,8 @@ class TopologyService
     }
 
     /**
-     * @param  array{device: ?int, depth: int, group: ?int, location: ?int, vrf: ?string, stubs: bool, ospf: bool, bgp: bool, ipv6: bool, all_devices: bool}  $p
+     * @param  array{device: ?int, depth: int, group: ?int, location: ?int, vrf: ?string, stubs: bool, ospf: bool, bgp: bool, ospfv3?: bool,
+     *     isis?: bool, ipsec?: bool, mpls?: bool, pw?: bool, ipv6: bool, all_devices: bool}  $p
      */
     public function l3(array $p): array
     {
@@ -123,14 +129,22 @@ class TopologyService
         }
 
         $ids = array_keys($devices);
-        $builder = new L3Builder(
-            $devices,
-            array_values(array_filter($addresses, fn ($a) => isset($devices[(int) $a['device_id']]))),
-            $p['ospf'] ? $this->repo->ospfNeighbors($ids) : [],
-            $p['bgp'] ? $this->repo->bgpPeers($ids) : [],
-        );
+        $mapAddresses = array_values(array_filter($addresses, fn ($a) => isset($devices[(int) $a['device_id']])));
+        $ospf = $p['ospf'] ? $this->repo->ospfNeighbors($ids) : [];
+        $bgp = $p['bgp'] ? $this->repo->bgpPeers($ids) : [];
 
-        $result = $builder->build([
+        // overlay layers from modules that are often off: loaded when the scope has rows, offered when the drawn devices do
+        $layerRepo = $this->repo->sibling(L3LayerRepository::class);
+        $perDevice = $layerRepo->countsByDevice($ids);
+        $loaded = array_values(array_filter(L3Builder::LAYERS, fn ($layer) => ($p[$layer] ?? MapParams::L3_LAYERS[$layer]) && $perDevice[$layer]));
+        $layers = $layerRepo->load($ids, $loaded);
+
+        // far ends among the other devices the user may see become stubs, the rest external nodes
+        $builder = new L3Builder($devices, $mapAddresses, $ospf, $bgp, $layers);
+        $known = $layerRepo->resolve($builder->lookups());
+        $known['devices'] = $this->repo->devices(array_values(array_diff($known['deviceIds'], $ids)), false);
+
+        $result = $builder->withKnown($known)->build([
             'hideStubs' => ! $p['stubs'],
             'p2pPrefix4' => $this->settings->int('l3_p2p_prefix', 8, 32),
             'p2pPrefix6' => 126,
@@ -140,9 +154,22 @@ class TopologyService
             'bgp' => $p['bgp'],
             'root' => $root,
             'depth' => $root ? $p['depth'] : null,
-        ]);
+            'maxNodes' => $this->maxNodes(),
+        ] + array_fill_keys(L3Builder::LAYERS, true));
 
-        $shown = count(array_filter($result['nodes'], fn ($n) => $n['type'] === 'device'));
+        $drawn = [];
+        foreach ($result['nodes'] as $node) {
+            if ($node['type'] === 'device' && empty($node['outside'])) {
+                $drawn[$node['device_id']] = true;
+            }
+        }
+        $result['layers'] = [];
+        foreach (L3Builder::LAYERS as $layer) {
+            $available = array_sum(array_intersect_key($perDevice[$layer], $drawn));
+            $result['layers'][$layer] = ['available' => $available, 'shown' => $available > 0 && in_array($layer, $loaded, true), 'default' => MapParams::L3_LAYERS[$layer]];
+        }
+
+        $shown = count($drawn);
         if ($root && $shown > $this->maxNodes()) {
             $truncated = true;
         }
@@ -179,8 +206,9 @@ class TopologyService
         }
         $portIds = array_merge($portIds, array_keys($lag), array_values($lag));
 
+        $devices = $this->repo->devices($scope);
         $analyzer = new StpAnalyzer(
-            $this->repo->devices($scope),
+            $devices,
             $index,
             $links,
             $this->repo->analysisPorts($portIds),
@@ -193,12 +221,51 @@ class TopologyService
         $result['vlans'] = $this->repo->stpVlans($scope);
         $result['notice'] = $notice;
         $result['filter'] = $p + ['effective_vlan' => $vlan];
+        $result = LoopEvidence::merge($result, $this->loopEvidence($devices, $links, $p['device']));
 
         if ($p['device']) {
             $result = self::filterStpForDevice($result, $p['device']);
         }
 
         return $result;
+    }
+
+    /**
+     * Loop evidence of the devices in scope: broadcast / multicast counters of their inter-switch
+     * ports and the loop related syslog messages of their switches and routers (when the user may
+     * read syslog). For one device: its ports, its neighbors' ports toward it and its own messages.
+     */
+    private function loopEvidence(array $devices, array $links, ?int $deviceId): array
+    {
+        if ($deviceId) {
+            $links = array_values(array_filter($links, fn ($l) => (int) $l['local_device_id'] === $deviceId || (int) ($l['remote_device_id'] ?? 0) === $deviceId));
+        }
+        $repo = $this->repo->sibling(LoopEvidenceRepository::class);
+        $ports = $repo->portRates(array_keys(LoopEvidence::interSwitchPorts($devices, $links)));
+
+        $senders = array_keys(array_filter($devices, fn ($d) => in_array($d['role'] ?? '', [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER], true)));
+        if ($deviceId) {
+            $senders = array_values(array_intersect($senders, [$deviceId]));
+        }
+        $patterns = new SyslogPatterns($this->settings);
+        $hidden = ! $repo->canViewSyslog();
+        $syslog = ['rows' => [], 'senders' => 0, 'scanned' => 0, 'truncated' => false, 'limited' => 0, 'unsearched' => 0, 'stopped' => null];
+        if (! $hidden && $patterns->usable()) {
+            $since = time() - $this->settings->int('stp_syslog_hours', 1, 720) * 3600;
+            $syslog = $repo->syslog($senders, $since, fn (string $text) => $patterns->classify($text));
+        }
+
+        return (new LoopEvidence($devices, $links, $ports, $syslog['rows'], $repo->portNames(array_column($syslog['rows'], 'device_id')),
+            $this->settings, patterns: $patterns))->analyze([
+                'syslog_hidden' => $hidden,
+                'syslog_truncated' => $syslog['truncated'],
+                'syslog_limited' => $syslog['limited'],
+                'syslog_unsearched' => $syslog['unsearched'],
+                'syslog_stopped' => $syslog['stopped'],
+                'syslog_scanned' => $syslog['scanned'],
+                'syslog_devices' => $syslog['senders'],
+                'syslog_scope' => count($senders),
+            ]);
     }
 
     /**
@@ -314,12 +381,13 @@ class TopologyService
     }
 
     /**
-     * Redundancy analysis of every device the user may see, reporting on $scope.
+     * Redundancy analysis of every device the user may see, reporting on $scope. Also the base of the
+     * rollout planner and the device dependencies (PlanningService), so they see the same links.
      *
      * @param  int[]  $scope
      * @param  bool  $details  also read stack members / line cards and outage start times
      */
-    private function redundancyAnalyzer(array $scope, bool $details): RedundancyAnalyzer
+    public function redundancyAnalyzer(array $scope, bool $details): RedundancyAnalyzer
     {
         $all = $this->repo->deviceIds();
         $links = $this->repo->links($all);

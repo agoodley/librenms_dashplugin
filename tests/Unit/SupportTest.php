@@ -121,6 +121,46 @@ class SupportTest extends TestCase
         $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromPlatform(''));
     }
 
+    public function testRolesOfLldpNeighborsComeFromTheirSystemDescription(): void
+    {
+        // LibreNMS stores no platform for LLDP neighbors, only the sysDescr (remote_version)
+        $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor(null, 'Juniper Networks, Inc. ex2300-48p Ethernet Switch, kernel JUNOS 21.4R3-S4', 'bldg2-idf3'));
+        $this->assertSame(DeviceRole::ROUTER, DeviceRole::fromNeighbor('', 'MikroTik RouterOS 7.12 (stable) CCR2004-1G-12S+2XS', 'edge-gw'));
+        $this->assertSame(DeviceRole::SERVER, DeviceRole::fromNeighbor('', 'VMware ESXi 8.0.2 build-22380479 VMware, Inc. VMware7,1', 'esx01'));
+        $this->assertSame(DeviceRole::SERVER, DeviceRole::fromNeighbor('', 'Linux srv1 5.15.0-91-generic #101-Ubuntu SMP x86_64', 'srv1'));
+        $this->assertSame(DeviceRole::PHONE, DeviceRole::fromNeighbor('', 'Cisco IP Phone CP-8845, V3, sip88xx.14-1-1-0001-136', 'SEP0011223344AB'));
+        $this->assertSame(DeviceRole::FIREWALL, DeviceRole::fromNeighbor('', 'pfSense fw1.example.net 2.7.2-RELEASE FreeBSD 14.0-CURRENT amd64', 'fw1'));
+        // network operating systems on Linux are not servers
+        $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor('', 'SONiC Software Version: SONiC.202305 - HwSku: Accton-AS7726-32X - Distribution: Debian 11.7 - Kernel: 5.10.0-18-2-amd64', 'leaf1'));
+        $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor('', 'Cumulus Linux version 5.4.0 running on Mellanox SN2010', 'leaf2'));
+        // a CDP platform wins over the description; nothing known stays unknown
+        $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor('cisco WS-C2960X-48FPD-L', 'Linux', 'sw1'));
+        $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromNeighbor(null, 'Acme NetOS 1.2', 'box1'));
+        $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromNeighbor(null, '', ''));
+
+        // the system descriptions of common switches and routers
+        $descriptions = [
+            'Cisco IOS Software, C2960X Software (C2960X-UNIVERSALK9-M), Version 15.2(7)E3, RELEASE SOFTWARE (fc1)' => DeviceRole::SWITCH,
+            'Cisco IOS Software [Cupertino], Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.9.4' => DeviceRole::SWITCH,
+            'Cisco NX-OS(tm) n9000, Software (n9000-dk9), Version 9.3(10), RELEASE SOFTWARE' => DeviceRole::SWITCH,
+            'Arista Networks EOS version 4.28.3M running on an Arista Networks DCS-7050SX3-48YC8' => DeviceRole::SWITCH,
+            'Aruba JL658A 6300M 24SFP+ 4SFP56 Swch FL.10.10.1020' => DeviceRole::SWITCH,
+            'ExtremeXOS (X460G2-48p-10G4) version 30.7.1.1 30.7.1.1-patch1-5' => DeviceRole::SWITCH,
+            'Ruckus ICX7150-48P, IronWare Version 08.0.95 Compiled on Mar 23 2022' => DeviceRole::SWITCH,
+            'Dell EMC Networking OS10 Enterprise. Copyright (c) 1999-2023 by Dell Inc.' => DeviceRole::SWITCH,
+            'Cisco IOS Software, C2900 Software (C2900-UNIVERSALK9-M), Version 15.7(3)M8' => DeviceRole::ROUTER,
+            'Cisco IOS XR Software, Version 7.5.2' => DeviceRole::ROUTER,
+            'VyOS 1.4-rolling-202307250317' => DeviceRole::ROUTER,
+            'ArubaOS (MODEL: 515), Version 8.10.0.6' => DeviceRole::WIRELESS,
+            'Cisco IOS Software [Cupertino], C9800 Software (C9800_IOSXE-K9), Version 17.9.4a' => DeviceRole::WIRELESS,
+            'U6-LR 6.5.62.14789' => DeviceRole::WIRELESS,
+            'Cisco Firepower Threat Defense, Version 7.2.5' => DeviceRole::FIREWALL,
+        ];
+        foreach ($descriptions as $description => $role) {
+            $this->assertSame($role, DeviceRole::fromNeighbor(null, $description, 'neighbor'), $description);
+        }
+    }
+
     public function testSettingsAndParams(): void
     {
         $settings = new PluginSettings(['max_nodes' => '50', 'stp_preferred_roots' => "core1, core2\ncore3", 'show_unmanaged' => '0']);

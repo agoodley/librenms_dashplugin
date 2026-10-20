@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
+use Agoodley\LibrenmsTopology\Support\PortStack;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -166,21 +167,43 @@ class TopologyRepository extends ScopedRepository
             return [];
         }
 
+        // stack pairs in either orientation (see Support\PortStack): the current schema has both port
+        // ids (resolved from the ifIndexes when LibreNMS could not), the one before 24.8 only ifIndexes
         $pairs = [];
-        // current schema first, then the column names used before LibreNMS 24.8
-        foreach ([['high_port_id', 'low_port_id'], ['port_id_high', 'port_id_low']] as [$high, $low]) {
-            try {
-                foreach (DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)
-                    ->where($high, '>', 0)->where($low, '>', 0)
-                    ->get([$high . ' as high', $low . ' as low']) as $row) {
-                    $pairs[(int) $row->low][] = (int) $row->high;
+        $byIndex = [];
+        try {
+            $rows = DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)
+                ->get(['device_id', 'high_ifIndex', 'low_ifIndex', 'high_port_id', 'low_port_id']);
+            foreach ($rows as $row) {
+                if ($row->high_port_id && $row->low_port_id) {
+                    $pairs[] = [(int) $row->high_port_id, (int) $row->low_port_id];
+                } else {
+                    $byIndex[] = [(int) $row->device_id, (int) $row->high_ifIndex, (int) $row->low_ifIndex];
                 }
-                break;
+            }
+        } catch (\Throwable $e) {
+            try {
+                foreach (DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)->get(['device_id', 'port_id_high', 'port_id_low']) as $row) {
+                    $byIndex[] = [(int) $row->device_id, (int) $row->port_id_high, (int) $row->port_id_low];
+                }
             } catch (\Throwable $e) {
                 Log::debug('topology plugin: cannot read ports_stack: ' . $e->getMessage());
             }
         }
+        if ($byIndex) {
+            $portIds = [];
+            foreach (DB::table('ports')->whereIntegerInRaw('device_id', array_values(array_unique(array_column($byIndex, 0))))
+                ->get(['port_id', 'device_id', 'ifIndex']) as $port) {
+                $portIds[$port->device_id . ':' . $port->ifIndex] = (int) $port->port_id;
+            }
+            foreach ($byIndex as [$deviceId, $high, $low]) {
+                if (isset($portIds["$deviceId:$high"], $portIds["$deviceId:$low"])) {
+                    $pairs[] = [$portIds["$deviceId:$high"], $portIds["$deviceId:$low"]];
+                }
+            }
+        }
 
+        // Cisco PAgP / LACP group membership
         try {
             foreach (DB::table('ports as m')
                 ->join('ports as p', function ($join): void {
@@ -189,8 +212,8 @@ class TopologyRepository extends ScopedRepository
                 ->whereIntegerInRaw('m.device_id', $ids)
                 ->where('m.pagpGroupIfIndex', '>', 0)
                 ->whereColumn('m.pagpGroupIfIndex', '<>', 'm.ifIndex')
-                ->get(['m.port_id as low', 'p.port_id as high']) as $row) {
-                $pairs[(int) $row->low][] = (int) $row->high;
+                ->get(['m.port_id as member', 'p.port_id as aggregate']) as $row) {
+                $pairs[] = [(int) $row->aggregate, (int) $row->member];
             }
         } catch (\Throwable $e) {
             Log::debug('topology plugin: cannot read pagp data: ' . $e->getMessage());
@@ -200,23 +223,14 @@ class TopologyRepository extends ScopedRepository
             return [];
         }
 
-        // keep only real aggregates (not sub-interfaces, VLAN interfaces, tunnels...)
-        $highIds = array_values(array_unique(array_merge(...array_values($pairs))));
-        $parents = DB::table('ports')->whereIntegerInRaw('port_id', $highIds)
-            ->get(['port_id', 'ifType', 'ifName', 'ifDescr'])->keyBy('port_id');
-
-        $result = [];
-        foreach ($pairs as $low => $highs) {
-            foreach ($highs as $high) {
-                $parent = $parents[$high] ?? null;
-                if ($parent && $high !== $low && ($parent->ifType === 'ieee8023adLag' || InterfaceName::isLagName($parent->ifName ?: $parent->ifDescr))) {
-                    $result[$low] = $high;
-                    break;
-                }
+        $ports = [];
+        foreach (array_chunk(array_values(array_unique(array_merge(...$pairs))), 5000) as $chunk) {
+            foreach (DB::table('ports')->whereIntegerInRaw('port_id', $chunk)->get(['port_id', 'ifType', 'ifName', 'ifDescr']) as $port) {
+                $ports[(int) $port->port_id] = (array) $port;
             }
         }
 
-        return $result;
+        return PortStack::lagMembers($pairs, $ports);
     }
 
     /**

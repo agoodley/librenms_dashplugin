@@ -21,14 +21,14 @@ The plugin's conventions apply to all of them:
 | 1 | [Link & VLAN diagnostics](README.md#link--vlan-diagnostics) | **done** | – |
 | 3 | [Redundancy & failure impact](README.md#redundancy--failure-impact) | **done** | – |
 | 4 | [Routing & IP diagnostics](README.md#routing--ip-diagnostics) | **done** | – |
+| 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
+| 7 | [Automatic device dependencies](README.md#device-dependencies) | **done** | – |
+| 9 | [More L3 map layers](README.md#layer-3-map-overlays) | **done** | – |
+| 10 | [Loop evidence on the STP page](README.md#spanning-tree-diagnostics) | **done** | – |
+| 12 | [Coverage report](README.md#coverage-report) | **done** | – |
 | 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
 | 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
 | 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
-| 7 | [Automatic device dependencies](#7-automatic-device-dependencies) | planned | M |
-| 14 | [Rollout planner](#14-rollout-planner-change-and-upgrade-waves) | planned | S–M |
-| 12 | [Coverage report](#12-coverage-report) | planned | S |
-| 9 | [More L3 map layers](#9-more-l3-map-layers) | planned | S each |
-| 10 | [Loop evidence on the STP page](#10-loop-evidence-on-the-stp-page) | planned | S–M |
 | 8 | [Site / WAN view](#8-site--wan-view) | later | M |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
 | 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
@@ -37,9 +37,7 @@ Effort: S = new checks or an overlay on data the plugin already loads; M = new q
 L = several new parts (tables, jobs, UI).
 
 **Why this order:** 2 answers the most frequent day-to-day question. 5 and 6 share the same scheduled job and tables and
-turn every check into something that runs without anyone opening a page. 7 and 14 reuse the core and outage logic of
-the redundancy page; 14 also prepares the [change automation plugin](#change-automation-with-ansible). The rest builds
-on those.
+turn every check into something that runs without anyone opening a page. The rest builds on those.
 
 ## What a plugin can do in LibreNMS
 
@@ -87,50 +85,6 @@ on those.
 * A finding's identity is its code, devices, ports and VLAN.
 * Builds on the scheduled job and tables of 5.
 
-### 7. Automatic device dependencies
-
-* LibreNMS suppresses a device's alerts while **all** its parent devices are down, but parents are maintained by hand.
-* Derive the parents from the topology, toward the core or the poller (dual-homed devices get two parents), show the
-  difference from the current `device_relationships`, and let an admin apply it (`Device::parents()->sync()`).
-* Builds on the redundancy analysis: its core (configurable, so it can be the switches next to the poller) and the
-  paths toward it give the parents, and its outage view shows what the dependencies would have suppressed.
-* Parents always closer to the core keep the result free of loops. `device_outages` history can confirm the
-  derived dependencies.
-* This writes LibreNMS data: admin only, with a preview.
-
-### 14. Rollout planner (change and upgrade waves)
-
-* Pick devices (a selection, a group or a location) and get them in ordered batches for a firmware upgrade, a reboot or
-  a configuration change:
-  * farthest from the core first and the core last, so a change that breaks a device never cuts off devices still
-    waiting for it;
-  * devices that back each other up (the two switches of a redundant pair, MLAG peers) never share a batch: a batch
-    failing as a whole cuts off no more than its devices failing one at a time;
-  * for each batch, what loses its path while it is down (the phones and access points of its switches, single-homed
-    switches behind them), which is what its maintenance window must cover.
-* An optional batch size limit, and JSON at `api/rollout` for the
-  [change automation plugin](#change-automation-with-ansible).
-* Builds on the redundancy analysis: its core, `simulate()` and the devices behind each device. No new data.
-
-### 12. Coverage report
-
-* LLDP/CDP neighbors that look like switches, routers, APs or firewalls (`DeviceRole::fromPlatform`) but are not
-  monitored, where they are connected, with a link to add them.
-* Monitored devices without neighbor data, which leave gaps in the maps. The link diagnostics already report devices
-  that other switches see but that report no neighbors themselves.
-
-### 9. More L3 map layers
-
-* OSPFv3 (`ospfv3_nbrs`), IS-IS (`isis_adjacencies`; the module is off by default), IPsec tunnels (`ipsec_tunnels`,
-  peer address → device), MPLS LSPs (`mpls_lsps`, from/to addresses) and pseudowires (`pseudowires`; local vs peer MTU
-  gives a free MTU check).
-* Each is about the size of `L3Builder::addOspf()`.
-
-### 10. Loop evidence on the STP page
-
-* Broadcast / multicast storms on inter-switch links (`ports_statistics` broadcast and multicast packet rates).
-* Messages from the `syslog` table, for devices that send syslog to LibreNMS: MAC flapping, err-disable, BPDU / loop /
-  root guard, UDLD, CDP duplex and native VLAN mismatch. Vendor message patterns should be configurable.
 
 ## Later
 
@@ -201,7 +155,7 @@ from the LibreNMS pages.
 |---|---|---|
 | 1 | Connection to the runner; an Ansible inventory from LibreNMS (device groups, locations, LibreNMS `os` mapped to `ansible_network_os`; devices without a mapping are refused); run a template on selected devices; live status and log; an audit log (who, what, when, result), also in each device's eventlog | – |
 | 2 | Dry run (`--check --diff`) showing the diff per device; approval, optionally by a second admin; batches that stop at the first failures; Oxidized backups before and after (its REST API's `node/next`); a LibreNMS maintenance window for the targets | 1 |
-| 3 | Rollout plan and blast radius from this plugin (item 14 and `api/simulate`); the maintenance window also covers what each batch cuts off | 1, item 14 |
+| 3 | Rollout plan and blast radius from this plugin (`api/rollout` and `api/simulate`); the maintenance window also covers what each batch cuts off | 1 |
 | 4 | Verification: topology and findings before and after the change (root bridge moved, uplink lost, new single point of failure); one-click fixes for findings with a clear configuration (port descriptions, STP root priority) | items 5 and 6 |
 
 * **Safety:**
