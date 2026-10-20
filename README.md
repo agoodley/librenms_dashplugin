@@ -109,6 +109,44 @@ opens the L2 map with that failure applied.
 
 ![Failure simulation on the L2 map](docs/images/failure-simulation.png)
 
+### Rollout planner
+
+**Tools → Rollout Planner** puts the devices of a firmware upgrade, a reboot or a configuration change in batches, using
+the core and the links of the redundancy page as they are now. Pick devices, or a device group or location (its
+switches, routers and firewalls by default), and optionally the most devices per batch:
+
+* **Farthest from the core first, the core last.** A device's path to the core only runs through devices closer to the
+  core, so a change that breaks a device never cuts off a device that still waits for it.
+* **Never two devices that back each other up in one batch**: a batch going down as a whole cuts off no more than its
+  devices one at a time. The two switches of a redundant pair, two switches that share a dual-homed server or an
+  unmonitored switch, and two core switches always land in different batches.
+* **What goes down while a batch runs**: the monitored devices it cuts off and the unmanaged neighbors (phones, access
+  points) that go down with it – what its maintenance window must cover. Each batch has its hostnames ready to copy and
+  a *Simulate* button that fails the batch on the L2 map.
+
+Devices that are down now are left out. `api/rollout?devices=12,13` (or `group`, `location`, `size`, `network=0`)
+returns the plan as JSON.
+
+![Rollout planner](docs/images/rollout.png)
+
+### Device dependencies
+
+LibreNMS suppresses a device's alerts while **all** its parent devices are down, but the parents are set by hand.
+**Tools → Dependencies** derives them from the topology: the parents of a device are its neighbors one hop closer to
+the core over every LLDP/CDP link, also links that are down now.
+
+* Dual-homed devices get both uplink devices, so their alerts are only suppressed when both are down.
+* Parents are always closer to the core, so the dependencies never form a loop.
+* An unmonitored switch in between is skipped to the next monitored device toward the core.
+* Core devices and devices without a path to a core keep their current parents.
+
+The page lists the current and the derived parents of each device (changed, new, same or kept), and how many of its
+outages in the last 30 days started while all its parents were down – with the current and with the derived parents:
+the alerts LibreNMS suppresses. Admins can apply all or selected changes; changes that would make a loop with
+dependencies kept by hand are refused, and every change is written to the device's eventlog.
+
+![Device dependencies](docs/images/dependencies.png)
+
 *(Screenshots use a simulated demo network.)*
 
 ## Requirements
@@ -147,7 +185,8 @@ composer config --global repositories.librenms-topology '{"type": "path", "url":
 ```
 
 The plugin is enabled automatically. Open **Overview → Plugins → L2 Topology Map / L3 Topology Map / STP
-Diagnostics / Link & VLAN Diagnostics / Redundancy & Failure Impact**, or go to `/plugin/topology`. It can be disabled or configured in
+Diagnostics / Link & VLAN Diagnostics / Redundancy & Failure Impact / Rollout Planner / Device Dependencies**, or go to
+`/plugin/topology`. It can be disabled or configured in
 **Overview → Plugins → Plugin Admin → topology → Settings**.
 
 To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
@@ -167,9 +206,14 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   `l2?fail=d:12,p:345` opens the map with device 12 and the link of port 345 failed (`api/simulate?fail=...` returns the
   same as JSON).
 * If the automatic core is not your core, set **Core devices** in the settings; the switches next to the LibreNMS
-  poller are a good choice when you want "what can the poller still reach".
-* `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links` and `api/redundancy` return the same data as JSON (same
-  query parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`) for automation.
+  poller are a good choice when you want "what can the poller still reach". Set both switches of a core pair: with only
+  one, devices that are also cabled to the other get one parent on the dependencies page, and the rollout planner
+  treats the other one as an ordinary switch.
+* Before a firmware rollout, plan it on **Rollout Planner** for the device group or location, then put each batch and
+  the devices listed under it in a LibreNMS maintenance window while it runs.
+* `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links`, `api/redundancy`, `api/rollout` and `api/dependencies`
+  return the same data as JSON (same query parameters as the pages, e.g. `api/stp?vlan=30&group=2`,
+  `api/links?device=12`) for automation.
 
 ## Settings
 
@@ -194,12 +238,15 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Core devices | – | hostnames/sysNames/ids every device should keep a path to; empty: designated root bridges, else automatic |
 | Warn from | 2 | switches, routers or firewalls cut off by one failure before a single point of failure is a warning |
 | Disabled redundancy checks | – | check codes or categories (`outages`, `lost`, `fake`, `spof`), e.g. `spof_link uplinks_same_device` |
+| Rollout batch size | 0 | default most devices per rollout batch (0: no limit); the planner page can change it |
+| Outage history | 30 days | outages the derived dependencies are checked against |
 
 ## Permissions
 
 Every map and diagnostic only uses devices the logged-in user may see (LibreNMS device permissions).
 Neighbors on devices the user cannot see are shown as unmanaged neighbors (their LLDP/CDP name only), and a
-root bridge on such a device is not reported as a rogue switch.
+root bridge on such a device is not reported as a rogue switch. Only LibreNMS admins can apply derived device
+dependencies; other users see the page read only.
 
 ## How it works
 
@@ -215,6 +262,8 @@ root bridge on such a device is not reported as a rogue switch.
 * `src/Redundancy/RedundancyAnalyzer.php` – single points of failure (cut vertices and bridges toward the core,
   `Support\Graph::cuts()`), fake and lost redundancy and outages; `CoreFinder` picks the core, `PortUnits` reads stack
   members and line cards from the hardware inventory.
+* `src/Redundancy/RolloutPlanner.php`, `src/Redundancy/DependencyPlanner.php` – rollout batches and device dependencies
+  on the graphs of the redundancy analysis (`Topology\PlanningService`, `Data\DependencyRepository`).
 * `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
@@ -241,11 +290,14 @@ vendor/bin/phpunit
 * Servers, access points and phones are recognized by their LibreNMS device type, unmanaged neighbors by their LLDP/CDP
   platform; an unmanaged neighbor without a platform counts as a switch. Down devices without any LLDP/CDP neighbor are
   not listed as outages: nothing tells what they depend on.
+* The rollout planner and the device dependencies follow the same LLDP/CDP links: devices without neighbor data get no
+  parents and are planned with nothing depending on them. A batch with every core device of a part cuts off that whole
+  part (the map's failure simulation instead lets the largest remaining piece carry on). LibreNMS parents must be
+  monitored devices, so a device behind an unmonitored switch depends on the next monitored one.
 
 ## Roadmap
 
-Planned tools (host locator, topology history, routing diagnostics, automatic device dependencies and more) are
-listed in [ROADMAP.md](ROADMAP.md).
+Planned tools (host locator, topology history, routing diagnostics and more) are listed in [ROADMAP.md](ROADMAP.md).
 
 ## License
 

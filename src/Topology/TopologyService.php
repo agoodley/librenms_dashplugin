@@ -314,12 +314,13 @@ class TopologyService
     }
 
     /**
-     * Redundancy analysis of every device the user may see, reporting on $scope.
+     * Redundancy analysis of every device the user may see, reporting on $scope. Also the base of the
+     * rollout planner and the device dependencies (PlanningService), so they see the same links.
      *
      * @param  int[]  $scope
      * @param  bool  $details  also read stack members / line cards and outage start times
      */
-    private function redundancyAnalyzer(array $scope, bool $details): RedundancyAnalyzer
+    public function redundancyAnalyzer(array $scope, bool $details): RedundancyAnalyzer
     {
         $all = $this->repo->deviceIds();
         $links = $this->repo->links($all);
