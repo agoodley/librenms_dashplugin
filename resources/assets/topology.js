@@ -224,6 +224,15 @@
     /** Unmanaged neighbors that do not pass traffic between their links, by the role of their platform. */
     var END_ROLES = ['server', 'phone', 'wireless'];
 
+    /** L3 overlays beyond OSPF and BGP: edge kind => name, color and dash pattern (distinct from OSPF, BGP and subnets). */
+    var L3_LAYERS = {
+        ospfv3: {name: 'OSPFv3 adjacency', color: '#2e86de', dashes: [2, 4]},
+        isis: {name: 'IS-IS adjacency', color: '#795548', dashes: [10, 3, 2, 3]},
+        ipsec: {name: 'IPsec tunnel', color: '#c9a20a', dashes: [14, 5]},
+        mpls: {name: 'MPLS LSP', color: '#d63384', dashes: [6, 3]},
+        pw: {name: 'Pseudowire', color: '#5e60ce', dashes: [2, 2]}
+    };
+
     // ------------------------------------------------------------------ the map
 
     function TopologyMap(config) {
@@ -476,6 +485,7 @@
             self.data = data;
             self.prepareRedundancy();
             self.populateSelects(data);
+            self.updateLayerToggles(data);
             self.render(false);
         }).catch(function (error) {
             if (requestId === self.requestId && error.name !== 'AbortError') {
@@ -750,6 +760,12 @@
                 color = edge.status === 'up' ? '#8e44ad' : '#c0392b';
                 dashes = [10, 4];
                 label = this.view.linkLabels ? edge.type + (edge.remote_as ? ' AS' + edge.remote_as : '') + (edge.status === 'up' ? '' : ' ' + edge.state) : undefined;
+            } else if (L3_LAYERS[edge.kind]) {
+                var layer = this.layerEdgeStyle(edge);
+                color = layer.color;
+                dashes = layer.dashes;
+                width = layer.width;
+                label = layer.label;
             } else if (edge.kind === 'p2p') {
                 color = edge.status === 'up' ? '#1f6fb2' : '#c0392b';
                 width = 2.5;
@@ -785,6 +801,10 @@
             } else if (this.simMap.nodes[edge.from] || this.simMap.nodes[edge.to]) {
                 visEdge.color.opacity = 0.25;
             }
+        }
+
+        if (edge.arrows) {
+            visEdge.arrows = edge.arrows;
         }
 
         var parallel = edge.parallel || {index: 0, count: 1};
@@ -1119,6 +1139,159 @@
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         ctx.fillText(suspected ? 'ROOT? (unmanaged)' : 'ROOT', cx + 11, cy);
+    };
+
+    // ------------------------------------------------------------------ L3 overlay layers
+
+    /**
+     * Offer the toggles of the L3 overlay layers (OSPFv3, IS-IS, IPsec, MPLS LSPs, pseudowires) only when
+     * the devices of the map have such data: the LibreNMS modules behind them are often off. A hidden
+     * toggle is disabled so that it stays out of the URL.
+     */
+    TopologyMap.prototype.updateLayerToggles = function (data) {
+        var layers = data.layers || {};
+        document.querySelectorAll('#topo-filters [data-layer]').forEach(function (label) {
+            var layer = layers[label.getAttribute('data-layer')];
+            var available = !!(layer && layer.available);
+            label.style.display = available ? '' : 'none';
+            label.querySelector('input').disabled = !available;
+        });
+    };
+
+    /**
+     * Color, dashes, width and label of an overlay edge: red when down, grey when shut down, orange for
+     * pseudowires whose two ends have different MTUs (always labelled: the MTU check is the point of
+     * that layer).
+     */
+    TopologyMap.prototype.layerEdgeStyle = function (edge) {
+        var layer = L3_LAYERS[edge.kind];
+        var style = {color: layer.color, dashes: layer.dashes, width: edge.kind === 'ipsec' ? 2.5 : 2, label: undefined};
+        if (edge.status === 'down') {
+            style.color = '#c0392b';
+        } else if (edge.status === 'disabled') {
+            style.color = '#95a5a6';
+        } else if (edge.status === 'warning') {
+            style.color = '#e67e22';
+            style.width = 3;
+        }
+        if (this.view.linkLabels || edge.mtu_mismatch) {
+            style.label = this.layerSummary(edge);
+        }
+        return style;
+    };
+
+    /**
+     * One line about an overlay edge: protocol and state, number of tunnels / LSPs / pseudowires, an
+     * MTU mismatch.
+     */
+    TopologyMap.prototype.layerSummary = function (edge) {
+        var count = function (n, one, many) {
+            return n + ' ' + (n === 1 ? one : many);
+        };
+        var problem = edge.status === 'up' ? '' : ' ' + edge.state;
+        switch (edge.kind) {
+            case 'ospfv3':
+                return 'OSPFv3 ' + edge.state;
+            case 'isis':
+                return 'IS-IS' + (edge.levels.length ? ' ' + edge.levels.join('/') : '') + problem;
+            case 'ipsec':
+                return 'IPsec' + problem;
+            case 'mpls':
+                return count(edge.lsps.length, 'LSP', 'LSPs') + (edge.status === 'up' ? '' : ', ' + edge.state);
+            case 'pw':
+                var bad = edge.vcs.filter(function (vc) {
+                    return vc.mismatch;
+                })[0];
+                return count(edge.vcs.length, 'pseudowire', 'pseudowires') + (bad ? ': MTU ' + bad.mtu_a + ' ≠ ' + bad.mtu_b : '');
+        }
+        return '';
+    };
+
+    /**
+     * Details panel of an overlay edge: its state and the adjacencies, tunnels, LSPs or pseudowires it
+     * stands for (an edge merges both ends and every tunnel / LSP / pseudowire between two devices).
+     */
+    TopologyMap.prototype.layerDetails = function (edge) {
+        var self = this;
+        var name = function (deviceId) {
+            return esc(self.nodeName('d:' + deviceId));
+        };
+        var state = function (status, text) {
+            return '<span class="topo-status-' + esc(status === 'warning' ? 'degraded' : status) + '">' + esc(text) + '</span>';
+        };
+        var html = '<table class="table table-condensed topo-kv">' + this.row('Layer', esc(L3_LAYERS[edge.kind].name)) +
+            this.row('State', state(edge.status, edge.state));
+
+        if (edge.kind === 'ospfv3') {
+            html += this.row('Router IDs', esc(edge.routerIds.join(', '))) + this.row('Neighbor addresses', esc(edge.addresses.join(', ')));
+        } else if (edge.kind === 'isis') {
+            html += this.row('Levels', esc(edge.levels.join(', '))) + this.row('Areas', esc(edge.areas.join(', '))) +
+                this.row('System IDs', esc(edge.systemIds.join(', '))) + this.row('Addresses', esc(edge.addresses.join(', '))) +
+                this.row('Interfaces', edge.interfaces.map(function (i) {
+                    return name(i.device_id) + ' ' + esc(i.name);
+                }).join(', '));
+        }
+        html += '</table>';
+
+        if (edge.kind === 'ipsec') {
+            html += '<h5>Tunnels</h5><table class="table table-condensed topo-kv topo-layer-list">';
+            edge.tunnels.forEach(function (t) {
+                html += '<tr><td>' + name(t.device_id) + '</td><td>' + esc(t.name) + '</td><td>' + esc((t.local ? t.local + ' ' : '') + '→ ' + t.peer) +
+                    '</td><td>' + state(t.up ? 'up' : 'down', t.status) + '</td></tr>';
+            });
+            html += '</table>';
+        } else if (edge.kind === 'mpls') {
+            html += '<h5>LSPs</h5><table class="table table-condensed topo-kv topo-layer-list"><tr><th>Name</th><th>Head → tail</th><th>State</th><th>Paths</th></tr>';
+            edge.lsps.forEach(function (lsp) {
+                var up = lsp.oper === 'inService';
+                var shut = lsp.admin === 'outOfService';
+                html += '<tr><td title="' + esc(lsp.type + (lsp.frr ? ', fast reroute' : '') + ', ' + lsp.transitions + ' transitions') + '">' + esc(lsp.name) + '</td><td>' +
+                    esc(self.nodeName(lsp.head) + ' → ' + self.nodeName(lsp.tail)) + '</td><td>' +
+                    state(shut ? 'disabled' : (up ? 'up' : 'down'), shut ? 'shut down' : lsp.oper) + '</td><td>' + esc(lsp.paths) + '</td></tr>';
+            });
+            html += '</table>';
+        } else if (edge.kind === 'pw') {
+            html += '<h5>Pseudowires</h5><table class="table table-condensed topo-kv topo-layer-list"><tr><th>VC</th><th>' + esc(this.nodeName(edge.from)) + '</th><th>' +
+                esc(this.nodeName(edge.to)) + '</th><th>MTU</th></tr>';
+            edge.vcs.forEach(function (vc) {
+                var mtu = (vc.mtu_a || '?') + ' / ' + (vc.mtu_b || '?');
+                html += '<tr><td title="' + esc(vc.type + ' over ' + vc.psn) + '">' + esc(vc.vc) + (vc.description ? ' <small>' + esc(vc.description) + '</small>' : '') + '</td><td>' +
+                    esc(vc.a ? vc.a.port : '') + '</td><td>' + esc(vc.b ? vc.b.port : '') + '</td><td>' + (vc.mismatch ? '<b class="text-danger">' + esc(mtu) + '</b>' : esc(mtu)) + '</td></tr>';
+            });
+            html += '</table><p class="text-muted topo-hint">LibreNMS keeps no pseudowire state. A pseudowire whose two ends have different MTUs cannot come up.</p>';
+        }
+        return html;
+    };
+
+    /**
+     * Legend lines of the overlay layers drawn on this map.
+     */
+    TopologyMap.prototype.layerLegend = function () {
+        var stats = (this.data && this.data.stats) || {};
+        var html = '';
+        Object.keys(L3_LAYERS).forEach(function (kind) {
+            if (stats[kind]) {
+                html += '<div><span class="topo-line topo-line-dashed" style="border-color:' + L3_LAYERS[kind].color + '"></span> ' + esc(L3_LAYERS[kind].name) +
+                    (kind === 'mpls' ? ' (arrow toward the tail)' : '') + '</div>';
+            }
+        });
+        if (stats.mtu) {
+            html += '<div><span class="topo-line topo-line-dashed" style="border-color:#e67e22"></span> Pseudowire MTU mismatch</div>';
+        }
+        return html;
+    };
+
+    /**
+     * Status line parts of the overlay layers.
+     */
+    TopologyMap.prototype.layerStatus = function (stats) {
+        var parts = [];
+        [['ospfv3', 'OSPFv3 adjacencies'], ['isis', 'IS-IS adjacencies'], ['ipsec', 'IPsec peers'], ['mpls', 'LSPs'], ['pw', 'pseudowires']].forEach(function (item) {
+            if (stats[item[0]]) {
+                parts.push(stats[item[0]] + ' ' + item[1] + (item[0] === 'pw' && stats.mtu ? ' (<span class="topo-text-warning">' + stats.mtu + ' MTU mismatch</span>)' : ''));
+            }
+        });
+        return parts;
     };
 
     // ------------------------------------------------------------------ failure simulation & outages
@@ -1460,6 +1633,7 @@
         if (edge.speed) html += '<br>' + esc(formatSpeed(edge.speed)) + 'bps';
         if (edge.network) html += '<br>' + esc(edge.network);
         if (edge.kind === 'ospf' || edge.kind === 'bgp') html += '<br>' + esc((edge.type || 'OSPF') + ' ' + edge.state);
+        if (L3_LAYERS[edge.kind]) html += '<br>' + esc(this.layerSummary(edge));
         return html;
     };
 
@@ -1500,6 +1674,7 @@
             html += this.row('Status', '<span class="topo-status-' + esc(node.status) + '">' + esc(node.status) + '</span>') +
                 this.row('Role', esc(node.role)) + this.row('Hardware', esc(node.hardware)) + this.row('OS', esc((node.os || '') + ' ' + (node.version || ''))) +
                 this.row('Location', esc(node.location)) + this.row('Platform', esc(node.platform));
+            if (node.address) html += this.row('Address', esc(node.address));
             if (node.loopbacks && node.loopbacks.length) html += this.row('Loopbacks', esc(node.loopbacks.join(', ')));
             if (node.bgpLocalAs) html += this.row('BGP AS', esc(node.bgpLocalAs));
             if (node.stubs && node.stubs.length) html += this.row('Stub networks', esc(node.stubs.slice(0, 12).join(', ')) + (node.stubs.length > 12 ? ' &hellip;' : ''));
@@ -1547,7 +1722,7 @@
                 var local = edge.from === id ? edge.a : edge.b;
                 var remote = edge.from === id ? edge.b : edge.a;
                 var other = self.nodeName(edge.from === id ? edge.to : edge.from);
-                var localName = local ? (local.short || local.name) : (edge.kind || '');
+                var localName = local ? (local.short || local.name) : (L3_LAYERS[edge.kind] ? L3_LAYERS[edge.kind].name : (edge.kind || ''));
                 var remoteName = remote ? ' ' + (remote.short || remote.name || '') : '';
                 html += '<tr data-edge="' + esc(visEdge.id) + '"><td>' + esc(localName) + '</td><td>' + esc(other + remoteName) + '</td></tr>';
             });
@@ -1632,6 +1807,10 @@
         var self = this;
         var html = '<h4 class="topo-panel-title">' + esc(this.nodeName(edge.from)) + ' &harr; ' + esc(this.nodeName(edge.to)) + '</h4>';
 
+        if (L3_LAYERS[edge.kind]) {
+            this.panel.innerHTML = html + this.layerDetails(edge);
+            return;
+        }
         if (edge.kind === 'ospf' || edge.kind === 'bgp') {
             html += '<table class="table table-condensed topo-kv">' +
                 this.row('Protocol', esc(edge.kind === 'ospf' ? 'OSPF' : edge.type)) +
@@ -1719,6 +1898,7 @@
                 '<div><span class="topo-subnet">10.0.0.0/24</span> Multi-access subnet</div>' +
                 '<div><span class="topo-line topo-line-dashed" style="border-color:#16a085"></span> OSPF adjacency</div>' +
                 '<div><span class="topo-line topo-line-dashed" style="border-color:#8e44ad"></span> BGP session</div>' +
+                this.layerLegend() +
                 '<div><span class="topo-line topo-line-dashed" style="border-color:#c0392b"></span> Down / not established</div>';
         }
         html += '</div><p class="text-muted topo-hint">Click a device or link for details. Double-click a device to center the map on it. Drag devices to arrange, then <i>Save layout</i>.' +
@@ -1743,6 +1923,7 @@
             parts.push(stats.devices + ' L3 devices', stats.subnets + ' subnets', stats.p2p + ' point-to-point links');
             if (stats.ospf) parts.push(stats.ospf + ' OSPF adjacencies');
             if (stats.bgp) parts.push(stats.bgp + ' BGP sessions');
+            parts = parts.concat(this.layerStatus(stats));
             if (stats.down) parts.push('<span class="text-danger">' + stats.down + ' down</span>');
         }
         var html = parts.join(' &middot; ');

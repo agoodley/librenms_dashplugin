@@ -13,7 +13,7 @@ transceiver sensors and the hardware inventory).
 | Interface names at **both ends** of every link (`Te1/0/1 [R]`), link speed, port-channels collapsed (`2x 10G`) | Point-to-point subnets (/29–/31) as direct links, LAN segments as subnet "media" nodes |
 | STP overlay: ★ root bridge, `[R]`/`[D]`/`[ALT]` port roles, ⊗ on blocked ports, dashed orange blocked links | Interface name + IP address at each end, VRF filter, loopbacks and stub networks per device |
 | VLAN filter dims switches/links that do not carry the VLAN and switches the STP overlay to that VLAN's instance | OSPF adjacencies and BGP sessions (iBGP/eBGP, external AS clouds), red when not full/established |
-| Unmanaged LLDP/CDP neighbors (APs, phones, servers, unknown switches); an unmanaged neighbor behind a root port is flagged `ROOT?` | |
+| Unmanaged LLDP/CDP neighbors (APs, phones, servers, unknown switches); an unmanaged neighbor behind a root port is flagged `ROOT?` | OSPFv3, IS-IS, IPsec, MPLS LSP and pseudowire [overlays](#layer-3-map-overlays), with a pseudowire MTU check |
 
 Both maps: center on any device with N hops, filter by device group or location, search, hierarchical or
 organic layout, drag-and-save layout (per browser), color links by speed / utilization / status,
@@ -21,6 +21,25 @@ details panel for every device and link (speed, duplex, VLANs, traffic, STP stat
 PNG and CSV, full screen, and shareable URLs. On the L2 map, **Simulate failure** in the details of a device or link
 shows which devices would lose their path to the core (failures add up, so "what if both go down" works too), and
 the top-most down device of an outage is marked with the number of down devices behind it.
+
+### Layer 3 map overlays
+
+Besides OSPF and BGP, the L3 map draws the overlays of LibreNMS modules that are often off. Each has its own toggle,
+shown only when the devices on the map have such data:
+
+| Overlay | LibreNMS module | |
+|---|---|---|
+| OSPFv3 adjacencies | `ospfv3` (on by default) | neighbors are found by router ID: their address is usually link-local |
+| IS-IS adjacencies | `isis` discovery and poller modules (off by default) | a neighbor without an address is matched by a system ID that encodes a loopback (`0100.0000.0001` = 10.0.0.1) |
+| IPsec tunnels | `cipsec-tunnels` poller module (Cisco, Firebrick; off by default) | to the device owning the peer address, else to an external VPN peer |
+| MPLS LSPs | `mpls` (Nokia SR OS) | arrow toward the tail; red when an LSP that is in service is down |
+| Pseudowires | `cisco-pw` discovery module (off by default) | orange with both MTUs when the two ends of a pseudowire disagree: it cannot come up |
+
+Both ends of an adjacency, tunnel, LSP or pseudowire are merged into one link per pair of devices, and its details
+list them all (LSP states and paths, tunnel names, pseudowire VC IDs, ports and MTUs). Peers that are not monitored
+are external nodes named by router ID, system ID or address.
+
+![L3 map overlays](docs/images/l3-layers.png)
 
 ### Spanning tree diagnostics
 
@@ -159,6 +178,8 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 * Pick a **VLAN** on the L2 map to see which switches/trunks carry it and that VLAN's spanning tree
   (root bridge, port roles, blocked ports). Domain rows and findings on the STP page link straight to that view.
 * Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope).
+* On the L3 map, click a router and pick an overlay under *Connections* to list its LSPs, tunnels or pseudowires;
+  `l3?isis=0&mpls=0` (and `api/l3`) leaves overlays out.
 * The suggested configuration under a description finding is ready to paste; it names each port after its current
   LLDP/CDP neighbor (`core2 Te1/1/1`).
 * Before maintenance on a switch, open it on the L2 map and use **Simulate failure**: the box lists what loses its path
@@ -207,7 +228,8 @@ root bridge on such a device is not reported as a rogue switch.
   the diagnostics.
 * `src/Support/Navigation.php` – the pages, as listed in the navigation, the plugin menu and the landing page.
 * `src/Topology/L2Builder.php`, `src/Topology/L3Builder.php` – build the map graphs (link de-duplication,
-  LAG/MLAG handling, VLAN membership, subnet classification, routing overlays, hierarchy tiers).
+  LAG/MLAG handling, VLAN membership, subnet classification, hierarchy tiers, and the L3 overlays: OSPF, OSPFv3, IS-IS,
+  BGP, IPsec, MPLS LSPs and pseudowires, read by `Data\L3LayerRepository`).
 * `src/Stp/StpIndex.php`, `src/Stp/StpAnalyzer.php` – STP role derivation (BRIDGE-MIB has no port role) and
   the diagnostics.
 * `src/Links/LinkAnalyzer.php` – the link and VLAN checks (both ends of each link, port-channels, VLAN islands per
@@ -231,6 +253,9 @@ vendor/bin/phpunit
 * Stacks / virtual chassis that are not modelled as one device, and MLAG pairs without a detected
   port-channel, can produce a "possible bridging loop" warning – the finding says so.
 * Saved layouts live in the browser's local storage, they are not shared between users.
+* The L3 overlays only join devices drawn on the map: a peer that is monitored but outside the map's scope is left out
+  (as for OSPF and BGP), and an unknown peer, or one on a device you may not see, is an external node showing only its
+  address. LibreNMS keeps no pseudowire state, and the MTU check needs both MTUs, which some devices report as 0.
 * LibreNMS refreshes VLAN memberships at discovery (every 6 hours by default) and counters at every poll, so a
   VLAN change can take until the next discovery to show up. The split VLAN check can only follow links that
   LLDP/CDP reports; a VLAN that crosses a link without LLDP/CDP can be reported as split.

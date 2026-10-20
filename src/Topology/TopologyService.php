@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Topology;
 
+use Agoodley\LibrenmsTopology\Data\L3LayerRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
 use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
@@ -92,7 +93,8 @@ class TopologyService
     }
 
     /**
-     * @param  array{device: ?int, depth: int, group: ?int, location: ?int, vrf: ?string, stubs: bool, ospf: bool, bgp: bool, ipv6: bool, all_devices: bool}  $p
+     * @param  array{device: ?int, depth: int, group: ?int, location: ?int, vrf: ?string, stubs: bool, ospf: bool, bgp: bool, ospfv3?: bool,
+     *     isis?: bool, ipsec?: bool, mpls?: bool, pw?: bool, ipv6: bool, all_devices: bool}  $p
      */
     public function l3(array $p): array
     {
@@ -123,11 +125,20 @@ class TopologyService
         }
 
         $ids = array_keys($devices);
+
+        // overlay layers from modules that are often off: only offered (and loaded) when they have data
+        $layerRepo = $this->repo->sibling(L3LayerRepository::class);
+        $available = $layerRepo->counts($ids);
+        $loaded = array_filter(L3Builder::LAYERS, fn ($layer) => ($p[$layer] ?? true) && $available[$layer] > 0);
+        $layers = $layerRepo->load($ids, $loaded);
+
         $builder = new L3Builder(
             $devices,
             array_values(array_filter($addresses, fn ($a) => isset($devices[(int) $a['device_id']]))),
             $p['ospf'] ? $this->repo->ospfNeighbors($ids) : [],
             $p['bgp'] ? $this->repo->bgpPeers($ids) : [],
+            $layers,
+            $layers ? $layerRepo->resolve(L3Builder::layerLookups($layers)) : [],
         );
 
         $result = $builder->build([
@@ -140,7 +151,11 @@ class TopologyService
             'bgp' => $p['bgp'],
             'root' => $root,
             'depth' => $root ? $p['depth'] : null,
-        ]);
+        ] + array_fill_keys(L3Builder::LAYERS, true));
+        $result['layers'] = [];
+        foreach (L3Builder::LAYERS as $layer) {
+            $result['layers'][$layer] = ['available' => $available[$layer], 'shown' => in_array($layer, $loaded, true)];
+        }
 
         $shown = count(array_filter($result['nodes'], fn ($n) => $n['type'] === 'device'));
         if ($root && $shown > $this->maxNodes()) {

@@ -12,7 +12,8 @@ class MapParams
      * plugin settings; invalid values are ignored.
      *
      * @return array{device: ?int, depth: int, group: ?int, location: ?int, vlan: ?int, vrf: ?string, unmanaged: bool,
-     *     lag: bool, isolated: bool, stubs: bool, ospf: bool, bgp: bool, ipv6: bool, all_devices: bool}
+     *     lag: bool, isolated: bool, stubs: bool, ospf: bool, bgp: bool, ospfv3: bool, isis: bool, ipsec: bool, mpls: bool,
+     *     pw: bool, ipv6: bool, all_devices: bool}
      */
     public static function parse(array $query, PluginSettings $settings): array
     {
@@ -29,6 +30,12 @@ class MapParams
             'stubs' => self::bool($query, 'stubs', ! $settings->bool('l3_hide_stubs')),
             'ospf' => self::bool($query, 'ospf', true),
             'bgp' => self::bool($query, 'bgp', true),
+            // more L3 overlays: on unless switched off (the map only offers those with data)
+            'ospfv3' => self::bool($query, 'ospfv3', true),
+            'isis' => self::bool($query, 'isis', true),
+            'ipsec' => self::bool($query, 'ipsec', true),
+            'mpls' => self::bool($query, 'mpls', true),
+            'pw' => self::bool($query, 'pw', true),
             'ipv6' => self::bool($query, 'ipv6', false),
             'all_devices' => self::bool($query, 'all_devices', false),
         ];
