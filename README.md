@@ -734,10 +734,11 @@ vendor/bin/phpunit
 ## Limitations
 
 * The pages of the whole network fit in PHP's default 128 MB on 1,242 switches with 23,000 phones and 50 PVST VLANs
-  (largest: redundancy 102 MB, links 86 MB, spanning tree 84 MB, L2 map 66 MB); a page also raises PHP's memory limit to
-  LibreNMS' `php_memory_limit`, or 256 MB when it is not set. Above 3,000 spanning tree instances or 40,000 STP port
-  rows the STP page analyzes one VLAN at a time (VLAN 1 / CST until another is picked); the background check covers
-  every VLAN. One VLAN of a very large PVST network with STP rows for every port can still need more.
+  (largest: redundancy and device dependencies 96 MB, links 86 MB, spanning tree 82 MB, L2 map 66 MB); a page also
+  raises PHP's memory limit to LibreNMS' `php_memory_limit`, or 256 MB when it is not set. Above 3,000 spanning tree
+  instances or 40,000 STP port rows the STP page analyzes one VLAN at a time (VLAN 1 / CST until another is picked);
+  the background check covers every VLAN. One VLAN of a very large PVST network with STP rows for every port can still
+  need more.
 * The site map knows the links between monitored devices. Unmanaged neighbors, devices the user may not see and OSPF
   neighbors LibreNMS does not monitor are left out (their location is unknown), as are sessions to devices outside a
   device group filter; BGP peers LibreNMS does not monitor are grouped by AS, so two providers in the same AS are one
