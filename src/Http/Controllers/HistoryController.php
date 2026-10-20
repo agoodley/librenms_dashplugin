@@ -37,7 +37,7 @@ class HistoryController extends Controller
 
         return $this->page($request, 'changes', 'topology history', function (array $params, PluginSettings $settings) use ($request, $from, $to, $admin) {
             $service = $this->history($request, $settings);
-            $result = $service->changes($params, $from, $to);
+            $result = self::forUser($service->changes($params, $from, $to), $admin);
             if ($admin && $request->query('baseline') === 'preview' && ($result['available'] ?? false)) {
                 $result['preview'] = $service->baselinePreview($params);
             }
@@ -55,7 +55,7 @@ class HistoryController extends Controller
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json('topology history', fn () => $this->history($request, $settings)->changes($params, $from, $to));
+        return $this->json('topology history', fn () => self::forUser($this->history($request, $settings)->changes($params, $from, $to), self::isAdmin($request)));
     }
 
     /**
@@ -68,7 +68,8 @@ class HistoryController extends Controller
 
         $settings = $this->settings();
         $params = MapParams::parse($request->only(['device', 'group', 'location']), $settings);
-        $back = array_filter(['device' => $params['device'], 'group' => $params['group'], 'location' => $params['location'], 'window' => $request->input('window')]);
+        $back = array_filter(['device' => $params['device'], 'group' => $params['group'], 'location' => $params['location'],
+            'window' => $request->input('window'), 'from' => $request->input('from'), 'to' => $request->input('to')], fn ($value) => is_scalar($value) && $value !== '');
         $user = (string) ($request->user()->username ?? '');
 
         try {
@@ -91,6 +92,18 @@ class HistoryController extends Controller
     private function history(Request $request, PluginSettings $settings): HistoryService
     {
         return new HistoryService(new HistoryRepository($request->user()), new TopologyRepository($request->user()), $settings);
+    }
+
+    /**
+     * Who saved the baseline is for admins only.
+     */
+    private static function forUser(array $result, bool $admin): array
+    {
+        if (! $admin && isset($result['baseline']['saved'])) {
+            $result['baseline']['saved']['saved_by'] = null;
+        }
+
+        return $result;
     }
 
     /**
@@ -124,7 +137,7 @@ class HistoryController extends Controller
             }
         }
 
-        $window = isset(self::WINDOWS[$query['window'] ?? '']) ? (string) $query['window'] : '1d';
+        $window = is_string($query['window'] ?? null) && isset(self::WINDOWS[$query['window']]) ? $query['window'] : '1d';
 
         return [$now->copy()->subDays(self::WINDOWS[$window][1]), $now, $window];
     }

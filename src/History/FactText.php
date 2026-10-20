@@ -84,7 +84,9 @@ class FactText
      */
     public function ospf(array $data): string
     {
-        $local = trim($this->device($data['device'], $data['device_name']) . ' ' . ($data['port_name'] ?? ''));
+        $local = $this->visible((int) $data['device'])
+            ? trim($this->device($data['device'], $data['device_name']) . ' ' . ($data['port_name'] ?? ''))
+            : 'another device';
         $neighbor = ($data['neighbor'] ?? null) !== null && $this->visible((int) $data['neighbor'])
             ? $this->device((int) $data['neighbor'], $data['neighbor_name'] ?? null) . ' (' . $data['ip'] . ')'
             : 'router ' . $data['router_id'] . ($data['ip'] !== $data['router_id'] ? ' (' . $data['ip'] . ')' : '');

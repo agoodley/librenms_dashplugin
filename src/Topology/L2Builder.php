@@ -270,7 +270,7 @@ class L2Builder
             'b_platform' => (string) ($link['remote_platform'] ?? ''),
             'b_version' => (string) ($link['remote_version'] ?? ''),
             'protocols' => array_filter([strtolower((string) ($link['protocol'] ?? ''))]),
-            // a baseline link that LLDP/CDP no longer reports: when it was last seen ('' if unknown)
+            // a baseline link that LLDP/CDP no longer reports: since when ('' if unknown)
             'missing' => isset($link['missing']) ? (string) $link['missing'] : null,
         ];
     }

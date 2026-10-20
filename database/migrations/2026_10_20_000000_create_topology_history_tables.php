@@ -26,6 +26,7 @@ return new class extends Migration
             $table->dateTime('first_seen');
             $table->dateTime('removed_at')->nullable();
             $table->index(['hash', 'removed_at']);
+            $table->index(['kind', 'removed_at']);
             $table->index('first_seen');
             $table->index('removed_at');
             $table->index('device_a');

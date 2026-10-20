@@ -29,6 +29,34 @@ class Baseline
     }
 
     /**
+     * Baseline links that are gone, leaving out those whose port now has another cable: a port
+     * holds one cable, so that is a moved cable (the Changes page reports it), not a second path.
+     *
+     * @param  array<string, array>  $baseline  hash => baseline link fact
+     * @param  array<string, array>  $current  hash => link fact now
+     * @return array<string, array>
+     */
+    public static function goneLinks(array $baseline, array $current): array
+    {
+        $cabled = [];
+        foreach ($current as $fact) {
+            foreach (self::monitoredEnds($fact['key'] ?? $fact['fact_key']) as $end) {
+                $cabled[$end] = true;
+            }
+        }
+
+        return array_filter(array_diff_key($baseline, $current), function (array $fact) use ($cabled) {
+            foreach (self::monitoredEnds($fact['key'] ?? $fact['fact_key']) as $end) {
+                if (isset($cabled[$end])) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+    }
+
+    /**
      * Links rows (as TopologyRepository::links() returns them) for baseline links that LLDP/CDP
      * no longer reports, flagged `missing` so the redundancy analysis treats them as down links.
      * Links with a monitored end outside $devices are left out: the analysis only knows those
@@ -36,7 +64,7 @@ class Baseline
      *
      * @param  array<string, array>  $missing  hash => baseline link fact
      * @param  array<int, mixed>  $devices  device_id => anything, the devices of the analysis
-     * @param  array<string, string>  $since  hash => when the link was last seen (date), if known
+     * @param  array<string, string>  $since  hash => since when the link is gone (date), if known
      * @return array<int, array>
      */
     public static function linkRows(array $missing, array $devices, array $since = []): array
@@ -67,5 +95,15 @@ class Baseline
         }
 
         return $rows;
+    }
+
+    /**
+     * Ends of a link fact on monitored devices with a known port ("d5:gi1/0/49").
+     *
+     * @return string[]
+     */
+    private static function monitoredEnds(string $key): array
+    {
+        return array_filter(explode('|', $key), fn ($end) => str_starts_with($end, 'd') && ! str_ends_with($end, ':'));
     }
 }

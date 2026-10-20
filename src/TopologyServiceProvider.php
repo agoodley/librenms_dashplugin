@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsTopology;
 
 use Agoodley\LibrenmsTopology\Console\SnapshotCommand;
+use Agoodley\LibrenmsTopology\History\Interval;
 use Agoodley\LibrenmsTopology\Hooks\DeviceOverview;
 use Agoodley\LibrenmsTopology\Hooks\MenuEntry;
 use Agoodley\LibrenmsTopology\Hooks\Page;
@@ -65,38 +66,11 @@ class TopologyServiceProvider extends ServiceProvider
     private function schedule(Schedule $schedule, PluginManagerInterface $pluginManager): void
     {
         $schedule->command(SnapshotCommand::class)
-            ->cron(self::cron(self::settings($pluginManager)->int('history_interval', 5, 1440)))
+            ->cron(Interval::cron(self::settings($pluginManager)->int('history_interval', 5, 1440)))
             ->when(fn () => $pluginManager->pluginEnabled(self::PLUGIN_NAME) && self::settings($pluginManager)->bool('history_enabled'))
             ->withoutOverlapping(180)
             ->onOneServer()
             ->runInBackground();
-    }
-
-    /**
-     * Cron expression for an interval in minutes: a divisor of an hour below one hour, else whole
-     * hours (a divisor of a day) at 7 minutes past, away from the pollers' full hours.
-     */
-    public static function cron(int $minutes): string
-    {
-        if ($minutes < 60) {
-            $step = 5;
-            foreach ([5, 10, 15, 20, 30] as $divisor) {
-                if ($divisor <= $minutes) {
-                    $step = $divisor;
-                }
-            }
-
-            return "*/$step * * * *";
-        }
-
-        $hours = 1;
-        foreach ([1, 2, 3, 4, 6, 8, 12, 24] as $divisor) {
-            if ($divisor * 60 <= $minutes) {
-                $hours = $divisor;
-            }
-        }
-
-        return $hours === 24 ? '7 3 * * *' : ($hours === 1 ? '7 * * * *' : "7 */$hours * * *");
     }
 
     /**

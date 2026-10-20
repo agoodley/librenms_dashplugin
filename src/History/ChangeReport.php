@@ -16,8 +16,8 @@ use Agoodley\LibrenmsTopology\Support\DeviceRole;
  */
 class ChangeReport
 {
-    /** Unmanaged neighbor roles worth reporting when they show up. */
-    private const NETWORK_ROLES = [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER, DeviceRole::FIREWALL, DeviceRole::WIRELESS];
+    /** Unmanaged neighbors that are no news when they show up (any other LLDP/CDP speaker may forward traffic). */
+    private const END_ROLES = [DeviceRole::PHONE, DeviceRole::SERVER];
 
     /** Events of one change: what it is about, how much attention it needs. */
     public const TYPES = [
@@ -27,6 +27,7 @@ class ChangeReport
         'link_back' => ['links', 'info'],
         'link_added' => ['links', 'info'],
         'unmanaged_new' => ['links', 'warning'],
+        'neighbor_new' => ['links', 'info'],
         'lag_member_removed' => ['links', 'warning'],
         'lag_member_added' => ['links', 'info'],
         'root_changed' => ['stp', 'warning'],
@@ -136,7 +137,8 @@ class ChangeReport
 
     /**
      * Links: a port whose neighbor changed is a moved cable (or a link that came back), the rest
-     * are new or gone links; a new unmanaged switch or access point is called out.
+     * are new or gone links; a new unmanaged switch, access point or unknown LLDP/CDP speaker is
+     * called out (phones and servers are plain new links).
      */
     private function links(array $added, array $removed): void
     {
@@ -181,7 +183,7 @@ class ChangeReport
         $newNodes = [];
         foreach ($rest as $row) {
             $node = $row['data']['b']['node'] ?? null;
-            if ($node !== null && ! isset($this->priorNodes[$node]) && in_array($row['data']['b']['role'] ?? null, self::NETWORK_ROLES, true)) {
+            if ($node !== null && ! isset($this->priorNodes[$node]) && ! in_array($row['data']['b']['role'] ?? null, self::END_ROLES, true)) {
                 $newNodes[$node][] = $row;
                 continue;
             }
@@ -190,7 +192,8 @@ class ChangeReport
         foreach ($newNodes as $rows) {
             $b = $rows[0]['data']['b'];
             $where = array_map(fn ($row) => $this->text->linkEnd($row['data']['a']), $rows);
-            $this->add(min(array_column($rows, 'first_seen')), 'unmanaged_new', 'New unmanaged ' . self::role($b['role']) . ' ' . ($b['name'] ?? 'neighbor')
+            $role = self::role($b['role'] ?? null);
+            $this->add(min(array_column($rows, 'first_seen')), $role === 'neighbor' ? 'neighbor_new' : 'unmanaged_new', "New unmanaged $role " . ($b['name'] ?? 'neighbor')
                 . (isset($b['platform']) ? ' (' . $b['platform'] . ')' : '') . ' on ' . implode(', ', $where), array_values(array_unique(array_merge(...array_map(fn ($row) => self::devices($row), $rows)))));
         }
 
@@ -332,30 +335,22 @@ class ChangeReport
     }
 
     /**
-     * "core1, core2 and 7 more" for the devices the user may see (others are counted).
+     * "core1, core2 and 7 more" for the devices the user may see (the others are not counted).
      *
      * @param  int[]  $devices
      */
     private function deviceList(array $devices): string
     {
         $names = [];
-        $hidden = 0;
         foreach ($devices as $device) {
             if ($this->text->visible($device)) {
                 $names[] = $this->text->device($device, null);
-            } else {
-                $hidden++;
             }
         }
         sort($names, SORT_NATURAL | SORT_FLAG_CASE);
-        $more = count($names) > 5 ? count($names) - 5 : 0;
-        $list = implode(', ', array_slice($names, 0, 5));
-        $extra = $more + $hidden;
-        if ($extra) {
-            $list .= ($list !== '' ? ' and ' : '') . $extra . ($list !== '' ? ' more' : ' devices');
-        }
+        $more = count($names) - 5;
 
-        return $list;
+        return implode(', ', array_slice($names, 0, 5)) . ($more > 0 ? " and $more more" : '');
     }
 
     /**
@@ -409,10 +404,11 @@ class ChangeReport
     private static function role(?string $role): string
     {
         return match ($role) {
+            DeviceRole::SWITCH, DeviceRole::L3SWITCH => 'switch',
             DeviceRole::WIRELESS => 'access point',
             DeviceRole::ROUTER => 'router',
             DeviceRole::FIREWALL => 'firewall',
-            default => 'switch',
+            default => 'neighbor',
         };
     }
 
@@ -426,6 +422,8 @@ class ChangeReport
         $hours = intdiv($seconds % 86400, 3600);
         $minutes = intdiv($seconds % 3600, 60);
 
-        return trim(($days ? "{$days}d " : '') . ($hours ? "{$hours}h " : '') . ($days ? '' : "{$minutes}m"));
+        $parts = array_filter([$days ? "{$days}d" : '', $hours ? "{$hours}h" : '', $minutes && ! $days ? "{$minutes}m" : '']);
+
+        return $parts ? implode(' ', $parts) : '0m';
     }
 }

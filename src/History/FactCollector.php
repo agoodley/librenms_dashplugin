@@ -39,7 +39,8 @@ class FactCollector
     }
 
     /**
-     * Facts of the LLDP/CDP links (unmanaged neighbors included), de-duplicated as on the L2 map.
+     * Facts of the LLDP/CDP links (unmanaged neighbors included, phones left out), de-duplicated
+     * as on the L2 map.
      *
      * @param  array<int, array>  $links  links table rows (see TopologyRepository::links())
      * @return array<string, array> hash => fact
@@ -54,6 +55,10 @@ class FactCollector
                 $b = $this->monitoredEnd((int) $link['b_device'], $link['b_port'] ? (int) $link['b_port'] : null, (string) $link['b_name'])
                     + ['host' => mb_substr((string) $link['b_host'], 0, 120)];
             } else {
+                $role = DeviceRole::fromPlatform($link['b_platform'], $link['b_host']);
+                if ($role === DeviceRole::PHONE) {
+                    continue; // end devices that move all day: no topology change, and tens of thousands of them
+                }
                 $node = L2Builder::unmanagedNodeId($link);
                 $b = [
                     'key' => $node . ':' . InterfaceName::normalize($link['b_name']),
@@ -62,7 +67,7 @@ class FactCollector
                     'port_name' => InterfaceName::short($link['b_name']),
                     'name' => $link['b_host'] !== '' ? (string) $link['b_host'] : 'unknown neighbor',
                     'node' => $node,
-                    'role' => DeviceRole::fromPlatform($link['b_platform'], $link['b_host']),
+                    'role' => $role,
                     'platform' => mb_substr((string) $link['b_platform'], 0, 120),
                 ];
             }

@@ -74,10 +74,13 @@ class FindingHistory
 
     /**
      * Eventlog entries for new and resolved findings at or above $minimum severity ('none' writes
-     * nothing): one entry per device of the finding, at most EVENTLOG_DEVICES.
+     * nothing): one entry per device of the finding, at most EVENTLOG_DEVICES. A finding that only
+     * changed its extent (a port or device more or less, so a new identity with the same code and
+     * title) goes on: the devices that have it before and after get no entry, like a finding whose
+     * identity did not change.
      *
      * @param  array<int, array>  $new  new findings
-     * @param  array<int, array>  $resolved  resolved rows (severity, title, devices as int[])
+     * @param  array<int, array>  $resolved  resolved rows (code, severity, title, devices as int[])
      * @return array<int, array{device_id: int, message: string, severity: string, reference: string}> severity: critical,
      *                                                                                                  warning, info or ok
      */
@@ -88,13 +91,28 @@ class FindingHistory
             return [];
         }
 
+        $after = [];
+        foreach ($new as $finding) {
+            foreach ($finding['devices'] ?? [] as $device) {
+                $after[self::onDevice($device, $finding['code'], self::title($finding))] = true;
+            }
+        }
+        $before = [];
+        foreach ($resolved as $row) {
+            foreach ($row['devices'] ?? [] as $device) {
+                $before[self::onDevice($device, $row['code'], $row['title'])] = true;
+            }
+        }
+
         $entries = [];
         foreach ($new as $finding) {
             if ((self::RANKS[$finding['severity']] ?? 0) < $rank) {
                 continue;
             }
-            $message = 'Topology ' . $finding['severity'] . ': ' . self::title($finding) . '. ' . trim((string) ($finding['detail'] ?? ''));
-            foreach (self::eventlogDevices($finding['devices'] ?? [], $message) as [$device, $text]) {
+            $title = self::title($finding);
+            $devices = array_filter($finding['devices'] ?? [], fn ($device) => ! isset($before[self::onDevice($device, $finding['code'], $title)]));
+            $message = 'Topology ' . $finding['severity'] . ': ' . $title . '. ' . trim((string) ($finding['detail'] ?? ''));
+            foreach (self::eventlogDevices($devices, $message) as [$device, $text]) {
                 $entries[] = ['device_id' => $device, 'message' => $text, 'severity' => $finding['severity'], 'reference' => self::reference($analysis, $finding['code'])];
             }
         }
@@ -102,13 +120,42 @@ class FindingHistory
             if ((self::RANKS[$row['severity']] ?? 0) < $rank) {
                 continue;
             }
+            $devices = array_filter($row['devices'] ?? [], fn ($device) => ! isset($after[self::onDevice($device, $row['code'], $row['title'])]));
             $message = 'Topology resolved: ' . $row['title'];
-            foreach (self::eventlogDevices($row['devices'] ?? [], $message) as [$device, $text]) {
+            foreach (self::eventlogDevices($devices, $message) as [$device, $text]) {
                 $entries[] = ['device_id' => $device, 'message' => $text, 'severity' => 'ok', 'reference' => self::reference($analysis, $row['code'])];
             }
         }
 
         return $entries;
+    }
+
+    /**
+     * Findings that came or went in a window, each with its status: new, resolved, or changed for a
+     * finding resolved and reported again with another extent by the same run (same code and title).
+     *
+     * @param  array<int, array>  $rows  rows of the findings history (analysis, code, title, first_seen, resolved_at)
+     * @return array<int, array> the rows with `status`
+     */
+    public static function window(array $rows, int $from, int $to): array
+    {
+        $started = []; // analysis|code|title|time => rows of findings reported from that run on
+        foreach ($rows as $i => $row) {
+            $resolved = $row['resolved_at'] !== null ? strtotime($row['resolved_at']) : null;
+            $rows[$i]['status'] = $resolved !== null && $resolved >= $from && $resolved <= $to ? 'resolved' : 'new';
+            if ($rows[$i]['status'] === 'new') {
+                $started[$row['analysis'] . '|' . $row['code'] . '|' . $row['title'] . '|' . $row['first_seen']][] = $i;
+            }
+        }
+        foreach ($rows as $i => $row) {
+            $key = $row['analysis'] . '|' . $row['code'] . '|' . $row['title'] . '|' . $row['resolved_at'];
+            if ($row['status'] === 'resolved' && ! empty($started[$key])) {
+                $rows[array_shift($started[$key])]['status'] = 'changed';
+                unset($rows[$i]);
+            }
+        }
+
+        return array_values($rows);
     }
 
     /**
@@ -132,6 +179,11 @@ class FindingHistory
         $text = mb_substr($message, 0, 900) . ($more > 0 ? " (also on $more more devices)" : '');
 
         return array_map(fn ($device) => [$device, $text], array_slice($devices, 0, self::EVENTLOG_DEVICES));
+    }
+
+    private static function onDevice(int|string $device, string $code, string $title): string
+    {
+        return (int) $device . '|' . $code . '|' . $title;
     }
 
     private static function reference(string $analysis, string $code): string

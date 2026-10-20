@@ -1136,8 +1136,10 @@ class RedundancyAnalyzer
                 $this->nameList($named) . ($plural ? ' normally have' : ' normally has') . ' a second path to the core, but it is down: '
                 . implode('; ', array_slice($group['broken'], 0, 10)) . '. Single points of failure now: ' . implode('; ', array_unique($group['points']))
                 . ($behind ? '. Behind ' . ($plural ? 'them' : 'it') . ': ' . $this->nameList($behind) : '') . '.',
-                'Restore the link or device that is down. LibreNMS removes links that LLDP/CDP no longer sees at the next discovery, '
-                . 'so this finding disappears then even if the link stays down.',
+                empty($group['missing'])
+                    ? 'Restore the link or device that is down. LibreNMS removes links that LLDP/CDP no longer sees at the next discovery, '
+                        . 'so this finding disappears then even if the link stays down, unless a baseline is saved on the Topology Changes page.'
+                    : 'Restore the link, or save the baseline again on the Topology Changes page if it was removed on purpose.',
                 null, array_merge(array_map(fn ($n) => $this->nodes[$n]['device_id'], $exposed), $group['devices']), $group['ports'],
             ));
         }
@@ -1220,6 +1222,7 @@ class RedundancyAnalyzer
                     $group['devices'][] = $this->nodes[$down]['device_id'];
                 } else {
                     $group['broken'][] = $this->edgeLabel($edge, $x) . ' (' . $this->edgeState($edge) . ')';
+                    $group['missing'] = ($group['missing'] ?? false) || $this->missingSince($edge) !== null;
                     $group['devices'] = array_merge($group['devices'], $this->edgeDevices($edge));
                     $group['ports'] = array_merge($group['ports'], $this->edgePorts($edge));
                 }
@@ -1754,10 +1757,8 @@ class RedundancyAnalyzer
      */
     private function edgeState(array $edge): string
     {
-        $missing = array_column($edge['members'], 'missing');
-        if (count(array_filter($missing, fn ($since) => $since !== null)) === count($edge['members'])) {
-            $since = max($missing);
-
+        $since = $this->missingSince($edge);
+        if ($since !== null) {
             return 'missing' . ($since !== '' ? ' since ' . substr($since, 0, 16) : '') . ': in the baseline, no longer reported by LLDP/CDP';
         }
 
@@ -1773,6 +1774,17 @@ class RedundancyAnalyzer
         }
 
         return 'link down';
+    }
+
+    /**
+     * Since when a link of the baseline is no longer reported by LLDP/CDP ('' if unknown), null
+     * for a link LLDP/CDP reports.
+     */
+    private function missingSince(array $edge): ?string
+    {
+        $missing = array_column($edge['members'], 'missing');
+
+        return count(array_filter($missing, fn ($since) => $since !== null)) === count($edge['members']) ? max($missing) : null;
     }
 
     /**

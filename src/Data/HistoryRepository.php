@@ -58,17 +58,6 @@ class HistoryRepository extends ScopedRepository
         return $names;
     }
 
-    /**
-     * Devices that are disabled in LibreNMS: their facts are kept as they were while LibreNMS does
-     * not poll them.
-     *
-     * @return int[]
-     */
-    public function disabledDeviceIds(): array
-    {
-        return array_map('intval', DB::table('devices')->where('disabled', 1)->pluck('device_id')->all());
-    }
-
     // ---------------------------------------------------------------- fact sources
 
     /**
@@ -185,21 +174,14 @@ class HistoryRepository extends ScopedRepository
     // ---------------------------------------------------------------- facts
 
     /**
-     * Facts present at the last snapshot, oldest first; facts of the excluded (disabled) devices
-     * are left out so they stay as they were.
+     * Facts of a kind present at the last snapshot, oldest first.
      *
-     * @param  int[]  $exclude
      * @return array<int, array{id: int, hash: string, data_hash: string}>
      */
-    public function openFacts(array $exclude = []): array
+    public function openFacts(string $kind): array
     {
-        $query = DB::table('topology_facts')->whereNull('removed_at')->orderBy('id');
-        if ($exclude) {
-            $query->where(fn (Builder $q) => $q->whereNull('device_a')->orWhereNotIn('device_a', $exclude))
-                ->where(fn (Builder $q) => $q->whereNull('device_b')->orWhereNotIn('device_b', $exclude));
-        }
-
-        return $query->get(['id', 'hash', 'data_hash'])->map(fn ($r) => ['id' => (int) $r->id, 'hash' => $r->hash, 'data_hash' => $r->data_hash])->all();
+        return DB::table('topology_facts')->where('kind', $kind)->whereNull('removed_at')->orderBy('id')->get(['id', 'hash', 'data_hash'])
+            ->map(fn ($r) => ['id' => (int) $r->id, 'hash' => $r->hash, 'data_hash' => $r->data_hash])->all();
     }
 
     /**
@@ -336,11 +318,21 @@ class HistoryRepository extends ScopedRepository
      */
     public function priorNodes(array $nodes, CarbonInterface $before): array
     {
+        $wanted = array_fill_keys($nodes, true);
+        if (! $wanted) {
+            return [];
+        }
+
+        // an unmanaged end is the second of a link key ("d5:gi1/0/1|u:ap-12:eth0"), its node id the part
+        // before one of its colons (node ids can contain colons themselves)
         $seen = [];
-        foreach (array_slice(array_unique($nodes), 0, 200) as $node) {
-            $pattern = '%|' . addcslashes($node, '%_\\') . ':%';
-            if (DB::table('topology_facts')->where('kind', FactCollector::LINK)->where('first_seen', '<', $before)->where('fact_key', 'like', $pattern)->exists()) {
-                $seen[$node] = true;
+        foreach (DB::table('topology_facts')->where('kind', FactCollector::LINK)->where('first_seen', '<', $before)
+            ->where('fact_key', 'like', '%|u:%')->select('fact_key')->cursor() as $row) {
+            $end = substr((string) $row->fact_key, strpos((string) $row->fact_key, '|') + 1);
+            for ($colon = strpos($end, ':', 2); $colon !== false; $colon = strpos($end, ':', $colon + 1)) {
+                if (isset($wanted[substr($end, 0, $colon)])) {
+                    $seen[substr($end, 0, $colon)] = true;
+                }
             }
         }
 
@@ -366,12 +358,33 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * When facts were last seen (the end of their latest period).
+     * Devices the history saw for the first time at the given time (no fact of them before).
+     *
+     * @param  array<int, int>  $firstSeen  device_id => timestamp of its first fact in a window
+     * @return array<int, true>
+     */
+    public function newToHistory(array $firstSeen): array
+    {
+        $new = [];
+        foreach (array_slice($firstSeen, 0, 500, true) as $deviceId => $time) {
+            $before = DB::table('topology_facts')->where('first_seen', '<', date('Y-m-d H:i:s', $time))
+                ->where(fn (Builder $q) => $q->where('device_a', $deviceId)->orWhere('device_b', $deviceId))->exists();
+            if (! $before) {
+                $new[(int) $deviceId] = true;
+            }
+        }
+
+        return $new;
+    }
+
+    /**
+     * Since when facts are gone: the end of their latest period, the first snapshot that no longer
+     * saw them.
      *
      * @param  string[]  $hashes
      * @return array<string, string> hash => date
      */
-    public function lastSeen(array $hashes): array
+    public function goneSince(array $hashes): array
     {
         $result = [];
         foreach (array_chunk($hashes, self::CHUNK) as $chunk) {
@@ -513,9 +526,9 @@ class HistoryRepository extends ScopedRepository
                 return [];
             }
             $current = (new FactCollector(array_fill_keys($ids, ''), $ports))->links($links);
-            $missing = array_diff_key($baseline, $current);
+            $missing = Baseline::goneLinks($baseline, $current);
 
-            return $missing ? Baseline::linkRows($missing, array_flip($ids), $this->lastSeen(array_keys($missing))) : [];
+            return $missing ? Baseline::linkRows($missing, array_flip($ids), $this->goneSince(array_keys($missing))) : [];
         } catch (\Throwable $e) {
             Log::error('topology plugin: cannot compare the links with the baseline: ' . $e->getMessage());
 
@@ -638,7 +651,8 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * Findings that started or were resolved in [$from, $to] and involve the devices.
+     * Findings that started or were resolved in [$from, $to], involve the devices and only devices
+     * the user may see (their titles name devices: the diagnostics pages show the user's own).
      *
      * @param  int[]  $ids
      * @return array<int, array>
@@ -646,13 +660,14 @@ class HistoryRepository extends ScopedRepository
     public function windowFindings(CarbonInterface $from, CarbonInterface $to, array $ids): array
     {
         $wanted = array_flip($ids);
+        $visible = $this->accessible();
         $rows = [];
         foreach (DB::table('topology_findings')
             ->where(fn (Builder $q) => $q->where(fn (Builder $q) => $q->whereBetween('first_seen', [$from, $to])->where('initial', 0))
                 ->orWhereBetween('resolved_at', [$from, $to]))
             ->orderByDesc('id')->limit(5000)->get() as $row) {
             $devices = array_map('intval', json_decode((string) $row->devices, true) ?: []);
-            if (! array_filter($devices, fn ($id) => isset($wanted[$id]))) {
+            if (! array_filter($devices, fn ($id) => isset($wanted[$id])) || array_filter($devices, fn ($id) => ! isset($visible[$id]))) {
                 continue;
             }
             $rows[] = ['analysis' => $row->analysis, 'code' => $row->code, 'severity' => $row->severity, 'title' => $row->title,

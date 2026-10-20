@@ -42,19 +42,19 @@ class HistoryService
         $started = Carbon::now();
         $run = $this->history->startRun('snapshot', $started);
 
-        $ids = $this->topology->deviceIds();
-        $current = $this->collect($ids);
-        $diff = FactDiff::diff($this->history->openFacts($this->history->disabledDeviceIds()), $current);
+        // disabled devices too: LibreNMS keeps their data as it was, and so does the history
+        $topology = $this->topology->withDisabled();
+        $ids = $topology->deviceIds();
         $knownKinds = $this->history->factKinds();
-
-        $stats = [
-            'devices' => count($ids),
-            'facts' => count($current),
-            'added' => $this->history->insertFacts($diff['insert'], $started, $knownKinds),
-            'removed' => $this->history->closeFacts($diff['remove'], $started),
-            'updated' => $this->history->updateFacts($diff['update']),
-            'pruned' => $this->history->prune($started->copy()->subDays($this->settings->int('history_retention_days', 1, 3650))),
-        ];
+        $stats = ['devices' => count($ids), 'facts' => 0, 'added' => 0, 'removed' => 0, 'updated' => 0];
+        foreach ($this->collect($topology, $ids) as $kind => $current) {
+            $diff = FactDiff::diff($this->history->openFacts($kind), $current);
+            $stats['facts'] += count($current);
+            $stats['added'] += $this->history->insertFacts($diff['insert'], $started, $knownKinds);
+            $stats['removed'] += $this->history->closeFacts($diff['remove'], $started);
+            $stats['updated'] += $this->history->updateFacts($diff['update']);
+        }
+        $stats['pruned'] = $this->history->prune($started->copy()->subDays($this->settings->int('history_retention_days', 1, 3650)));
         $stats['seconds'] = round(Carbon::now()->diffInMilliseconds($started, true) / 1000, 2);
         $this->history->finishRun($run, $stats, Carbon::now());
 
@@ -132,20 +132,29 @@ class HistoryService
         $text = new FactText($this->history->names(array_keys($visible)), $visible);
 
         $rows = $this->history->windowFacts($from, $to, $ids);
-        $candidates = [];
+        $nodes = [];
+        $firstFacts = []; // device => when its first new fact of the window was seen
         foreach ($rows as $row) {
-            if ($row['kind'] === FactCollector::LINK && isset($row['data']['b']['node']) && ! $row['initial'] && $row['first_seen'] >= $from->getTimestamp()) {
-                $candidates[] = $row['data']['b']['node'];
+            if ($row['initial'] || $row['first_seen'] < $from->getTimestamp()) {
+                continue;
+            }
+            if ($row['kind'] === FactCollector::LINK && isset($row['data']['b']['node'])) {
+                $nodes[] = $row['data']['b']['node'];
+            }
+            foreach (array_filter([$row['device_a'], $row['device_b']]) as $deviceId) {
+                $firstFacts[$deviceId] = min($firstFacts[$deviceId] ?? PHP_INT_MAX, $row['first_seen']);
             }
         }
+        // devices LibreNMS started to monitor: added recently, and no facts of them before these
+        $added = $this->history->devicesAddedSince(array_keys($firstFacts), $from->copy()->subDay());
         $report = ChangeReport::build($rows, $from->getTimestamp(), $to->getTimestamp(), $text,
-            $this->history->devicesAddedSince($ids, $from), $this->history->priorNodes($candidates, $from));
+            $this->history->newToHistory(array_intersect_key($firstFacts, $added)), $this->history->priorNodes($nodes, $from));
 
         $findings = array_map(function (array $finding) use ($text) {
             $finding['device_names'] = array_combine($finding['devices'], array_map(fn ($id) => $text->device($id, null), $finding['devices']));
 
             return $finding;
-        }, $this->history->windowFindings($from, $to, $ids));
+        }, FindingHistory::window($this->history->windowFindings($from, $to, $ids), $from->getTimestamp(), $to->getTimestamp()));
 
         return [
             'available' => true,
@@ -204,37 +213,36 @@ class HistoryService
     }
 
     /**
-     * Facts of the devices as they are now, from the LibreNMS tables.
+     * Facts of the devices as they are now, from the LibreNMS tables, one kind at a time: a large
+     * network has tens of thousands of them.
      *
      * @param  int[]  $ids
-     * @return array<string, array> hash => fact
+     * @return \Generator<string, array<string, array>> kind => (hash => fact), every kind once
      */
-    public function collect(array $ids): array
+    private function collect(TopologyRepository $topology, array $ids): \Generator
     {
-        $links = $this->topology->links($ids);
-        $lag = $this->topology->lagParents($ids);
-        $stp = $this->history->stpRoots($ids);
+        $names = $this->history->names($ids);
+        $collector = fn (array $portIds) => new FactCollector($names, $topology->ports($portIds, self::PORT_COLUMNS));
+
+        $links = $topology->links($ids);
+        yield FactCollector::LINK => $collector(array_merge(array_column($links, 'local_port_id'), array_column($links, 'remote_port_id')))->links($links);
+        unset($links);
+
+        $lag = $topology->lagParents($ids);
+        yield FactCollector::LAG => $collector(array_merge(array_keys($lag), array_values($lag)))->lagMembers($lag);
+        unset($lag);
+
+        yield FactCollector::STP_ROOT => $collector([])->stpRoots($this->history->stpRoots($ids));
+
         $blocked = $this->history->blockedPorts($ids);
+        yield FactCollector::STP_BLOCKED => $collector(array_column($blocked, 'port_id'))->blockedPorts($blocked);
+        unset($blocked);
+
         $ospf = $this->history->ospfNeighbors($ids);
         $bgp = $this->history->bgpPeers($ids);
         $addresses = $this->history->addressOwners(array_merge(array_column($ospf, 'ospfNbrIpAddr'), array_map('strtolower', array_column($bgp, 'bgpPeerIdentifier'))), $ids);
-
-        $portIds = array_merge(
-            array_column($links, 'local_port_id'),
-            array_column($links, 'remote_port_id'),
-            array_keys($lag),
-            array_values($lag),
-            array_column($blocked, 'port_id'),
-            array_column($ospf, 'port_id'),
-        );
-        $collector = new FactCollector($this->history->names($ids), $this->topology->ports($portIds, self::PORT_COLUMNS));
-
-        return $collector->links($links)
-            + $collector->lagMembers($lag)
-            + $collector->stpRoots($stp)
-            + $collector->blockedPorts($blocked)
-            + $collector->ospf($ospf, $this->history->routerIds($ids), $addresses)
-            + $collector->bgp($bgp, $addresses);
+        yield FactCollector::OSPF => $collector(array_column($ospf, 'port_id'))->ospf($ospf, $this->history->routerIds($ids), $addresses);
+        yield FactCollector::BGP => $collector([])->bgp($bgp, $addresses);
     }
 
     /**
@@ -250,7 +258,7 @@ class HistoryService
         }
 
         $comparison = Baseline::compare($this->history->baselineFacts($ids), $this->history->currentFacts($ids, Baseline::KINDS));
-        $since = $this->history->lastSeen(array_keys($comparison['missing']));
+        $since = $this->history->goneSince(array_keys($comparison['missing']));
         $describe = fn (array $fact) => [
             'kind' => $fact['kind'],
             'text' => $text->describe($fact),

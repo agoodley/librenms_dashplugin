@@ -19,6 +19,9 @@ abstract class ScopedRepository
     /** Every device, for the scheduled jobs (see system()). */
     private bool $system = false;
 
+    /** The system scope with the devices disabled in LibreNMS too (see withDisabled()). */
+    private bool $withDisabled = false;
+
     /**
      * @param  mixed  $user  the logged in LibreNMS user (App\Models\User); every query is limited to what it may see
      */
@@ -43,13 +46,34 @@ abstract class ScopedRepository
     }
 
     /**
+     * This system scope with the devices disabled in LibreNMS too. LibreNMS keeps the data of a
+     * disabled device as it was, so the topology history keeps its last state rather than reporting
+     * its links as gone and its neighbors as new unmanaged devices.
+     */
+    public function withDisabled(): static
+    {
+        if (! $this->system) {
+            throw new \LogicException('only the system scope can include disabled devices');
+        }
+
+        $repository = clone $this;
+        $repository->withDisabled = true;
+        $repository->accessible = null;
+
+        return $repository;
+    }
+
+    /**
      * Devices the user may see, optionally limited to a device group and/or location.
      *
      * @return int[]
      */
     public function deviceIds(?int $groupId = null, ?int $locationId = null): array
     {
-        $query = ($this->system ? Device::query() : Device::hasAccess($this->user))->where('devices.disabled', 0);
+        $query = $this->system ? Device::query() : Device::hasAccess($this->user);
+        if (! $this->withDisabled) {
+            $query->where('devices.disabled', 0);
+        }
         if ($groupId) {
             $query->inDeviceGroup($groupId);
         }
