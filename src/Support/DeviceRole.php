@@ -74,6 +74,25 @@ class DeviceRole
     }
 
     /**
+     * Role of an unmanaged LLDP/CDP neighbour as LibreNMS stores it: the platform (CDP / FDP) when
+     * there is one, else the system description (LLDP has no platform; LibreNMS keeps the sysDescr
+     * in links.remote_version).
+     */
+    public static function fromNeighbor(?string $platform, ?string $description, ?string $hostname = null): string
+    {
+        $role = self::fromPlatform($platform, $hostname);
+        $description = trim((string) $description);
+        if ($role !== self::UNKNOWN || $description === '') {
+            return $role;
+        }
+
+        $role = self::fromPlatform($description, $hostname);
+
+        // network operating systems built on Linux describe themselves like servers
+        return $role === self::SERVER && preg_match('/sonic|cumulus|onie|dell.*os10|vyos|openwrt/i', $description) ? self::SWITCH : $role;
+    }
+
+    /**
      * Guess the role of an unmanaged LLDP/CDP neighbour from its platform/description string.
      */
     public static function fromPlatform(?string $platform, ?string $hostname = null): string
@@ -84,7 +103,7 @@ class DeviceRole
             $text === '' => self::UNKNOWN,
             (bool) preg_match('/phone|^sep[0-9a-f]{6}|polycom|yealink|avaya|mitel|cp-\d{4}|grandstream/', $text) => self::PHONE,
             (bool) preg_match('/\bair-|access ?point|\bap\b|\buap|aironet|\bmr\d{2}|meraki mr|aruba ap|\bcap\b|unifi ap|ruckus/', $text) => self::WIRELESS,
-            (bool) preg_match('/firewall|fortigate|palo ?alto|\bpa-\d|asa\d|sonicwall|checkpoint|\bsrx/', $text) => self::FIREWALL,
+            (bool) preg_match('/firewall|fortigate|palo ?alto|\bpa-\d|asa\d|sonicwall|checkpoint|\bsrx|pfsense|opnsense/', $text) => self::FIREWALL,
             (bool) preg_match('/router|\bisr|\basr|mikrotik|routeros|\bmx\d/', $text) => self::ROUTER,
             (bool) preg_match('/switch|ws-c|catalyst|c9[2-5]\d{2}|nexus|procurve|aruba ?\d{4}|\bex\d{4}|comware|dell.*n\d{4}|unifi ?switch|\busw/', $text) => self::SWITCH,
             (bool) preg_match('/linux|windows|vmware|esxi|ubuntu|debian|red ?hat|centos|server|hyper-v|proxmox|truenas|synology/', $text) => self::SERVER,

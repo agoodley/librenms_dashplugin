@@ -492,7 +492,7 @@ class LinkAnalyzer
             } elseif ($remote) {
                 $exits[] = [$deviceId, $end, 'x:outside'];
                 $participating[$deviceId] = true;
-            } elseif (in_array(DeviceRole::fromPlatform($partial['platform'], $partial['host']), [DeviceRole::SWITCH, DeviceRole::UNKNOWN], true)) {
+            } elseif (in_array(DeviceRole::fromNeighbor($partial['platform'], $partial['version'], $partial['host']), [DeviceRole::SWITCH, DeviceRole::UNKNOWN], true)) {
                 // an unmanaged switch may carry the VLAN on to anything behind it
                 $exits[] = [$deviceId, $end, 'x:' . self::hostKey($partial['host'], $deviceId . ':' . $partial['port_id'])];
                 $participating[$deviceId] = true;
@@ -1355,6 +1355,7 @@ class LinkAnalyzer
                     'host' => trim((string) ($link['remote_hostname'] ?? '')),
                     'remote_port' => (string) ($link['remote_port'] ?? ''),
                     'platform' => (string) ($link['remote_platform'] ?? ''),
+                    'version' => (string) ($link['remote_version'] ?? ''),
                 ];
             }
         }

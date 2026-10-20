@@ -268,8 +268,8 @@ vendor/bin/phpunit
   up at best as a port with many MAC addresses. LibreNMS does not keep the management address a neighbor advertises, so
   *Add* opens the Add Device page without it. Neighbors are matched to monitored devices by name (a name without domain
   matches the same first label with any domain) and by interface address.
-* Servers, access points and phones are recognized by their LibreNMS device type, unmanaged neighbors by their LLDP/CDP
-  platform; an unmanaged neighbor without a platform counts as a switch. Down devices without any LLDP/CDP neighbor are
+* Servers, access points and phones are recognized by their LibreNMS device type, unmanaged neighbors by their CDP
+  platform or, for LLDP (which has no platform), their system description; a neighbor with neither counts as a switch. Down devices without any LLDP/CDP neighbor are
   not listed as outages: nothing tells what they depend on.
 
 ## Roadmap
