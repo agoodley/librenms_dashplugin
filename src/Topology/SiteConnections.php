@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Topology;
 
+use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
 
 /**
@@ -48,6 +49,12 @@ class SiteConnections
 
     /** @var array<string, array<string, array<int, true>>> site pair => site => its devices with a cable to the other site */
     private array $gateways = [];
+
+    /**
+     * Names of tunnel interfaces whatever their type: Cisco Tunnel and Virtual-Access, Junos gr- / ip- / st0, VTIs,
+     * route-based VPNs (ipsec, WireGuard wg / wireguard, Linux xfrm, OpenVPN ovpns / ovpnc) and GRE tunnels.
+     */
+    private const TUNNEL_NAMES = '/^(tunnel|tu\d|tun\d|gr-|gre[-\d]|ip-|st0|vti|ipsec|wg[\d:]|wireguard|xfrm|ovpn[sc]\d|virtual-access)/i';
 
     /** @var array<string, array<int, int[]>> site => device adjacency inside it (the $siteLinks of addSubnets()) */
     private array $adjacency = [];
@@ -227,20 +234,26 @@ class SiteConnections
      *                                    members (stack(), unitParents())
      * @param  array<int, array<int, array{device_id: int, location_id: int|null}>>  $neighbors  port_id => the monitored
      *     neighbors on the port (LLDP / CDP links, either direction: SiteRepository::portNeighbors())
-     * @param  callable|null  $siteLinks  site id => device adjacency inside the site (SiteRepository::siteAdjacency()),
-     *                                    asked for the sites whose neighbors are not themselves cabled to the other site
+     * @param  callable|null  $siteLinks  site ids => device adjacency inside each of them (SiteRepository::siteAdjacency()),
+     *                                    asked once for the sites whose subnet ends face a switch that has no cable to
+     *                                    the other site itself
      */
     public function addSubnets(array $l3, array $ports, array $stack, array $neighbors = [], ?callable $siteLinks = null): self
     {
-        $subnets = [];
+        $edges = [];
         foreach ($l3['edges'] as $edge) {
-            if ($edge['kind'] !== 'p2p' || ! $this->crossesSites($edge)) {
-                continue;
+            if ($edge['kind'] === 'p2p' && $this->crossesSites($edge)) {
+                $edges[] = [$edge, self::resolve((int) $edge['a']['port_id'], $ports, $stack), self::resolve((int) $edge['b']['port_id'], $ports, $stack)];
             }
+        }
+        if ($siteLinks !== null) {
+            $this->loadSiteLinks($edges, $neighbors, $siteLinks);
+        }
+
+        $subnets = [];
+        foreach ($edges as [$edge, $a, $b]) {
             $aDevice = (int) $edge['a']['device_id'];
             $bDevice = (int) $edge['b']['device_id'];
-            $a = self::resolve((int) $edge['a']['port_id'], $ports, $stack);
-            $b = self::resolve((int) $edge['b']['port_id'], $ports, $stack);
             $network = $edge['network'] . ($edge['vrf'] !== '' ? ' (' . $edge['vrf'] . ')' : '');
 
             $sites = $this->sitePair($aDevice, $bDevice);
@@ -258,8 +271,8 @@ class SiteConnections
                 $cables = $this->cables[self::pair($aDevice, $bDevice)] ?? [];
                 $on = match (true) {
                     ! $a['physical'] && ! $b['physical'] && $cables !== [] => $cables,
-                    isset($this->siteCables[$sites]) && $this->ridesLocalSwitch($a, $aDevice, $sites, $neighbors, $siteLinks)
-                        && $this->ridesLocalSwitch($b, $bDevice, $sites, $neighbors, $siteLinks) => $this->siteCables[$sites],
+                    isset($this->siteCables[$sites]) && $this->ridesLocalSwitch($a, $aDevice, $sites, $neighbors)
+                        && $this->ridesLocalSwitch($b, $bDevice, $sites, $neighbors) => $this->siteCables[$sites],
                     default => [],
                 };
             }
@@ -348,38 +361,54 @@ class SiteConnections
     }
 
     /**
+     * The links inside the sites where a subnet's end faces a switch that has no cable to the other
+     * site itself, asked for all of them at once.
+     *
+     * @param  array<int, array{0: array, 1: array, 2: array}>  $edges  subnets between sites: L3 map edge, both ends (resolve())
+     */
+    private function loadSiteLinks(array $edges, array $neighbors, callable $siteLinks): void
+    {
+        $sites = [];
+        foreach ($edges as [$edge, $a, $b]) {
+            $pair = $this->sitePair((int) $edge['a']['device_id'], (int) $edge['b']['device_id']);
+            foreach ([[(int) $edge['a']['device_id'], $a], [(int) $edge['b']['device_id'], $b]] as [$deviceId, $end]) {
+                $site = (string) $this->site($deviceId);
+                foreach ($this->localSwitches($end, $deviceId, $neighbors) as $switch) {
+                    if (! isset($this->gateways[$pair][$site][$switch]) && ! isset($this->adjacency[$site])) {
+                        $sites[$site] = $site;
+                    }
+                }
+            }
+        }
+        if ($sites) {
+            $this->adjacency += $siteLinks(array_values($sites)) + array_fill_keys($sites, []);
+        }
+    }
+
+    /**
      * Does a subnet's end reach the other site through switches of its own site? It has no port of
-     * its own (a VLAN or IRB interface), or its port faces a device of its own site from which a
-     * device with a cable to the other site can be reached inside the site, not through the router
-     * itself (the router behind an access switch behind the core). A carrier's CPE monitored at the
-     * site leads nowhere: the subnet is a circuit of its own.
+     * its own (a VLAN or IRB interface), or its port faces a switch of its own site from which a
+     * switch with a cable to the other site can be reached through switches of the site (the router
+     * behind an access switch behind the core). Routers, firewalls and other devices, such as a
+     * carrier's CPE monitored at the site, lead nowhere: the subnet is then a circuit of its own.
      *
      * @param  string  $sites  the site pair of the subnet
      * @param  array<int, array<int, array{device_id: int, location_id: int|null}>>  $neighbors  see addSubnets()
      */
-    private function ridesLocalSwitch(array $end, int $deviceId, string $sites, array $neighbors, ?callable $siteLinks): bool
+    private function ridesLocalSwitch(array $end, int $deviceId, string $sites, array $neighbors): bool
     {
         if (! $end['physical']) {
             return true;
         }
         $site = (string) $this->site($deviceId);
         $gateways = $this->gateways[$sites][$site] ?? [];
-        $queue = [];
-        foreach ($end['physical'] as $port) {
-            foreach ($neighbors[$port] ?? [] as $neighbor) {
-                if (SiteBuilder::siteId(['location_id' => $neighbor['location_id']]) === $site) {
-                    $queue[] = $neighbor['device_id'];
-                }
-            }
-        }
-
-        sort($queue);
+        $queue = $this->localSwitches($end, $deviceId, $neighbors);
         $key = $deviceId . '|' . $sites . '|' . implode(',', $queue);
         if (isset($this->rides[$key])) {
             return $this->rides[$key];
         }
 
-        $seen = [$deviceId => true];
+        $seen = [$deviceId => true]; // not back through the subnet's own device (an L3 switch)
         for ($i = 0; $i < count($queue); $i++) {
             $device = $queue[$i];
             if (isset($seen[$device])) {
@@ -389,15 +418,43 @@ class SiteConnections
                 return $this->rides[$key] = true;
             }
             $seen[$device] = true;
-            if ($siteLinks !== null) {
-                $this->adjacency[$site] ??= $siteLinks($site);
-                foreach ($this->adjacency[$site][$device] ?? [] as $next) {
+            foreach ($this->adjacency[$site][$device] ?? [] as $next) {
+                if ($this->isSwitch($next)) {
                     $queue[] = $next;
                 }
             }
         }
 
         return $this->rides[$key] = false;
+    }
+
+    /**
+     * The switches of its own site that a subnet's end faces on its physical ports.
+     *
+     * @return int[] device ids, sorted
+     */
+    private function localSwitches(array $end, int $deviceId, array $neighbors): array
+    {
+        $switches = [];
+        foreach ($end['physical'] as $port) {
+            foreach ($neighbors[$port] ?? [] as $neighbor) {
+                if ($neighbor['device_id'] !== $deviceId && $this->isSwitch($neighbor['device_id'])
+                    && SiteBuilder::siteId(['location_id' => $neighbor['location_id']]) === $this->site($deviceId)) {
+                    $switches[$neighbor['device_id']] = $neighbor['device_id'];
+                }
+            }
+        }
+        sort($switches);
+
+        return $switches;
+    }
+
+    /**
+     * A switch or L3 switch of the map (a device outside its scope has no known role).
+     */
+    private function isSwitch(int $deviceId): bool
+    {
+        return in_array($this->devices[$deviceId]['role'] ?? null, [DeviceRole::SWITCH, DeviceRole::L3SWITCH], true);
     }
 
     /**
@@ -440,12 +497,12 @@ class SiteConnections
     }
 
     /**
-     * A tunnel interface, by its type or name (Cisco Tunnel, Junos gr- / ip- / st0, VTIs).
+     * A tunnel interface, by its type or name (TUNNEL_NAMES).
      */
     public static function isTunnel(array $port): bool
     {
         return in_array(strtolower((string) ($port['ifType'] ?? '')), ['tunnel', 'mplstunnel'], true)
-            || (bool) preg_match('/^(tunnel|tu\d|tun\d|gr-|ip-|st0|vti)/i', InterfaceName::label($port));
+            || (bool) preg_match(self::TUNNEL_NAMES, InterfaceName::label($port));
     }
 
     /**

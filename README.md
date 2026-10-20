@@ -77,8 +77,9 @@ cloud VPN gateway) or on a tunnel subnet they join with addresses of their own (
   BGP session shut down by an administrator is grey and does not count as down.
 * Link width and color follow the capacity of its cables (or the busiest cable's utilization, or the status); the
   details list every cable with both ports, speed, utilization and subnet, and every session with its state. Tunnels
-  and other logical interfaces have no capacity of their own (a tunnel's interface speed is a nominal bandwidth), so a
-  link on them only shows its traffic; a subnet on a sub-interface is measured on the physical port under it.
+  (also route-based VPN interfaces such as ipsec, WireGuard, xfrm and OpenVPN ones) and other logical interfaces have
+  no capacity of their own (a tunnel's interface speed is a nominal bandwidth), so a link on them only shows its
+  traffic; a subnet on a sub-interface is measured on the physical port under it.
 * Layouts: hierarchical (the best connected site on top), organic, or **geographic** from the latitude and longitude of
   the locations (sites in one city are pushed apart, sites without coordinates wait in a grid underneath; when most
   sites have none, the map is laid out without them).
@@ -445,7 +446,8 @@ vendor/bin/phpunit
   private AS cloud comes from the routers' addresses: the session's local address, or the router's interface addresses
   while the session is down, so a shared cloud only splits when LibreNMS has neither.
 * A subnet between two sites only rides the cables between them when both ends reach them through their own site (a
-  VLAN interface, or a port facing a switch that leads to such a cable), which needs LLDP/CDP: a router behind a switch
+  VLAN interface, or a port facing a switch that leads to such a cable through switches only; a carrier's CPE, router or
+  firewall in the way makes it a circuit of its own), which needs LLDP/CDP: a router behind a switch
   that does not show up as its neighbor makes a transit VLAN to it a circuit of its own, counting its traffic twice.
   Without VLAN data, a carrier circuit (a VPLS backup) between two routers that both sit behind their sites' switches,
   next to a fiber between those switches, looks like such a transit VLAN and is counted as riding the fiber.

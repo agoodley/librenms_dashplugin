@@ -193,6 +193,11 @@ class SiteSessionsTest extends TestCase
         $this->assertSame(['as:65000@10.0.0.1'], array_values(array_unique(array_map(fn ($c) => $c['cloud']['id'],
             (new SiteSessions($devices, $owners))->addBgp($rows)->all()))));
 
+        // the hub on a WireGuard interface (ifType other) is a tunnel subnet too
+        $wireguard = array_map(fn ($list) => array_map(fn ($owner) => ['port' => ['ifType' => 'other', 'ifName' => 'wg0']] + $owner, $list), $owners);
+        $this->assertSame(['as:65000@10.0.0.1'], array_values(array_unique(array_map(fn ($c) => $c['cloud']['id'],
+            (new SiteSessions($devices, $wireguard))->addBgp($rows)->all()))));
+
         // a template transit LAN: every branch's own firewall at .254 of the same /24, the routers at addresses of their
         // own on Ethernet: three firewalls, a cloud per site
         $lan = array_map(fn ($list) => array_map(fn ($owner) => ['port' => ['ifType' => 'ethernetCsmacd', 'ifName' => 'Gi0/0/1']] + $owner, $list), $owners);
