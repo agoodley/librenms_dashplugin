@@ -93,7 +93,7 @@ class L3Builder
      * @param  array<int, array>  $bgp  rows of bgpPeers
      * @param  array<string, array<int, array>>  $layers  rows per overlay layer (LAYERS): ospfv3_nbrs, isis_adjacencies, ipsec_tunnels,
      *                                                    mpls_lsps and pseudowires (the last two with the local ifName, pseudowires with its ifMtu)
-     * @param  array{addresses?: array<string, int>, loopbacks?: array<string, int>, routerIds?: array<string, int>,
+     * @param  array{addresses?: array<string, int>, vrfAddresses?: array<string, int>, loopbacks?: array<string, int>, routerIds?: array<string, int>,
      *     ambiguousRouterIds?: array<string, true>, pseudowires?: array<int, array>, vcDevices?: array<int, int>, devices?: array<int, array>}  $known
      *     far ends among the other devices the user may see (L3LayerRepository::resolve() of lookups()) and the rows of
      *     those devices (TopologyRepository::devices())
@@ -1226,8 +1226,9 @@ class L3Builder
     /**
      * Device owning an address, looked up in a VRF (the global table by default): a device of this map with it
      * in that VRF; else the owner among the devices the user may see (L3LayerRepository::resolve(): in the global
-     * table first); else a device of this map with it in another VRF. Nobody owns an address found on several
-     * devices at the same step, nor a link-local or other ignorable one (the same on many routers).
+     * table first; for a customer VRF only one with it in that VRF, as such address space overlaps); else a device
+     * of this map with it in another VRF. Nobody owns an address found on several devices at the same step, nor a
+     * link-local or other ignorable one (the same on many routers).
      */
     private function deviceByAddress(string $address, string $vrf = ''): ?int
     {
@@ -1244,7 +1245,8 @@ class L3Builder
         $inVrf = array_keys(array_filter($owners, fn ($vrfs) => isset($vrfs[$vrf])));
         $device = match (true) {
             $inVrf !== [] => count($inVrf) === 1 ? (int) $inVrf[0] : null,
-            isset($this->known['addresses'][$canonical]) => (int) $this->known['addresses'][$canonical],
+            $vrf === '' && isset($this->known['addresses'][$canonical]) => (int) $this->known['addresses'][$canonical],
+            $vrf !== '' && isset($this->known['vrfAddresses'][$vrf . '|' . $canonical]) => (int) $this->known['vrfAddresses'][$vrf . '|' . $canonical],
             default => count($owners) === 1 ? (int) array_key_first($owners) : null,
         };
 
