@@ -23,7 +23,10 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
 class TopologyService
 {
     /** Above this many ports_stp rows the STP page analyzes one VLAN at a time. */
-    private const STP_ALL_VLAN_LIMIT = 150000;
+    private const STP_ALL_VLAN_LIMIT = 40000;
+
+    /** Above this many spanning tree instances (a PVST network has one per switch and VLAN) too. */
+    private const STP_ALL_INSTANCE_LIMIT = 3000;
 
     /** Above this many ports_vlans rows on inter-switch ports the link page skips the VLAN checks. */
     private const LINK_VLAN_LIMIT = 1000000;
@@ -77,7 +80,7 @@ class TopologyService
         $linkPorts = array_values(array_filter(array_unique(array_merge($linkPorts, array_map(fn ($p) => $lag[$p] ?? 0, $linkPorts)))));
 
         // the overlay shows one instance per device: the one carrying the selected VLAN
-        $stp = $this->singleInstanceIndex($this->repo->stpInstances($ids), $p['vlan'], $lag);
+        $stp = $this->singleInstanceIndex($this->repo->stpKeys($ids), $p['vlan'], $lag);
         $rootPorts = array_filter(array_map(fn ($id) => $stp->rootPortId($id, $p['vlan']), $ids));
         $ports = $this->repo->ports(array_merge($linkPorts, $rootPorts));
 
@@ -192,17 +195,18 @@ class TopologyService
         $scope = $this->repo->deviceIds($p['group'], $p['location']);
         $vlan = $p['vlan'];
         $notice = null;
-        if ($vlan === null && $this->repo->stpPortCount($scope) > self::STP_ALL_VLAN_LIMIT) {
+        $keys = $this->repo->stpKeys($scope);
+        if ($vlan === null && ($keys['count'] > self::STP_ALL_INSTANCE_LIMIT || $this->repo->stpPortCount($scope) > self::STP_ALL_VLAN_LIMIT)) {
             $vlan = 1;
             $notice = 'Large spanning tree data set: showing VLAN 1 / CST only, select a VLAN to analyze another instance.';
         }
 
-        $instances = $this->repo->stpInstances($scope);
-        $stpDevices = array_values(array_unique(array_map(fn ($i) => (int) $i['device_id'], $instances)));
+        $stpDevices = array_keys($keys['keys']);
         $lag = $this->repo->lagParents($stpDevices);
         $index = $vlan === null
-            ? new StpIndex($instances, $this->repo->stpPorts($stpDevices), $lag)
-            : $this->singleInstanceIndex($instances, $vlan, $lag);
+            ? new StpIndex($this->repo->stpInstances($scope), $this->repo->stpPorts($stpDevices), $lag)
+            : $this->singleInstanceIndex($keys, $vlan, $lag);
+        unset($keys);
 
         $links = $this->repo->links($scope);
         $portIds = $index->portIds();
@@ -547,20 +551,25 @@ class TopologyService
     }
 
     /**
-     * STP index holding, for every bridge, the port rows of the one instance that carries $vlan
-     * (null: the default instance). Instance rows are complete so PVST bridges are recognized.
+     * STP index holding, for every bridge, the instance and port rows of the one instance that
+     * carries $vlan (null: the default instance); the other instances are known by their VLAN key,
+     * which tells PVST bridges from single instance ones.
      *
+     * @param  array{keys: array<int, int[]>, bridges: array<string, int>}  $keys  TopologyRepository::stpKeys()
      * @param  array<int, int>  $lag
      */
-    private function singleInstanceIndex(array $instances, ?int $vlan, array $lag): StpIndex
+    private function singleInstanceIndex(array $keys, ?int $vlan, array $lag): StpIndex
     {
-        $selector = new StpIndex($instances);
-        $keys = [];
-        foreach ($selector->deviceIds() as $deviceId) {
-            $keys[$deviceId] = $selector->keyFor($deviceId, $vlan);
+        $selected = [];
+        foreach ($keys['keys'] as $deviceId => $deviceKeys) {
+            $key = StpIndex::selectKey($deviceKeys, $vlan);
+            if ($key !== null) {
+                $selected[$deviceId] = $key;
+            }
         }
 
-        return new StpIndex($instances, $this->repo->stpPorts(array_keys($keys), $keys), $lag);
+        return StpIndex::partial($keys['keys'], $this->repo->stpInstancesFor($selected), $this->repo->stpPorts(array_keys($selected), $selected),
+            $lag, $keys['bridges']);
     }
 
     /**

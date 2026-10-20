@@ -350,7 +350,7 @@ class StpAnalyzer
 
         if ($key !== 0) {
             foreach ($this->stp->deviceIds() as $deviceId) {
-                if (array_keys($this->stp->instancesFor($deviceId)) === [0]) {
+                if ($this->stp->keysFor($deviceId) === [0]) {
                     $participants[$deviceId] = true;
                 }
             }
@@ -989,7 +989,7 @@ class StpAnalyzer
             return false;
         }
 
-        foreach (array_keys($this->stp->instancesFor($deviceId)) as $key) {
+        foreach ($this->stp->keysFor($deviceId) as $key) {
             if ($this->stp->portRow($deviceId, $key, $portId)) {
                 return true;
             }

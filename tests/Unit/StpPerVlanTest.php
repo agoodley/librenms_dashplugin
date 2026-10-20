@@ -84,6 +84,36 @@ class StpPerVlanTest extends TestCase
         $this->assertSame(1, count(array_filter($perVlan, fn ($f) => $f['code'] === 'root_changed')), 'network-wide checks once');
     }
 
+    public function testAnIndexOfOneInstancePerDeviceAnalyzesThatVlanLikeOneWithEveryInstance(): void
+    {
+        // the STP page and the L2 map read the rows of the selected VLAN only and know the other instances by key
+        $keys = [];
+        $bridges = [];
+        foreach (self::instances() as $row) {
+            $keys[$row['device_id']][] = StpIndex::vlanKey($row['vlan']);
+            if (($mac = StpIndex::mac($row['bridgeAddress'] ?? '')) !== '') {
+                $bridges[$mac] ??= $row['device_id'];
+            }
+        }
+        foreach ([0 => 1, 20 => 20, 30 => 30] as $key => $vlan) {
+            $complete = new StpIndex(self::instances(), self::ports($key), CampusFixture::lagParent());
+            $rows = array_filter(self::instances(), fn (array $row) => StpIndex::vlanKey($row['vlan']) === $key);
+            $partial = StpIndex::partial($keys, $rows, self::ports($key), CampusFixture::lagParent(), $bridges);
+
+            $this->assertSame($complete->deviceIds(), $partial->deviceIds());
+            foreach ($complete->deviceIds() as $deviceId) {
+                $this->assertSame($complete->keyFor($deviceId, $vlan), $partial->keyFor($deviceId, $vlan));
+                $this->assertSame(array_keys($complete->instancesFor($deviceId)), $partial->keysFor($deviceId));
+            }
+            $expected = self::analyzer($complete)->analyze([], $vlan);
+            $actual = self::analyzer($partial)->analyze([], $vlan);
+            $this->assertNotEmpty($expected['bridges']);
+            foreach (['findings', 'bridges', 'blocked', 'domains'] as $part) {
+                $this->assertEquals($expected[$part], $actual[$part], "VLAN $vlan: $part");
+            }
+        }
+    }
+
     public function testMergingMergedFindingsKeepsAllVlans(): void
     {
         $finding = ['severity' => 'warning', 'code' => 'port_flapping', 'title' => 't', 'detail' => 'd', 'devices' => [3], 'ports' => [33]];

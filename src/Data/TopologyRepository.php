@@ -490,6 +490,62 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
+     * VLAN keys of the devices' spanning tree instances and the bridge MACs of all of them, without
+     * holding whole rows (Stp\StpIndex::partial()).
+     *
+     * @param  int[]  $ids
+     * @return array{keys: array<int, int[]>, bridges: array<string, int>, count: int} count: instances
+     */
+    public function stpKeys(array $ids): array
+    {
+        $keys = [];
+        $bridges = [];
+        $count = 0;
+        if ($ids) {
+            foreach (DB::table('stp')->whereIntegerInRaw('device_id', $ids)->select(['stp_id', 'device_id', 'vlan', 'bridgeAddress'])
+                ->lazyById(5000, 'stp_id') as $row) {
+                $count++;
+                $keys[(int) $row->device_id][StpIndex::vlanKey($row->vlan)] = true;
+                $mac = StpIndex::mac($row->bridgeAddress);
+                if ($mac !== '') {
+                    $bridges[$mac] ??= (int) $row->device_id;
+                }
+            }
+        }
+
+        return ['keys' => array_map('array_keys', $keys), 'bridges' => $bridges, 'count' => $count];
+    }
+
+    /**
+     * stp rows of one instance per device.
+     *
+     * @param  array<int, int>  $keys  device_id => VLAN key (0 = default instance)
+     */
+    public function stpInstancesFor(array $keys): array
+    {
+        $devicesByKey = [];
+        foreach ($keys as $deviceId => $key) {
+            $devicesByKey[$key][] = (int) $deviceId;
+        }
+
+        $rows = [];
+        foreach ($devicesByKey as $key => $deviceIds) {
+            $query = DB::table('stp')->whereIntegerInRaw('device_id', $deviceIds);
+            if ($key === 0) {
+                // LibreNMS stores the default instance (and Cisco PVST VLAN 1) with vlan NULL
+                $query->where(fn (Builder $q) => $q->whereNull('vlan')->orWhereIn('vlan', [0, 1]));
+            } else {
+                $query->where('vlan', $key);
+            }
+            foreach ($query->orderBy('stp_id')->get() as $row) {
+                $rows[] = (array) $row;
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
      * stp rows of the devices, one at a time (a PVST network has one per switch and VLAN).
      *
      * @param  int[]  $ids
@@ -894,7 +950,7 @@ class TopologyRepository extends ScopedRepository
     {
         $best = [];
         foreach (array_chunk($ids, 5000) as $chunk) {
-            foreach (DB::table('stp')->whereIntegerInRaw('device_id', $chunk)->get(['device_id', 'vlan', 'priority']) as $row) {
+            foreach (DB::table('stp')->whereIntegerInRaw('device_id', $chunk)->select(['device_id', 'vlan', 'priority'])->cursor() as $row) {
                 $deviceId = (int) $row->device_id;
                 $key = StpIndex::vlanKey($row->vlan);
                 if (! isset($best[$deviceId]) || $key < $best[$deviceId][0]) {
