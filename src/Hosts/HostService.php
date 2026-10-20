@@ -273,9 +273,9 @@ class HostService
         }
 
         $ips = [];
-        $deadline = microtime(true) + $this->dnsBudget();
+        $deadline = $this->seconds() + $this->dnsBudget();
         foreach (array_unique($names) as $name) {
-            $left = $deadline - microtime(true);
+            $left = $deadline - $this->seconds();
             if ($left < 0.1) {
                 break;
             }
@@ -296,6 +296,14 @@ class HostService
     protected function dnsBudget(): float
     {
         return self::DNS_BUDGET;
+    }
+
+    /**
+     * Clock of the DNS budget, in seconds.
+     */
+    protected function seconds(): float
+    {
+        return microtime(true);
     }
 
     /**

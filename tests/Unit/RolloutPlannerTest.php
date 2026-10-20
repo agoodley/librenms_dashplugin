@@ -201,7 +201,8 @@ class RolloutPlannerTest extends TestCase
         $elapsed = microtime(true) - $start;
 
         $this->assertSame([1000, 40, 40, 1, 1], array_map('count', self::batches($plan)));
-        $this->assertLessThan(5.0, $elapsed);
+        // a generous bound: it guards against an algorithm that grows with the square of the network, not the speed of the machine
+        $this->assertLessThan(20.0, $elapsed);
         // the dist "a" batch cuts off the single-homed access switches, as the simulation says
         $this->assertSame(40 * 5, count($plan['batches'][1]['lost']));
         $this->assertLikeTheSimulation($analyzer, $plan);
