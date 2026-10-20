@@ -5,6 +5,7 @@ use Agoodley\LibrenmsTopology\Http\Controllers\AssetController;
 use Agoodley\LibrenmsTopology\Http\Controllers\CoverageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PlanningController;
+use Agoodley\LibrenmsTopology\Http\Controllers\SiteController;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use Illuminate\Support\Facades\Route;
 
@@ -16,12 +17,14 @@ Route::middleware(['web', 'auth'])
     ->group(function (): void {
         Route::get('l2', [PageController::class, 'l2'])->name('l2');
         Route::get('l3', [PageController::class, 'l3'])->name('l3');
+        Route::get('sites', [SiteController::class, 'show'])->name('sites');
         Route::get('stp', [PageController::class, 'stp'])->name('stp');
         Route::get('links', [PageController::class, 'links'])->name('links');
         Route::get('redundancy', [PageController::class, 'redundancy'])->name('redundancy');
 
         Route::get('api/l2', [ApiController::class, 'l2'])->name('api.l2');
         Route::get('api/l3', [ApiController::class, 'l3'])->name('api.l3');
+        Route::get('api/sites', [SiteController::class, 'api'])->name('api.sites');
         Route::get('api/stp', [ApiController::class, 'stp'])->name('api.stp');
         Route::get('api/links', [ApiController::class, 'links'])->name('api.links');
         Route::get('api/redundancy', [ApiController::class, 'redundancy'])->name('api.redundancy');

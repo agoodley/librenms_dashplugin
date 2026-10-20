@@ -25,11 +25,11 @@ The plugin's conventions apply to all of them:
 | 9 | [More L3 map layers](README.md#layer-3-map-overlays) | **done** | – |
 | 10 | [Loop evidence on the STP page](README.md#spanning-tree-diagnostics) | **done** | – |
 | 12 | [Coverage report](README.md#coverage-report) | **done** | – |
+| 8 | [Site / WAN map](README.md#site--wan-map) | **done** | – |
 | 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
 | 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
 | 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
 | 4 | [Routing & IP diagnostics](#4-routing--ip-diagnostics) | planned | M |
-| 8 | [Site / WAN view](#8-site--wan-view) | later | M |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
 | 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
 
@@ -109,12 +109,6 @@ The L3 counterpart of the spanning tree page.
 * Builds on: the subnet index of `L3Builder`, the `Finding` format and the layout of the diagnostics pages.
 
 ## Later
-
-### 8. Site / WAN view
-
-* One node per location with the links between sites added up (count, capacity, utilization, status), optionally
-  placed geographically from `locations.lat` / `lng`; click a site to open its L2/L3 map.
-* Keeps large networks readable, since a device map is capped at *Maximum devices* (400 by default).
 
 ### 11. Sharing & export
 

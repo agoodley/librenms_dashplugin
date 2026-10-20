@@ -3,7 +3,7 @@
     $fields = [
         'Maps' => [
             ['default_depth', 'number', 'Default hops around a centered device', '1-10'],
-            ['max_nodes', 'number', 'Maximum devices drawn on one map', '10-5000; larger maps are trimmed to the best connected devices'],
+            ['max_nodes', 'number', 'Maximum devices drawn on one map (sites on the site map)', '10-5000; larger maps are trimmed to the best connected devices or sites'],
             ['show_unmanaged', 'bool', 'Show unmanaged LLDP/CDP neighbors by default', ''],
             ['collapse_lag', 'bool', 'Draw LAG / port-channel members as one link by default', ''],
             ['l3_hide_stubs', 'bool', 'Hide stub networks (subnets with a single device) on the L3 map by default', ''],
