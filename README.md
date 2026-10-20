@@ -60,7 +60,7 @@ the unicast traffic and the link speed; and the loop related messages the switch
 Links to phones, access points and servers are not inter-switch links. The syslog checks recognize the messages of
 Cisco IOS / IOS-XE / NX-OS, Arista EOS, Junos and ProCurve / ArubaOS-Switch; each pattern is a setting, so other vendors
 can be added. A message counts for the first check that matches it, so a port err-disabled by BPDU guard is a BPDU guard
-finding.
+finding (and with `bpdu_guard` in the disabled checks, those messages are left out rather than reported as err-disable).
 
 ![Loop evidence](docs/images/stp-loop-evidence.png)
 
@@ -205,10 +205,10 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Flapping threshold | 100 | transitions to forwarding |
 | Maximum diameter | 7 | bridge hops from the root |
 | Event history | 7 days | STP eventlog entries analyzed |
-| Storm threshold / share | 1,000 packets/s / 20 % | broadcast or multicast rate on an inter-switch port that is a storm when it is also this share of the port's packets or 1 % of the link (0 disables) |
+| Storm threshold / share | 1,000 packets/s / 20 % | broadcast or multicast rate on an inter-switch port that is a storm when it is also this share of the port's packets or 1 % of the link (0 disables; check codes `broadcast_storm`, `multicast_storm`) |
 | Syslog window | 24 hours | loop related syslog messages this recent are analyzed |
-| Syslog patterns | Cisco, Arista, Junos, ProCurve messages | one regular expression per check (case-insensitive, matched against the program and the message) |
-| Disabled STP checks | – | check codes or categories (`root`, `config`, `changes`, `ports`, `loops`, `storms`, `syslog`), e.g. `timers_non_default multicast_storm` |
+| Syslog patterns | Cisco, Arista, Junos, ProCurve messages | one regular expression per check (case-insensitive, matched against the program and the message), tried in this order: `loop_detected`, `udld`, `bpdu_guard`, `loop_guard`, `root_guard`, `storm_control`, `mac_flapping`, `syslog_native_vlan`, `syslog_duplex_mismatch`, `err_disabled` |
+| Disabled STP checks | – | check codes (the `code` of each finding in `api/stp`) or categories (`root`, `config`, `changes`, `ports`, `loops`, `storms`, `syslog`), e.g. `timers_non_default multicast_storm` |
 | Interface error threshold | 10 | errors per poll on an inter-switch port (0 disables) |
 | Discard threshold | 1 % | share of the packets discarded (0 disables) |
 | Port-channel imbalance | 40 % | a member above this utilization carrying 3x the traffic of another member (0 disables) |

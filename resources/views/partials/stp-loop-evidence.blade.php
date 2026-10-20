@@ -21,7 +21,7 @@
 
     <div class="topo-evidence-heading">
         Inter-switch ports, storms first
-        <span class="text-muted">({{ $evidence['ports_with_counters'] }} of {{ $evidence['inter_switch_ports'] }} ports with current packet counters{{ $evidence['storm_threshold'] > 0 ? ', storm from ' . number_format($evidence['storm_threshold']) . ' packets/s' : ', storm checks off' }})</span>
+        <span class="text-muted">({{ $evidence['ports_with_counters'] }} of {{ $evidence['inter_switch_ports'] }} ports with current packet counters{{ $evidence['storms_off'] ? ', storm checks switched off in the settings' : ', storm from ' . number_format($evidence['storm_threshold']) . ' packets/s' }})</span>
     </div>
     <div class="table-responsive">
     <table class="table table-condensed table-hover topo-stp-table" id="topo-storm-table">
@@ -59,12 +59,14 @@
 
     <div class="topo-evidence-heading">
         Syslog, last {{ $evidence['syslog_hours'] }} hours
-        @unless($evidence['syslog_hidden'])
+        @unless($evidence['syslog_hidden'] || $evidence['syslog_off'])
             <span class="text-muted">({{ $evidence['syslog_devices'] }} of {{ $evidence['syslog_scope'] }} switches and routers sent syslog to LibreNMS)</span>
         @endunless
     </div>
     @if($evidence['syslog_hidden'])
         <p class="topo-evidence-note">Your LibreNMS role may not view syslog, so syslog evidence is not shown.</p>
+    @elseif($evidence['syslog_off'])
+        <p class="topo-evidence-note" id="topo-syslog-off">The syslog checks are switched off in the settings.</p>
     @else
         <div class="table-responsive">
         <table class="table table-condensed table-hover topo-stp-table" id="topo-syslog-table">

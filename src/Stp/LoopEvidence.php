@@ -158,6 +158,7 @@ class LoopEvidence
 
         $storms = $this->checkStorms();
         $syslog = empty($context['syslog_hidden']) ? $this->checkSyslog($hours) : [];
+        $syslogOff = self::scanPattern($this->settings) === null;
         if (! empty($context['syslog_scan_limited'])) {
             $this->notices[] = 'Only the newest ' . number_format((int) $context['syslog_scan_limited']) . " syslog messages of the last $hours hours were searched; "
                 . 'shorten the syslog window in the settings to cover it all.';
@@ -182,9 +183,11 @@ class LoopEvidence
                 'inter_switch_ports' => $storms['ports'],
                 'ports_with_counters' => $storms['counted'],
                 'storm_threshold' => $this->settings->int('stp_storm_pps', 0),
+                'storms_off' => $storms['off'],
                 'syslog' => $syslog,
                 'syslog_hours' => $hours,
                 'syslog_hidden' => ! empty($context['syslog_hidden']),
+                'syslog_off' => $syslogOff,
                 'syslog_devices' => (int) ($context['syslog_devices'] ?? 0),
                 'syslog_scope' => (int) ($context['syslog_scope'] ?? 0),
                 'notices' => $this->notices,
@@ -266,7 +269,8 @@ class LoopEvidence
 
     /**
      * The patterns of the enabled syslog checks as one regular expression, to pick the candidate
-     * messages while reading the syslog; null when every syslog check is off or empty.
+     * messages while reading the syslog; null when every syslog check is off, empty or invalid.
+     * Messages only a disabled check matches are not needed: analyze() drops them.
      */
     public static function scanPattern(PluginSettings $settings): ?string
     {
@@ -289,13 +293,14 @@ class LoopEvidence
      * when the rate reaches the threshold and either dominates its traffic or takes a noticeable part
      * of the link: a loop sends the same broadcasts around until links or switch CPUs saturate.
      *
-     * @return array{rows: array, ports: int, counted: int}
+     * @return array{rows: array, ports: int, counted: int, off: bool}
      */
     private function checkStorms(): array
     {
         $threshold = $this->settings->int('stp_storm_pps', 0);
         $share = $this->settings->int('stp_storm_percent', 1, 100) / 100;
         $links = self::interSwitchPorts($this->devices, $this->links);
+        $checked = array_filter(['broadcast', 'multicast'], fn ($kind) => $threshold > 0 && $this->enabled($kind . '_storm'));
 
         $rows = [];
         foreach ($links as $portId => $link) {
@@ -304,7 +309,7 @@ class LoopEvidence
                 continue;
             }
             foreach (['broadcast', 'multicast'] as $kind) {
-                $row[$kind . '_level'] = $threshold > 0 ? self::stormLevel($kind, $row[$kind], $threshold, $share) : null;
+                $row[$kind . '_level'] = in_array($kind, $checked, true) ? self::stormLevel($kind, $row[$kind], $threshold, $share) : null;
             }
             $rows[] = $row;
         }
@@ -323,6 +328,7 @@ class LoopEvidence
             'rows' => array_slice($rows, 0, count($storms) + self::TABLE_PORTS),
             'ports' => count($links),
             'counted' => count($rows),
+            'off' => ! $checked,
         ];
     }
 
@@ -456,7 +462,7 @@ class LoopEvidence
     private function checkSyslog(int $hours): array
     {
         $patterns = $this->patterns();
-        if (! $patterns) {
+        if (! array_filter(array_keys($patterns), fn ($code) => $this->enabled($code))) {
             return [];
         }
 
@@ -466,7 +472,7 @@ class LoopEvidence
             $time = strtotime((string) ($message['timestamp'] ?? '')) ?: 0;
             $text = trim(((string) ($message['program'] ?? '')) . ' ' . ((string) ($message['msg'] ?? '')));
             $code = $time >= $since ? self::classify($text, $patterns) : null;
-            if ($code === null) {
+            if ($code === null || ! $this->enabled($code)) {
                 continue;
             }
             $deviceId = (int) $message['device_id'];
@@ -492,8 +498,9 @@ class LoopEvidence
     }
 
     /**
-     * Compiled patterns of the enabled syslog checks in matching order; invalid ones are reported
-     * and skipped, empty ones switch their check off.
+     * Compiled patterns of the syslog checks in matching order. A disabled check keeps its pattern,
+     * so its messages are not counted by a later check (an err-disable caused by BPDU guard stays
+     * BPDU guard); empty patterns match nothing, invalid ones are reported and skipped.
      *
      * @return array<string, string> code => regular expression
      */
@@ -502,12 +509,14 @@ class LoopEvidence
         $patterns = [];
         foreach (self::SYSLOG as $code => $check) {
             $pattern = trim((string) ($this->settings->all()[$check['setting']] ?? ''));
-            if ($pattern === '' || ! $this->enabled($code)) {
+            if ($pattern === '') {
                 continue;
             }
             $regex = self::compile($pattern);
             if ($regex === null) {
-                $this->notices[] = "The syslog pattern for {$check['title']} ({$check['setting']}) is not a valid regular expression; that check was skipped.";
+                if ($this->enabled($code)) {
+                    $this->notices[] = "The syslog pattern for {$check['title']} ({$check['setting']}) is not a valid regular expression; that check was skipped.";
+                }
                 continue;
             }
             $patterns[$code] = $regex;

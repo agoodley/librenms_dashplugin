@@ -145,12 +145,23 @@ class LoopEvidenceTest extends TestCase
         $net->set(2, 'Gi1/0/1', ['ifInBroadcastPkts_rate' => 90000, 'ifInMulticastPkts_rate' => 90000, 'ifInUcastPkts_rate' => 100]);
 
         $this->assertSame(['broadcast_storm' => 'critical', 'multicast_storm' => 'warning'], self::codes($net->evidence()));
-        $this->assertSame(['multicast_storm' => 'warning'], self::codes($net->evidence(['stp_disabled_checks' => 'broadcast_storm'])));
-        $this->assertSame([], self::codes($net->evidence(['stp_disabled_checks' => 'storms'])));
+        $this->assertFalse($net->evidence()['evidence']['storms_off']);
+
+        $multicast = $net->evidence(['stp_disabled_checks' => 'broadcast_storm']);
+        $this->assertSame(['multicast_storm' => 'warning'], self::codes($multicast));
+        $this->assertSame([null, 'warning'], [$multicast['evidence']['storms'][0]['broadcast_level'], $multicast['evidence']['storms'][0]['multicast_level']],
+            'a disabled check marks no storm in the table either');
+        $this->assertFalse($multicast['evidence']['storms_off']);
+
+        $category = $net->evidence(['stp_disabled_checks' => 'storms']);
+        $this->assertSame([], self::codes($category));
+        $this->assertTrue($category['evidence']['storms_off']);
+
         $off = $net->evidence(['stp_storm_pps' => '0']);
         $this->assertSame([], $off['findings']);
         $this->assertCount(1, $off['evidence']['storms'], 'the rates are still listed');
-        $this->assertSame(0, $off['evidence']['storm_threshold']);
+        $this->assertSame([null, null], [$off['evidence']['storms'][0]['broadcast_level'], $off['evidence']['storms'][0]['multicast_level']]);
+        $this->assertTrue($off['evidence']['storms_off']);
     }
 
     /**
@@ -312,6 +323,26 @@ class LoopEvidenceTest extends TestCase
         $this->assertNull(self::find($net->evidence(['stp_disabled_checks' => 'mac_flapping']), 'mac_flapping'));
         $this->assertSame([], array_filter(array_column($net->evidence(['stp_disabled_checks' => 'syslog'])['findings'], 'category'),
             fn ($category) => $category === 'syslog'));
+
+        // a disabled check keeps its messages: the err-disables caused by loop detection and BPDU guard do not turn
+        // into err-disable findings, unlike with an empty pattern above
+        $disabled = $net->evidence(['stp_disabled_checks' => 'loop_detected bpdu_guard']);
+        $this->assertNull(self::find($disabled, 'loop_detected'));
+        $this->assertNull(self::find($disabled, 'bpdu_guard'));
+        $this->assertSame([], array_filter($disabled['evidence']['syslog'], fn ($row) => in_array($row['code'], ['loop_detected', 'bpdu_guard'], true)));
+        $this->assertSame(1, self::rows($disabled, 'err_disabled')[2]['count']);
+        $this->assertSame(['Gi1/0/20'], array_column(self::rows($disabled, 'err_disabled')[2]['ports'], 'name'), 'the port security err-disable only');
+
+        // every syslog check off: the page says so instead of "no messages"
+        $this->assertFalse($net->evidence()['evidence']['syslog_off']);
+        $this->assertTrue($net->evidence(['stp_disabled_checks' => 'syslog'])['evidence']['syslog_off']);
+        $empty = array_fill_keys(array_column(LoopEvidence::SYSLOG, 'setting'), '');
+        $broken = $net->evidence(['stp_syslog_udld' => 'udld('] + $empty);
+        $this->assertTrue($broken['evidence']['syslog_off']);
+        $this->assertSame([], $broken['evidence']['syslog']);
+        $this->assertCount(1, $broken['evidence']['notices'], 'the invalid pattern is still reported');
+        $this->assertCount(0, $net->evidence(['stp_syslog_udld' => 'udld(', 'stp_disabled_checks' => 'udld'])['evidence']['notices'],
+            'but not the one of a disabled check');
     }
 
     public function testScanPattern(): void
