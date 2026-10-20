@@ -1,0 +1,51 @@
+{
+    "name": "agoodley/librenms-topology-plugin",
+    "description": "LibreNMS plugin: NetBrain-style Layer 2 / Layer 3 topology maps and Spanning Tree diagnostics",
+    "keywords": [
+        "librenms",
+        "plugin",
+        "topology",
+        "lldp",
+        "cdp",
+        "spanning-tree",
+        "stp",
+        "network-map"
+    ],
+    "type": "library",
+    "license": "GPL-3.0-or-later",
+    "authors": [
+        {
+            "name": "agoodley"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Agoodley\\LibrenmsTopology\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Agoodley\\LibrenmsTopology\\Tests\\": "tests/"
+        }
+    },
+    "require": {
+        "php": "^8.2",
+        "librenms/plugin-interfaces": "^1.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5|^11.0"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Agoodley\\LibrenmsTopology\\TopologyServiceProvider"
+            ]
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

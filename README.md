@@ -1,0 +1,159 @@
+# LibreNMS Topology & Spanning Tree plugin
+
+NetBrain-style **Layer 2** and **Layer 3** network diagrams plus **spanning tree diagnostics** for
+[LibreNMS](https://www.librenms.org), built entirely from data LibreNMS already collects
+(LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, IP addresses, OSPF and BGP).
+
+![Layer 2 map](docs/images/l2-map.png)
+
+| Layer 2 map | Layer 3 map |
+|---|---|
+| Switches as Cisco-style icons, tiered top-down (WAN edge / firewall → core → access → endpoints) | Routers, L3 switches and firewalls joined through their subnets |
+| Interface names at **both ends** of every link (`Te1/0/1 [R]`), link speed, port-channels collapsed (`2x 10G`) | Point-to-point subnets (/29–/31) as direct links, LAN segments as subnet "media" nodes |
+| STP overlay: ★ root bridge, `[R]`/`[D]`/`[ALT]` port roles, ⊗ on blocked ports, dashed orange blocked links | Interface name + IP address at each end, VRF filter, loopbacks and stub networks per device |
+| VLAN filter dims switches/links that do not carry the VLAN and switches the STP overlay to that VLAN's instance | OSPF adjacencies and BGP sessions (iBGP/eBGP, external AS clouds), red when not full/established |
+| Unmanaged LLDP/CDP neighbors (APs, phones, servers, unknown switches); an unmanaged neighbor behind a root port is flagged `ROOT?` | |
+
+Both maps: center on any device with N hops, filter by device group or location, search, hierarchical or
+organic layout, drag-and-save layout (per browser), color links by speed / utilization / status,
+details panel for every device and link (speed, duplex, VLANs, traffic, STP state, LAG members), export to
+PNG and CSV, full screen, and shareable URLs.
+
+### Spanning tree diagnostics
+
+One page (plus a JSON API) that analyzes every STP instance (802.1D/RSTP/MST CIST and Cisco PVST+/Rapid-PVST+ per VLAN):
+
+| Check | Severity |
+|---|---|
+| Bridges of one connected L2 domain disagree on the root bridge | critical |
+| Bridging loop: a cycle of links that are forwarding on both ends (LAG and MLAG/vPC aware) | critical |
+| Ports in `broken` state (root/loop inconsistent, guard err-disable) | critical |
+| Root bridge not monitored by LibreNMS (rogue switch) – traced along root ports to the exit port, FDB sightings and OUI vendor | warning |
+| Root elected with default priority, root not one of your designated roots, root at the edge of the topology | warning |
+| High topology change rate per day of uptime, with the most likely source ports (edge ports without portfast) | warning |
+| Ports with many transitions to forwarding (flapping) | warning |
+| Forwarding ports that are neither root nor designated | warning |
+| Operational timers different from the root, invalid 802.1D timer relationship, non-default timers | warning / info |
+| Mixed STP modes (PVST+ / Rapid-PVST+ / MST) in one domain | warning / info |
+| Bridges more hops from the root than the configured diameter | warning |
+| Inter-switch switchports without STP (BPDU filter / STP disabled) | warning |
+| Switches without STP data that sit on redundant L2 paths, switches without STP data | warning / info |
+| Root bridge / root port changes from the LibreNMS eventlog | warning / info |
+
+Identical findings in many PVST VLANs are reported once with the list of VLANs. The page also lists every
+STP domain (root bridge ID, members, blocked ports, max hops, last topology change, timers), all
+blocked ports with their neighbor across the link, every bridge instance and recent STP events.
+
+![Spanning tree diagnostics](docs/images/stp-diagnostics.png)
+
+VLAN view with the STP overlay – the VLAN 30 root is an unmanaged switch behind `acc-sw3 Gi1/0/24`:
+
+![VLAN 30 spanning tree](docs/images/l2-vlan-stp.png)
+
+![Layer 3 map](docs/images/l3-map.png)
+
+A **device overview panel** shows each switch's STP role per VLAN (root / root port / cost / blocked ports /
+last topology change), its issues and links to the maps centered on that device.
+
+![Device panel](docs/images/device-panel.png)
+
+*(Screenshots use a simulated demo network.)*
+
+## Requirements
+
+* LibreNMS 26.x (developed and tested against 26.9 / master of October 2026), PHP 8.2+
+* The LibreNMS modules that feed the plugin enabled for your devices:
+  `discovery-protocols` (links), `ports`, `vlans`, `ports-stack`, `stp`, `ipv4-addresses`
+  (`ipv6-addresses`), `ospf`, `bgp-peers`, `fdb-table` (rogue root tracing). The maps work with whatever subset
+  is available.
+
+## Installation
+
+The plugin is a standard Composer package (LibreNMS "plugin package"). Run everything as the `librenms` user.
+
+```bash
+sudo su - librenms
+
+# 1. tell composer where the package lives (stored in the librenms user's global composer
+#    config so it survives LibreNMS updates)
+composer config --global repositories.librenms-topology vcs https://github.com/agoodley/librenms_dashplugin
+
+# 2. install it with LibreNMS' plugin installer
+cd /opt/librenms
+./lnms plugin:add agoodley/librenms-topology-plugin dev-main
+```
+
+If the repository is private, give composer a GitHub token first:
+`composer config --global github-oauth.github.com <token>`.
+
+To install from a local checkout instead, use a path repository:
+
+```bash
+composer config --global repositories.librenms-topology '{"type": "path", "url": "/opt/librenms-plugins/librenms_dashplugin", "options": {"symlink": true}}'
+./lnms plugin:add agoodley/librenms-topology-plugin @dev
+```
+
+The plugin is enabled automatically. Open **Overview → Plugins → L2 Topology Map / L3 Topology Map / STP
+Diagnostics**, or go to `/plugin/topology`. It can be disabled or configured in **Overview → Plugins →
+Plugin Admin → topology → Settings**.
+
+To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
+
+## Usage tips
+
+* **Center on a device** and pick the number of hops for large networks (the map is capped at *Maximum devices*,
+  default 400). Double-click any device to re-center on it.
+* Pick a **VLAN** on the L2 map to see which switches/trunks carry it and that VLAN's spanning tree
+  (root bridge, port roles, blocked ports). Domain rows and findings on the STP page link straight to that view.
+* Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope).
+* `plugin/topology/api/l2`, `api/l3` and `api/stp` return the same data as JSON (same query parameters as the
+  pages, e.g. `api/stp?vlan=30&group=2`) for automation.
+
+## Settings
+
+| Setting | Default | |
+|---|---|---|
+| Default hops | 2 | hops drawn around a centered device |
+| Maximum devices | 400 | larger maps are trimmed to the best connected devices |
+| Show unmanaged neighbors / Collapse LAGs / Hide stub networks | on | defaults of the map toggles |
+| Point-to-point prefix | 29 | two-device IPv4 subnets this long or longer become direct links |
+| Excluded subnets | – | CIDRs never drawn on the L3 map (e.g. management networks) |
+| Designated root bridges | – | hostnames/sysNames/ids; warn when any other bridge is root |
+| Topology change window / rate | 60 min / 50 per day | |
+| Flapping threshold | 100 | transitions to forwarding |
+| Maximum diameter | 7 | bridge hops from the root |
+| Event history | 7 days | STP eventlog entries analyzed |
+
+## Permissions
+
+Every map and diagnostic only uses devices the logged-in user may see (LibreNMS device permissions).
+Neighbors on devices the user cannot see are shown as unmanaged neighbors (their LLDP/CDP name only), and a
+root bridge on such a device is not reported as a rogue switch.
+
+## How it works
+
+* `src/Data/TopologyRepository.php` – all database access, permission scoped.
+* `src/Topology/L2Builder.php`, `src/Topology/L3Builder.php` – build the map graphs (link de-duplication,
+  LAG/MLAG handling, VLAN membership, subnet classification, routing overlays, hierarchy tiers).
+* `src/Stp/StpIndex.php`, `src/Stp/StpAnalyzer.php` – STP role derivation (BRIDGE-MIB has no port role) and
+  the diagnostics.
+* `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
+
+The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
+
+```bash
+composer install
+vendor/bin/phpunit
+```
+
+## Limitations
+
+* STP data comes from the BRIDGE-MIB as polled by LibreNMS: MST instances other than the CIST are not
+  available, and findings reflect the last poll (a check can fire during re-convergence).
+* Stacks / virtual chassis that are not modelled as one device, and MLAG pairs without a detected
+  port-channel, can produce a "possible bridging loop" warning – the finding says so.
+* Saved layouts live in the browser's local storage, they are not shared between users.
+
+## License
+
+GPL-3.0-or-later, like LibreNMS.

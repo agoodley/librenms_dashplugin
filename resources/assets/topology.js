@@ -1,0 +1,1304 @@
+/*
+ * LibreNMS Topology plugin - NetBrain style Layer 2 / Layer 3 maps.
+ * Renders the JSON produced by plugin/topology/api/{l2,l3} with vis-network (bundled with LibreNMS).
+ */
+(function (window, document) {
+    'use strict';
+
+    // ------------------------------------------------------------------ helpers
+
+    function esc(value) {
+        return String(value === null || value === undefined ? '' : value).replace(/[&<>"']/g, function (c) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+        });
+    }
+
+    function formatSpeed(bps) {
+        bps = Number(bps) || 0;
+        if (!bps) {
+            return '';
+        }
+        var units = [[1e12, 'T'], [1e9, 'G'], [1e6, 'M'], [1e3, 'K']];
+        for (var i = 0; i < units.length; i++) {
+            if (bps >= units[i][0]) {
+                var value = bps / units[i][0];
+                return (Math.round(value * 10) / 10) + units[i][1];
+            }
+        }
+        return bps + 'bps';
+    }
+
+    function formatRate(bps) {
+        var speed = formatSpeed(bps);
+        return speed ? speed + 'bps' : '0bps';
+    }
+
+    function formatDuration(seconds) {
+        if (seconds === null || seconds === undefined) {
+            return '-';
+        }
+        seconds = Number(seconds);
+        if (seconds < 120) {
+            return seconds + 's';
+        }
+        if (seconds < 7200) {
+            return Math.round(seconds / 60) + 'm';
+        }
+        if (seconds < 172800) {
+            return (Math.round(seconds / 360) / 10) + 'h';
+        }
+        return (Math.round(seconds / 8640) / 10) + 'd';
+    }
+
+    function isDark() {
+        return document.documentElement.classList.contains('dark');
+    }
+
+    function theme() {
+        return isDark() ? {
+            background: '#1d2024', text: '#e6e6e6', textStroke: '#1d2024', labelBg: 'rgba(36,39,44,0.88)',
+            labelText: '#dcdcdc', labelBorder: 'rgba(120,120,120,0.6)', subnetBg: '#3b3524', subnetBorder: '#c9a227',
+            member: '#7f8c99', muted: 'rgba(140,140,140,0.25)'
+        } : {
+            background: '#ffffff', text: '#222222', textStroke: '#ffffff', labelBg: 'rgba(255,255,255,0.9)',
+            labelText: '#333333', labelBorder: 'rgba(160,160,160,0.7)', subnetBg: '#fff6d5', subnetBorder: '#c9a227',
+            member: '#7f8c99', muted: 'rgba(160,160,160,0.25)'
+        };
+    }
+
+    // ------------------------------------------------------------------ icons (drawn as SVG, Cisco/NetBrain-like)
+
+    var STATUS_COLORS = {up: '#1f6fb2', down: '#c0392b', disabled: '#8a949e', unknown: '#7d8a96'};
+    var iconCache = {};
+
+    function shade(hex, amount) {
+        var num = parseInt(hex.slice(1), 16);
+        var r = Math.max(0, Math.min(255, (num >> 16) + amount));
+        var g = Math.max(0, Math.min(255, ((num >> 8) & 0xff) + amount));
+        var b = Math.max(0, Math.min(255, (num & 0xff) + amount));
+        return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+    }
+
+    function arrow(x1, y1, x2, y2) {
+        var angle = Math.atan2(y2 - y1, x2 - x1);
+        var head = 5;
+        var hx1 = x2 - head * Math.cos(angle - 0.5), hy1 = y2 - head * Math.sin(angle - 0.5);
+        var hx2 = x2 - head * Math.cos(angle + 0.5), hy2 = y2 - head * Math.sin(angle + 0.5);
+        return '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/>' +
+            '<polygon points="' + x2 + ',' + y2 + ' ' + hx1.toFixed(1) + ',' + hy1.toFixed(1) + ' ' + hx2.toFixed(1) + ',' + hy2.toFixed(1) + '" fill="#fff"/>';
+    }
+
+    function svgFor(role, color) {
+        var dark = shade(color, -45);
+        var light = shade(color, 35);
+        switch (role) {
+            case 'router':
+                return '<ellipse cx="32" cy="40" rx="28" ry="11" fill="' + dark + '"/>' +
+                    '<rect x="4" y="24" width="56" height="16" fill="' + dark + '"/>' +
+                    '<ellipse cx="32" cy="24" rx="28" ry="11" fill="' + color + '" stroke="' + light + '" stroke-width="1"/>' +
+                    arrow(14, 19, 25, 23) + arrow(50, 29, 39, 25) + arrow(28, 27, 17, 30) + arrow(36, 21, 47, 18);
+            case 'l3switch':
+                return '<polygon points="10,18 22,8 58,8 46,18" fill="' + light + '"/>' +
+                    '<polygon points="46,18 58,8 58,46 46,56" fill="' + dark + '"/>' +
+                    '<rect x="10" y="18" width="36" height="38" fill="' + color + '"/>' +
+                    arrow(28, 37, 18, 27) + arrow(28, 37, 38, 47) + arrow(28, 37, 38, 27) + arrow(28, 37, 18, 47) +
+                    '<circle cx="28" cy="37" r="4" fill="#fff"/>';
+            case 'switch':
+                return '<polygon points="4,26 16,16 60,16 48,26" fill="' + light + '"/>' +
+                    '<polygon points="48,26 60,16 60,38 48,48" fill="' + dark + '"/>' +
+                    '<rect x="4" y="26" width="44" height="22" fill="' + color + '"/>' +
+                    arrow(9, 32, 22, 32) + arrow(43, 32, 30, 32) + arrow(22, 42, 9, 42) + arrow(30, 42, 43, 42);
+            case 'firewall':
+                var bricks = '';
+                for (var row = 0; row < 4; row++) {
+                    var y = 14 + row * 10;
+                    bricks += '<line x1="6" y1="' + y + '" x2="58" y2="' + y + '" stroke="#fff" stroke-width="1.6"/>';
+                    for (var col = (row % 2 ? 12 : 22); col < 58; col += 20) {
+                        bricks += '<line x1="' + col + '" y1="' + (y - 10) + '" x2="' + col + '" y2="' + y + '" stroke="#fff" stroke-width="1.6"/>';
+                    }
+                }
+                return '<rect x="6" y="4" width="52" height="50" rx="2" fill="' + (color === STATUS_COLORS.up ? '#c0562b' : color) + '"/>' + bricks;
+            case 'wireless':
+                return '<rect x="12" y="34" width="40" height="18" rx="5" fill="' + color + '"/>' +
+                    '<circle cx="32" cy="43" r="3" fill="#fff"/>' +
+                    '<path d="M20 28 Q32 16 44 28" stroke="' + color + '" stroke-width="4" fill="none" stroke-linecap="round"/>' +
+                    '<path d="M13 21 Q32 2 51 21" stroke="' + color + '" stroke-width="4" fill="none" stroke-linecap="round"/>';
+            case 'server':
+                return '<rect x="16" y="4" width="32" height="56" rx="3" fill="' + color + '"/>' +
+                    '<rect x="21" y="11" width="22" height="4" fill="' + light + '"/><rect x="21" y="19" width="22" height="4" fill="' + light + '"/>' +
+                    '<rect x="21" y="27" width="22" height="4" fill="' + light + '"/><circle cx="32" cy="48" r="4" fill="#fff"/>';
+            case 'phone':
+                return '<rect x="14" y="26" width="36" height="28" rx="4" fill="' + color + '"/>' +
+                    '<path d="M10 22 Q32 6 54 22 L48 28 Q32 18 16 28 Z" fill="' + dark + '"/>' +
+                    '<rect x="22" y="33" width="20" height="14" rx="2" fill="' + light + '"/>';
+            case 'cloud':
+                return '<path d="M18 48 Q6 48 7 38 Q8 29 18 30 Q19 17 32 17 Q44 17 46 28 Q57 27 58 38 Q58 48 46 48 Z" fill="' + light + '" stroke="' + dark + '" stroke-width="2"/>';
+            case 'other':
+                return '<rect x="10" y="14" width="44" height="36" rx="6" fill="' + color + '"/><circle cx="32" cy="32" r="8" fill="#fff"/>';
+            default:
+                return '<circle cx="32" cy="32" r="22" fill="' + color + '"/><text x="32" y="40" font-size="24" font-family="Arial" font-weight="bold" text-anchor="middle" fill="#fff">?</text>';
+        }
+    }
+
+    function iconUrl(role, status, managed) {
+        var color = STATUS_COLORS[status] || STATUS_COLORS.unknown;
+        if (managed === false && status === 'unknown') {
+            color = '#8b9cad';
+        }
+        var key = role + '|' + color;
+        if (!iconCache[key]) {
+            var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">' + svgFor(role, color) + '</svg>';
+            iconCache[key] = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }
+        return iconCache[key];
+    }
+
+    // ------------------------------------------------------------------ edge styling
+
+    function speedColor(speed) {
+        if (!speed) return '#8e9aa6';
+        if (speed >= 100e9) return '#b0279e';
+        if (speed >= 40e9) return '#6f42c1';
+        if (speed >= 25e9) return '#3949ab';
+        if (speed >= 10e9) return '#1f6fb2';
+        if (speed >= 2e9) return '#17a2b8';
+        if (speed >= 1e9) return '#2e9e44';
+        return '#8e9aa6';
+    }
+
+    function utilColor(util) {
+        if (util === null || util === undefined) return '#8e9aa6';
+        if (util >= 80) return '#c0392b';
+        if (util >= 60) return '#e67e22';
+        if (util >= 30) return '#d4ac0d';
+        return '#2e9e44';
+    }
+
+    function speedWidth(speed, lag) {
+        var width = 1.5;
+        if (speed >= 100e9) width = 5.5;
+        else if (speed >= 40e9) width = 4.5;
+        else if (speed >= 10e9) width = 3.5;
+        else if (speed >= 1e9) width = 2.5;
+        return lag ? width + 1 : width;
+    }
+
+    var STP_TAGS = {root: 'R', designated: 'D', alternate: 'ALT', backup: 'BK', nondesignated: 'FWD?', broken: 'BRK', disabled: 'DIS'};
+
+    // ------------------------------------------------------------------ the map
+
+    function TopologyMap(config) {
+        this.config = config;
+        this.mode = config.mode;
+        this.data = null;
+        this.network = null;
+        this.nodes = new window.vis.DataSet();
+        this.edges = new window.vis.DataSet();
+        this.view = {
+            layout: 'hierarchical',
+            interfaceLabels: true,
+            linkLabels: true,
+            colorBy: 'speed',
+            stp: true
+        };
+        this.container = document.getElementById('topo-canvas');
+        this.panel = document.getElementById('topo-details');
+        this.status = document.getElementById('topo-status');
+        this.loading = document.getElementById('topo-loading');
+        this.restoreView();
+        this.bindControls();
+        this.load();
+    }
+
+    TopologyMap.prototype.restoreView = function () {
+        try {
+            var saved = JSON.parse(window.localStorage.getItem('topology.view.' + this.mode) || '{}');
+            for (var key in saved) {
+                if (Object.prototype.hasOwnProperty.call(this.view, key)) {
+                    this.view[key] = saved[key];
+                }
+            }
+        } catch (e) {
+            // storage unavailable
+        }
+        if (this.mode === 'l3' && !window.localStorage.getItem('topology.view.l3')) {
+            this.view.layout = 'organic';
+        }
+    };
+
+    TopologyMap.prototype.saveView = function () {
+        try {
+            window.localStorage.setItem('topology.view.' + this.mode, JSON.stringify(this.view));
+        } catch (e) {
+            // storage unavailable
+        }
+    };
+
+    TopologyMap.prototype.bindControls = function () {
+        var self = this;
+        var form = document.getElementById('topo-filters');
+
+        form.addEventListener('submit', function (event) {
+            event.preventDefault();
+            self.load();
+        });
+        form.addEventListener('change', function (event) {
+            // the device picker reloads through its select2 change handler
+            if (!event.target || event.target.id !== 'topo-device') {
+                self.load();
+            }
+        });
+
+        var $ = window.jQuery;
+        var device = document.getElementById('topo-device');
+        if ($ && $.fn && $.fn.select2 && device) {
+            $(device).select2({
+                theme: 'bootstrap',
+                width: '240px',
+                allowClear: true,
+                placeholder: 'Whole network',
+                ajax: {
+                    url: this.config.urls.deviceSelect,
+                    delay: 200,
+                    data: function (params) {
+                        return {term: params.term, page: params.page || 1};
+                    }
+                }
+            }).on('change', function () {
+                self.load();
+            });
+        }
+
+        document.querySelectorAll('#topo-viewbar [data-view]').forEach(function (input) {
+            var key = input.getAttribute('data-view');
+            if (input.type === 'checkbox') {
+                input.checked = !!self.view[key];
+            } else {
+                input.value = self.view[key];
+            }
+            input.addEventListener('change', function () {
+                self.view[key] = input.type === 'checkbox' ? input.checked : input.value;
+                self.saveView();
+                if (key === 'layout') {
+                    self.render(true);
+                } else {
+                    self.restyle();
+                }
+            });
+        });
+
+        this.on('topo-fit', function () {
+            self.network && self.network.fit({animation: {duration: 400}});
+        });
+        this.on('topo-save-layout', function () {
+            self.saveLayout();
+        });
+        this.on('topo-reset-layout', function () {
+            self.resetLayout();
+        });
+        this.on('topo-export-png', function () {
+            self.exportPng();
+        });
+        this.on('topo-export-csv', function () {
+            self.exportCsv();
+        });
+        this.on('topo-fullscreen', function () {
+            var wrapper = document.getElementById('topo-app');
+            wrapper.classList.toggle('topo-fullscreen');
+            setTimeout(function () {
+                self.network && self.network.redraw();
+                self.network && self.network.fit();
+            }, 50);
+        });
+
+        var search = document.getElementById('topo-search');
+        if (search) {
+            search.addEventListener('keydown', function (event) {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    self.find(search.value);
+                }
+            });
+        }
+
+        window.addEventListener('popstate', function () {
+            self.applyQueryToForm(new URLSearchParams(window.location.search));
+            self.load(true);
+        });
+    };
+
+    TopologyMap.prototype.on = function (id, handler) {
+        var element = document.getElementById(id);
+        if (element) {
+            element.addEventListener('click', function (event) {
+                event.preventDefault();
+                handler();
+            });
+        }
+    };
+
+    TopologyMap.prototype.query = function () {
+        var form = document.getElementById('topo-filters');
+        var params = new URLSearchParams();
+        Array.prototype.forEach.call(form.elements, function (element) {
+            if (!element.name || element.disabled) {
+                return;
+            }
+            if (element.type === 'checkbox') {
+                params.set(element.name, element.checked ? '1' : '0');
+            } else if (element.value !== '' && element.value !== null) {
+                params.set(element.name, element.value);
+            }
+        });
+        return params;
+    };
+
+    TopologyMap.prototype.applyQueryToForm = function (params) {
+        var form = document.getElementById('topo-filters');
+        Array.prototype.forEach.call(form.elements, function (element) {
+            if (!element.name || !params.has(element.name)) {
+                return;
+            }
+            if (element.type === 'checkbox') {
+                element.checked = params.get(element.name) === '1';
+            } else {
+                element.value = params.get(element.name);
+            }
+        });
+    };
+
+    TopologyMap.prototype.scopeKey = function () {
+        var params = this.query();
+        return ['device', 'depth', 'group', 'location', 'vrf'].map(function (key) {
+            return key + '=' + (params.get(key) || '');
+        }).join('&');
+    };
+
+    TopologyMap.prototype.load = function (fromHistory) {
+        var self = this;
+        var params = this.query();
+        if (!fromHistory) {
+            window.history.replaceState(null, '', window.location.pathname + '?' + params.toString());
+        }
+        this.updateNavLinks(params);
+        this.setLoading(true);
+
+        fetch(this.config.urls.api + '?' + params.toString(), {
+            credentials: 'same-origin',
+            headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+        }).then(function (response) {
+            return response.json().then(function (body) {
+                if (!response.ok) {
+                    throw new Error(body && body.error ? body.error : 'HTTP ' + response.status);
+                }
+                return body;
+            });
+        }).then(function (data) {
+            self.data = data;
+            self.populateSelects(data);
+            self.render(false);
+        }).catch(function (error) {
+            self.status.innerHTML = '<span class="text-danger"><i class="fa fa-exclamation-triangle"></i> ' + esc(error.message) + '</span>';
+        }).finally(function () {
+            self.setLoading(false);
+        });
+    };
+
+    TopologyMap.prototype.setLoading = function (loading) {
+        if (this.loading) {
+            this.loading.style.display = loading ? 'flex' : 'none';
+        }
+    };
+
+    TopologyMap.prototype.updateNavLinks = function (params) {
+        var keep = new URLSearchParams();
+        ['device', 'depth', 'group', 'location', 'vlan'].forEach(function (key) {
+            if (params.get(key)) {
+                keep.set(key, params.get(key));
+            }
+        });
+        document.querySelectorAll('[data-topo-nav]').forEach(function (link) {
+            link.href = link.getAttribute('data-base') + (keep.toString() ? '?' + keep.toString() : '');
+        });
+    };
+
+    TopologyMap.prototype.populateSelects = function (data) {
+        var fill = function (id, items, allLabel) {
+            var select = document.getElementById(id);
+            if (!select) {
+                return;
+            }
+            var current = select.value || select.getAttribute('data-selected') || '';
+            var html = '<option value="">' + esc(allLabel) + '</option>';
+            items.forEach(function (item) {
+                html += '<option value="' + esc(item.value) + '"' + (String(item.value) === String(current) ? ' selected' : '') + '>' + esc(item.label) + '</option>';
+            });
+            select.innerHTML = html;
+        };
+
+        if (this.mode === 'l2') {
+            var vlans = Object.keys(data.vlans || {}).map(function (vlan) {
+                var name = data.vlans[vlan];
+                return {value: vlan, label: vlan + (name && name !== 'VLAN' + vlan && name !== 'VLAN' + ('0000' + vlan).slice(-4) ? ' - ' + name : '')};
+            });
+            fill('topo-vlan', vlans, 'All VLANs');
+        } else {
+            fill('topo-vrf', (data.vrfs || []).map(function (vrf) {
+                return {value: vrf, label: vrf};
+            }), 'All VRFs');
+        }
+    };
+
+    // ------------------------------------------------------------------ rendering
+
+    TopologyMap.prototype.layoutKey = function () {
+        return 'topology.layout.' + this.mode + '.' + this.scopeKey();
+    };
+
+    TopologyMap.prototype.savedPositions = function () {
+        try {
+            return JSON.parse(window.localStorage.getItem(this.layoutKey()) || 'null');
+        } catch (e) {
+            return null;
+        }
+    };
+
+    TopologyMap.prototype.render = function (relayout) {
+        var self = this;
+        if (!this.data) {
+            return;
+        }
+
+        var saved = relayout ? null : this.savedPositions();
+        var hierarchical = !saved && this.view.layout === 'hierarchical';
+
+        this.nodes.clear();
+        this.edges.clear();
+        this.nodes.add(this.data.nodes.map(function (node) {
+            var visNode = self.visNode(node);
+            if (saved && saved[node.id]) {
+                visNode.x = saved[node.id].x;
+                visNode.y = saved[node.id].y;
+            }
+            return visNode;
+        }));
+        this.edges.add(this.data.edges.map(function (edge) {
+            return self.visEdge(edge);
+        }));
+
+        if (this.network) {
+            this.network.destroy();
+        }
+
+        var colors = theme();
+        var options = {
+            autoResize: true,
+            nodes: {
+                font: {size: 12, color: colors.text, strokeWidth: 3, strokeColor: colors.textStroke, face: 'Arial'},
+                shapeProperties: {useBorderWithImage: true, interpolation: true},
+                borderWidth: 0,
+                borderWidthSelected: 2,
+                color: {border: 'rgba(0,0,0,0)', background: 'rgba(0,0,0,0)', highlight: {border: '#f39c12', background: 'rgba(243,156,18,0.12)'}, hover: {border: 'rgba(243,156,18,0.6)', background: 'rgba(243,156,18,0.06)'}}
+            },
+            edges: {
+                smooth: false,
+                selectionWidth: 2,
+                hoverWidth: 1,
+                font: {size: 10, color: colors.labelText, strokeWidth: 3, strokeColor: colors.background, align: 'middle', face: 'Arial'}
+            },
+            interaction: {hover: true, tooltipDelay: 200, multiselect: true, hideEdgesOnDrag: this.data.edges.length > 1500},
+            layout: hierarchical ? {
+                hierarchical: {
+                    enabled: true,
+                    direction: 'UD',
+                    levelSeparation: this.mode === 'l3' ? 170 : 210,
+                    nodeSpacing: 210,
+                    treeSpacing: 240,
+                    blockShifting: true,
+                    edgeMinimization: true,
+                    parentCentralization: true
+                }
+            } : {improvedLayout: this.data.nodes.length < 200, randomSeed: 7},
+            physics: (hierarchical || saved) ? {enabled: false} : {
+                enabled: true,
+                solver: 'forceAtlas2Based',
+                forceAtlas2Based: {gravitationalConstant: -120, centralGravity: 0.006, springLength: 200, springConstant: 0.04, avoidOverlap: 0.8},
+                stabilization: {iterations: Math.min(600, 150 + this.data.nodes.length * 2), fit: true}
+            }
+        };
+
+        this.network = new window.vis.Network(this.container, {nodes: this.nodes, edges: this.edges}, options);
+        this.network.on('beforeDrawing', function (ctx) {
+            self.drawBackground(ctx);
+        });
+        this.network.on('afterDrawing', function (ctx) {
+            self.drawOverlays(ctx);
+        });
+        this.network.on('click', function (params) {
+            if (params.nodes.length) {
+                self.showNode(params.nodes[0]);
+            } else if (params.edges.length) {
+                self.showEdge(params.edges[0]);
+            } else {
+                self.showLegend();
+            }
+        });
+        this.network.on('doubleClick', function (params) {
+            if (params.nodes.length) {
+                var node = self.nodes.get(params.nodes[0]);
+                if (node && node.data.device_id) {
+                    self.recenter(node.data.device_id, node.data.name);
+                }
+            }
+        });
+        this.network.once('stabilizationIterationsDone', function () {
+            // freeze the organic layout so devices stay where the user drags them
+            self.network.setOptions({physics: {enabled: false}});
+            self.network.fit();
+        });
+        if (hierarchical || saved) {
+            this.network.fit();
+        }
+
+        this.updateStatus();
+        this.showLegend();
+        this.updateSearchList();
+    };
+
+    TopologyMap.prototype.visNode = function (node) {
+        var colors = theme();
+        var tooltip = document.createElement('div');
+        tooltip.className = 'topo-tooltip';
+        tooltip.innerHTML = this.nodeTooltip(node);
+
+        var visNode = {id: node.id, label: node.label, title: tooltip, level: node.level, data: node};
+
+        if (node.type === 'subnet') {
+            return Object.assign(visNode, {
+                shape: 'box',
+                margin: 6,
+                borderWidth: 1.5,
+                shapeProperties: {borderRadius: 3},
+                color: {background: colors.subnetBg, border: colors.subnetBorder, highlight: {background: colors.subnetBg, border: '#f39c12'}},
+                font: {size: 11, color: colors.text, strokeWidth: 0, face: 'monospace'}
+            });
+        }
+
+        var role = node.type === 'as' ? 'cloud' : (node.role || 'unknown');
+        var size = node.managed ? 24 : (node.type === 'as' ? 26 : 16);
+        visNode.shape = 'image';
+        visNode.image = iconUrl(role, node.status, node.managed);
+        visNode.size = size;
+
+        if (this.mode === 'l2' && this.data.scope && node.vlanMember === false) {
+            visNode.opacity = 0.25;
+        }
+        return visNode;
+    };
+
+    TopologyMap.prototype.visEdge = function (edge) {
+        var colors = theme();
+        var color;
+        var width = 2;
+        var dashes = false;
+        var label;
+
+        if (this.mode === 'l2') {
+            width = speedWidth(edge.speed, edge.lag);
+            if (this.view.colorBy === 'util') {
+                color = utilColor(edge.util);
+            } else if (this.view.colorBy === 'status') {
+                color = edge.status === 'up' ? '#2e9e44' : (edge.status === 'degraded' ? '#e67e22' : '#c0392b');
+            } else {
+                color = speedColor(edge.speed);
+            }
+            if (edge.status === 'down') {
+                color = '#c0392b';
+                dashes = [6, 4];
+            } else if (edge.status === 'degraded') {
+                dashes = [12, 4];
+            }
+            if (this.view.stp && edge.blocked) {
+                color = '#e67e22';
+                dashes = [10, 6];
+            }
+            if (this.view.linkLabels) {
+                var parts = [];
+                var speed = formatSpeed(edge.speed);
+                if (edge.lag && edge.lag.members > 1) {
+                    parts.push(edge.lag.members + 'x ' + formatSpeed(edge.speed / edge.lag.members));
+                } else if (speed) {
+                    parts.push(speed);
+                }
+                if (this.view.colorBy === 'util' && edge.util !== null) {
+                    parts.push(edge.util + '%');
+                }
+                label = parts.join(' ') || undefined;
+            }
+        } else {
+            if (edge.kind === 'ospf') {
+                color = edge.status === 'up' ? '#16a085' : '#c0392b';
+                dashes = [4, 4];
+                label = this.view.linkLabels ? 'OSPF ' + edge.state : undefined;
+            } else if (edge.kind === 'bgp') {
+                color = edge.status === 'up' ? '#8e44ad' : '#c0392b';
+                dashes = [10, 4];
+                label = this.view.linkLabels ? edge.type + (edge.remote_as ? ' AS' + edge.remote_as : '') + (edge.status === 'up' ? '' : ' ' + edge.state) : undefined;
+            } else if (edge.kind === 'p2p') {
+                color = edge.status === 'up' ? '#1f6fb2' : '#c0392b';
+                width = 2.5;
+                label = this.view.linkLabels ? edge.network : undefined;
+            } else {
+                color = edge.status === 'up' ? colors.member : '#c0392b';
+                width = 1.8;
+            }
+            if (edge.status === 'down' && !dashes) {
+                dashes = [6, 4];
+            }
+        }
+
+        var visEdge = {
+            id: edge.id,
+            from: edge.from,
+            to: edge.to,
+            width: width,
+            dashes: dashes,
+            label: label,
+            color: {color: color, highlight: '#f39c12', hover: color, opacity: 1},
+            data: edge
+        };
+
+        if (this.mode === 'l2' && this.data && this.isVlanFiltered() && edge.carriesVlan === false) {
+            visEdge.color.opacity = 0.15;
+        }
+
+        var parallel = edge.parallel || {index: 0, count: 1};
+        if (parallel.count > 1) {
+            var offset = parallel.count % 2 ? parallel.index : parallel.index + 1;
+            if (offset === 0) {
+                visEdge.smooth = false;
+            } else {
+                visEdge.smooth = {enabled: true, type: offset % 2 ? 'curvedCW' : 'curvedCCW', roundness: 0.12 * Math.ceil(offset / 2)};
+            }
+        }
+
+        var tooltip = document.createElement('div');
+        tooltip.className = 'topo-tooltip';
+        tooltip.innerHTML = this.edgeTooltip(edge);
+        visEdge.title = tooltip;
+
+        return visEdge;
+    };
+
+    TopologyMap.prototype.isVlanFiltered = function () {
+        var vlan = document.getElementById('topo-vlan');
+        return vlan && vlan.value !== '';
+    };
+
+    TopologyMap.prototype.restyle = function () {
+        var self = this;
+        if (!this.data) {
+            return;
+        }
+        this.edges.update(this.data.edges.map(function (edge) {
+            return self.visEdge(edge);
+        }));
+        this.network && this.network.redraw();
+        this.showLegend();
+    };
+
+    TopologyMap.prototype.drawBackground = function (ctx) {
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.fillStyle = theme().background;
+        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.restore();
+    };
+
+    TopologyMap.prototype.edgePoint = function (edgeId, from, to, t) {
+        var internal = this.network && this.network.body && this.network.body.edges[edgeId];
+        if (internal && internal.edgeType && typeof internal.edgeType.getPoint === 'function') {
+            try {
+                var point = internal.edgeType.getPoint(t);
+                if (point && isFinite(point.x) && isFinite(point.y)) {
+                    return point;
+                }
+            } catch (e) {
+                // fall back to straight interpolation
+            }
+        }
+        return {x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t};
+    };
+
+    TopologyMap.prototype.drawOverlays = function (ctx) {
+        var self = this;
+        if (!this.data || !this.network) {
+            return;
+        }
+        var scale = this.network.getScale();
+        var colors = theme();
+        var positions = this.network.getPositions();
+        var showLabels = this.view.interfaceLabels && scale >= 0.45;
+        var slots = this.labelSlots(positions);
+
+        ctx.save();
+        this.edges.forEach(function (visEdge) {
+            var edge = visEdge.data;
+            var from = positions[visEdge.from];
+            var to = positions[visEdge.to];
+            if (!from || !to || visEdge.hidden) {
+                return;
+            }
+            var dx = to.x - from.x, dy = to.y - from.y;
+            var length = Math.sqrt(dx * dx + dy * dy) || 1;
+            var tA = Math.min(0.45, Math.max(0.1, (slots[visEdge.id + '|a'] || 56) / length));
+            var tB = Math.min(0.45, Math.max(0.1, (slots[visEdge.id + '|b'] || 56) / length));
+            var t = tA;
+
+            var ends = [['a', tA], ['b', 1 - tB]];
+            ends.forEach(function (end) {
+                var endpoint = edge[end[0]];
+                if (!endpoint) {
+                    return;
+                }
+                var point = self.edgePoint(visEdge.id, from, to, end[1]);
+                var stp = self.mode === 'l2' && self.view.stp ? endpoint.stp : null;
+
+                if (stp && (stp.state === 'blocking' || stp.state === 'discarding' || stp.state === 'broken')) {
+                    t = end[0] === 'a' ? tA : tB;
+                    var marker = self.edgePoint(visEdge.id, from, to, end[0] === 'a' ? Math.max(0.08, t * 0.6) : Math.min(0.92, 1 - t * 0.6));
+                    self.drawBlockedMarker(ctx, marker, stp.state === 'broken');
+                }
+
+                if (!showLabels) {
+                    return;
+                }
+                var lines = [];
+                var name = endpoint.short || endpoint.name;
+                if (name) {
+                    lines.push(name + (stp && STP_TAGS[stp.role] ? ' [' + STP_TAGS[stp.role] + ']' : ''));
+                }
+                if (self.mode === 'l3' && endpoint.ips && endpoint.ips.length) {
+                    lines.push(endpoint.ips[0] + (endpoint.ips.length > 1 ? ' +' + (endpoint.ips.length - 1) : ''));
+                }
+                if (lines.length) {
+                    var accent = stp && (stp.role === 'alternate' || stp.role === 'backup' || stp.role === 'broken') ? '#d35400' : null;
+                    self.drawLabel(ctx, point, lines, colors, accent);
+                }
+            });
+        });
+
+        // root bridge badges
+        if (this.mode === 'l2' && this.view.stp) {
+            this.data.nodes.forEach(function (node) {
+                if (node.stp && node.stp.root && positions[node.id]) {
+                    self.drawRootBadge(ctx, positions[node.id], node.stp.suspected, node.managed ? 22 : 15);
+                }
+            });
+        }
+        ctx.restore();
+    };
+
+    /**
+     * Distance of each interface label from its device: edges leaving a device at similar
+     * angles get alternating distances so their labels do not stack on top of each other.
+     */
+    TopologyMap.prototype.labelSlots = function (positions) {
+        var around = {};
+        this.edges.forEach(function (visEdge) {
+            var from = positions[visEdge.from];
+            var to = positions[visEdge.to];
+            if (!from || !to) {
+                return;
+            }
+            (around[visEdge.from] = around[visEdge.from] || []).push({key: visEdge.id + '|a', angle: Math.atan2(to.y - from.y, to.x - from.x)});
+            (around[visEdge.to] = around[visEdge.to] || []).push({key: visEdge.id + '|b', angle: Math.atan2(from.y - to.y, from.x - to.x)});
+        });
+
+        var slots = {};
+        var distances = [56, 84, 112];
+        Object.keys(around).forEach(function (node) {
+            var list = around[node].sort(function (x, y) {
+                return x.angle - y.angle;
+            });
+            var step = 0;
+            list.forEach(function (item, index) {
+                step = index > 0 && item.angle - list[index - 1].angle < 0.42 ? (step + 1) % distances.length : 0;
+                // links leaving downwards pass the device name, keep their labels clear of it
+                slots[item.key] = distances[step] + (Math.sin(item.angle) > 0.45 ? 22 : 0);
+            });
+        });
+        return slots;
+    };
+
+    TopologyMap.prototype.drawLabel = function (ctx, point, lines, colors, accent) {
+        ctx.font = '10px Arial';
+        var width = 0;
+        lines.forEach(function (line) {
+            width = Math.max(width, ctx.measureText(line).width);
+        });
+        var height = lines.length * 12 + 4;
+        var x = point.x - width / 2 - 4;
+        var y = point.y - height / 2;
+        ctx.fillStyle = colors.labelBg;
+        ctx.strokeStyle = accent || colors.labelBorder;
+        ctx.lineWidth = accent ? 1.5 : 0.8;
+        ctx.beginPath();
+        if (ctx.roundRect) {
+            ctx.roundRect(x, y, width + 8, height, 3);
+        } else {
+            ctx.rect(x, y, width + 8, height);
+        }
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = accent || colors.labelText;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        lines.forEach(function (line, index) {
+            ctx.fillText(line, point.x, y + 8 + index * 12);
+        });
+    };
+
+    TopologyMap.prototype.drawBlockedMarker = function (ctx, point, broken) {
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 7, 0, Math.PI * 2);
+        ctx.fillStyle = broken ? '#c0392b' : '#e67e22';
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(point.x - 3.5, point.y - 3.5);
+        ctx.lineTo(point.x + 3.5, point.y + 3.5);
+        ctx.moveTo(point.x + 3.5, point.y - 3.5);
+        ctx.lineTo(point.x - 3.5, point.y + 3.5);
+        ctx.stroke();
+    };
+
+    TopologyMap.prototype.drawRootBadge = function (ctx, position, suspected, offset) {
+        var cx = position.x + offset, cy = position.y - offset, outer = 9, inner = 4;
+        ctx.beginPath();
+        for (var i = 0; i < 10; i++) {
+            var radius = i % 2 ? inner : outer;
+            var angle = Math.PI / 5 * i - Math.PI / 2;
+            ctx[i ? 'lineTo' : 'moveTo'](cx + radius * Math.cos(angle), cy + radius * Math.sin(angle));
+        }
+        ctx.closePath();
+        ctx.fillStyle = suspected ? '#e74c3c' : '#f1c40f';
+        ctx.fill();
+        ctx.strokeStyle = suspected ? '#922b21' : '#b7950b';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.font = 'bold 9px Arial';
+        ctx.fillStyle = suspected ? '#c0392b' : '#b7950b';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(suspected ? 'ROOT? (unmanaged)' : 'ROOT', cx + 11, cy);
+    };
+
+    // ------------------------------------------------------------------ tooltips & details
+
+    TopologyMap.prototype.nodeTooltip = function (node) {
+        if (node.type === 'subnet') {
+            return '<b>' + esc(node.network) + '</b>' + (node.vrf ? ' (' + esc(node.vrf) + ')' : '') + '<br>' + node.devices + ' device(s)';
+        }
+        var html = '<b>' + esc(node.name) + '</b>';
+        if (node.hardware) html += '<br>' + esc(node.hardware);
+        if (node.platform) html += '<br>' + esc(node.platform);
+        if (node.role) html += '<br>Role: ' + esc(node.role);
+        if (node.stp && node.stp.root) html += '<br><b>' + (node.stp.suspected ? 'Suspected STP root bridge' : 'STP root bridge') + '</b>';
+        return html;
+    };
+
+    TopologyMap.prototype.edgeTooltip = function (edge) {
+        var a = edge.a ? (this.nodeName(edge.from) + ' ' + (edge.a.short || '')) : this.nodeName(edge.from);
+        var b = edge.b ? (this.nodeName(edge.to) + ' ' + (edge.b.short || '')) : this.nodeName(edge.to);
+        var html = esc(a) + ' &harr; ' + esc(b);
+        if (edge.speed) html += '<br>' + esc(formatSpeed(edge.speed)) + 'bps';
+        if (edge.network) html += '<br>' + esc(edge.network);
+        if (edge.kind === 'ospf' || edge.kind === 'bgp') html += '<br>' + esc((edge.type || 'OSPF') + ' ' + edge.state);
+        return html;
+    };
+
+    TopologyMap.prototype.nodeName = function (id) {
+        var node = this.nodes.get(id);
+        return node ? node.data.name : id;
+    };
+
+    TopologyMap.prototype.deviceLink = function (node) {
+        return node.url ? '<a href="' + esc(node.url) + '">' + esc(node.name) + '</a>' : esc(node.name);
+    };
+
+    TopologyMap.prototype.portLink = function (endpoint) {
+        var text = esc(endpoint.name || '?');
+        return endpoint.url ? '<a href="' + esc(endpoint.url) + '">' + text + '</a>' : text;
+    };
+
+    TopologyMap.prototype.row = function (label, value) {
+        return value === null || value === undefined || value === '' ? '' : '<tr><th>' + esc(label) + '</th><td>' + value + '</td></tr>';
+    };
+
+    TopologyMap.prototype.showNode = function (id) {
+        var self = this;
+        var visNode = this.nodes.get(id);
+        if (!visNode) {
+            return;
+        }
+        var node = visNode.data;
+        var html = '<h4 class="topo-panel-title">' + this.deviceLink(node) + '</h4><table class="table table-condensed topo-kv">';
+
+        if (node.type === 'subnet') {
+            html += this.row('Network', esc(node.network)) + this.row('VRF', esc(node.vrf)) + this.row('Devices', node.devices) +
+                this.row('Addresses', esc((node.hosts || []).join(', ')));
+        } else {
+            html += this.row('Status', '<span class="topo-status-' + esc(node.status) + '">' + esc(node.status) + '</span>') +
+                this.row('Role', esc(node.role)) + this.row('Hardware', esc(node.hardware)) + this.row('OS', esc((node.os || '') + ' ' + (node.version || ''))) +
+                this.row('Location', esc(node.location)) + this.row('Platform', esc(node.platform));
+            if (node.loopbacks && node.loopbacks.length) html += this.row('Loopbacks', esc(node.loopbacks.join(', ')));
+            if (node.bgpLocalAs) html += this.row('BGP AS', esc(node.bgpLocalAs));
+            if (node.stubs && node.stubs.length) html += this.row('Stub networks', esc(node.stubs.slice(0, 12).join(', ')) + (node.stubs.length > 12 ? ' &hellip;' : ''));
+            if (node.peers && node.peers.length) html += this.row('Peers', esc(node.peers.join(', ')));
+            if (node.stp && node.stp.suspected) {
+                html += '<tr><th colspan="2" class="topo-section">Spanning tree</th></tr>' +
+                    this.row('Role', '<b class="text-danger">Suspected root bridge</b>') +
+                    this.row('Root ID', esc(node.stp.designatedRoot)) +
+                    '<tr><td colspan="2" class="text-muted">A monitored switch uses its root port toward this unmanaged neighbor and the root bridge ID belongs to no monitored device.</td></tr>';
+            } else if (node.stp) {
+                var stp = node.stp;
+                html += '<tr><th colspan="2" class="topo-section">Spanning tree (' + (stp.vlan ? 'VLAN ' + stp.vlan : 'VLAN 1 / CST') + ')</th></tr>' +
+                    this.row('Role', stp.root ? '<b>Root bridge</b>' : 'Non-root') +
+                    this.row('Bridge ID', esc(stp.priority + ' / ' + stp.bridge)) +
+                    this.row('Root ID', esc(stp.designatedRoot)) +
+                    this.row('Root port', esc(stp.rootPort)) +
+                    this.row('Root cost', stp.root ? '' : esc(stp.rootCost)) +
+                    this.row('Protocol', esc(stp.protocol)) +
+                    this.row('Topology changes', esc(stp.topChanges + (stp.topChanges ? ' (last ' + formatDuration(stp.lastTopologyChange) + ' ago)' : '')));
+            }
+        }
+        html += '</table>';
+
+        // neighbor list
+        var connected = this.network.getConnectedEdges(id).map(function (edgeId) {
+            return self.edges.get(edgeId);
+        }).filter(Boolean);
+        if (connected.length && node.type !== 'subnet') {
+            html += '<h5>Connections (' + connected.length + ')</h5><table class="table table-condensed topo-kv topo-neighbors">';
+            connected.forEach(function (visEdge) {
+                var edge = visEdge.data;
+                var local = edge.from === id ? edge.a : edge.b;
+                var remote = edge.from === id ? edge.b : edge.a;
+                var other = self.nodeName(edge.from === id ? edge.to : edge.from);
+                var localName = local ? (local.short || local.name) : (edge.kind || '');
+                var remoteName = remote ? ' ' + (remote.short || remote.name || '') : '';
+                html += '<tr data-edge="' + esc(visEdge.id) + '"><td>' + esc(localName) + '</td><td>' + esc(other + remoteName) + '</td></tr>';
+            });
+            html += '</table>';
+        }
+
+        if (node.device_id) {
+            html += '<div class="topo-actions">' +
+                '<button class="btn btn-xs btn-primary" data-recenter="' + node.device_id + '"><i class="fa fa-crosshairs"></i> Center map here</button> ' +
+                '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.l2Page + '?device=' + node.device_id) + '">L2 map</a> ' +
+                '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.l3Page + '?device=' + node.device_id) + '">L3 map</a> ' +
+                '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.stpPage + '?device=' + node.device_id) + '">STP</a></div>';
+        }
+
+        this.panel.innerHTML = html;
+        this.panel.querySelectorAll('[data-recenter]').forEach(function (button) {
+            button.addEventListener('click', function () {
+                self.recenter(node.device_id, node.name);
+            });
+        });
+        this.panel.querySelectorAll('[data-edge]').forEach(function (row) {
+            row.addEventListener('click', function () {
+                self.network.selectEdges([row.getAttribute('data-edge')]);
+                self.showEdge(row.getAttribute('data-edge'));
+            });
+        });
+    };
+
+    TopologyMap.prototype.endpointRows = function (endpoint) {
+        if (!endpoint) {
+            return '';
+        }
+        var html = this.row('Interface', this.portLink(endpoint)) + this.row('Description', esc(endpoint.alias));
+        if (endpoint.ips) {
+            html += this.row('Address', esc(endpoint.ips.join(', ') + (endpoint.prefix ? ' /' + endpoint.prefix : '')));
+        }
+        html += this.row('Status', endpoint.oper ? '<span class="topo-status-' + esc(endpoint.oper) + '">' + esc(endpoint.oper) + '</span>' + (endpoint.admin && endpoint.admin !== 'up' ? ' (admin ' + esc(endpoint.admin) + ')' : '') : '');
+        if (endpoint.speed !== undefined) {
+            html += this.row('Speed', esc(endpoint.speed ? formatSpeed(endpoint.speed) + 'bps' : '')) + this.row('Duplex', esc(endpoint.duplex)) + this.row('MTU', esc(endpoint.mtu));
+            if (endpoint.managed) {
+                html += this.row('Traffic in/out', esc(formatRate(endpoint.in_bps) + ' / ' + formatRate(endpoint.out_bps)));
+                html += this.row('Native VLAN', esc(endpoint.native_vlan));
+                if (endpoint.vlans && endpoint.vlans.length > 1) {
+                    html += this.row('Trunk VLANs', '<span class="topo-vlans">' + esc(endpoint.vlans.length > 40 ? endpoint.vlans.slice(0, 40).join(',') + ' (' + endpoint.vlans.length + ')' : endpoint.vlans.join(',')) + '</span>');
+                }
+            }
+        }
+        if (endpoint.stp) {
+            var stp = endpoint.stp;
+            html += this.row('STP', esc(stp.state + ' / ' + stp.role + (stp.via_lag ? ' (on aggregate)' : '') + ' cost ' + stp.cost) +
+                ' <small>' + esc(stp.transitions + ' fwd transitions') + '</small>');
+        }
+        return html;
+    };
+
+    TopologyMap.prototype.showEdge = function (id) {
+        var visEdge = this.edges.get(id);
+        if (!visEdge) {
+            return;
+        }
+        var edge = visEdge.data;
+        var self = this;
+        var html = '<h4 class="topo-panel-title">' + esc(this.nodeName(edge.from)) + ' &harr; ' + esc(this.nodeName(edge.to)) + '</h4>';
+
+        if (edge.kind === 'ospf' || edge.kind === 'bgp') {
+            html += '<table class="table table-condensed topo-kv">' +
+                this.row('Protocol', esc(edge.kind === 'ospf' ? 'OSPF' : edge.type)) +
+                this.row('State', esc(edge.state)) +
+                this.row('Remote AS', esc(edge.remote_as)) +
+                this.row('Peer addresses', esc((edge.peers || edge.addresses || []).join(', '))) +
+                this.row('Description', esc(edge.description)) + '</table>';
+            this.panel.innerHTML = html;
+            return;
+        }
+
+        html += '<table class="table table-condensed topo-kv">';
+        if (this.mode === 'l2') {
+            html += this.row('Speed', esc(formatSpeed(edge.speed) ? formatSpeed(edge.speed) + 'bps' : 'unknown')) +
+                this.row('Status', '<span class="topo-status-' + esc(edge.status) + '">' + esc(edge.status) + '</span>') +
+                this.row('Utilization', edge.util === null ? '' : esc(edge.util + '%')) +
+                this.row('Errors/s', edge.errors ? esc(edge.errors) : '') +
+                this.row('Discovered by', esc((edge.protocols || []).join(', ').toUpperCase())) +
+                this.row('Common VLANs', edge.vlans && edge.vlans.length ? '<span class="topo-vlans">' + esc(edge.vlans.length > 60 ? edge.vlans.slice(0, 60).join(',') + ' (' + edge.vlans.length + ')' : edge.vlans.join(',')) + '</span>' : '');
+            if (edge.lag) {
+                html += this.row('Aggregate', esc((edge.lag.a || '-') + ' / ' + (edge.lag.b || '-') + ' (' + edge.lag.up + '/' + edge.lag.members + ' members up)'));
+            }
+        } else {
+            html += this.row('Network', esc(edge.network)) + this.row('VRF', esc(edge.vrf)) + this.row('Type', esc(edge.kind === 'p2p' ? 'point-to-point' : 'segment member'));
+        }
+        html += '<tr><th colspan="2" class="topo-section">' + esc(this.nodeName(edge.from)) + '</th></tr>' + this.endpointRows(edge.a);
+        if (edge.b) {
+            html += '<tr><th colspan="2" class="topo-section">' + esc(this.nodeName(edge.to)) + '</th></tr>' + this.endpointRows(edge.b);
+        }
+        html += '</table>';
+
+        if (edge.members && edge.members.length > 1) {
+            html += '<h5>Member links</h5><table class="table table-condensed topo-kv">';
+            edge.members.forEach(function (member) {
+                html += '<tr><td>' + esc(member.a) + '</td><td>' + esc(member.b) + '</td><td>' + esc(formatSpeed(member.speed)) + '</td><td>' +
+                    (member.up ? '<span class="topo-status-up">up</span>' : '<span class="topo-status-down">down</span>') + '</td></tr>';
+            });
+            html += '</table>';
+        }
+
+        this.panel.innerHTML = html;
+    };
+
+    TopologyMap.prototype.showLegend = function () {
+        var roles = this.mode === 'l2'
+            ? [['l3switch', 'L3 switch'], ['switch', 'L2 switch'], ['router', 'Router'], ['firewall', 'Firewall'], ['wireless', 'Wireless / AP'], ['server', 'Server'], ['phone', 'Phone'], ['unknown', 'Unmanaged']]
+            : [['router', 'Router'], ['l3switch', 'L3 switch'], ['firewall', 'Firewall'], ['cloud', 'External AS']];
+        var html = '<h4 class="topo-panel-title">Legend</h4><div class="topo-legend">';
+        roles.forEach(function (role) {
+            html += '<div><img src="' + iconUrl(role[0], role[0] === 'unknown' ? 'unknown' : 'up', role[0] !== 'unknown') + '" width="22" height="22" alt=""> ' + esc(role[1]) + '</div>';
+        });
+        html += '</div><div class="topo-legend topo-legend-lines">';
+        if (this.mode === 'l2') {
+            if (this.view.colorBy === 'util') {
+                [['#2e9e44', '< 30%'], ['#d4ac0d', '30-60%'], ['#e67e22', '60-80%'], ['#c0392b', '> 80%'], ['#8e9aa6', 'no data']].forEach(function (item) {
+                    html += '<div><span class="topo-line" style="background:' + item[0] + '"></span> ' + item[1] + '</div>';
+                });
+            } else {
+                [['#b0279e', '100G+'], ['#6f42c1', '40G'], ['#3949ab', '25G'], ['#1f6fb2', '10G'], ['#17a2b8', '2.5-5G'], ['#2e9e44', '1G'], ['#8e9aa6', '< 1G / unknown']].forEach(function (item) {
+                    html += '<div><span class="topo-line" style="background:' + item[0] + '"></span> ' + item[1] + '</div>';
+                });
+            }
+            html += '<div><span class="topo-line topo-line-dashed" style="border-color:#c0392b"></span> Link down</div>' +
+                '<div><span class="topo-line topo-line-dashed" style="border-color:#e67e22"></span> STP blocked</div>' +
+                '<div><span class="topo-marker">&#9733;</span> STP root bridge</div>' +
+                '<div><small>[R] root port, [D] designated, [ALT] alternate/blocking, [FWD?] forwarding but not designated</small></div>';
+        } else {
+            html += '<div><span class="topo-line" style="background:#1f6fb2"></span> Point-to-point subnet</div>' +
+                '<div><span class="topo-subnet">10.0.0.0/24</span> Multi-access subnet</div>' +
+                '<div><span class="topo-line topo-line-dashed" style="border-color:#16a085"></span> OSPF adjacency</div>' +
+                '<div><span class="topo-line topo-line-dashed" style="border-color:#8e44ad"></span> BGP session</div>' +
+                '<div><span class="topo-line topo-line-dashed" style="border-color:#c0392b"></span> Down / not established</div>';
+        }
+        html += '</div><p class="text-muted topo-hint">Click a device or link for details. Double-click a device to center the map on it. Drag devices to arrange, then <i>Save layout</i>.</p>';
+        this.panel.innerHTML = html;
+    };
+
+    TopologyMap.prototype.updateStatus = function () {
+        var stats = this.data.stats || {};
+        var scope = this.data.scope || {};
+        var parts = [];
+        if (this.mode === 'l2') {
+            parts.push(stats.devices + ' devices', stats.unmanaged + ' unmanaged neighbors', stats.links + ' links');
+            if (stats.down) parts.push('<span class="text-danger">' + stats.down + ' down</span>');
+            if (stats.blocked) parts.push('<span class="topo-text-warning">' + stats.blocked + ' STP blocked</span>');
+        } else {
+            parts.push(stats.devices + ' L3 devices', stats.subnets + ' subnets', stats.p2p + ' point-to-point links');
+            if (stats.ospf) parts.push(stats.ospf + ' OSPF adjacencies');
+            if (stats.bgp) parts.push(stats.bgp + ' BGP sessions');
+            if (stats.down) parts.push('<span class="text-danger">' + stats.down + ' down</span>');
+        }
+        var html = parts.join(' &middot; ');
+        if (scope.root_name) {
+            html = 'Centered on <b>' + esc(scope.root_name) + '</b> (' + esc(scope.depth) + ' hops) &middot; ' + html;
+        }
+        if (scope.truncated) {
+            html += ' &middot; <span class="topo-text-warning"><i class="fa fa-exclamation-triangle"></i> Showing ' + scope.shown + ' of ' + scope.total +
+                ' devices (limit ' + scope.max_nodes + '). Pick a device, group or location to narrow the map.</span>';
+        }
+        if (!this.data.nodes.length) {
+            html = '<span class="topo-text-warning">No ' + (this.mode === 'l2' ? 'LLDP/CDP neighbor links' : 'L3 interfaces') + ' found for this scope.</span>';
+        }
+        this.status.innerHTML = html;
+    };
+
+    TopologyMap.prototype.updateSearchList = function () {
+        var list = document.getElementById('topo-search-list');
+        if (!list) {
+            return;
+        }
+        list.innerHTML = this.data.nodes.filter(function (node) {
+            return node.type !== 'subnet';
+        }).map(function (node) {
+            return '<option value="' + esc(node.name) + '">';
+        }).join('');
+    };
+
+    TopologyMap.prototype.find = function (text) {
+        text = String(text || '').toLowerCase().trim();
+        if (!text || !this.data) {
+            return;
+        }
+        var match = this.data.nodes.find(function (node) {
+            return String(node.name).toLowerCase() === text;
+        }) || this.data.nodes.find(function (node) {
+            return String(node.name).toLowerCase().indexOf(text) !== -1 || String(node.label).toLowerCase().indexOf(text) !== -1;
+        });
+        if (match) {
+            this.network.selectNodes([match.id]);
+            this.network.focus(match.id, {scale: Math.max(1, this.network.getScale()), animation: {duration: 500}});
+            this.showNode(match.id);
+        }
+    };
+
+    TopologyMap.prototype.recenter = function (deviceId, name) {
+        var $ = window.jQuery;
+        var select = document.getElementById('topo-device');
+        if (!select) {
+            return;
+        }
+        if (!select.querySelector('option[value="' + Number(deviceId) + '"]')) {
+            select.appendChild(new Option(name || ('#' + deviceId), deviceId, false, false));
+        }
+        if ($ && $.fn && $.fn.select2) {
+            $(select).val(String(deviceId)).trigger('change');
+        } else {
+            select.value = String(deviceId);
+            this.load();
+        }
+    };
+
+    // ------------------------------------------------------------------ layout persistence & export
+
+    TopologyMap.prototype.saveLayout = function () {
+        if (!this.network) {
+            return;
+        }
+        try {
+            window.localStorage.setItem(this.layoutKey(), JSON.stringify(this.network.getPositions()));
+            this.flash('Layout saved in this browser for this map scope.');
+        } catch (e) {
+            this.flash('Unable to save layout: ' + e.message);
+        }
+    };
+
+    TopologyMap.prototype.resetLayout = function () {
+        try {
+            window.localStorage.removeItem(this.layoutKey());
+        } catch (e) {
+            // ignore
+        }
+        this.render(true);
+    };
+
+    TopologyMap.prototype.flash = function (message) {
+        if (window.toastr) {
+            window.toastr.info(message);
+        } else {
+            this.status.innerHTML = esc(message);
+        }
+    };
+
+    TopologyMap.prototype.download = function (href, filename) {
+        var link = document.createElement('a');
+        link.href = href;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    TopologyMap.prototype.fileBase = function () {
+        return 'topology-' + this.mode + '-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '');
+    };
+
+    TopologyMap.prototype.exportPng = function () {
+        var canvas = this.container.querySelector('canvas');
+        if (canvas) {
+            this.network.redraw();
+            this.download(canvas.toDataURL('image/png'), this.fileBase() + '.png');
+        }
+    };
+
+    TopologyMap.prototype.exportCsv = function () {
+        if (!this.data) {
+            return;
+        }
+        var self = this;
+        var quote = function (value) {
+            value = String(value === null || value === undefined ? '' : value);
+            if (/^[=+\-@]/.test(value)) {
+                value = "'" + value; // spreadsheet formula injection guard
+            }
+            return '"' + value.replace(/"/g, '""') + '"';
+        };
+        var rows;
+        if (this.mode === 'l2') {
+            rows = [['Device A', 'Interface A', 'Device B', 'Interface B', 'Speed', 'Status', 'Aggregate', 'Common VLANs', 'STP A', 'STP B', 'Protocols']];
+            this.data.edges.forEach(function (e) {
+                rows.push([self.nodeName(e.from), e.a && e.a.name, self.nodeName(e.to), e.b && e.b.name, formatSpeed(e.speed), e.status,
+                    e.lag ? (e.lag.a || '') + '/' + (e.lag.b || '') + ' x' + e.lag.members : '', (e.vlans || []).join(' '),
+                    e.a && e.a.stp ? e.a.stp.state + '/' + e.a.stp.role : '', e.b && e.b.stp ? e.b.stp.state + '/' + e.b.stp.role : '',
+                    (e.protocols || []).join(' ')]);
+            });
+        } else {
+            rows = [['Type', 'Device A', 'Interface A', 'Address A', 'Peer / Subnet', 'Interface B', 'Address B', 'Network', 'VRF', 'State']];
+            this.data.edges.forEach(function (e) {
+                rows.push([e.kind, self.nodeName(e.from), e.a && e.a.name, e.a && e.a.ips ? e.a.ips.join(' ') : '', self.nodeName(e.to),
+                    e.b && e.b.name, e.b && e.b.ips ? e.b.ips.join(' ') : (e.peers || e.addresses || []).join(' '), e.network, e.vrf, e.state || e.status]);
+            });
+        }
+        var csv = rows.map(function (row) {
+            return row.map(quote).join(',');
+        }).join('\r\n');
+        this.download('data:text/csv;charset=utf-8,' + encodeURIComponent(csv), this.fileBase() + '.csv');
+    };
+
+    window.TopologyMap = {
+        init: function (config) {
+            if (!window.vis || !window.vis.Network) {
+                document.getElementById('topo-status').innerHTML = '<span class="text-danger">vis-network library is not available.</span>';
+                return null;
+            }
+            return new TopologyMap(config);
+        },
+        // exposed for tests
+        _formatSpeed: formatSpeed,
+        _iconUrl: iconUrl
+    };
+})(window, document);

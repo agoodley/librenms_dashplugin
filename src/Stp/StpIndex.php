@@ -1,0 +1,320 @@
+<?php
+
+namespace Agoodley\LibrenmsTopology\Stp;
+
+/**
+ * Indexed, normalized view of the LibreNMS `stp` and `ports_stp` tables.
+ *
+ * VLAN keys: LibreNMS stores the default instance (802.1D/RSTP/MST CIST or Cisco PVST VLAN 1)
+ * with vlan NULL. Those are normalized to key 0. Per-VLAN (PVST) instances keep their VLAN id.
+ */
+class StpIndex
+{
+    public const BLOCKING_STATES = ['blocking', 'discarding'];
+
+    /** @var array<int, array<int, array>> device_id => vlanKey => instance */
+    private array $instances = [];
+
+    /** @var array<int, array<int, array<int, array>>> device_id => vlanKey => port_id => port */
+    private array $ports = [];
+
+    /** @var array<int, array<int, array<int, array>>> device_id => vlanKey => port_index => port */
+    private array $portsByIndex = [];
+
+    /** @var array<string, int> bridge MAC => device_id */
+    private array $bridges = [];
+
+    /**
+     * @param  iterable<array|object>  $instances  rows of the stp table
+     * @param  iterable<array|object>  $ports  rows of the ports_stp table
+     * @param  array<int, int>  $lagParent  member port_id => aggregate port_id
+     */
+    public function __construct(iterable $instances = [], iterable $ports = [], private array $lagParent = [])
+    {
+        foreach ($instances as $row) {
+            $row = self::normalizeInstance((array) $row);
+            $this->instances[$row['device_id']][$row['vlan']] = $row;
+            if ($row['bridgeAddress'] !== '') {
+                $this->bridges[$row['bridgeAddress']] ??= $row['device_id'];
+            }
+        }
+
+        foreach ($ports as $row) {
+            $row = self::normalizePort((array) $row);
+            $this->ports[$row['device_id']][$row['vlan']][$row['port_id']] = $row;
+            $this->portsByIndex[$row['device_id']][$row['vlan']][$row['port_index']] = $row;
+        }
+
+        foreach ($this->instances as &$byVlan) {
+            ksort($byVlan);
+        }
+    }
+
+    public static function vlanKey(mixed $vlan): int
+    {
+        $vlan = (int) $vlan;
+
+        return $vlan <= 1 ? 0 : $vlan;
+    }
+
+    public static function vlanLabel(int $key): string
+    {
+        return $key === 0 ? 'VLAN 1 / CST' : 'VLAN ' . $key;
+    }
+
+    public static function normalizeInstance(array $row): array
+    {
+        return [
+            'device_id' => (int) $row['device_id'],
+            'vlan' => self::vlanKey($row['vlan'] ?? null),
+            'rootBridge' => (bool) ($row['rootBridge'] ?? false),
+            'bridgeAddress' => self::mac($row['bridgeAddress'] ?? ''),
+            'protocolSpecification' => (string) ($row['protocolSpecification'] ?? 'unknown'),
+            'priority' => (int) ($row['priority'] ?? 0),
+            'timeSinceTopologyChange' => (int) ($row['timeSinceTopologyChange'] ?? 0),
+            'topChanges' => (int) ($row['topChanges'] ?? 0),
+            'designatedRoot' => self::mac($row['designatedRoot'] ?? ''),
+            'rootCost' => (int) ($row['rootCost'] ?? 0),
+            'rootPort' => (int) ($row['rootPort'] ?? 0),
+            'maxAge' => (int) ($row['maxAge'] ?? 0),
+            'helloTime' => (int) ($row['helloTime'] ?? 0),
+            'holdTime' => (int) ($row['holdTime'] ?? 0),
+            'forwardDelay' => (int) ($row['forwardDelay'] ?? 0),
+            'bridgeMaxAge' => (int) ($row['bridgeMaxAge'] ?? 0),
+            'bridgeHelloTime' => (int) ($row['bridgeHelloTime'] ?? 0),
+            'bridgeForwardDelay' => (int) ($row['bridgeForwardDelay'] ?? 0),
+        ];
+    }
+
+    public static function normalizePort(array $row): array
+    {
+        return [
+            'device_id' => (int) $row['device_id'],
+            'vlan' => self::vlanKey($row['vlan'] ?? null),
+            'port_id' => (int) $row['port_id'],
+            'port_index' => (int) ($row['port_index'] ?? 0),
+            'priority' => (int) ($row['priority'] ?? 0),
+            'state' => strtolower((string) ($row['state'] ?? 'unknown')),
+            'enable' => strtolower((string) ($row['enable'] ?? 'unknown')),
+            'pathCost' => (int) ($row['pathCost'] ?? 0),
+            'designatedRoot' => self::mac($row['designatedRoot'] ?? ''),
+            'designatedCost' => (int) ($row['designatedCost'] ?? 0),
+            'designatedBridge' => self::mac($row['designatedBridge'] ?? ''),
+            'designatedPort' => (int) ($row['designatedPort'] ?? 0),
+            'forwardTransitions' => (int) ($row['forwardTransitions'] ?? 0),
+        ];
+    }
+
+    /**
+     * Normalize a MAC/bridge address to 12 lowercase hex characters ('' when unknown).
+     */
+    public static function mac(?string $value): string
+    {
+        $hex = preg_replace('/[^0-9a-f]/', '', strtolower((string) $value));
+        if ($hex === null || strlen($hex) < 12) {
+            return '';
+        }
+
+        $hex = substr($hex, -12);
+
+        return $hex === '000000000000' ? '' : $hex;
+    }
+
+    public static function formatMac(string $hex): string
+    {
+        return $hex === '' ? '?' : implode(':', str_split($hex, 2));
+    }
+
+    public static function bridgeId(int $priority, string $mac): string
+    {
+        return $priority . '.' . self::formatMac($mac);
+    }
+
+    public static function isBlocking(?string $state): bool
+    {
+        return in_array($state, self::BLOCKING_STATES, true);
+    }
+
+    /**
+     * Device owning a bridge MAC, if that bridge is monitored.
+     */
+    public function bridgeOwner(string $mac): ?int
+    {
+        return $this->bridges[$mac] ?? null;
+    }
+
+    public function hasStp(int $deviceId): bool
+    {
+        return ! empty($this->instances[$deviceId]);
+    }
+
+    /**
+     * @return int[]
+     */
+    public function deviceIds(): array
+    {
+        return array_keys($this->instances);
+    }
+
+    /**
+     * @return array<int, array> vlanKey => instance
+     */
+    public function instancesFor(int $deviceId): array
+    {
+        return $this->instances[$deviceId] ?? [];
+    }
+
+    public function instance(int $deviceId, int $vlanKey): ?array
+    {
+        return $this->instances[$deviceId][$vlanKey] ?? null;
+    }
+
+    /**
+     * All instances grouped by vlan key.
+     *
+     * @return array<int, array<int, array>> vlanKey => device_id => instance
+     */
+    public function byVlan(): array
+    {
+        $result = [];
+        foreach ($this->instances as $deviceId => $byVlan) {
+            foreach ($byVlan as $key => $instance) {
+                $result[$key][$deviceId] = $instance;
+            }
+        }
+        ksort($result);
+
+        return $result;
+    }
+
+    /**
+     * Which instance of a device controls the given VLAN?
+     * PVST devices: the instance of that VLAN. Single instance devices (802.1D/RSTP/MST CIST): that instance.
+     */
+    public function keyFor(int $deviceId, ?int $vlan): ?int
+    {
+        $keys = array_keys($this->instances[$deviceId] ?? []);
+        if (! $keys) {
+            return null;
+        }
+
+        $vlanKey = self::vlanKey($vlan);
+        if (in_array($vlanKey, $keys, true)) {
+            return $vlanKey;
+        }
+
+        if ($keys === [0]) {
+            return 0; // single common instance covers every VLAN
+        }
+
+        return $vlan === null ? min($keys) : null;
+    }
+
+    /**
+     * @return array<int, array> port_id => port
+     */
+    public function portsFor(int $deviceId, int $vlanKey): array
+    {
+        return $this->ports[$deviceId][$vlanKey] ?? [];
+    }
+
+    public function portByIndex(int $deviceId, int $vlanKey, int $portIndex): ?array
+    {
+        return $this->portsByIndex[$deviceId][$vlanKey][$portIndex] ?? null;
+    }
+
+    /**
+     * STP row for a port, falling back to its LAG (port-channel) where STP actually runs.
+     */
+    public function portRow(int $deviceId, int $vlanKey, int $portId): ?array
+    {
+        if (isset($this->ports[$deviceId][$vlanKey][$portId])) {
+            return $this->ports[$deviceId][$vlanKey][$portId] + ['via_lag' => false];
+        }
+
+        $parent = $this->lagParent[$portId] ?? null;
+        if ($parent && isset($this->ports[$deviceId][$vlanKey][$parent])) {
+            return $this->ports[$deviceId][$vlanKey][$parent] + ['via_lag' => true];
+        }
+
+        return null;
+    }
+
+    /**
+     * STP state and role of a port for a VLAN (null VLAN = default instance).
+     *
+     * @return array{vlan: int, state: string, role: string, cost: int, transitions: int, via_lag: bool, designated_bridge: string}|null
+     */
+    public function portStatus(int $deviceId, ?int $portId, ?int $vlan): ?array
+    {
+        if (! $portId) {
+            return null;
+        }
+
+        $key = $this->keyFor($deviceId, $vlan);
+        if ($key === null) {
+            return null;
+        }
+
+        $row = $this->portRow($deviceId, $key, $portId);
+        if ($row === null) {
+            return null;
+        }
+
+        return [
+            'vlan' => $key,
+            'state' => $row['state'],
+            'role' => self::role($this->instance($deviceId, $key), $row),
+            'cost' => $row['pathCost'],
+            'transitions' => $row['forwardTransitions'],
+            'via_lag' => $row['via_lag'],
+            'designated_bridge' => $row['designatedBridge'],
+        ];
+    }
+
+    /**
+     * Derive the 802.1D/802.1w port role from BRIDGE-MIB data (the MIB has no role column).
+     */
+    public static function role(?array $instance, array $port): string
+    {
+        $state = $port['state'] ?? 'unknown';
+        $designatedBridge = $port['designatedBridge'] ?? '';
+
+        if ($instance) {
+            $isRoot = $instance['rootBridge'] || ($instance['bridgeAddress'] !== '' && $instance['bridgeAddress'] === $instance['designatedRoot']);
+
+            if (! $isRoot && $instance['rootPort'] > 0 && ($port['port_index'] ?? -1) === $instance['rootPort']) {
+                return 'root';
+            }
+
+            if (self::isBlocking($state)) {
+                return $designatedBridge !== '' && $designatedBridge === $instance['bridgeAddress'] ? 'backup' : 'alternate';
+            }
+
+            if ($isRoot && $state === 'forwarding') {
+                return 'designated';
+            }
+
+            if ($instance['bridgeAddress'] !== '' && $designatedBridge === $instance['bridgeAddress']) {
+                return 'designated';
+            }
+        } elseif (self::isBlocking($state)) {
+            return 'alternate';
+        }
+
+        return match ($state) {
+            'forwarding' => 'nondesignated',
+            'disabled' => 'disabled',
+            'broken' => 'broken',
+            default => 'unknown',
+        };
+    }
+
+    /**
+     * Is the root bridge of this instance the device itself?
+     */
+    public static function isRoot(array $instance): bool
+    {
+        return $instance['rootBridge'] || ($instance['bridgeAddress'] !== '' && $instance['bridgeAddress'] === $instance['designatedRoot']);
+    }
+}
