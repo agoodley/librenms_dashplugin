@@ -9,12 +9,17 @@ use LibreNMS\Interfaces\Plugins\Hooks\MenuEntryHook;
  */
 class MenuEntry implements MenuEntryHook
 {
+    /**
+     * Every logged in user gets the entries: the pages only show devices the user may see.
+     */
     public function authorize(): bool
     {
-        // data on every page is limited to the devices the user can see
         return true;
     }
 
+    /**
+     * @return array{0: string, 1: array} view and its data, rendered inside the menu
+     */
     public function handle(string $pluginName): array
     {
         return ["$pluginName::menu", []];

@@ -1,3 +1,4 @@
+{{-- Landing page /plugin/topology (Hooks\Page), rendered inside LibreNMS' plugin page layout. --}}
 @push('styles')
     <link href="{{ route('topology.asset', 'topology.css') }}" rel="stylesheet">
 @endpush

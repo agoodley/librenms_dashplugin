@@ -19,6 +19,12 @@ class L2Builder
         DeviceRole::SWITCH => 2,
     ];
 
+    /** Factory default names that many unrelated devices advertise. */
+    private const GENERIC_HOSTNAMES = [
+        'switch', 'router', 'ap', 'phone', 'host', 'localhost', 'localhost.localdomain', 'none', '(none)',
+        'unknown', 'default', 'openwrt', 'ubnt', 'mikrotik', 'linux', 'esxi', 'debian', 'ubuntu',
+    ];
+
     /**
      * @param  array<int, array>  $devices  device_id => device row (with 'role', 'url')
      * @param  array<int, array>  $links  rows of the links table
@@ -69,7 +75,12 @@ class L2Builder
     }
 
     /**
+     * Build the map data returned by api/l2: nodes, edges, VLANs in scope and statistics.
+     *
      * @param  array{vlan?: int|null, unmanaged?: bool, collapseLag?: bool, root?: int|null}  $options
+     *     vlan: VLAN to highlight (also selects the STP instance shown), unmanaged: draw LLDP/CDP
+     *     neighbours LibreNMS does not monitor, collapseLag: one edge per aggregate,
+     *     root: centered device (top of the hierarchy)
      */
     public function build(array $options = []): array
     {
@@ -236,6 +247,10 @@ class L2Builder
         return $result;
     }
 
+    /**
+     * Normalized link: side a is the reporting (local) device, side b the neighbour; b_device is
+     * null for unmanaged neighbours.
+     */
     private function rawLink(array $link, int $ld, int $lp, int $rd, int $rp): array
     {
         return [
@@ -252,6 +267,9 @@ class L2Builder
         ];
     }
 
+    /**
+     * Remember every discovery protocol (lldp, cdp...) that reported the link.
+     */
     private function addProtocol(array &$raw, array $link): void
     {
         $protocol = strtolower((string) ($link['protocol'] ?? ''));
@@ -260,6 +278,9 @@ class L2Builder
         }
     }
 
+    /**
+     * Same link seen from the other side (a and b exchanged).
+     */
     private static function swap(array $link): array
     {
         return array_merge($link, [
@@ -272,6 +293,10 @@ class L2Builder
         ]);
     }
 
+    /**
+     * Short host name, used to recognize the same neighbour reported by LLDP (often short name)
+     * and CDP (often FQDN) on one local port.
+     */
     private static function hostKey(string $hostname): string
     {
         $hostname = strtolower(trim($hostname));
@@ -282,13 +307,24 @@ class L2Builder
         return explode('.', $hostname)[0];
     }
 
+    /**
+     * Node id of an unmanaged neighbour: one node per advertised name, so a device seen by
+     * several switches is drawn once. Missing or factory default names ("Switch") would merge
+     * unrelated devices and get one node per local port instead.
+     */
     private function unmanagedNodeId(array $link): string
     {
-        $host = self::hostKey($link['b_host']);
+        $host = strtolower(trim($link['b_host']));
+        if ($host === '' || in_array($host, self::GENERIC_HOSTNAMES, true)) {
+            return 'u:' . $link['a_device'] . ':' . ($link['a_port'] ?: InterfaceName::normalize($link['b_name']));
+        }
 
-        return $host !== '' ? 'u:' . $host : 'u:' . $link['a_device'] . ':' . ($link['a_port'] ?? $link['b_name']);
+        return 'u:' . $host;
     }
 
+    /**
+     * Map node for a neighbour LibreNMS does not monitor, typed from its LLDP/CDP platform string.
+     */
     private function unmanagedNode(string $id, array $link): array
     {
         $name = $link['b_host'] !== '' ? $link['b_host'] : 'unknown neighbor';
@@ -309,6 +345,10 @@ class L2Builder
         ];
     }
 
+    /**
+     * Map node for a monitored device, including its STP state for the instance that carries the
+     * selected VLAN (root bridge, bridge ID, root port...).
+     */
     private function deviceNode(int $deviceId, array $device, ?int $vlan): array
     {
         $stp = null;
@@ -316,9 +356,9 @@ class L2Builder
         if ($key !== null && ($instance = $this->stp->instance($deviceId, $key))) {
             $rootPortName = null;
             if ($instance['rootPort'] && ! StpIndex::isRoot($instance)) {
-                $rootPortRow = $this->stp->portByIndex($deviceId, $key, $instance['rootPort']);
-                $rootPortName = $rootPortRow && isset($this->ports[$rootPortRow['port_id']])
-                    ? InterfaceName::short(InterfaceName::label($this->ports[$rootPortRow['port_id']]))
+                $rootPortId = $this->stp->rootPortId($deviceId, $vlan);
+                $rootPortName = $rootPortId && isset($this->ports[$rootPortId])
+                    ? InterfaceName::short(InterfaceName::label($this->ports[$rootPortId]))
                     : 'bridge port ' . $instance['rootPort'];
             }
             $stp = [
@@ -363,6 +403,9 @@ class L2Builder
         ];
     }
 
+    /**
+     * up / down / disabled from a devices row.
+     */
     public static function deviceStatus(array $device): string
     {
         if (! empty($device['disabled'])) {
@@ -389,6 +432,10 @@ class L2Builder
     }
 
     /**
+     * One map edge for a physical link, or for all member links of an aggregate (LAG): endpoints,
+     * speed (sum of the members), status, common VLANs, utilization (traffic measured on side A)
+     * and whether STP blocks either end.
+     *
      * @param  array<int, array>  $members  raw links oriented a=from b=to
      */
     private function edge(string $id, string $from, string $to, array $members, ?int $vlan, bool $collapseLag): array
@@ -483,6 +530,10 @@ class L2Builder
         ];
     }
 
+    /**
+     * One end of a link on a monitored device: interface name, speed, status, VLANs, traffic and
+     * the STP state/role of the port (or of its aggregate) for the selected VLAN.
+     */
     private function endpoint(int $deviceId, ?int $portId, string $fallbackName, ?int $vlan): array
     {
         $port = $portId ? ($this->ports[$portId] ?? null) : null;
@@ -516,6 +567,9 @@ class L2Builder
         ];
     }
 
+    /**
+     * Neighbour end of a link to an unmanaged device: only the port name LLDP/CDP reported is known.
+     */
     private function unmanagedEndpoint(array $link): array
     {
         return [
@@ -566,6 +620,10 @@ class L2Builder
         return null; // trunk without per-VLAN data
     }
 
+    /**
+     * Does the link carry the VLAN? Both ends known: both must carry it; one end known: that end
+     * decides; nothing known: null (unknown, drawn normally).
+     */
     private static function combineVlanKnowledge(?bool $a, ?bool $b): ?bool
     {
         if ($a === null) {
@@ -595,6 +653,9 @@ class L2Builder
         return array_values(array_intersect($a, $b));
     }
 
+    /**
+     * Speed of a link: the slower of its two ends (0 when unknown).
+     */
     private static function linkSpeed(?array $a, ?array $b): int
     {
         $speeds = array_filter([(int) ($a['ifSpeed'] ?? 0), (int) ($b['ifSpeed'] ?? 0)]);
@@ -602,6 +663,9 @@ class L2Builder
         return $speeds ? min($speeds) : 0;
     }
 
+    /**
+     * A link is up when every end with known status is up.
+     */
     private static function isUp(?array $a, ?array $b): bool
     {
         $states = array_filter([$a['ifOperStatus'] ?? null, $b['ifOperStatus'] ?? null]);

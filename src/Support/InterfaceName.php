@@ -41,6 +41,9 @@ class InterfaceName
         'Management' => 'Mgmt',
     ];
 
+    /**
+     * Abbreviated interface name as shown on diagrams: GigabitEthernet1/0/1 => Gi1/0/1, Port-channel10 => Po10.
+     */
     public static function short(?string $name): string
     {
         $name = trim((string) $name);
@@ -84,6 +87,9 @@ class InterfaceName
         return isset($port['ifIndex']) ? 'ifIndex ' . $port['ifIndex'] : '?';
     }
 
+    /**
+     * Does the name look like an aggregate (Port-channel, ae, bond, Bundle-Ether, Eth-Trunk...)?
+     */
     public static function isLagName(?string $name): bool
     {
         return (bool) preg_match('/^(port-?channel|po\d|ae\d|bond|lag|trk|bundle-ether|be\d|bagg|eth-trunk|agg)/i', trim((string) $name));

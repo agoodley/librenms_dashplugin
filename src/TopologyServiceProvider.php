@@ -13,6 +13,10 @@ use LibreNMS\Interfaces\Plugins\Hooks\SettingsHook;
 use LibreNMS\Interfaces\Plugins\Hooks\SinglePageHook;
 use LibreNMS\Interfaces\Plugins\PluginManagerInterface;
 
+/**
+ * Entry point of the plugin package, auto-discovered by Laravel (see composer.json extra.laravel).
+ * Registers the LibreNMS plugin hooks, the views and, when the plugin is enabled, the routes.
+ */
 class TopologyServiceProvider extends ServiceProvider
 {
     /** Name of the plugin inside LibreNMS (plugin admin, settings, view namespace). */
@@ -21,6 +25,10 @@ class TopologyServiceProvider extends ServiceProvider
     /** Base URI of every page registered by this plugin. */
     public const URI_PREFIX = 'plugin/topology';
 
+    /**
+     * Hooks are always published so the plugin shows up in Plugin Admin (LibreNMS removes plugins
+     * without hooks); routes are only loaded while the plugin is enabled.
+     */
     public function boot(PluginManagerInterface $pluginManager): void
     {
         $name = self::PLUGIN_NAME;

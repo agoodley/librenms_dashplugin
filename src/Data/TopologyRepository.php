@@ -9,7 +9,6 @@ use App\Models\Device;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 
 /**
  * All database access of the plugin. Everything is scoped to the devices the user may see and
@@ -26,6 +25,9 @@ class TopologyRepository
     /** @var int[]|null */
     private ?array $accessible = null;
 
+    /**
+     * @param  mixed  $user  the logged in LibreNMS user (App\Models\User); every query is limited to what it may see
+     */
     public function __construct(private readonly mixed $user)
     {
     }
@@ -212,18 +214,18 @@ class TopologyRepository
         }
 
         $pairs = [];
-        try {
-            [$high, $low] = Schema::hasColumn('ports_stack', 'high_port_id')
-                ? ['high_port_id', 'low_port_id']
-                : ['port_id_high', 'port_id_low'];
-
-            foreach (DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)
-                ->where($high, '>', 0)->where($low, '>', 0)
-                ->get([$high . ' as high', $low . ' as low']) as $row) {
-                $pairs[(int) $row->low][] = (int) $row->high;
+        // current schema first, then the column names used before LibreNMS 24.8
+        foreach ([['high_port_id', 'low_port_id'], ['port_id_high', 'port_id_low']] as [$high, $low]) {
+            try {
+                foreach (DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)
+                    ->where($high, '>', 0)->where($low, '>', 0)
+                    ->get([$high . ' as high', $low . ' as low']) as $row) {
+                    $pairs[(int) $row->low][] = (int) $row->high;
+                }
+                break;
+            } catch (\Throwable $e) {
+                Log::debug('topology plugin: cannot read ports_stack: ' . $e->getMessage());
             }
-        } catch (\Throwable $e) {
-            Log::debug('topology plugin: cannot read ports_stack: ' . $e->getMessage());
         }
 
         try {
@@ -301,29 +303,67 @@ class TopologyRepository
     }
 
     /**
-     * STP instance and port rows; $vlan limits the load to that VLAN plus the default instance.
+     * Spanning tree instances (rows of the stp table) of the devices, for every VLAN. The table is
+     * small (one row per bridge and instance) and only the complete list tells PVST bridges
+     * (one instance per VLAN) from single-instance 802.1D/RSTP/MST bridges.
      *
      * @param  int[]  $ids
-     * @return array{0: array, 1: array}
      */
-    public function stpRows(array $ids, ?int $vlan = null): array
+    public function stpInstances(array $ids): array
     {
         if (! $ids) {
-            return [[], []];
+            return [];
         }
 
-        $filter = function (Builder $query) use ($vlan): void {
-            if ($vlan !== null) {
-                $query->where(fn (Builder $q) => $q->whereNull('vlan')->orWhereIn('vlan', array_unique([0, 1, $vlan])));
-            }
-        };
-
-        $instances = DB::table('stp')->whereIntegerInRaw('device_id', $ids)->tap($filter)->get()->map(fn ($r) => (array) $r)->all();
-        $ports = DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids)->tap($filter)->get()->map(fn ($r) => (array) $r)->all();
-
-        return [$instances, $ports];
+        return DB::table('stp')->whereIntegerInRaw('device_id', $ids)->get()->map(fn ($r) => (array) $r)->all();
     }
 
+    /**
+     * Port rows (ports_stp) of the devices. ports_stp grows with ports x VLANs on PVST networks,
+     * so callers usually load a single instance per device.
+     *
+     * @param  int[]  $ids
+     * @param  array<int, int|null>|null  $keys  device_id => VLAN key (0 = default instance) to load,
+     *                                           null loads every instance
+     */
+    public function stpPorts(array $ids, ?array $keys = null): array
+    {
+        if (! $ids) {
+            return [];
+        }
+
+        if ($keys === null) {
+            return DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids)->get()->map(fn ($r) => (array) $r)->all();
+        }
+
+        $wanted = array_flip($ids);
+        $devicesByKey = [];
+        foreach ($keys as $deviceId => $key) {
+            if ($key !== null && isset($wanted[$deviceId])) {
+                $devicesByKey[$key][] = $deviceId;
+            }
+        }
+
+        $rows = [];
+        foreach ($devicesByKey as $key => $deviceIds) {
+            $query = DB::table('ports_stp')->whereIntegerInRaw('device_id', $deviceIds);
+            if ($key === 0) {
+                // LibreNMS stores the default instance (and Cisco PVST VLAN 1) with vlan NULL
+                $query->where(fn (Builder $q) => $q->whereNull('vlan')->orWhereIn('vlan', [0, 1]));
+            } else {
+                $query->where('vlan', $key);
+            }
+            foreach ($query->get() as $row) {
+                $rows[] = (array) $row;
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Number of ports_stp rows of the devices (decides whether the STP page can analyze every VLAN at once).
+     */
     public function stpPortCount(array $ids): int
     {
         return $ids ? DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids)->count() : 0;
@@ -345,16 +385,6 @@ class TopologyRepository
             ->map(fn ($vlan) => StpIndex::vlanKey($vlan))->unique()->sort()->values()->all();
 
         return array_map('intval', $keys);
-    }
-
-    /**
-     * @param  int[]  $ids
-     */
-    public function stpIndex(array $ids, ?int $vlan, array $lagParent): StpIndex
-    {
-        [$instances, $ports] = $this->stpRows($ids, $vlan);
-
-        return new StpIndex($instances, $ports, $lagParent);
     }
 
     /**
@@ -409,6 +439,9 @@ class TopologyRepository
         return $rows;
     }
 
+    /**
+     * Address row with its VRF name (port VRF, else SNMP context) and port URL.
+     */
     private function addressRow(array $row, array $vrfs): array
     {
         $row['vrf'] = (string) (($row['ifVrf'] ? ($vrfs[$row['ifVrf']] ?? '') : '') ?: ($row['context_name'] ?? ''));
@@ -433,6 +466,9 @@ class TopologyRepository
         return $this->rows('bgpPeers', $ids, ['device_id', 'bgpPeerIdentifier', 'bgpPeerRemoteAs', 'bgpPeerState', 'bgpPeerAdminStatus', 'bgpLocalAddr', 'bgpPeerDescr', 'context_name']);
     }
 
+    /**
+     * All rows of a per-device table, or none when the table does not exist on this LibreNMS version.
+     */
     private function rows(string $table, array $ids, array $columns): array
     {
         if (! $ids) {
@@ -466,13 +502,16 @@ class TopologyRepository
     }
 
     /**
-     * Find where unknown root bridge MACs live: interface MACs / bridge addresses of monitored
-     * devices, FDB entries and the OUI vendor.
+     * Find where root bridge MACs live: bridge addresses and interface MACs of monitored devices,
+     * FDB entries and the OUI vendor. The FDB, interface and vendor lookups are skipped when
+     * $deep is false (ports.ifPhysAddress is not indexed, so keep them off frequently viewed pages).
      *
      * @param  string[]  $macs  12 hex characters
-     * @return array<string, array{owners: array, fdb: array, vendor: string}>
+     * @return array<string, array{owners: array, fdb: array, vendor: string, hidden: bool}>
+     *     owners: [device_id, port_id, name, source: stp|interface]; hidden: owned by a monitored
+     *     device this user may not see (which one is not revealed)
      */
-    public function rootLookups(array $macs): array
+    public function rootLookups(array $macs, bool $deep = true): array
     {
         $macs = array_values(array_unique(array_map('strval', $macs)));
         if (! $macs) {
@@ -482,54 +521,100 @@ class TopologyRepository
         $accessible = $this->accessible();
         $result = [];
         foreach ($macs as $mac) {
-            // hidden: the bridge is a monitored device this user may not see (do not reveal which)
             $result[$mac] = ['owners' => [], 'fdb' => [], 'vendor' => '', 'hidden' => false];
         }
 
-        foreach (DB::table('stp')->whereIn('bridgeAddress', $macs)->get(['device_id', 'bridgeAddress']) as $row) {
-            if (isset($accessible[(int) $row->device_id])) {
-                $result[(string) $row->bridgeAddress]['owners'][] = ['device_id' => (int) $row->device_id, 'port_id' => null];
+        $owners = DB::table('stp')->whereIn('bridgeAddress', $macs)->distinct()
+            ->get(['device_id', 'bridgeAddress as mac'])->map(fn ($r) => [(int) $r->device_id, null, (string) $r->mac, 'stp']);
+        if ($deep) {
+            $owners = $owners->merge(DB::table('ports')->whereIn('ifPhysAddress', $macs)->limit(200)
+                ->get(['device_id', 'port_id', 'ifPhysAddress as mac'])->map(fn ($r) => [(int) $r->device_id, (int) $r->port_id, (string) $r->mac, 'interface']));
+        }
+        foreach ($owners as [$deviceId, $portId, $mac, $source]) {
+            if (isset($accessible[$deviceId])) {
+                $result[$mac]['owners'][] = ['device_id' => $deviceId, 'port_id' => $portId, 'name' => null, 'source' => $source];
             } else {
-                $result[(string) $row->bridgeAddress]['hidden'] = true;
+                $result[$mac]['hidden'] = true;
             }
         }
 
-        foreach (DB::table('ports')->whereIn('ifPhysAddress', $macs)->limit(200)->get(['device_id', 'port_id', 'ifPhysAddress']) as $row) {
-            if (isset($accessible[(int) $row->device_id])) {
-                $result[(string) $row->ifPhysAddress]['owners'][] = ['device_id' => (int) $row->device_id, 'port_id' => (int) $row->port_id];
-            } else {
-                $result[(string) $row->ifPhysAddress]['hidden'] = true;
+        if ($deep) {
+            try {
+                foreach (DB::table('ports_fdb as f')
+                    ->leftJoin('vlans as v', 'v.vlan_id', '=', 'f.vlan_id')
+                    ->leftJoin('ports as p', 'p.port_id', '=', 'f.port_id')
+                    ->whereIn('f.mac_address', $macs)->limit(200)
+                    ->get(['f.device_id', 'f.port_id', 'f.mac_address', 'v.vlan_vlan', 'p.ifName', 'p.ifDescr']) as $row) {
+                    if (isset($accessible[(int) $row->device_id])) {
+                        $result[(string) $row->mac_address]['fdb'][] = [
+                            'device_id' => (int) $row->device_id,
+                            'port_id' => (int) $row->port_id,
+                            'port' => InterfaceName::short($row->ifName ?: $row->ifDescr),
+                            'name' => null,
+                            'vlan' => $row->vlan_vlan,
+                        ];
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::debug('topology plugin: cannot read ports_fdb: ' . $e->getMessage());
             }
-        }
 
-        try {
-            foreach (DB::table('ports_fdb as f')->leftJoin('vlans as v', 'v.vlan_id', '=', 'f.vlan_id')
-                ->whereIn('f.mac_address', $macs)->limit(200)
-                ->get(['f.device_id', 'f.port_id', 'f.mac_address', 'v.vlan_vlan']) as $row) {
-                if (isset($accessible[(int) $row->device_id])) {
-                    $result[(string) $row->mac_address]['fdb'][] = ['device_id' => (int) $row->device_id, 'port_id' => (int) $row->port_id, 'vlan' => $row->vlan_vlan];
+            if (class_exists(\LibreNMS\Util\Mac::class) && method_exists(\LibreNMS\Util\Mac::class, 'vendor')) {
+                foreach ($macs as $mac) {
+                    try {
+                        $result[$mac]['vendor'] = (string) \LibreNMS\Util\Mac::parse($mac)->vendor();
+                    } catch (\Throwable) {
+                        // OUI database not populated
+                    }
                 }
             }
-        } catch (\Throwable $e) {
-            Log::debug('topology plugin: cannot read ports_fdb: ' . $e->getMessage());
         }
 
-        if (class_exists(\LibreNMS\Util\Mac::class) && method_exists(\LibreNMS\Util\Mac::class, 'vendor')) {
-            foreach ($macs as $mac) {
-                try {
-                    $result[$mac]['vendor'] = (string) \LibreNMS\Util\Mac::parse($mac)->vendor();
-                } catch (\Throwable) {
-                    // vendor database not available
+        // owners and FDB sightings may be outside the analyzed scope: resolve their names here
+        $deviceIds = [];
+        foreach ($result as $lookup) {
+            foreach (array_merge($lookup['owners'], $lookup['fdb']) as $entry) {
+                $deviceIds[] = $entry['device_id'];
+            }
+        }
+        $names = $this->deviceNames($deviceIds);
+        foreach ($result as &$lookup) {
+            foreach (['owners', 'fdb'] as $list) {
+                foreach ($lookup[$list] as &$entry) {
+                    $entry['name'] = $names[$entry['device_id']] ?? null;
                 }
+                unset($entry);
             }
         }
 
-        // ports on the same device as fdb sightings are needed for names
         return $result;
     }
 
     /**
-     * Port rows for STP analysis: names plus has_ip / switchport flags.
+     * @param  int[]  $deviceIds
+     * @return array<int, string> device_id => display name
+     */
+    private function deviceNames(array $deviceIds): array
+    {
+        $deviceIds = array_values(array_unique($deviceIds));
+        if (! $deviceIds) {
+            return [];
+        }
+
+        $names = [];
+        foreach (DB::table('devices')->whereIntegerInRaw('device_id', $deviceIds)->get(['device_id', 'display', 'hostname']) as $row) {
+            $names[(int) $row->device_id] = (string) ($row->display ?: $row->hostname);
+        }
+
+        return $names;
+    }
+
+    /**
+     * Port rows for STP analysis: names plus flags
+     *  - has_ip: routed port (carries an IPv4 address),
+     *  - switchport: carries VLANs,
+     *  - has_stp: takes part in spanning tree in at least one VLAN (any instance, even when only
+     *    one instance's ports_stp rows were loaded).
      *
      * @param  int[]  $portIds
      */
@@ -538,8 +623,20 @@ class TopologyRepository
         $ports = $this->ports($portIds);
         $withIp = $this->portsWithIp(array_keys($ports));
         $vlans = $this->portVlans(array_keys($ports));
+
+        $withStp = [];
+        $deviceIds = array_values(array_unique(array_map(fn ($p) => (int) $p['device_id'], $ports)));
+        foreach (array_chunk(array_keys($ports), 5000) as $chunk) {
+            // device_id first so the (device_id, vlan, port_index) index is used
+            foreach (DB::table('ports_stp')->whereIntegerInRaw('device_id', $deviceIds)->whereIntegerInRaw('port_id', $chunk)
+                ->distinct()->pluck('port_id') as $portId) {
+                $withStp[(int) $portId] = true;
+            }
+        }
+
         foreach ($ports as $portId => &$port) {
             $port['has_ip'] = isset($withIp[$portId]);
+            $port['has_stp'] = isset($withStp[$portId]);
             $port['switchport'] = isset($vlans[$portId]) || ! empty($port['ifTrunk']) || (is_numeric($port['ifVlan']) && (int) $port['ifVlan'] > 0);
         }
 
@@ -569,6 +666,9 @@ class TopologyRepository
         return ['groups' => $groups, 'locations' => $locations];
     }
 
+    /**
+     * Display name of a device, null when the user may not see it.
+     */
     public function deviceName(int $deviceId): ?string
     {
         if (! isset($this->accessible()[$deviceId])) {

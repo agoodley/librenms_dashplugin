@@ -1,3 +1,4 @@
+{{-- Plugin settings form (Hooks\Settings). LibreNMS stores every settings[...] field posted back to the same URL. --}}
 @php
     $fields = [
         'Maps' => [

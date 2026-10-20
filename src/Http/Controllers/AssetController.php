@@ -15,6 +15,10 @@ class AssetController extends Controller
         'css' => 'text/css; charset=utf-8',
     ];
 
+    /**
+     * Serve resources/assets/{file}. The route only accepts plain *.js / *.css names; the realpath
+     * check keeps the file inside the assets directory anyway.
+     */
     public function __invoke(string $file): BinaryFileResponse
     {
         $file = basename($file);

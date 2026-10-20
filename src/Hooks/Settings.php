@@ -10,11 +10,18 @@ use LibreNMS\Interfaces\Plugins\Hooks\SettingsHook;
  */
 class Settings implements SettingsHook
 {
+    /**
+     * The settings route itself is limited to plugin admins by LibreNMS.
+     */
     public function authorize(): bool
     {
         return true;
     }
 
+    /**
+     * @param  array  $settings  saved settings injected by LibreNMS; the form posts them back as settings[...]
+     * @return array{content_view: string, settings: array<string, string>}
+     */
     public function handle(string $pluginName, array $settings): array
     {
         return [

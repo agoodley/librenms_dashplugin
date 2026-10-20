@@ -28,13 +28,17 @@ class Cidr
         return inet_ntop($network) . '/' . $prefix;
     }
 
+    /**
+     * IP version of an address: 6 when it contains a colon, otherwise 4.
+     */
     public static function family(string $address): int
     {
         return str_contains($address, ':') ? 6 : 4;
     }
 
     /**
-     * Does $cidr (a.b.c.d/nn) contain the given address or network?
+     * Does $cidr (a.b.c.d/nn, or a bare address) contain the given address or network?
+     * A malformed $cidr (e.g. "10.0.0.0/" or "10.0.0.0/x") contains nothing.
      */
     public static function contains(string $cidr, string $addressOrNetwork): bool
     {
@@ -47,8 +51,13 @@ class Cidr
             return false;
         }
 
-        $len = $len === null ? strlen($netPacked) * 8 : (int) $len;
-        $mask = self::mask(strlen($netPacked), $len);
+        $bits = strlen($netPacked) * 8;
+        if ($len === null) {
+            $len = $bits;
+        } elseif (! ctype_digit($len) || (int) $len > $bits) {
+            return false;
+        }
+        $mask = self::mask(strlen($netPacked), (int) $len);
 
         return ($netPacked & $mask) === ($addrPacked & $mask);
     }
@@ -79,6 +88,9 @@ class Cidr
         return self::containedInAny(['fe80::/10', '::1/128', '::/128', 'ff00::/8'], $address);
     }
 
+    /**
+     * Binary netmask of $prefix bits for an address of $bytes bytes.
+     */
     private static function mask(int $bytes, int $prefix): string
     {
         $prefix = max(0, min($bytes * 8, $prefix));

@@ -1,3 +1,4 @@
+{{-- Spanning tree diagnostics page (PageController::stp), rendered from TopologyService::stp(). --}}
 @extends('layouts.librenmsv1')
 
 @section('title', 'Spanning Tree Diagnostics')
@@ -56,7 +57,7 @@
     </form>
 
     @if($error)
-        <div class="alert alert-danger"><i class="fa fa-exclamation-triangle"></i> Spanning tree analysis failed: {{ $error }}</div>
+        <div class="alert alert-danger"><i class="fa fa-exclamation-triangle"></i> {{ $error }}</div>
     @endif
 
     @if($result)

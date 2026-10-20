@@ -1,3 +1,4 @@
+{{-- Tabs between the L2 map, L3 map and STP diagnostics, keeping the current scope; topology.js updates the links when filters change. --}}
 @php
     $navQuery = array_filter([
         'device' => $params['device'] ?? null,

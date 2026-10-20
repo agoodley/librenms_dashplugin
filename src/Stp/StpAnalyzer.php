@@ -21,8 +21,8 @@ class StpAnalyzer
     /** @var array<int, array{device_id: ?int, port_id: ?int, name: string, host: string}> port_id => neighbour */
     private array $neighbor = [];
 
-    /** @var array<string, int> bridge MAC => device_id */
-    private array $bridgeOwner = [];
+    /** @var array<int, int[]> aggregate port_id => member port_ids (reverse of $lagParent) */
+    private array $lagMembers = [];
 
     private Graph $adjacency;
 
@@ -35,7 +35,7 @@ class StpAnalyzer
     /**
      * @param  array<int, array>  $devices  device_id => device row (display, hostname, uptime, role, url)
      * @param  array<int, array>  $links  rows of the links table (only devices the user can see)
-     * @param  array<int, array>  $ports  port_id => port row, may contain 'has_ip' and 'switchport' flags
+     * @param  array<int, array>  $ports  port_id => port row, may contain 'has_ip', 'has_stp' and 'switchport' flags
      * @param  array<int, int>  $lagParent  member port_id => aggregate port_id
      * @param  array<int, array>  $events  eventlog rows of type stp (device_id, datetime, message)
      */
@@ -50,15 +50,10 @@ class StpAnalyzer
         private ?int $now = null,
     ) {
         $this->now ??= time();
-        $this->prepareLinks();
-
-        foreach ($this->stp->byVlan() as $members) {
-            foreach ($members as $deviceId => $instance) {
-                if ($instance['bridgeAddress'] !== '') {
-                    $this->bridgeOwner[$instance['bridgeAddress']] ??= $deviceId;
-                }
-            }
+        foreach ($this->lagParent as $member => $parent) {
+            $this->lagMembers[$parent][] = $member;
         }
+        $this->prepareLinks();
     }
 
     /**
@@ -69,22 +64,15 @@ class StpAnalyzer
      */
     public function unknownRootMacs(): array
     {
-        $macs = [];
-        foreach ($this->stp->byVlan() as $members) {
-            foreach ($members as $instance) {
-                $root = $instance['designatedRoot'];
-                if ($root !== '' && ! isset($this->bridgeOwner[$root])) {
-                    $macs[$root] = true;
-                }
-            }
-        }
-
-        return array_keys($macs);
+        return $this->stp->unknownRootMacs();
     }
 
     /**
-     * @param  array<string, array{owners?: array, fdb?: array, vendor?: string}>  $rootLookups  keyed by root MAC
-     * @param  int|null  $vlanFilter  only analyze this VLAN key
+     * Run every check and return the data of the STP diagnostics page: summary, findings (merged
+     * across VLANs), domains, bridges, blocked ports and recent STP events.
+     *
+     * @param  array<string, array{owners?: array, fdb?: array, vendor?: string, hidden?: bool}>  $rootLookups  keyed by root MAC
+     * @param  int|null  $vlanFilter  only analyze the instance of this VLAN (1 = default instance)
      */
     public function analyze(array $rootLookups = [], ?int $vlanFilter = null): array
     {
@@ -122,10 +110,8 @@ class StpAnalyzer
         usort($findings, fn ($a, $b) => [Finding::SEVERITY_ORDER[$a['severity']], $a['vlan'] ?? -1, $a['title']]
             <=> [Finding::SEVERITY_ORDER[$b['severity']], $b['vlan'] ?? -1, $b['title']]);
 
-        $counts = ['critical' => 0, 'warning' => 0, 'info' => 0];
         $names = [];
         foreach ($findings as $finding) {
-            $counts[$finding['severity']]++;
             foreach ($finding['devices'] as $deviceId) {
                 $names[$deviceId] = $this->deviceName($deviceId);
             }
@@ -133,22 +119,37 @@ class StpAnalyzer
 
         return [
             'device_names' => $names,
-            'summary' => [
-                'bridges' => count($this->stp->deviceIds()),
-                'instances' => count($bridges),
-                'domains' => count($domains),
-                'roots' => count(array_unique(array_filter(array_map(fn ($d) => $d['root']['mac'], $domains)))),
-                'blocked_ports' => count(array_filter($blocked, fn ($b) => $b['state'] !== 'broken')),
-                'recent_tc' => count(array_filter($bridges, fn ($b) => $b['last_tc'] !== null && $b['last_tc'] < $this->tcRecentSeconds())),
-                'recent_tc_window' => $this->tcRecentSeconds(),
-                'findings' => $counts,
-                'status' => $counts['critical'] ? 'critical' : ($counts['warning'] ? 'warning' : 'ok'),
-            ],
+            'summary' => self::summarize($domains, $bridges, $blocked, $findings, $this->tcRecentSeconds()),
             'domains' => $domains,
             'findings' => $findings,
             'bridges' => $bridges,
             'blocked' => $blocked,
             'events' => $this->eventRows(),
+        ];
+    }
+
+    /**
+     * Summary cards of a (possibly filtered) analysis result.
+     *
+     * @param  int  $recentWindow  seconds within which a topology change counts as recent
+     */
+    public static function summarize(array $domains, array $bridges, array $blocked, array $findings, int $recentWindow): array
+    {
+        $counts = ['critical' => 0, 'warning' => 0, 'info' => 0];
+        foreach ($findings as $finding) {
+            $counts[$finding['severity']]++;
+        }
+
+        return [
+            'bridges' => count(array_unique(array_column($bridges, 'device_id'))),
+            'instances' => count($bridges),
+            'domains' => count($domains),
+            'roots' => count(array_unique(array_filter(array_map(fn ($d) => $d['root']['mac'], $domains)))),
+            'blocked_ports' => count(array_filter($blocked, fn ($b) => $b['state'] !== 'broken')),
+            'recent_tc' => count(array_filter($bridges, fn ($b) => $b['last_tc'] !== null && $b['last_tc'] < $recentWindow)),
+            'recent_tc_window' => $recentWindow,
+            'findings' => $counts,
+            'status' => $counts['critical'] ? 'critical' : ($counts['warning'] ? 'warning' : 'ok'),
         ];
     }
 
@@ -228,9 +229,10 @@ class StpAnalyzer
                     $add(Finding::WARNING, $this->portName($port['port_id']) . ' changed to forwarding ' . $port['forwardTransitions'] . ' times', $row);
                 }
             }
+            // only bridge addresses are looked up here (cheap); the STP page also checks interface MACs
             $rootMac = $this->stp->instance($deviceId, $row['vlan'])['designatedRoot'] ?? '';
-            if (! $row['is_root'] && $rootMac !== '' && ! isset($this->bridgeOwner[$rootMac]) && empty($rootLookups[$rootMac]['owners']) && empty($rootLookups[$rootMac]['hidden'])) {
-                $add(Finding::WARNING, 'root bridge ' . $row['root_id'] . ' is not monitored (possible rogue switch)', $row);
+            if (! $row['is_root'] && $rootMac !== '' && $this->stp->bridgeOwner($rootMac) === null && empty($rootLookups[$rootMac]['owners']) && empty($rootLookups[$rootMac]['hidden'])) {
+                $add(Finding::WARNING, 'root bridge ' . $row['root_id'] . ' is not a monitored bridge (possible rogue switch, see STP diagnostics)', $row);
             }
         }
 
@@ -287,6 +289,15 @@ class StpAnalyzer
         return $domains;
     }
 
+    /**
+     * Analyze one connected L2 domain of one VLAN instance: which root the bridges agree on, root
+     * placement, timers, protocols, diameter, topology changes, port states and loops.
+     *
+     * @param  int[]  $memberIds  bridges of this instance inside the domain
+     * @param  array<int, array>  $instances  device_id => instance of this VLAN key
+     * @param  Graph  $graph  L2 adjacency including single-instance transit bridges
+     * @return array one row of the domains table
+     */
     private function analyzeDomain(int $key, array $memberIds, array $instances, Graph $graph, array $rootLookups): array
     {
         $before = count($this->findings);
@@ -299,7 +310,7 @@ class StpAnalyzer
         }
         uasort($roots, fn ($a, $b) => count($b) <=> count($a));
         $rootMac = (string) array_key_first($roots);
-        $rootDevice = $rootMac !== '' ? ($this->bridgeOwner[$rootMac] ?? null) : null;
+        $rootDevice = $rootMac !== '' ? $this->stp->bridgeOwner($rootMac) : null;
 
         if (count($roots) > 1 && count($memberIds) > 1) {
             $parts = [];
@@ -317,17 +328,20 @@ class StpAnalyzer
         }
 
         $rootInstance = $rootDevice !== null ? ($instances[$rootDevice] ?? $this->stp->instance($rootDevice, $key)) : null;
+        $lookup = $rootLookups[$rootMac] ?? [];
+        $owner = self::lookupOwner($lookup);
         $rootInfo = [
             'mac' => $rootMac !== '' ? StpIndex::formatMac($rootMac) : null,
-            'device_id' => $rootDevice,
+            // a bridge outside the analyzed group/location can still be linked to
+            'device_id' => $rootDevice ?? $owner['device_id'] ?? null,
             'name' => $rootMac !== '' ? $this->rootName($rootMac, $rootLookups) : null,
             'priority' => $rootInstance['priority'] ?? null,
             'bridge_id' => $rootInstance ? StpIndex::bridgeId($rootInstance['priority'], $rootMac) : null,
-            'monitored' => $rootDevice !== null,
+            'monitored' => $rootDevice !== null || $owner !== null || ! empty($lookup['hidden']),
         ];
 
         if ($rootMac !== '' && $rootDevice === null) {
-            $this->checkUnknownRoot($key, $rootMac, $memberIds, $instances, $rootLookups[$rootMac] ?? []);
+            $this->checkUnknownRoot($key, $rootMac, $memberIds, $instances, $lookup);
         }
 
         if ($rootInstance !== null && in_array($rootDevice, $memberIds, true)) {
@@ -375,18 +389,27 @@ class StpAnalyzer
         ];
     }
 
+    /**
+     * The root bridge MAC belongs to no analyzed bridge: decide whether it is a monitored bridge
+     * outside the scope (fine), a monitored device without STP data (info) or an unknown bridge,
+     * and in the latter case follow the root ports to where the path leaves the monitored network.
+     */
     private function checkUnknownRoot(int $key, string $rootMac, array $memberIds, array $instances, array $lookup): void
     {
         $vendor = ! empty($lookup['vendor']) ? ' (' . $lookup['vendor'] . ')' : '';
-        $owners = $lookup['owners'] ?? [];
+        $owner = self::lookupOwner($lookup);
 
-        if (! $owners && ! empty($lookup['hidden'])) {
+        if (! $owner && ! empty($lookup['hidden'])) {
             return; // monitored device outside this user's permissions: not a rogue bridge
         }
 
-        if ($owners) {
-            $owner = $owners[0];
-            $name = $this->deviceName((int) $owner['device_id']);
+        if ($owner && $owner['source'] === 'stp') {
+            return; // monitored bridge outside the analyzed group/location: nothing wrong
+        }
+
+        if ($owner) {
+            // the MAC is an interface MAC of a monitored device that reports no STP data with it
+            $name = $owner['name'] ?? $this->deviceName((int) $owner['device_id']);
             $this->add(new Finding(
                 Finding::INFO, 'root_not_polled',
                 "root bridge $name has no STP data",
@@ -422,7 +445,8 @@ class StpAnalyzer
 
         $sightings = [];
         foreach (array_slice($lookup['fdb'] ?? [], 0, 5) as $fdb) {
-            $sightings[] = $this->deviceName((int) $fdb['device_id']) . ' ' . $this->portName((int) $fdb['port_id']) . (! empty($fdb['vlan']) ? ' vlan ' . $fdb['vlan'] : '');
+            $sightings[] = ($fdb['name'] ?? $this->deviceName((int) $fdb['device_id'])) . ' '
+                . (($fdb['port'] ?? '') ?: $this->portName((int) $fdb['port_id'])) . (! empty($fdb['vlan']) ? ' vlan ' . $fdb['vlan'] : '');
         }
 
         $detail = 'Root bridge ' . StpIndex::formatMac($rootMac) . $vendor . ' is not a device monitored by LibreNMS.';
@@ -443,6 +467,9 @@ class StpAnalyzer
         ));
     }
 
+    /**
+     * Root bridge sanity: explicit priority, one of the designated roots (setting), not at the edge.
+     */
     private function checkRootPlacement(int $key, int $rootDevice, array $rootInstance, array $memberIds, Graph $graph): void
     {
         $name = $this->deviceName($rootDevice);
@@ -482,6 +509,10 @@ class StpAnalyzer
         }
     }
 
+    /**
+     * Timer checks: non-default or 802.1D-inconsistent timers on the root, and bridges whose
+     * operational timers (learned from the root's BPDUs) differ from the root's.
+     */
     private function checkTimers(int $key, int $rootDevice, array $root, array $memberIds, array $instances): void
     {
         $hello = $root['bridgeHelloTime'] ?: $root['helloTime'];
@@ -536,6 +567,9 @@ class StpAnalyzer
         }
     }
 
+    /**
+     * Mixed STP modes in one domain (PVST+ / Rapid-PVST+ / MST / 802.1D).
+     */
     private function checkProtocols(int $key, array $memberIds, array $instances): void
     {
         $protocols = [];
@@ -569,6 +603,11 @@ class StpAnalyzer
         ));
     }
 
+    /**
+     * Bridge hops from the root against the configured maximum diameter.
+     *
+     * @return int|null largest hop count from the root, null when the root is not in the domain
+     */
     private function checkDiameter(int $key, ?int $rootDevice, array $memberIds, Graph $graph): ?int
     {
         if ($rootDevice === null || ! $graph->hasNode($rootDevice)) {
@@ -603,6 +642,10 @@ class StpAnalyzer
         return $hops;
     }
 
+    /**
+     * Recent topology changes and change storms (rate per day of uptime), with the ports most
+     * likely causing them: frequently transitioning ports that are not inter-switch links.
+     */
     private function checkTopologyChanges(int $key, array $memberIds, array $instances): void
     {
         $recent = [];
@@ -664,6 +707,10 @@ class StpAnalyzer
         }
     }
 
+    /**
+     * Port level problems: broken ports, flapping ports, ports still converging, forwarding ports
+     * that are neither root nor designated, and non-root bridges without a root port.
+     */
     private function checkPorts(int $key, array $memberIds, array $instances): void
     {
         $flapLimit = $this->settings->int('stp_flap_transitions', 1);
@@ -802,6 +849,10 @@ class StpAnalyzer
 
     // ---------------------------------------------------------------- network wide checks
 
+    /**
+     * Inter-switch switchports that take part in no STP instance although both switches run STP
+     * (spanning tree disabled or BPDU filter on the port). Routed ports are ignored.
+     */
     private function checkPortsWithoutStp(): void
     {
         $missing = [];
@@ -814,14 +865,7 @@ class StpAnalyzer
                 if (! $port || ! $this->portUp($portId) || ! empty($port['has_ip']) || empty($port['switchport'])) {
                     continue;
                 }
-                $found = false;
-                foreach (array_keys($this->stp->instancesFor($deviceId)) as $key) {
-                    if ($this->stp->portRow($deviceId, $key, $portId)) {
-                        $found = true;
-                        break;
-                    }
-                }
-                if (! $found) {
+                if (! $this->portHasStp($deviceId, $portId)) {
                     $missing[$portId] = $deviceId;
                 }
             }
@@ -842,6 +886,36 @@ class StpAnalyzer
         }
     }
 
+    /**
+     * Does the port (or the aggregate it belongs to) take part in spanning tree in any VLAN?
+     * Uses the 'has_stp' flag when the caller provides it, because only some instances' port
+     * rows may be loaded; otherwise checks the loaded rows.
+     */
+    private function portHasStp(int $deviceId, int $portId): bool
+    {
+        $candidates = array_filter([$portId, $this->lagParent[$portId] ?? null]);
+        foreach ($candidates as $candidate) {
+            if (! empty($this->ports[$candidate]['has_stp'])) {
+                return true;
+            }
+        }
+
+        if (array_key_exists('has_stp', $this->ports[$portId] ?? [])) {
+            return false;
+        }
+
+        foreach (array_keys($this->stp->instancesFor($deviceId)) as $key) {
+            if ($this->stp->portRow($deviceId, $key, $portId)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Switches with switch neighbours but no STP data (STP disabled or not exposed via SNMP).
+     */
     private function checkDevicesWithoutStp(): void
     {
         $missing = [];
@@ -879,34 +953,11 @@ class StpAnalyzer
         $graph = $this->logicalGraph(array_values($links));
 
         $flagged = [];
-        foreach ($graph->nodes() as $node) {
+        foreach ($graph->nodesOnCycles() as $node) {
             $ids = array_map('intval', explode('+', (string) $node));
             $noStp = array_filter($ids, fn ($id) => ! $this->stp->hasStp($id)
                 && in_array($this->devices[$id]['role'] ?? '', [DeviceRole::SWITCH, DeviceRole::L3SWITCH], true));
-            if (! $noStp || $graph->degree($node) < 2) {
-                continue;
-            }
-
-            // node lies on a cycle if two of its neighbours stay connected without it
-            $neighbours = $graph->neighbours($node);
-            $without = new Graph;
-            foreach ($graph->nodes() as $n) {
-                if ($n !== $node) {
-                    $without->addNode($n);
-                    foreach ($graph->neighbours($n) as $m) {
-                        if ($m !== $node) {
-                            $without->addEdge($n, $m);
-                        }
-                    }
-                }
-            }
-            $reach = $without->distances($neighbours[0]);
-            foreach (array_slice($neighbours, 1) as $other) {
-                if (isset($reach[$other])) {
-                    $flagged = array_merge($flagged, $noStp);
-                    break;
-                }
-            }
+            $flagged = array_merge($flagged, $noStp);
         }
 
         if ($flagged) {
@@ -920,24 +971,41 @@ class StpAnalyzer
         }
     }
 
+    /**
+     * Root bridge and root port changes recorded by LibreNMS in the eventlog.
+     */
     private function checkEvents(): void
     {
         $since = $this->now - $this->settings->int('stp_event_days', 1) * 86400;
-        $rootChanges = [];
-        $rootPortChanges = [];
-        foreach ($this->events as $event) {
+        $changes = ['root' => [], 'port' => []];
+        $last = [];
+
+        // LibreNMS logs one entry per STP instance, so a single failover on a PVST switch with
+        // 50 VLANs writes 50 entries within one poll: count bursts, not entries.
+        $events = $this->events;
+        usort($events, fn ($a, $b) => strcmp((string) ($a['datetime'] ?? ''), (string) ($b['datetime'] ?? '')));
+        foreach ($events as $event) {
             $time = strtotime((string) ($event['datetime'] ?? '')) ?: 0;
             if ($time < $since) {
                 continue;
             }
             $message = (string) ($event['message'] ?? '');
-            $deviceId = (int) ($event['device_id'] ?? 0);
-            if (stripos($message, 'designated root changed') !== false) {
-                $rootChanges[$deviceId] = ($rootChanges[$deviceId] ?? 0) + 1;
-            } elseif (stripos($message, 'root port changed') !== false) {
-                $rootPortChanges[$deviceId] = ($rootPortChanges[$deviceId] ?? 0) + 1;
+            $kind = match (true) {
+                stripos($message, 'designated root changed') !== false => 'root',
+                stripos($message, 'root port changed') !== false => 'port',
+                default => null,
+            };
+            if ($kind === null) {
+                continue;
             }
+
+            $deviceId = (int) ($event['device_id'] ?? 0);
+            if (! isset($last[$kind][$deviceId]) || $time - $last[$kind][$deviceId] > 120) {
+                $changes[$kind][$deviceId] = ($changes[$kind][$deviceId] ?? 0) + 1;
+            }
+            $last[$kind][$deviceId] = $time;
         }
+        [$rootChanges, $rootPortChanges] = [$changes['root'], $changes['port']];
 
         $days = $this->settings->int('stp_event_days', 1);
         if ($rootChanges) {
@@ -965,6 +1033,9 @@ class StpAnalyzer
 
     // ---------------------------------------------------------------- rows for tables
 
+    /**
+     * Row of the bridges table (one per device and instance).
+     */
     private function bridgeRow(int $deviceId, int $key, array $instance): array
     {
         $rootPort = null;
@@ -997,6 +1068,9 @@ class StpAnalyzer
         ];
     }
 
+    /**
+     * Row of the blocked ports table, with the neighbour across the link when LLDP/CDP knows it.
+     */
     private function blockedRow(int $deviceId, int $key, array $instance, array $port): array
     {
         $neighbor = $this->neighborOf($port['port_id']);
@@ -1012,7 +1086,7 @@ class StpAnalyzer
             'role' => StpIndex::role($instance, $port),
             'cost' => $port['pathCost'],
             'designated_bridge' => StpIndex::formatMac($port['designatedBridge']),
-            'designated_name' => isset($this->bridgeOwner[$port['designatedBridge']]) ? $this->deviceName($this->bridgeOwner[$port['designatedBridge']]) : null,
+            'designated_name' => ($owner = $this->stp->bridgeOwner($port['designatedBridge'])) !== null ? $this->deviceName($owner) : null,
             'transitions' => $port['forwardTransitions'],
             'neighbor' => $neighbor ? [
                 'device_id' => $neighbor['device_id'],
@@ -1022,6 +1096,9 @@ class StpAnalyzer
         ];
     }
 
+    /**
+     * Most recent STP eventlog entries for the events table.
+     */
     private function eventRows(): array
     {
         $rows = [];
@@ -1040,6 +1117,10 @@ class StpAnalyzer
 
     // ---------------------------------------------------------------- helpers
 
+    /**
+     * Index the links table: neighbour per local port, device adjacency, and one entry per
+     * physical link between two analyzed devices (both directions of LLDP/CDP merged).
+     */
     private function prepareLinks(): void
     {
         $this->adjacency = new Graph;
@@ -1161,11 +1242,17 @@ class StpAnalyzer
         return $graph;
     }
 
+    /**
+     * Display name of a logical graph node ("12" or merged MLAG pair "12+13").
+     */
     private function logicalName(int|string $node): string
     {
         return implode('+', array_map(fn ($id) => $this->deviceName((int) $id), explode('+', (string) $node)));
     }
 
+    /**
+     * LLDP/CDP neighbour seen on a port, or on a member of the aggregate when the port is a LAG.
+     */
     private function neighborOf(int $portId): ?array
     {
         if (isset($this->neighbor[$portId])) {
@@ -1173,8 +1260,8 @@ class StpAnalyzer
         }
 
         // STP runs on the aggregate, LLDP on its members
-        foreach ($this->lagParent as $member => $parent) {
-            if ($parent === $portId && isset($this->neighbor[$member])) {
+        foreach ($this->lagMembers[$portId] ?? [] as $member) {
+            if (isset($this->neighbor[$member])) {
                 return $this->neighbor[$member];
             }
         }
@@ -1182,6 +1269,9 @@ class StpAnalyzer
         return null;
     }
 
+    /**
+     * Ports without status data count as up (the links table only keeps recently seen neighbours).
+     */
     private function portUp(int $portId): bool
     {
         $status = $this->ports[$portId]['ifOperStatus'] ?? 'up';
@@ -1189,6 +1279,11 @@ class StpAnalyzer
         return $status === 'up';
     }
 
+    /**
+     * Devices listed in the 'designated root bridges' setting (ids, hostnames, sysNames or display names).
+     *
+     * @return array<int, true>
+     */
     private function preferredRoots(): array
     {
         $wanted = array_map('strtolower', $this->settings->list('stp_preferred_roots'));
@@ -1212,16 +1307,26 @@ class StpAnalyzer
         return $result;
     }
 
+    /**
+     * 32768 is the default bridge priority; with the extended system id (Cisco PVST) the VLAN
+     * number is added, so VLAN 10 reports 32778 and the default instance (VLAN 1) 32769.
+     */
     private function isDefaultPriority(int $priority, int $key): bool
     {
         return $priority === self::DEFAULT_PRIORITY || $priority === self::DEFAULT_PRIORITY + max(1, $key);
     }
 
+    /**
+     * Topology changes younger than this many seconds count as recent.
+     */
     private function tcRecentSeconds(): int
     {
         return $this->settings->int('stp_tc_recent_minutes', 1) * 60;
     }
 
+    /**
+     * Topology changes per day of device uptime, null when there is not enough uptime to tell.
+     */
     private function tcRate(int $deviceId, array $instance): ?float
     {
         $uptime = (int) ($this->devices[$deviceId]['uptime'] ?? 0);
@@ -1232,14 +1337,18 @@ class StpAnalyzer
         return round($instance['topChanges'] / ($uptime / 86400), 1);
     }
 
+    /**
+     * Human readable name of a root bridge MAC: the monitored device owning it, or a description
+     * of the unmonitored bridge (with its OUI vendor when known).
+     */
     private function rootName(string $mac, ?array $lookups = null): string
     {
         $lookups ??= $this->rootLookups;
-        if (isset($this->bridgeOwner[$mac])) {
-            return $this->deviceName($this->bridgeOwner[$mac]);
+        if (($owner = $this->stp->bridgeOwner($mac)) !== null) {
+            return $this->deviceName($owner);
         }
-        if (! empty($lookups[$mac]['owners'][0]['device_id'])) {
-            return $this->deviceName((int) $lookups[$mac]['owners'][0]['device_id']);
+        if ($owner = self::lookupOwner($lookups[$mac] ?? [])) {
+            return $owner['name'] ?? $this->deviceName((int) $owner['device_id']);
         }
         if (! empty($lookups[$mac]['hidden'])) {
             return 'monitored bridge (no access)';
@@ -1248,6 +1357,26 @@ class StpAnalyzer
         return ! empty($lookups[$mac]['vendor']) ? 'unmonitored ' . $lookups[$mac]['vendor'] : 'unmonitored bridge';
     }
 
+    /**
+     * Monitored owner of a looked up root MAC, preferring the device whose bridge address it is.
+     *
+     * @return array{device_id: int, port_id: ?int, name: ?string, source: string}|null
+     */
+    private static function lookupOwner(array $lookup): ?array
+    {
+        $owners = $lookup['owners'] ?? [];
+        foreach ($owners as $owner) {
+            if (($owner['source'] ?? '') === 'stp') {
+                return $owner + ['name' => null];
+            }
+        }
+
+        return isset($owners[0]) ? $owners[0] + ['name' => null, 'source' => 'interface'] : null;
+    }
+
+    /**
+     * Display name of a device, "device #id" when it is not part of the analysis.
+     */
     private function deviceName(int $deviceId): string
     {
         $device = $this->devices[$deviceId] ?? null;
@@ -1273,6 +1402,9 @@ class StpAnalyzer
         return implode(', ', $parts);
     }
 
+    /**
+     * Short interface name (Gi1/0/1) of a port, "port #id" when the port row was not loaded.
+     */
     private function portName(int $portId): string
     {
         $port = $this->ports[$portId] ?? null;
@@ -1280,6 +1412,10 @@ class StpAnalyzer
         return $port ? InterfaceName::short(InterfaceName::label($port)) : "port #$portId";
     }
 
+    /**
+     * @param  int[]  $portIds
+     * @return int[] device ids owning these ports
+     */
     private function devicesOfPorts(array $portIds): array
     {
         $devices = [];
@@ -1297,6 +1433,9 @@ class StpAnalyzer
         $this->findings[] = $finding;
     }
 
+    /**
+     * Compact human readable duration (95s, 12m, 3.5h, 2.1d).
+     */
     public static function duration(int $seconds): string
     {
         return match (true) {

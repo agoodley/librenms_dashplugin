@@ -26,6 +26,9 @@ class PluginSettings
     /** @var array<string, string> */
     private array $values;
 
+    /**
+     * @param  array  $stored  settings saved by LibreNMS for this plugin (strings, may be incomplete)
+     */
     public function __construct(array $stored = [])
     {
         $this->values = self::merge($stored);
@@ -54,6 +57,9 @@ class PluginSettings
         return $this->values;
     }
 
+    /**
+     * Integer setting clamped to [$min, $max]; non-numeric values fall back to the default.
+     */
     public function int(string $key, int $min = PHP_INT_MIN, int $max = PHP_INT_MAX): int
     {
         $value = $this->values[$key] ?? self::DEFAULTS[$key] ?? '0';
@@ -62,6 +68,9 @@ class PluginSettings
         return max($min, min($max, $int));
     }
 
+    /**
+     * Checkbox setting ('1', 'true', 'on' or 'yes').
+     */
     public function bool(string $key): bool
     {
         return in_array(strtolower($this->values[$key] ?? ''), ['1', 'true', 'on', 'yes'], true);

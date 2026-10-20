@@ -29,6 +29,9 @@ class Finding
     ) {
     }
 
+    /**
+     * Array form used by the views and the JSON API.
+     */
     public function toArray(): array
     {
         return [
@@ -45,6 +48,11 @@ class Finding
         ];
     }
 
+    /**
+     * Worst of several severities, 'ok' for none.
+     *
+     * @param  string[]  $severities
+     */
     public static function worst(array $severities): string
     {
         $worst = 'ok';
