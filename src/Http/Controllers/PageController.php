@@ -63,26 +63,7 @@ class PageController extends Controller
      */
     private function diagnostics(Request $request, string $analysis, string $what): View
     {
-        $settings = $this->settings();
-        $params = MapParams::parse($request->query(), $settings);
-        $repo = new TopologyRepository($request->user());
-
-        $result = null;
-        $error = null;
-        try {
-            $result = $this->service($request, $settings)->$analysis($params);
-        } catch (\Throwable $e) {
-            $error = $this->failure($what, $e);
-        }
-
-        return view("topology::$analysis", [
-            'params' => $params,
-            'result' => $result,
-            'error' => $error,
-            'filters' => $repo->filterOptions(),
-            'deviceName' => $params['device'] ? $repo->deviceName($params['device']) : null,
-            'assetVersion' => self::assetVersion(),
-        ]);
+        return $this->page($request, $analysis, $what, fn (array $params, $settings) => $this->service($request, $settings)->$analysis($params));
     }
 
     /**
@@ -101,15 +82,5 @@ class PageController extends Controller
             'deviceName' => $params['device'] ? $repo->deviceName($params['device']) : null,
             'assetVersion' => self::assetVersion(),
         ]);
-    }
-
-    /**
-     * Cache busting version of the JS/CSS assets (newest modification time).
-     */
-    public static function assetVersion(): string
-    {
-        $files = glob(__DIR__ . '/../../../resources/assets/*') ?: [];
-
-        return (string) array_reduce($files, fn ($carry, $file) => max($carry, (int) filemtime($file)), 0);
     }
 }

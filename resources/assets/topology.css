@@ -2,6 +2,9 @@
 .topo-page { padding-bottom: 10px; }
 .topo-nav { margin-bottom: 10px; }
 .topo-nav .nav-tabs > li > a { padding: 6px 14px; }
+.topo-nav-pages { margin-top: 6px; }
+.topo-nav-pages > li > a { padding: 4px 12px; }
+.topo-landing-group { margin: 18px 0 8px; }
 
 .topo-toolbar, .topo-viewbar {
     display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;

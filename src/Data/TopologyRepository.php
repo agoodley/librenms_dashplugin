@@ -6,16 +6,16 @@ use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
-use App\Models\Device;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * All database access of the plugin. Everything is scoped to the devices the user may see and
- * returned as plain arrays for the (LibreNMS independent) builders and analyzers.
+ * Database access of the maps and the spanning tree, link and redundancy diagnostics. Everything is
+ * scoped to the devices the user may see (ScopedRepository) and returned as plain arrays for the
+ * (LibreNMS independent) builders and analyzers.
  */
-class TopologyRepository
+class TopologyRepository extends ScopedRepository
 {
     private const PORT_COLUMNS = [
         'port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifAlias', 'ifSpeed', 'ifOperStatus',
@@ -23,46 +23,6 @@ class TopologyRepository
         'ifInOctets_rate', 'ifOutOctets_rate', 'ifInErrors_rate', 'ifOutErrors_rate',
         'ifInErrors_delta', 'ifOutErrors_delta', 'ifInUcastPkts_delta', 'ifOutUcastPkts_delta', 'poll_period',
     ];
-
-    /** @var int[]|null */
-    private ?array $accessible = null;
-
-    /**
-     * @param  mixed  $user  the logged in LibreNMS user (App\Models\User); every query is limited to what it may see
-     */
-    public function __construct(private readonly mixed $user)
-    {
-    }
-
-    /**
-     * Devices the user may see, optionally limited to a device group and/or location.
-     *
-     * @return int[]
-     */
-    public function deviceIds(?int $groupId = null, ?int $locationId = null): array
-    {
-        $query = Device::hasAccess($this->user)->where('devices.disabled', 0);
-        if ($groupId) {
-            $query->inDeviceGroup($groupId);
-        }
-        if ($locationId) {
-            $query->where('devices.location_id', $locationId);
-        }
-
-        return array_map('intval', $query->pluck('devices.device_id')->all());
-    }
-
-    /**
-     * @return array<int, true>
-     */
-    private function accessible(): array
-    {
-        if ($this->accessible === null) {
-            $this->accessible = array_flip($this->deviceIds());
-        }
-
-        return $this->accessible;
-    }
 
     /**
      * @param  int[]  $ids
@@ -136,20 +96,6 @@ class TopologyRepository
         }
 
         return $facts;
-    }
-
-    /**
-     * @return int[]
-     */
-    private function distinctDevices(string $table, array $ids): array
-    {
-        try {
-            return array_map('intval', DB::table($table)->whereIntegerInRaw('device_id', $ids)->distinct()->pluck('device_id')->all());
-        } catch (\Throwable $e) {
-            Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
-
-            return [];
-        }
     }
 
     /**
@@ -638,24 +584,6 @@ class TopologyRepository
     }
 
     /**
-     * All rows of a per-device table, or none when the table does not exist on this LibreNMS version.
-     */
-    private function rows(string $table, array $ids, array $columns): array
-    {
-        if (! $ids) {
-            return [];
-        }
-
-        try {
-            return DB::table($table)->whereIntegerInRaw('device_id', $ids)->get($columns)->map(fn ($r) => (array) $r)->all();
-        } catch (\Throwable $e) {
-            Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
-
-            return [];
-        }
-    }
-
-    /**
      * Recent spanning tree eventlog entries (designated root / root port / topology changes).
      *
      * @param  int[]  $ids
@@ -759,25 +687,6 @@ class TopologyRepository
         }
 
         return $result;
-    }
-
-    /**
-     * @param  int[]  $deviceIds
-     * @return array<int, string> device_id => display name
-     */
-    private function deviceNames(array $deviceIds): array
-    {
-        $deviceIds = array_values(array_unique($deviceIds));
-        if (! $deviceIds) {
-            return [];
-        }
-
-        $names = [];
-        foreach (DB::table('devices')->whereIntegerInRaw('device_id', $deviceIds)->get(['device_id', 'display', 'hostname']) as $row) {
-            $names[(int) $row->device_id] = (string) ($row->display ?: $row->hostname);
-        }
-
-        return $names;
     }
 
     /**
@@ -930,41 +839,5 @@ class TopologyRepository
         }
 
         return array_map(fn ($entry) => $entry[1], $best);
-    }
-
-    /**
-     * Device groups and locations the user may filter by.
-     */
-    public function filterOptions(): array
-    {
-        $groups = [];
-        $locations = [];
-        try {
-            $groups = \App\Models\DeviceGroup::hasAccess($this->user)->orderBy('name')->get(['id', 'name'])
-                ->map(fn ($g) => ['id' => (int) $g->id, 'name' => (string) $g->name])->all();
-        } catch (\Throwable $e) {
-            Log::debug('topology plugin: cannot list device groups: ' . $e->getMessage());
-        }
-        try {
-            $locations = \App\Models\Location::hasAccess($this->user)->orderBy('location')->get(['id', 'location'])
-                ->map(fn ($l) => ['id' => (int) $l->id, 'name' => (string) $l->location])->all();
-        } catch (\Throwable $e) {
-            Log::debug('topology plugin: cannot list locations: ' . $e->getMessage());
-        }
-
-        return ['groups' => $groups, 'locations' => $locations];
-    }
-
-    /**
-     * Display name of a device, null when the user may not see it.
-     */
-    public function deviceName(int $deviceId): ?string
-    {
-        if (! isset($this->accessible()[$deviceId])) {
-            return null;
-        }
-        $row = DB::table('devices')->where('device_id', $deviceId)->first(['display', 'hostname']);
-
-        return $row ? (string) ($row->display ?: $row->hostname) : null;
     }
 }

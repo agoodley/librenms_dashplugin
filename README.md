@@ -203,7 +203,9 @@ root bridge on such a device is not reported as a rogue switch.
 
 ## How it works
 
-* `src/Data/TopologyRepository.php` – all database access, permission scoped.
+* `src/Data/` – all database access, permission scoped (`ScopedRepository`); `TopologyRepository` serves the maps and
+  the diagnostics.
+* `src/Support/Navigation.php` – the pages, as listed in the navigation, the plugin menu and the landing page.
 * `src/Topology/L2Builder.php`, `src/Topology/L3Builder.php` – build the map graphs (link de-duplication,
   LAG/MLAG handling, VLAN membership, subnet classification, routing overlays, hierarchy tiers).
 * `src/Stp/StpIndex.php`, `src/Stp/StpAnalyzer.php` – STP role derivation (BRIDGE-MIB has no port role) and

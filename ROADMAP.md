@@ -5,9 +5,13 @@ already collects; the tables and modules each one needs are listed so it can be 
 
 The plugin's conventions apply to all of them:
 
-* database access only in `src/Data/TopologyRepository.php`, scoped to the devices the user may see;
+* database access only in `src/Data/`, in repositories that extend `ScopedRepository` so every query stays inside
+  the devices the user may see; a feature adds its own repository rather than growing `TopologyRepository`;
 * the analysis in plain PHP classes with no LibreNMS dependency, covered by unit tests
   (like `StpAnalyzer`, `LinkAnalyzer` and `RedundancyAnalyzer`);
+* a page is listed in `Support\Navigation` (the navigation of every page, the plugin menu and the landing page) and
+  routed in `routes/web.php`; a feature with its own pages gets its own controller, built on the `page()` and `json()`
+  helpers of `Http\Controllers\Concerns\BuildsTopology`;
 * every finding says what is wrong and how to fix it, and noisy checks can be switched off in the settings.
 
 ## Status

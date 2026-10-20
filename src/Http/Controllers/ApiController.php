@@ -66,11 +66,7 @@ class ApiController extends Controller
         $refs = array_slice(array_values(array_filter(array_map('trim', explode(',', (string) $request->query('fail', ''))),
             fn ($ref) => $ref !== '' && strlen($ref) <= 300)), 0, 50);
 
-        try {
-            return response()->json($this->service($request)->simulate($refs));
-        } catch (\Throwable $e) {
-            return response()->json(['error' => $this->failure('failure simulation', $e)], 500);
-        }
+        return $this->json('failure simulation', fn () => $this->service($request)->simulate($refs));
     }
 
     /**
@@ -81,10 +77,6 @@ class ApiController extends Controller
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        try {
-            return response()->json($this->service($request, $settings)->$map($params));
-        } catch (\Throwable $e) {
-            return response()->json(['error' => $this->failure("$map view", $e)], 500);
-        }
+        return $this->json("$map view", fn () => $this->service($request, $settings)->$map($params));
     }
 }

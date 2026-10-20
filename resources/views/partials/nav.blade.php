@@ -1,4 +1,5 @@
-{{-- Tabs between the maps and the diagnostics pages, keeping the current scope; topology.js updates the links when filters change. --}}
+{{-- Navigation of every page (Support\Navigation): the groups, then the pages of the current group. Links keep the
+     current scope; topology.js updates the [data-topo-nav] links when the map filters change. --}}
 @php
     $navQuery = array_filter([
         'device' => $params['device'] ?? null,
@@ -8,23 +9,32 @@
         'vlan' => $params['vlan'] ?? null,
     ]);
     $navSuffix = $navQuery ? '?' . http_build_query($navQuery) : '';
+    $navGroups = \Agoodley\LibrenmsTopology\Support\Navigation::groups();
+    $navActiveGroup = \Agoodley\LibrenmsTopology\Support\Navigation::groupOf($active);
+    $navLink = function (array $page) use ($navSuffix): string {
+        $base = route($page['route']);
+        if (! \Agoodley\LibrenmsTopology\Support\Navigation::scoped($page)) {
+            return 'href="' . e($base) . '"';
+        }
+
+        return 'href="' . e($base . $navSuffix) . '" data-topo-nav data-base="' . e($base) . '"';
+    };
 @endphp
 <div class="topo-nav">
-    <ul class="nav nav-tabs">
-        <li class="{{ $active === 'l2' ? 'active' : '' }}">
-            <a href="{{ route('topology.l2') . $navSuffix }}" data-topo-nav data-base="{{ route('topology.l2') }}"><i class="fa fa-sitemap fa-fw"></i> Layer 2 Map</a>
-        </li>
-        <li class="{{ $active === 'l3' ? 'active' : '' }}">
-            <a href="{{ route('topology.l3') . $navSuffix }}" data-topo-nav data-base="{{ route('topology.l3') }}"><i class="fa fa-project-diagram fa-fw"></i> Layer 3 Map</a>
-        </li>
-        <li class="{{ $active === 'stp' ? 'active' : '' }}">
-            <a href="{{ route('topology.stp') . $navSuffix }}" data-topo-nav data-base="{{ route('topology.stp') }}"><i class="fa fa-stethoscope fa-fw"></i> Spanning Tree Diagnostics</a>
-        </li>
-        <li class="{{ $active === 'links' ? 'active' : '' }}">
-            <a href="{{ route('topology.links') . $navSuffix }}" data-topo-nav data-base="{{ route('topology.links') }}"><i class="fa fa-link fa-fw"></i> Link &amp; VLAN Diagnostics</a>
-        </li>
-        <li class="{{ $active === 'redundancy' ? 'active' : '' }}">
-            <a href="{{ route('topology.redundancy') . $navSuffix }}" data-topo-nav data-base="{{ route('topology.redundancy') }}"><i class="fa fa-code-branch fa-fw"></i> Redundancy</a>
-        </li>
+    <ul class="nav nav-tabs topo-nav-groups">
+        @foreach($navGroups as $groupKey => $group)
+            <li class="{{ $groupKey === $navActiveGroup ? 'active' : '' }}">
+                <a {!! $navLink(reset($group['pages'])) !!}><i class="fa {{ $group['icon'] }} fa-fw"></i> {{ $group['label'] }}</a>
+            </li>
+        @endforeach
     </ul>
+    @if($navActiveGroup && count($navGroups[$navActiveGroup]['pages']) > 1)
+        <ul class="nav nav-pills topo-nav-pages">
+            @foreach($navGroups[$navActiveGroup]['pages'] as $pageKey => $page)
+                <li class="{{ $pageKey === $active ? 'active' : '' }}">
+                    <a {!! $navLink($page) !!}><i class="fa {{ $page['icon'] }} fa-fw"></i> {{ $page['tab'] }}</a>
+                </li>
+            @endforeach
+        </ul>
+    @endif
 </div>

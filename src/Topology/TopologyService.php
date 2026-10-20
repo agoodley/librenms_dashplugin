@@ -38,7 +38,7 @@ class TopologyService
      */
     public function l2(array $p): array
     {
-        [$scope, $root] = $this->scope($p);
+        [$scope, $root] = $this->repo->scope($p);
         $links = $this->repo->links($scope);
         $ids = L2Builder::scopeDevices($links, $scope, $root, $root ? $p['depth'] : null);
 
@@ -96,7 +96,7 @@ class TopologyService
      */
     public function l3(array $p): array
     {
-        [$scope, $root] = $this->scope($p);
+        [$scope, $root] = $this->repo->scope($p);
         $addresses = $this->repo->addresses($scope, $p['ipv6']);
 
         $withAddresses = array_values(array_unique(array_map(fn ($a) => (int) $a['device_id'], $addresses)));
@@ -209,7 +209,7 @@ class TopologyService
      */
     public function links(array $p): array
     {
-        [$scope, $device] = $this->scope($p);
+        [$scope, $device] = $this->repo->scope($p);
         $links = $this->repo->links($scope);
 
         $remote = [];
@@ -295,7 +295,7 @@ class TopologyService
      */
     public function redundancy(array $p): array
     {
-        [$scope, $device] = $this->scope($p);
+        [$scope, $device] = $this->repo->scope($p);
         $result = $this->redundancyAnalyzer($scope, true)->analyze($device);
         $result['filter'] = $p;
 
@@ -434,27 +434,6 @@ class TopologyService
         }
 
         return new StpIndex($instances, $this->repo->stpPorts(array_keys($keys), $keys), $lag);
-    }
-
-    /**
-     * Device scope of a map; a root device outside the group/location filter widens the scope.
-     *
-     * @return array{0: int[], 1: int|null}
-     */
-    private function scope(array $p): array
-    {
-        $scope = $this->repo->deviceIds($p['group'], $p['location']);
-        $root = $p['device'] ?: null;
-        if ($root && ! in_array($root, $scope, true)) {
-            $all = $this->repo->deviceIds();
-            if (in_array($root, $all, true)) {
-                $scope = $all;
-            } else {
-                $root = null; // not visible to this user
-            }
-        }
-
-        return [$scope, $root];
     }
 
     /**
