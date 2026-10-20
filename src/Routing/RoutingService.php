@@ -96,7 +96,8 @@ class RoutingService
                 }
             }
         }
-        // the devices with a link end that has no address: the VRFs of the end come from all their addresses
+        // the devices with a link end that has no address: the VRFs of the end come from all their addresses (in a
+        // switched campus that is nearly every switch, so there the device view saves little memory)
         $addressed = [];
         foreach ($ends ? $this->repo->addresses($all) : [] as $row) {
             if (($packed = Address::pack($row['address'] ?? null)) === null || RoutingAnalyzer::ignorable($packed)) {

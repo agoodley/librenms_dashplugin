@@ -130,6 +130,15 @@ class RoutingAnalyzer
     /** @var array<int, array<int, true>> device => devices it is joined to in every routing table (links without addresses, see joinLinks()) */
     private array $joinedAny = [];
 
+    /** @var array<int, array{0: array<string, list<Address>>, 1: array<int, array<int, true>>}> device => see subnetsOf() (while joinLinks() runs) */
+    private array $subnets = [];
+
+    /** @var array<int, array<int, array<int, array<string, list<Address>>>>> device => address length => prefix length => its addresses of longer prefixes by their subnet of that length (see sharing()) */
+    private array $inside = [];
+
+    /** @var array<int, true> devices with addresses in a VRF of their own (not the global table) */
+    private array $inVrf = [];
+
     /** @var array<int, int>|null device => its network over the links that join every routing table (made once, see network()) */
     private ?array $anyNetworks = null;
 
@@ -373,7 +382,7 @@ class RoutingAnalyzer
      * addresses (an L2 port, a LAG member, a port with SVIs behind it, or a port LibreNMS did not
      * resolve) facing one with addresses is in the VRFs of its device's addresses that share a subnet
      * with that end (see sharedVrfs()). A link with no addresses on either end joins every table
-     * unless a subnet the two devices share is in VRFs of different names (see agreedVrfs()).
+     * unless a subnet the two devices share is evidence of a boundary (see agreedVrfs()).
      */
     private function joinLinks(): void
     {
@@ -410,23 +419,28 @@ class RoutingAnalyzer
                 $peers[$portB][$a] = true;
             }
         }
-        $subnets = [];
+        $tables = [];
         foreach ($this->lldp as [$a, $portA, , $b, $portB]) {
             $endA = $this->onLink[$portA] ?? [];
             $endB = $this->onLink[$portB] ?? [];
             if ($endA || $endB) {
-                $vrfsA = $endA ? self::vrfsOf($endA) : $this->sharedVrfs($a, $b, $endB, $peers, $subnets);
-                $vrfsB = $endB ? self::vrfsOf($endB) : $this->sharedVrfs($b, $a, $endA, $peers, $subnets);
+                $vrfsA = $endA ? self::vrfsOf($endA) : $this->sharedVrfs($a, $b, $endB, $peers);
+                $vrfsB = $endB ? self::vrfsOf($endB) : $this->sharedVrfs($b, $a, $endA, $peers);
                 $vrfs = $vrfsA === null ? $vrfsB : ($vrfsB === null ? $vrfsA : array_intersect_key($vrfsA, $vrfsB));
-            } elseif (($vrfs = $this->agreedVrfs($a, $b, $peers, $subnets)) === null) {
-                $this->joinedAny[$a][$b] = $this->joinedAny[$b][$a] = true;
+            } else {
+                // the same for every link between the two devices (the members of a LAG)
+                [$vrfs] = $tables[min($a, $b) . '-' . max($a, $b)] ??= [$this->agreedVrfs($a, $b, $peers)];
+                if ($vrfs === null) {
+                    $this->joinedAny[$a][$b] = $this->joinedAny[$b][$a] = true;
 
-                continue;
+                    continue;
+                }
             }
             foreach (array_keys($vrfs) as $vrf) {
                 $this->joined[(string) $vrf][$a][$b] = $this->joined[(string) $vrf][$b][$a] = true;
             }
         }
+        $this->subnets = $this->inside = [];
     }
 
     /**
@@ -435,15 +449,19 @@ class RoutingAnalyzer
      *
      * @param  list<Address>  $theirs  the addresses of the other end
      * @param  array<int, array<int, true>>  $peers  linked port => devices at its other ends
-     * @param  array<int, array{0: array<string, list<Address>>, 1: array<int, array<int, true>>}>  $subnets  see holding()
      * @return array<string, true>|null
      */
-    private function sharedVrfs(int $device, int $other, array $theirs, array $peers, array &$subnets): ?array
+    private function sharedVrfs(int $device, int $other, array $theirs, array $peers): ?array
     {
+        [$bySubnet, $prefixes] = $this->subnetsOf($device);
         $vrfs = [];
         foreach ($theirs as $their) {
-            foreach ($this->holding($device, $other, $their, $peers, $subnets) as $mine) {
-                $vrfs[strtolower($mine->vrf)] = true;
+            foreach (array_keys($prefixes[strlen($their->packed)] ?? []) as $prefix) {
+                foreach ($bySubnet[$their->key($prefix)] ?? [] as $mine) {
+                    if ($this->usable($mine, $other, $peers)) {
+                        $vrfs[strtolower($mine->vrf)] = true;
+                    }
+                }
             }
         }
 
@@ -452,68 +470,103 @@ class RoutingAnalyzer
 
     /**
      * The routing tables a link without addresses on either end joins, from the subnets its two devices
-     * share (loopbacks and the ports of links to third devices left out). Only a shared subnet in VRFs
-     * of different names on the two devices (a provider edge facing a customer router over a
-     * port-channel) makes it a routing boundary: then it joins the VRFs both sides have in a shared
-     * subnet, possibly none. Otherwise, switches sharing a management subnet or VRF-lite trunks, it is
-     * one L2 domain and joins every table (null).
+     * share (loopbacks and the ports of links to third devices left out). It is one L2 domain that joins
+     * every table (null), switches sharing a management subnet or VRF-lite trunks, unless a shared
+     * subnet is evidence of a routing boundary: no VRF name holds it on both devices, and it is a
+     * point-to-point subnet (/30, /31, /126, /127: a provider edge facing a customer router over a
+     * port-channel) or both devices have addresses in VRFs of their own (a VRF that is only defined,
+     * like the management VRF of an access switch managed in-band, does not count). Then it joins the
+     * VRFs that hold a shared subnet on both devices, possibly none.
      *
      * @param  array<int, array<int, true>>  $peers  linked port => devices at its other ends
-     * @param  array<int, array{0: array<string, list<Address>>, 1: array<int, array<int, true>>}>  $subnets  see holding()
      * @return array<string, true>|null
      */
-    private function agreedVrfs(int $a, int $b, array $peers, array &$subnets): ?array
+    private function agreedVrfs(int $a, int $b, array $peers): ?array
     {
-        $agreed = [];
-        $boundary = false;
-        foreach ([[$a, $b], [$b, $a]] as [$device, $other]) {
-            foreach ($this->byDevice[$other] ?? [] as $their) {
-                if (! $this->usable($their, $device, $peers)) {
-                    continue;
-                }
-                foreach ($this->holding($device, $other, $their, $peers, $subnets) as $mine) {
-                    if (strtolower($mine->vrf) === strtolower($their->vrf)) {
-                        $agreed[strtolower($mine->vrf)] = true;
-                    } else {
-                        $boundary = true;
-                    }
+        // the addresses of the device with fewer, looked up in the other's subnets (a hub has thousands)
+        [$small, $big] = count($this->byDevice[$a] ?? []) <= count($this->byDevice[$b] ?? []) ? [$a, $b] : [$b, $a];
+        $shared = [];
+        foreach ($this->byDevice[$small] ?? [] as $mine) {
+            if (! $this->usable($mine, $big, $peers)) {
+                continue;
+            }
+            foreach ($this->sharing($big, $mine) as [$key, $prefix, $their]) {
+                if ($this->usable($their, $small, $peers)) {
+                    $shared[$key][0] = $prefix >= strlen($mine->packed) * 8 - 2;
+                    $shared[$key][1][strtolower($mine->vrf)] = true;
+                    $shared[$key][2][strtolower($their->vrf)] = true;
                 }
             }
+        }
+
+        $agreed = [];
+        $boundary = false;
+        $ownVrfs = isset($this->inVrf[$a], $this->inVrf[$b]);
+        foreach ($shared as [$pointToPoint, $mine, $theirs]) {
+            $both = array_intersect_key($mine, $theirs);
+            $agreed += $both;
+            $boundary = $boundary || (! $both && ($pointToPoint || $ownVrfs));
         }
 
         return $boundary ? $agreed : null;
     }
 
     /**
-     * A device's addresses whose subnet holds an address of the other device, without loopbacks and
-     * the ports of links to third devices.
+     * A device's addresses (loopbacks left out) that share a subnet with an address, each with that
+     * subnet (the larger of the two) and its prefix length: those whose subnet holds the address and
+     * those of longer prefixes in its subnet.
      *
-     * @param  array<int, array<int, true>>  $peers  linked port => devices at its other ends
-     * @param  array<int, array{0: array<string, list<Address>>, 1: array<int, array<int, true>>}>  $subnets  device => its
-     *         addresses by subnet and its prefix lengths by address length (built here when needed)
-     * @return list<Address>
+     * @return list<array{0: string, 1: int, 2: Address}>
      */
-    private function holding(int $device, int $other, Address $their, array $peers, array &$subnets): array
+    private function sharing(int $device, Address $address): array
     {
-        if (! isset($subnets[$device])) {
-            $subnets[$device] = [[], []];
-            foreach ($this->byDevice[$device] ?? [] as $address) {
-                if (! $address->host) {
-                    $subnets[$device][0][$address->key()][] = $address;
-                    $subnets[$device][1][strlen($address->packed)][$address->prefix] = true;
+        [$bySubnet, $prefixes] = $this->subnetsOf($device);
+        $bytes = strlen($address->packed);
+        $found = [];
+        foreach (array_keys($prefixes[$bytes] ?? []) as $prefix) {
+            if ($prefix <= $address->prefix) {
+                $key = $address->key($prefix);
+                foreach ($bySubnet[$key] ?? [] as $other) {
+                    $found[] = [$key, $prefix, $other];
                 }
             }
         }
-        $found = [];
-        foreach (array_keys($subnets[$device][1][strlen($their->packed)] ?? []) as $prefix) {
-            foreach ($subnets[$device][0][$their->key($prefix)] ?? [] as $mine) {
-                if ($this->usable($mine, $other, $peers)) {
-                    $found[] = $mine;
+        if (! isset($this->inside[$device][$bytes][$address->prefix])) {
+            $inside = [];
+            foreach ($this->byDevice[$device] ?? [] as $other) {
+                if (! $other->host && $other->prefix > $address->prefix && strlen($other->packed) === $bytes) {
+                    $inside[$other->key($address->prefix)][] = $other;
                 }
             }
+            $this->inside[$device][$bytes][$address->prefix] = $inside;
+        }
+        $key = $address->key();
+        foreach ($this->inside[$device][$bytes][$address->prefix][$key] ?? [] as $other) {
+            $found[] = [$key, $address->prefix, $other];
         }
 
         return $found;
+    }
+
+    /**
+     * A device's addresses (loopbacks left out) by subnet, and its prefix lengths by address length.
+     *
+     * @return array{0: array<string, list<Address>>, 1: array<int, array<int, true>>}
+     */
+    private function subnetsOf(int $device): array
+    {
+        if (! isset($this->subnets[$device])) {
+            $index = [[], []];
+            foreach ($this->byDevice[$device] ?? [] as $address) {
+                if (! $address->host) {
+                    $index[0][$address->key()][] = $address;
+                    $index[1][strlen($address->packed)][$address->prefix] = true;
+                }
+            }
+            $this->subnets[$device] = $index;
+        }
+
+        return $this->subnets[$device];
     }
 
     /**
@@ -578,6 +631,9 @@ class RoutingAnalyzer
             );
 
             $this->byDevice[$deviceId][] = $address;
+            if ($vrf !== '') {
+                $this->inVrf[$deviceId] = true;
+            }
             if (! isset($this->byIp[$packed])) {
                 $this->byIp[$packed] = $address;
             } elseif (is_array($this->byIp[$packed])) {

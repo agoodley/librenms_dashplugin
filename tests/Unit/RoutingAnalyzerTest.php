@@ -945,16 +945,21 @@ class RoutingAnalyzerTest extends TestCase
 
     public function testProviderEdgeOverAPortChannel(): void
     {
-        // LLDP runs on the member ports, the addresses are on the port-channels (Po10.100 / Po1)
-        $net = RoutingFixture::network();
-        $net->router(7, 'ce-a', 65101)->router(8, 'ce-b', 65102);
-        $net->address(1, 'Port-channel10.100', '10.255.254.1/30', 'CUST-A');
-        $net->address(1, 'Port-channel20.200', '10.255.254.1/30', 'CUST-B');
-        $net->address(7, 'Port-channel1', '10.255.254.2/30');
-        $net->address(8, 'Port-channel1', '10.255.254.2/30');
-        $net->link(1, 901, 7, 911, 'Gi0/0/1', 'Gi0/1')->link(1, 902, 7, 912, 'Gi0/0/2', 'Gi0/2');
-        $net->link(1, 903, 8, 913, 'Gi0/0/3', 'Gi0/1')->link(1, 904, 8, 914, 'Gi0/0/4', 'Gi0/2');
-        $this->assertSame('info', self::find($net->analyzer()->analyze(), 'ip_duplicate')['severity']);
+        // LLDP runs on the member ports, the addresses are on the port-channels (Po10.100 / Po1); the customer routers
+        // have only the global table, so it is the point-to-point handoff in VRFs of different names that makes the
+        // links boundaries
+        foreach (['/31' => ['10.255.254.0/31', '10.255.254.1/31'], '/30' => ['10.255.254.1/30', '10.255.254.2/30'],
+            '/127' => ['2001:db8:254::2/127', '2001:db8:254::3/127']] as $size => [$pe, $ce]) {
+            $net = RoutingFixture::network();
+            $net->router(7, 'ce-a', 65101)->router(8, 'ce-b', 65102);
+            $net->address(1, 'Port-channel10.100', $pe, 'CUST-A');
+            $net->address(1, 'Port-channel20.200', $pe, 'CUST-B');
+            $net->address(7, 'Port-channel1', $ce);
+            $net->address(8, 'Port-channel1', $ce);
+            $net->link(1, 901, 7, 911, 'Gi0/0/1', 'Gi0/1')->link(1, 902, 7, 912, 'Gi0/0/2', 'Gi0/2');
+            $net->link(1, 903, 8, 913, 'Gi0/0/3', 'Gi0/1')->link(1, 904, 8, 914, 'Gi0/0/4', 'Gi0/2');
+            $this->assertSame('info', self::find($net->analyzer()->analyze(), 'ip_duplicate', strstr($ce, '/', true) . ' ')['severity'] ?? null, $size);
+        }
 
         $net = self::overlap();
         $net->address(1, 'Bundle-Ether100.200', '10.200.0.1/30', 'CUST');
@@ -1062,15 +1067,24 @@ class RoutingAnalyzerTest extends TestCase
     {
         // a trunk without addresses between two access switches whose management addresses share a subnet, and a
         // tenant's router in VRF TENANT on an access port of each, both with one address: the trunk is one L2 domain
-        // that joins every table unless a subnet the switches share is in VRFs of different names; loopbacks and
-        // ports linked to other devices do not count
+        // that joins every table unless a shared subnet is evidence of a boundary (here: in VRFs of different names on
+        // switches that both have VRFs of their own); loopbacks and ports linked to other devices do not count, on
+        // either switch
+        $firewall = fn (int $on, int $other) => function (RoutingFixture $n) use ($on, $other) {
+            $n->router(55, 'fw', null)->address($other, 'Vlan30', '10.30.0.1/24', 'MGMT');
+            $n->link($on, $n->address($on, 'Gi1/0/40', '10.30.0.10/30', 'FW'), 55, $n->address(55, 'eth0', '10.30.0.9/30', 'FW'));
+        };
         $variants = [
             'management subnet in the global table' => ['', '', null, 'warning'],
             'VRF names in another case' => ['mgmt', 'MGMT', null, 'warning'],
-            'loopback of another VRF in the subnet' => ['', '', fn (RoutingFixture $n) => $n->address(52, 'Loopback1', '10.10.10.99/32', 'LAB'), 'warning'],
-            'subnet reused in another VRF toward a firewall' => ['', '', fn (RoutingFixture $n) => $n->router(55, 'fw', null)
-                ->link(52, $n->address(52, 'Gi1/0/40', '10.10.10.10/30', 'FW'), 55, $n->address(55, 'eth0', '10.10.10.9/30', 'FW')), 'warning'],
-            'management subnet in VRFs of different names' => ['', 'MGMT', null, 'info'],
+            'loopback of another VRF in a subnet of the other switch' => ['MGMT', 'MGMT', function (RoutingFixture $n) {
+                $n->address(51, 'Loopback1', '10.20.0.99/32', 'LAB');
+                $n->address(52, 'Vlan20', '10.20.0.1/24', 'MGMT');
+            }, 'warning'],
+            'subnet of the other switch reused toward a firewall' => ['MGMT', 'MGMT', $firewall(51, 52), 'warning'],
+            'the same the other way round' => ['MGMT', 'MGMT', $firewall(52, 51), 'warning'],
+            'management subnet in VRFs of different names' => ['MGMT', 'OOB', null, 'info'],
+            'and with masks that differ' => ['MGMT', 'OOB', fn (RoutingFixture $n) => $n->update('addresses', ['device_id' => 52, 'ifName' => 'Vlan1'], ['prefixlen' => 25]), 'info'],
         ];
         foreach ($variants as $how => [$vrf1, $vrf2, $extra, $severity]) {
             $net = RoutingFixture::network();
@@ -1095,7 +1109,8 @@ class RoutingAnalyzerTest extends TestCase
         // a trunk without addresses between two distribution switches with SVIs of VRFs RED and BLUE in the same
         // subnets on both sides, and a router on each with subinterfaces in RED and GREEN (which has no SVIs on the
         // switches) reusing one address per VRF: every shared subnet agrees, so the trunk joins every table; one
-        // shared subnet in VRFs of different names makes it a boundary that joins only the VRFs that agree (RED)
+        // shared subnet in VRFs of different names (both switches have VRFs) makes it a boundary that joins only the
+        // VRFs that agree (RED)
         foreach (['BLUE' => 'warning', 'BLUE2' => 'info'] as $blue => $green) {
             $net = RoutingFixture::network();
             $net->router(61, 'dist1', null)->router(62, 'dist2', null)->router(63, 'r-a')->router(64, 'r-b');
@@ -1112,6 +1127,67 @@ class RoutingAnalyzerTest extends TestCase
 
             $this->assertSame('warning', self::find($result, 'ip_duplicate', '10.73.0.1')['severity'] ?? null, $blue);
             $this->assertSame($green, self::find($result, 'ip_duplicate', '10.72.0.1')['severity'] ?? null, $blue);
+        }
+    }
+
+    public function testTenantSubnetInTwoVrfsOnAHub(): void
+    {
+        // a data center aggregation switch hosts two tenants on one subnet (VRFs TENANT-C and TENANT-D) and a leaf on a
+        // trunk without addresses hosts TENANT-C on it: one VRF name holds the subnet on both, so it is no evidence of a
+        // boundary and the trunk joins every table, also TENANT-B, which a firewall on the aggregation switch and the
+        // leaf route with a duplicate address; the leaf having the subnet in a VRF of a third name makes it a boundary
+        foreach (['TENANT-C' => 'warning', 'TENANT-E' => 'info'] as $tenant => $severity) {
+            $net = RoutingFixture::network();
+            $net->router(71, 'agg1', null)->router(72, 'leaf1', null)->router(73, 'fw1', null);
+            $net->link(71, 971, 72, 972, 'Eth1/1', 'Eth1/49');
+            $net->link(73, $net->address(73, 'eth1', '10.200.0.254/24', 'TENANT-B'), 71, 973, null, 'Eth1/10');
+            $net->address(71, 'Vlan100', '10.100.0.1/24', 'TENANT-A');
+            $net->address(72, 'Vlan100', '10.100.0.2/24', 'TENANT-A');
+            $net->address(71, 'Vlan300', '10.0.0.1/24', 'TENANT-C');
+            $net->address(71, 'Vlan301', '10.0.0.1/24', 'TENANT-D');
+            $net->address(72, 'Vlan300', '10.0.0.2/24', $tenant);
+            $net->address(72, 'Vlan200', '10.200.0.2/24', 'TENANT-B');
+            $net->address(72, 'Vlan210', '10.210.0.9/24', 'TENANT-B');
+            $net->address(73, 'eth2', '10.210.0.9/24', 'TENANT-B');
+
+            $this->assertSame($severity, self::find($net->analyzer()->analyze(), 'ip_duplicate', '10.210.0.9')['severity'] ?? null, $tenant);
+        }
+    }
+
+    public function testCampusWithTheManagementVlanInAVrfOnTheCore(): void
+    {
+        // the core switches route CORP, GUEST and the management VLAN in VRF MGMT (IPv4 and IPv6), the L2 access
+        // switches have their management addresses in their one global table: a subnet in VRFs of different names is
+        // evidence of a boundary only between devices that both have VRFs of their own, so the access trunks join
+        // every table and two access switches with one management address is a warning; a VRF only defined on the
+        // access switches does not count, one with addresses does
+        $variants = [
+            'access switches with the global table only' => [null, 'warning'],
+            'a management VRF only defined on them' => [fn (RoutingFixture $n) => $n->vrfs[43]['Mgmt-vrf'] = $n->vrfs[44]['Mgmt-vrf'] = null, 'warning'],
+            'a VRF of their own with addresses' => [function (RoutingFixture $n) {
+                $n->address(43, 'Vlan50', '10.50.0.11/24', 'VOICE');
+                $n->address(44, 'Vlan50', '10.50.0.12/24', 'VOICE');
+            }, 'info'],
+        ];
+        foreach ($variants as $how => [$extra, $severity]) {
+            $net = RoutingFixture::network();
+            $net->router(41, 'core1', null)->router(42, 'core2', null)->router(43, 'acc1', null)->router(44, 'acc2', null);
+            foreach ([41 => 2, 42 => 3] as $core => $host) {
+                $net->address($core, 'Vlan10', "10.10.0.$host/24", 'CORP');
+                $net->address($core, 'Vlan20', "10.20.0.$host/24", 'GUEST');
+                $net->address($core, 'Vlan99', "10.99.0.$host/24", 'MGMT');
+                $net->address($core, 'Vlan99', "2001:db8:99::$host/64", 'MGMT');
+            }
+            foreach ([43 => 11, 44 => 12] as $access => $host) {
+                $net->address($access, 'Vlan99', '10.99.0.11/24');
+                $net->address($access, 'Vlan99', "2001:db8:99::$host/64");
+            }
+            $net->link(41, 941, 42, 942, 'Po1', 'Po1')->link(43, 943, 41, 944, 'Gi1/0/49', 'Gi1/0/43')->link(44, 945, 42, 946, 'Gi1/0/49', 'Gi1/0/44');
+            if ($extra) {
+                $extra($net);
+            }
+
+            $this->assertSame($severity, self::find($net->analyzer()->analyze(), 'ip_duplicate', '10.99.0.11')['severity'] ?? null, $how);
         }
     }
 
