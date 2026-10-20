@@ -534,8 +534,7 @@ class TopologyRepository extends ScopedRepository
         $bridges = [];
         $count = 0;
         if ($ids) {
-            foreach (DB::table('stp')->whereIntegerInRaw('device_id', $ids)->select(['stp_id', 'device_id', 'vlan', 'bridgeAddress'])
-                ->lazyById(5000, 'stp_id') as $row) {
+            foreach (DB::table('stp')->whereIntegerInRaw('device_id', $ids)->select(['device_id', 'vlan', 'bridgeAddress'])->cursor() as $row) {
                 $count++;
                 $keys[(int) $row->device_id][StpIndex::vlanKey($row->vlan)] = true;
                 $mac = StpIndex::mac($row->bridgeAddress);
