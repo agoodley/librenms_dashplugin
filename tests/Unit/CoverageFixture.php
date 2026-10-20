@@ -6,9 +6,9 @@ use Agoodley\LibrenmsTopology\Coverage\CoverageAnalyzer;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 
 /**
- * Builds networks for the coverage tests: monitored devices, their ports, LLDP/CDP rows (between
- * monitored devices or towards neighbours LibreNMS does not monitor), busy ports and the devices
- * LibreNMS knows by name.
+ * Builds networks for the coverage tests: monitored devices, their ports, LLDP/CDP rows as LibreNMS
+ * stores them (between monitored devices or towards neighbours LibreNMS does not monitor), busy
+ * ports and the devices the user may see that are not analyzed.
  */
 class CoverageFixture
 {
@@ -20,7 +20,7 @@ class CoverageFixture
 
     public array $lag = [];
 
-    /** @var array<int, array> known devices that are not analyzable (disabled, or not visible to the user) */
+    /** @var array<int, array> devices the user may see that are not analyzed (disabled ones) */
     public array $extraKnown = [];
 
     /** @var array<int, string[]> device_id => addresses on its interfaces */
@@ -33,7 +33,8 @@ class CoverageFixture
 
     public array $moduleOff = [];
 
-    public bool $autodiscovery = true;
+    /** LLDP/CDP autodiscovery of LibreNMS: on, off or no_nets */
+    public string $autodiscovery = 'on';
 
     private int $nextPort = 5000;
 
@@ -87,33 +88,35 @@ class CoverageFixture
     }
 
     /**
-     * An LLDP/CDP neighbour LibreNMS did not link to a device, seen on a device's port.
+     * An LLDP/CDP neighbour LibreNMS did not link to a device, seen on a device's port. $about is the
+     * CDP platform, or for LLDP the system description.
      */
-    public function neighbor(int $deviceId, string $port, string $host, string $platform = '', string $remotePort = 'Gi0/1', string $protocol = 'lldp', array $values = []): self
+    public function neighbor(int $deviceId, string $port, string $host, string $about = '', string $remotePort = 'Gi0/1', string $protocol = 'lldp', array $values = []): self
     {
         $portId = $this->port($deviceId, $port);
-        $this->links[] = array_merge(self::row($deviceId, $portId, 0, null, $host, $remotePort, $platform, $protocol), $values);
+        $this->links[] = array_merge(self::row($deviceId, $portId, 0, null, $host, $remotePort, $about, $protocol), $values);
 
         return $this;
     }
 
     /**
-     * A port with $macs MAC addresses in the forwarding table.
+     * A port with $macs MAC addresses in the last forwarding table discovery, in the given VLANs.
      */
     public function busy(int $deviceId, string $port, int $macs, array $vlans = [10], array $portValues = []): int
     {
         $portId = $this->port($deviceId, $port, $portValues);
-        $this->busy[$portId] = ['device_id' => $deviceId, 'macs' => $macs, 'vlans' => $vlans, 'last_seen' => 1760000000];
+        $this->busy[$portId] = ['device_id' => $deviceId, 'macs' => $macs, 'vlans' => $vlans, 'vlan_count' => count(array_unique($vlans)), 'last_seen' => 1760000000];
 
         return $portId;
     }
 
     /**
-     * A device LibreNMS knows that is not analyzed: disabled, or not visible to the user.
+     * A device the user may see that is not analyzed: a disabled one (devices the user may not see are
+     * not passed at all).
      */
-    public function known(int $id, string $name, bool $visible = true, bool $disabled = false): self
+    public function known(int $id, string $name, bool $disabled = true): self
     {
-        $this->extraKnown[$id] = ['name' => $visible ? $name : '', 'names' => [strtolower($name)], 'visible' => $visible, 'disabled' => $disabled];
+        $this->extraKnown[$id] = ['name' => $name, 'hostname' => strtolower($name), 'sysname' => strtolower($name), 'names' => [strtolower($name)], 'disabled' => $disabled];
 
         return $this;
     }
@@ -127,8 +130,9 @@ class CoverageFixture
         foreach ($this->devices as $id => $device) {
             $known[$id] = [
                 'name' => $device['display'],
+                'hostname' => strtolower($device['hostname']),
+                'sysname' => strtolower($device['sysName']),
                 'names' => array_merge(array_map('strtolower', [$device['hostname'], $device['sysName'], $device['display']]), $this->addresses[$id] ?? []),
-                'visible' => true,
                 'disabled' => false,
             ];
         }
@@ -149,13 +153,16 @@ class CoverageFixture
     }
 
     /**
-     * A links table row.
+     * A links table row as LibreNMS stores it: CDP has a platform, LLDP has none and keeps the
+     * system description in remote_version.
      */
-    public static function row(int $ld, int $lp, int $rd, ?int $rp, string $host, string $remotePort, string $platform = '', string $protocol = 'lldp'): array
+    public static function row(int $ld, int $lp, int $rd, ?int $rp, string $host, string $remotePort, string $about = '', string $protocol = 'lldp'): array
     {
+        $cdp = strtolower($protocol) === 'cdp';
+
         return [
             'local_device_id' => $ld, 'local_port_id' => $lp, 'remote_device_id' => $rd, 'remote_port_id' => $rp, 'remote_hostname' => $host,
-            'remote_port' => $remotePort, 'remote_platform' => $platform, 'remote_version' => '', 'protocol' => $protocol, 'hidden' => false,
+            'remote_port' => $remotePort, 'remote_platform' => $cdp ? $about : null, 'remote_version' => $cdp ? '' : $about, 'protocol' => $protocol,
         ];
     }
 }

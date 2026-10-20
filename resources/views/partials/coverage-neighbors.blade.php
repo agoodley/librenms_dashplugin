@@ -1,6 +1,6 @@
 {{-- Table of unmonitored LLDP/CDP neighbors on the coverage page; $rows from CoverageAnalyzer, helpers from coverage.blade.php. --}}
 <table class="table table-condensed table-hover topo-stp-table">
-    <thead><tr><th>Neighbor</th><th>Type</th><th>Platform</th><th>Seen on</th><th>In LibreNMS</th><th></th></tr></thead>
+    <thead><tr><th>Neighbor</th><th>Type</th><th>Platform or description</th><th>Seen on</th><th>In LibreNMS</th><th></th></tr></thead>
     <tbody>
     @forelse($rows as $neighbor)
         <tr>
@@ -9,7 +9,7 @@
                 @if($neighbor['protocols'])<br><small class="text-muted">{{ strtoupper(implode(', ', $neighbor['protocols'])) }}</small>@endif
             </td>
             <td style="white-space: nowrap">{!! $role($neighbor['role']) !!}</td>
-            <td class="topo-wrap" title="{{ $neighbor['version'] }}">{{ \Illuminate\Support\Str::limit($neighbor['platform'] ?: '-', 60) }}</td>
+            <td class="topo-wrap" title="{{ $neighbor['description'] }}">{{ \Illuminate\Support\Str::limit($neighbor['platform'] ?: ($neighbor['description'] ?: '-'), 60) }}</td>
             <td class="topo-wrap">
                 @foreach(array_slice($neighbor['sightings'], 0, 6) as $sighting)
                     <a href="{{ $deviceUrl($sighting['device_id']) }}">{{ $name($sighting['device_id']) }}</a>
@@ -22,6 +22,13 @@
             <td class="topo-wrap">
                 @if($neighbor['status'] === 'not_linked')
                     monitored as <a href="{{ $deviceUrl($neighbor['device_id']) }}">{{ $name($neighbor['device_id']) }}</a>, <span class="text-muted">not linked</span>
+                @elseif($neighbor['status'] === 'ambiguous')
+                    <span class="text-muted">name of</span>
+                    @foreach(array_slice($neighbor['candidates'], 0, 4) as $deviceId)
+                        <a href="{{ $deviceUrl($deviceId) }}">{{ $name($deviceId) }}</a>@if(! $loop->last), @endif
+                    @endforeach
+                    @if(count($neighbor['candidates']) > 4)<span class="text-muted">and {{ count($neighbor['candidates']) - 4 }} more</span>@endif
+                    <span class="text-muted">(ambiguous, not linked)</span>
                 @elseif($neighbor['status'] === 'disabled')
                     <a href="{{ $deviceUrl($neighbor['device_id']) }}">{{ $name($neighbor['device_id']) }}</a> <span class="text-muted">is disabled</span>
                 @else

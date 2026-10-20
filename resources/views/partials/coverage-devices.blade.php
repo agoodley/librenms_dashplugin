@@ -17,7 +17,7 @@
             </td>
             <td style="white-space: nowrap">{!! $role($device['role']) !!}@if($device['type'] !== '')<br><small class="text-muted">{{ $device['type'] }}</small>@endif</td>
             <td class="topo-wrap">
-                {{ $states[$device['state']] ?? $device['state'] }}
+                {{ $device['no_xdp'] ? 'its OS supports neither LLDP nor CDP' : ($states[$device['state']] ?? $device['state']) }}
                 @if($device['module_off'])<br><small class="text-warning">discovery-protocols module disabled in LibreNMS</small>@endif
             </td>
             <td class="topo-wrap">

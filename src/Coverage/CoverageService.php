@@ -12,8 +12,10 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
  */
 class CoverageService
 {
-    /** Port columns the report needs (names, description, mode and type). */
-    private const PORT_COLUMNS = ['port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifAlias', 'ifType', 'ifTrunk', 'ifOperStatus', 'deleted'];
+    /** Port columns of the LLDP/CDP ports (names and description), and of the counted access ports (also mode and type). */
+    private const NAME_COLUMNS = ['port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifAlias'];
+
+    private const PORT_COLUMNS = ['port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifAlias', 'ifType', 'ifTrunk', 'deleted'];
 
     public function __construct(
         private CoverageRepository $repo,
@@ -50,16 +52,26 @@ class CoverageService
             }
         }
         $devices = $this->topology->devices(array_values(array_unique($ids)));
+        $lagParent = $this->topology->lagParents($scope);
 
+        // MAC addresses are only counted on access ports without a neighbour that explains them, of the
+        // centered device alone when there is one
         $threshold = $this->settings->int('coverage_mac_threshold', 0, 1000000);
-        $busy = $threshold ? $this->repo->busyPorts($scope, $threshold) : [];
+        $busy = [];
+        if ($threshold) {
+            $candidates = array_diff_key(
+                $this->repo->accessPorts($device !== null ? [$device] : $scope),
+                CoverageAnalyzer::explainedPorts($links), $lagParent, array_flip($lagParent),
+            );
+            $busy = $this->repo->busyPorts($candidates, $threshold);
+        }
 
         $analyzer = new CoverageAnalyzer(
             $devices,
             $scope,
             $links,
-            $this->topology->ports(array_merge($portIds, array_keys($busy)), self::PORT_COLUMNS),
-            $this->topology->lagParents($scope),
+            ($busy ? $this->topology->ports(array_keys($busy), self::PORT_COLUMNS) : []) + $this->topology->ports($portIds, self::NAME_COLUMNS),
+            $lagParent,
             $this->repo->knownDevices($addresses),
             $busy,
             $busy ? $this->topology->portVlans(array_keys($busy)) : [],

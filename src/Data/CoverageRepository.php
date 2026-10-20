@@ -2,16 +2,16 @@
 
 namespace Agoodley\LibrenmsTopology\Data;
 
+use Agoodley\LibrenmsTopology\Coverage\CoverageAnalyzer;
 use App\Models\Device;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 
 /**
- * Database access of the coverage report: the LLDP/CDP rows around the analyzed devices (keeping
- * which neighbours are monitored, disabled or out of the user's sight), the names of every
- * monitored device, MAC address counts per port, and the LibreNMS settings that decide whether
- * LLDP/CDP is read and neighbours are added.
+ * Database access of the coverage report: the LLDP/CDP rows around the analyzed devices, the names of
+ * the devices the user may see, MAC address counts of access ports, and the LibreNMS settings that
+ * decide whether LLDP/CDP is read and neighbours are added. Nothing about devices the user may not
+ * see leaves this class: a neighbour monitored on such a device looks unmonitored, like on the maps.
  */
 class CoverageRepository extends ScopedRepository
 {
@@ -25,9 +25,8 @@ class CoverageRepository extends ScopedRepository
 
     /**
      * LLDP/CDP rows reported by the given devices, and the rows of other devices the user may see that
-     * name them. A neighbour monitored on a device the user may not see loses its ids and is flagged
-     * 'hidden' (it is neither unmonitored nor shown); a disabled device the user may see keeps its id;
-     * an id of a device that no longer exists is dropped (the neighbour is unmonitored).
+     * name them. A remote device the user may not see (or that no longer exists) loses its ids, so the
+     * neighbour is unmonitored for this user; a disabled device the user may see keeps its id.
      *
      * @param  int[]  $ids
      * @return array<int, array>
@@ -56,28 +55,13 @@ class CoverageRepository extends ScopedRepository
             }
         }
 
-        $others = [];
-        foreach ($rows as $row) {
-            $rd = (int) $row['remote_device_id'];
-            if ($rd && ! isset($accessible[$rd])) {
-                $others[$rd] = true;
-            }
-        }
-        $existing = [];
-        foreach (array_chunk(array_keys($others), 5000) as $chunk) {
-            $existing += array_fill_keys(array_map('intval', DB::table('devices')->whereIntegerInRaw('device_id', $chunk)->pluck('device_id')->all()), true);
-        }
         $disabled = $this->disabledDevices();
-
         foreach ($rows as &$row) {
             $rd = (int) $row['remote_device_id'];
-            $row['hidden'] = false;
-            if (! $rd || isset($accessible[$rd]) || isset($disabled[$rd])) {
-                continue;
+            if ($rd && ! isset($accessible[$rd]) && ! isset($disabled[$rd])) {
+                $row['remote_device_id'] = 0;
+                $row['remote_port_id'] = null;
             }
-            $row['hidden'] = isset($existing[$rd]);
-            $row['remote_device_id'] = 0;
-            $row['remote_port_id'] = null;
         }
         unset($row);
 
@@ -85,31 +69,31 @@ class CoverageRepository extends ScopedRepository
     }
 
     /**
-     * Every monitored device with what identifies it as a neighbour: its lower case hostname, sysName and
-     * display name, and the given addresses when they belong to one of its interfaces. Devices the user may
-     * not see get no display name: they only keep their neighbours out of the report.
+     * The devices the user may see, also disabled ones, with what identifies them as a neighbour: the
+     * lower case hostname, sysName and display name, and the given addresses when they belong to one of
+     * their interfaces. Neighbours are only matched against these, like LibreNMS links them.
      *
      * @param  string[]  $addresses  neighbour names that are IP addresses
-     * @return array<int, array{name: string, names: string[], visible: bool, disabled: bool}>
+     * @return array<int, array{name: string, hostname: string, sysname: string, names: string[], disabled: bool}>
      */
     public function knownDevices(array $addresses = []): array
     {
-        $accessible = $this->accessible();
-        $disabled = $this->disabledDevices();
         $known = [];
-        foreach (DB::table('devices')->get(['device_id', 'hostname', 'sysName', 'display', 'disabled']) as $row) {
-            $id = (int) $row->device_id;
-            $visible = isset($accessible[$id]) || isset($disabled[$id]);
-            $known[$id] = [
-                'name' => $visible ? (string) ($row->display ?: $row->hostname) : '',
-                'names' => array_values(array_unique(array_filter(array_map(fn ($name) => strtolower(trim((string) $name)), [$row->hostname, $row->sysName, $row->display])))),
-                'visible' => $visible,
+        foreach (Device::hasAccess($this->user)->toBase()
+            ->get(['devices.device_id', 'devices.hostname', 'devices.sysName', 'devices.display', 'devices.disabled']) as $row) {
+            $hostname = strtolower(trim((string) $row->hostname));
+            $sysName = strtolower(trim((string) $row->sysName));
+            $known[(int) $row->device_id] = [
+                'name' => (string) ($row->display ?: $row->hostname),
+                'hostname' => $hostname,
+                'sysname' => $sysName,
+                'names' => array_values(array_unique(array_filter([$hostname, $sysName, strtolower(trim((string) $row->display))]))),
                 'disabled' => (bool) $row->disabled,
             ];
         }
 
         foreach ($this->addressOwners($addresses) as $address => $deviceIds) {
-            foreach ($deviceIds as $deviceId) {
+            foreach (array_unique($deviceIds) as $deviceId) {
                 if (isset($known[$deviceId])) {
                     $known[$deviceId]['names'][] = $address;
                 }
@@ -120,53 +104,111 @@ class CoverageRepository extends ScopedRepository
     }
 
     /**
-     * Ports of the given devices with at least $min MAC addresses in the forwarding table, with the
-     * VLANs of those addresses and when one was last seen. Counted in the database, so only the busy
-     * ports come back.
+     * Ports of the given devices that can have an unmanaged switch behind them: Ethernet ports (or of
+     * no reported type) that exist and are no Cisco trunk.
      *
      * @param  int[]  $ids
-     * @return array<int, array{device_id: int, macs: int, vlans: int[], last_seen: ?int}> port_id => counts
+     * @return array<int, int> port_id => device_id
      */
-    public function busyPorts(array $ids, int $min): array
+    public function accessPorts(array $ids): array
     {
-        if (! $ids || $min < 1) {
+        $types = array_values(array_filter(CoverageAnalyzer::ETHERNET_TYPES));
+        $ports = [];
+        foreach (array_chunk($ids, 1000) as $chunk) {
+            foreach (DB::table('ports')->whereIntegerInRaw('device_id', $chunk)->where('deleted', 0)
+                ->where(fn ($query) => $query->whereIn('ifType', $types)->orWhereNull('ifType')->orWhere('ifType', ''))
+                ->where(fn ($query) => $query->whereNull('ifTrunk')->orWhereIn('ifTrunk', CoverageAnalyzer::NOT_TRUNK))
+                ->get(['port_id', 'device_id']) as $row) {
+                $ports[(int) $row->port_id] = (int) $row->device_id;
+            }
+        }
+
+        return $ports;
+    }
+
+    /**
+     * MAC address counts of the given ports in the last forwarding table discovery of their device, for
+     * the ports with at least $min addresses: how many, in how many and which VLANs, and when. Only these
+     * ports are read, not the uplinks and trunks that hold most of the forwarding table.
+     *
+     * @param  array<int, int>  $ports  port_id => device_id, see accessPorts()
+     * @return array<int, array{device_id: int, macs: int, vlans: int[], vlan_count: int, last_seen: int}> port_id => counts
+     */
+    public function busyPorts(array $ports, int $min): array
+    {
+        if (! $ports || $min < 1) {
             return [];
         }
 
         try {
-            $seen = Schema::hasColumn('ports_fdb', 'updated_at') ? 'MAX(updated_at)' : 'NULL';
-            $ports = [];
-            foreach (array_chunk($ids, 5000) as $chunk) {
-                foreach (DB::table('ports_fdb')->whereIntegerInRaw('device_id', $chunk)->where('port_id', '>', 0)
-                    ->groupBy('port_id', 'device_id')
-                    ->havingRaw('COUNT(DISTINCT mac_address) >= ?', [$min])
-                    ->selectRaw("port_id, device_id, COUNT(DISTINCT mac_address) as macs, $seen as last_seen")
-                    ->get() as $row) {
-                    $ports[(int) $row->port_id] = [
-                        'device_id' => (int) $row->device_id,
+            // rows per port and discovery that found them last: a row is one address in one VLAN, so at least
+            // as many as the addresses; the ports that reach $min are counted exactly below
+            $groups = [];
+            $stamps = [];
+            foreach (array_chunk(array_keys($ports), 2000) as $chunk) {
+                foreach (DB::table('ports_fdb')->whereIntegerInRaw('port_id', $chunk)->whereNotNull('updated_at')
+                    ->groupBy('port_id', 'updated_at')->selectRaw('port_id, updated_at, COUNT(*) as macs')->get() as $row) {
+                    $groups[] = [
+                        'port_id' => (int) $row->port_id,
+                        'device_id' => $ports[(int) $row->port_id] ?? 0,
+                        'seen' => $stamps[$row->updated_at] ??= (int) strtotime((string) $row->updated_at),
                         'macs' => (int) $row->macs,
-                        'vlans' => [],
-                        'last_seen' => $row->last_seen ? (strtotime((string) $row->last_seen) ?: null) : null,
                     ];
                 }
             }
 
-            // ports_fdb.vlan_id is the id of the device's vlans row, or the VLAN number when there is none
-            foreach (array_chunk(array_keys($ports), 5000) as $chunk) {
+            $discovered = [];
+            foreach (array_chunk(array_values(array_unique(array_column($groups, 'device_id'))), 5000) as $chunk) {
+                foreach (DB::table('devices')->whereIntegerInRaw('device_id', $chunk)
+                    ->get(['device_id', 'last_discovered', 'last_discovered_timetaken']) as $row) {
+                    $discovered[(int) $row->device_id] = [
+                        $row->last_discovered ? (strtotime((string) $row->last_discovered) ?: null) : null,
+                        (float) $row->last_discovered_timetaken,
+                    ];
+                }
+            }
+            $current = CoverageAnalyzer::currentMacCounts($groups, $discovered, $min);
+
+            // the addresses of the last discovery and their VLANs: ports_fdb.vlan_id is the id of the device's vlans
+            // row (0 without one; only the timos and edgeswitch discovery store the VLAN number itself)
+            $macs = [];
+            $vlanIds = [];
+            $vlans = [];
+            foreach (array_chunk(array_keys($current), 2000) as $chunk) {
                 foreach (DB::table('ports_fdb as f')
                     ->leftJoin('vlans as v', function ($join): void {
                         $join->on('v.vlan_id', '=', 'f.vlan_id')->on('v.device_id', '=', 'f.device_id');
                     })
-                    ->whereIntegerInRaw('f.port_id', $chunk)->distinct()
-                    ->get(['f.port_id', 'f.vlan_id', 'v.vlan_vlan']) as $row) {
+                    ->whereIntegerInRaw('f.port_id', $chunk)
+                    ->get(['f.port_id', 'f.mac_address', 'f.vlan_id', 'f.updated_at', 'v.vlan_vlan']) as $row) {
+                    $portId = (int) $row->port_id;
+                    if (($stamps[$row->updated_at] ??= (int) strtotime((string) $row->updated_at)) !== $current[$portId]['last_seen']) {
+                        continue;
+                    }
+                    $macs[$portId][strtolower((string) $row->mac_address)] = true;
+                    $vlanIds[$portId][(int) $row->vlan_id] = true;
                     $vlan = $row->vlan_vlan !== null ? (int) $row->vlan_vlan : (int) $row->vlan_id;
                     if ($vlan > 0 && $vlan < 4095) {
-                        $ports[(int) $row->port_id]['vlans'][] = $vlan;
+                        $vlans[$portId][$vlan] = true;
                     }
                 }
             }
 
-            return $ports;
+            $busy = [];
+            foreach ($current as $portId => $port) {
+                $count = count($macs[$portId] ?? []);
+                if ($count >= $min) {
+                    $busy[$portId] = [
+                        'device_id' => $port['device_id'],
+                        'macs' => $count,
+                        'vlans' => array_keys($vlans[$portId] ?? []),
+                        'vlan_count' => count($vlanIds[$portId] ?? []),
+                        'last_seen' => $port['last_seen'],
+                    ];
+                }
+            }
+
+            return $busy;
         } catch (\Throwable $e) {
             Log::debug('topology plugin: cannot count MAC addresses: ' . $e->getMessage());
 
@@ -175,8 +217,9 @@ class CoverageRepository extends ScopedRepository
     }
 
     /**
-     * Devices whose discovery-protocols module is switched off in LibreNMS (in the device's settings,
-     * else for its OS or globally), so their LLDP/CDP tables are never read.
+     * Devices whose discovery-protocols module is switched off in LibreNMS, so their LLDP/CDP tables
+     * are never read. Decided like LibreNMS decides (Util\ModuleList): the device's own setting, else
+     * the setting for its OS, else the global one.
      *
      * @param  array<int, array>  $devices  device_id => row with os
      * @return array<int, true>
@@ -197,15 +240,18 @@ class CoverageRepository extends ScopedRepository
             Log::debug('topology plugin: cannot read device module settings: ' . $e->getMessage());
         }
 
+        $global = self::config('discovery_modules.discovery-protocols');
         $byOs = [];
         $off = [];
         foreach ($devices as $deviceId => $device) {
-            if (isset($attributes[$deviceId])) {
-                $enabled = (bool) $attributes[$deviceId];
-            } else {
-                $os = (string) ($device['os'] ?? '');
-                $enabled = $byOs[$os] ??= $this->moduleEnabledForOs($os);
-            }
+            $os = (string) ($device['os'] ?? '');
+            $osSetting = $byOs[$os] ??= [self::config("os.$os.discovery_modules.discovery-protocols")];
+            $enabled = match (true) {
+                $global === null => false, // not a discovery module of this LibreNMS
+                isset($attributes[$deviceId]) => (bool) $attributes[$deviceId],
+                $osSetting[0] !== null => (bool) $osSetting[0],
+                default => (bool) $global,
+            };
             if (! $enabled) {
                 $off[(int) $deviceId] = true;
             }
@@ -215,15 +261,16 @@ class CoverageRepository extends ScopedRepository
     }
 
     /**
-     * Does LibreNMS add LLDP/CDP neighbours as new devices (autodiscovery.xdp, on by default)?
+     * Does LibreNMS add LLDP/CDP neighbours as new devices? 'on', 'off', or 'no_nets' when
+     * autodiscovery.xdp is on but no discovery networks (nets) are set: then it adds none.
      */
-    public function xdpAutodiscovery(): bool
+    public function xdpAutodiscovery(): string
     {
-        try {
-            return (bool) \LibreNMS\Config::get('autodiscovery.xdp', true);
-        } catch (\Throwable) {
-            return true;
+        if (self::config('autodiscovery.xdp', true) !== true) {
+            return 'off';
         }
+
+        return self::config('nets') ? 'on' : 'no_nets';
     }
 
     /**
@@ -281,14 +328,16 @@ class CoverageRepository extends ScopedRepository
     }
 
     /**
-     * Is the discovery-protocols module on for this OS (or globally)?
+     * A LibreNMS setting, through the LibrenmsConfig facade (LibreNMS\Config on older versions).
      */
-    private function moduleEnabledForOs(string $os): bool
+    private static function config(string $key, mixed $default = null): mixed
     {
         try {
-            return (bool) (\LibreNMS\Config::getCombined($os, 'discovery_modules')['discovery-protocols'] ?? true);
+            return class_exists(\App\Facades\LibrenmsConfig::class)
+                ? \App\Facades\LibrenmsConfig::get($key, $default)
+                : \LibreNMS\Config::get($key, $default);
         } catch (\Throwable) {
-            return true;
+            return $default;
         }
     }
 }

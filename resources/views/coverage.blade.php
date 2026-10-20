@@ -21,6 +21,10 @@
     ];
     $role = fn ($key) => '<i class="fa ' . ($roles[$key][1] ?? 'fa-question-circle') . ' fa-fw"></i> ' . e($roles[$key][0] ?? $key);
     $plural = fn ($count, $word, $words = null) => $count . ' ' . ($count === 1 ? $word : ($words ?? $word . 's'));
+    // each list is cut at the same number of rows (CoverageAnalyzer::ROWS), the JSON too
+    $cut = fn (string $list, string $what) => ($result[$list . '_total'] ?? 0) > count($result[$list] ?? [])
+        ? 'Showing the first ' . count($result[$list]) . ' of ' . $result[$list . '_total'] . " $what: narrow the report with the device, group or location filter."
+        : null;
 @endphp
 
 @section('content')
@@ -85,8 +89,9 @@
                 <h4>Not monitored</h4>
                 <div class="topo-card-value">{{ $summary['not_monitored'] }}</div>
                 <p>{{ $roleCounts ? implode(', ', $roleCounts) : 'switches, routers, firewalls and access points' }} seen only as LLDP/CDP neighbors
-                    @if($summary['statuses']['not_linked'] || $summary['statuses']['disabled'])
-                        <br>+ {{ $summary['statuses']['not_linked'] }} not linked to their device, {{ $summary['statuses']['disabled'] }} disabled
+                    @if($summary['statuses']['not_linked'] || $summary['statuses']['ambiguous'] || $summary['statuses']['disabled'])
+                        <br>+ {{ $summary['statuses']['not_linked'] }} not linked to their device, {{ $summary['statuses']['ambiguous'] }} named like several devices,
+                        {{ $summary['statuses']['disabled'] }} disabled
                     @endif
                 </p>
             </div>
@@ -95,15 +100,15 @@
                 <div class="topo-card-value">{{ $summary['devices'] }}</div>
                 <p>monitored network devices that report no LLDP/CDP neighbors</p>
             </div>
-            <div class="topo-card topo-{{ $result['mac_threshold'] ? $worst(['ports']) : 'info' }}">
+            <div class="topo-card topo-{{ $worst(['ports']) }}">
                 <h4>Possible unmanaged switches</h4>
-                <div class="topo-card-value">{{ $result['mac_threshold'] ? $summary['ports'] : '-' }}</div>
-                <p>{{ $result['mac_threshold'] ? 'access ports with ' . $result['mac_threshold'] . ' or more MAC addresses and no LLDP/CDP neighbor' : 'check disabled in the settings' }}</p>
+                <div class="topo-card-value">{{ $summary['ports'] }}</div>
+                <p>ports with several LLDP/CDP neighbors{{ $result['mac_threshold'] ? ', or access ports with ' . $result['mac_threshold'] . ' or more MAC addresses and no neighbor that explains them' : ' (counting MAC addresses is off in the settings)' }}</p>
             </div>
         </div>
 
         <div class="panel panel-default">
-            <div class="panel-heading"><strong>Findings</strong> <span class="text-muted">({{ count($result['findings']) }})</span></div>
+            <div class="panel-heading"><strong>Findings</strong> <span class="text-muted">({{ $result['findings_total'] }})</span></div>
             <table class="table table-condensed table-hover topo-stp-table">
                 <thead><tr><th style="width: 90px">Severity</th><th>Finding</th><th style="width: 22%">Devices</th></tr></thead>
                 <tbody>
@@ -132,12 +137,15 @@
                 @endforelse
                 </tbody>
             </table>
+            @if($cut('findings', 'findings, most severe first'))
+                <div class="panel-footer text-muted">{{ $cut('findings', 'findings, most severe first') }}</div>
+            @endif
         </div>
 
         <div class="panel panel-default">
             <div class="panel-heading">
                 <strong>Network devices LibreNMS does not monitor</strong>
-                <span class="text-muted">(switches, routers, firewalls and access points seen as LLDP/CDP neighbors, and neighbors LibreNMS did not link to their device or that are disabled)</span>
+                <span class="text-muted">(switches, routers, firewalls and access points seen as LLDP/CDP neighbors, and neighbors LibreNMS did not link to their device: named like a monitored device, like several, or disabled)</span>
             </div>
             <div class="table-responsive">
                 @include('topology::partials.coverage-neighbors', ['rows' => $mainNeighbors])
@@ -148,8 +156,8 @@
                     <div class="table-responsive">@include('topology::partials.coverage-neighbors', ['rows' => $otherNeighbors])</div>
                 </details>
             @endif
-            @if($result['neighbors_total'] > count($result['neighbors']))
-                <div class="panel-footer text-muted">Showing the first {{ count($result['neighbors']) }} of {{ $result['neighbors_total'] }} neighbors: use the filters or the JSON for the rest.</div>
+            @if($cut('neighbors', 'neighbors, network devices first'))
+                <div class="panel-footer text-muted">{{ $cut('neighbors', 'neighbors, network devices first') }}</div>
             @endif
         </div>
 
@@ -163,45 +171,52 @@
             </div>
             @if($quietDevices)
                 <details class="topo-details">
-                    <summary>Servers, phones and other devices without LLDP/CDP neighbors ({{ count($quietDevices) }}): usual for them</summary>
+                    <summary>Servers, phones, other devices and firewalls without LLDP/CDP support that report no neighbors ({{ count($quietDevices) }}): usual for them</summary>
                     <div class="table-responsive">@include('topology::partials.coverage-devices', ['rows' => $quietDevices])</div>
                 </details>
             @endif
-            @if($result['devices_total'] > count($result['devices']))
-                <div class="panel-footer text-muted">Showing the first {{ count($result['devices']) }} of {{ $result['devices_total'] }} devices.</div>
+            @if($cut('devices', 'devices, problems first'))
+                <div class="panel-footer text-muted">{{ $cut('devices', 'devices, problems first') }}</div>
             @endif
         </div>
 
-        @if($result['mac_threshold'])
-            <div class="panel panel-default">
-                <div class="panel-heading">
-                    <strong>Access ports with many MAC addresses and no neighbor</strong>
-                    <span class="text-muted">({{ $result['mac_threshold'] }} or more MAC addresses, no LLDP/CDP neighbor on either end, not a trunk or port-channel)</span>
-                </div>
-                <table class="table table-condensed table-hover topo-stp-table">
-                    <thead><tr><th>Device</th><th>Port</th><th>Description</th><th>MAC addresses</th><th>VLANs</th><th>Last seen</th></tr></thead>
-                    <tbody>
-                    @forelse($result['ports'] as $port)
-                        <tr>
-                            <td><a href="{{ $deviceUrl($port['device_id']) }}">{{ $name($port['device_id']) }}</a></td>
-                            <td><a href="{{ $portUrl($port['device_id'], $port['port_id']) }}">{{ $port['port'] }}</a></td>
-                            <td class="topo-wrap">{{ $port['alias'] ?: '-' }}</td>
-                            <td>{{ $port['macs'] }}</td>
-                            <td class="topo-wrap">{{ $port['vlans'] ? implode(', ', $port['vlans']) : '-' }}</td>
-                            <td>{{ $ago($port['last_seen']) }}</td>
-                        </tr>
-                    @empty
-                        <tr><td colspan="6">No access port without LLDP/CDP neighbor has {{ $result['mac_threshold'] }} or more MAC addresses.</td></tr>
-                    @endforelse
-                    </tbody>
-                </table>
+        <div class="panel panel-default">
+            <div class="panel-heading">
+                <strong>Ports that look like an unmanaged switch or hub</strong>
+                <span class="text-muted">(several LLDP/CDP neighbors on one port{{ $result['mac_threshold'] ? ', or ' . $result['mac_threshold'] . ' or more MAC addresses in the last discovery on an Ethernet access port without a neighbor that explains them (a phone does not); trunks, port-channels and ports whose addresses are in three or more VLANs are left out' : '' }})</span>
             </div>
-        @endif
+            <table class="table table-condensed table-hover topo-stp-table">
+                <thead><tr><th>Device</th><th>Port</th><th>Description</th><th>Evidence</th><th>VLANs</th><th>Last seen</th></tr></thead>
+                <tbody>
+                @forelse($result['ports'] as $port)
+                    <tr>
+                        <td><a href="{{ $deviceUrl($port['device_id']) }}">{{ $name($port['device_id']) }}</a></td>
+                        <td><a href="{{ $portUrl($port['device_id'], $port['port_id']) }}">{{ $port['port'] }}</a></td>
+                        <td class="topo-wrap">{{ $port['alias'] ?: '-' }}</td>
+                        <td class="topo-wrap">
+                            @if($port['neighbors'])
+                                {{ count($port['neighbors']) }} LLDP/CDP neighbors: {{ \Illuminate\Support\Str::limit(implode(', ', $port['neighbors']), 120) }}
+                                @if($port['macs'] !== null)<br>@endif
+                            @endif
+                            @if($port['macs'] !== null){{ $plural($port['macs'], 'MAC address', 'MAC addresses') }}@endif
+                        </td>
+                        <td class="topo-wrap">{{ $port['vlans'] ? implode(', ', $port['vlans']) : '-' }}</td>
+                        <td>{{ $ago($port['last_seen']) }}</td>
+                    </tr>
+                @empty
+                    <tr><td colspan="6">No port has several LLDP/CDP neighbors{{ $result['mac_threshold'] ? ', and no access port without a neighbor that explains them has ' . $result['mac_threshold'] . ' or more MAC addresses' : '' }}.</td></tr>
+                @endforelse
+                </tbody>
+            </table>
+            @if($cut('ports', 'ports, most neighbors and MAC addresses first'))
+                <div class="panel-footer text-muted">{{ $cut('ports', 'ports, most neighbors and MAC addresses first') }}</div>
+            @endif
+        </div>
 
         <p class="text-muted" style="font-size: 12px">
             Built from the LLDP/CDP neighbor tables and forwarding tables LibreNMS reads at discovery (every 6 hours by default), so a change
-            shows up after the next discovery. LibreNMS does not keep the management address a neighbor advertises: add a device by the
-            name shown here, or by its address when the name is one. Single links that only one end reports are on the
+            shows up after the next discovery; MAC addresses are those of each device's last discovery. LibreNMS does not keep the management
+            address a neighbor advertises: add a device by the name shown here, or by its address when the name is one. Single links that only one end reports are on the
             <a href="{{ route('topology.links', array_filter(['device' => $params['device'], 'group' => $params['group'], 'location' => $params['location']])) }}">Link &amp; VLAN</a> page.
         </p>
     @endif
