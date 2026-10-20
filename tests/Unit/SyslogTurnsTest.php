@@ -122,6 +122,29 @@ class SyslogTurnsTest extends TestCase
         $this->assertLessThan(800, $result['scanned'], 'a turn cut short by the matches reads no more next time');
     }
 
+    public function testTheLimitThatStoppedTheReadIsNamed(): void
+    {
+        // thousands of senders with one event each: the match cap ends the read, not the message budget
+        $logs = [];
+        for ($d = 1; $d <= 4500; $d++) {
+            $logs[$d] = $this->log($d, 1, [0]);
+        }
+        $matches = (new SyslogTurns(100000, 500))->read(range(1, 4500), self::reader($logs), self::classify());
+        $this->assertSame('matches', $matches['stopped']);
+        $this->assertTrue($matches['truncated']);
+        $this->assertSame(4500 - 600, $matches['unsearched'], 'three reads of 200 devices');
+
+        $few = [];
+        for ($d = 1; $d <= 300; $d++) {
+            $few[$d] = $this->log($d, 50, [0]);
+        }
+        $scan = (new SyslogTurns(1000, 5000))->read(range(1, 300), self::reader($few), self::classify());
+        $this->assertSame('scan', $scan['stopped']);
+        $this->assertFalse($scan['truncated']);
+        $this->assertSame('reads', (new SyslogTurns(100000, 5000, 1))->read(range(1, 300), self::reader($few), self::classify())['stopped']);
+        $this->assertNull((new SyslogTurns)->read(range(1, 300), self::reader($few), self::classify())['stopped'], 'everything read');
+    }
+
     public function testNoSendersNoReads(): void
     {
         $reads = 0;
@@ -131,6 +154,6 @@ class SyslogTurnsTest extends TestCase
             return [];
         }, self::classify());
         $this->assertSame(0, $reads);
-        $this->assertSame(['rows' => [], 'scanned' => 0, 'reads' => 0, 'truncated' => false, 'limited' => 0, 'unsearched' => 0], $result);
+        $this->assertSame(['rows' => [], 'scanned' => 0, 'reads' => 0, 'truncated' => false, 'limited' => 0, 'unsearched' => 0, 'stopped' => null], $result);
     }
 }

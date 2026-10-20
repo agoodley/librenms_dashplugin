@@ -62,12 +62,12 @@ class LoopEvidenceRepository extends ScopedRepository
      *
      * @param  int[]  $deviceIds
      * @param  callable(string): ?string  $classify  check code of a message (program and text), null when it is no evidence
-     * @return array{rows: array<int, array>, senders: int, scanned: int, reads: int, truncated: bool, limited: int, unsearched: int}
+     * @return array{rows: array<int, array>, senders: int, scanned: int, reads: int, truncated: bool, limited: int, unsearched: int, stopped: ?string}
      *     senders: devices that sent syslog in the window; the rest as SyslogTurns::read()
      */
     public function syslog(array $deviceIds, int $since, callable $classify): array
     {
-        $none = ['rows' => [], 'senders' => 0, 'scanned' => 0, 'reads' => 0, 'truncated' => false, 'limited' => 0, 'unsearched' => 0];
+        $none = ['rows' => [], 'senders' => 0, 'scanned' => 0, 'reads' => 0, 'truncated' => false, 'limited' => 0, 'unsearched' => 0, 'stopped' => null];
         $deviceIds = array_values(array_filter(array_unique(array_map('intval', $deviceIds)), fn ($id) => $this->canSee($id)));
         if (! $deviceIds || ! $this->canViewSyslog()) {
             return $none;

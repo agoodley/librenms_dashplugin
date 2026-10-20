@@ -43,13 +43,14 @@ class SyslogTurns
      *     the next messages of these devices: device_id => the last message read before (timestamp and seq, null for the
      *     newest) and how many => device_id => messages (seq, device_id, timestamp, program, msg), newest first
      * @param  callable(string): ?string  $classify  check code of a message (program and text), null when it is no evidence
-     * @return array{rows: array<int, array>, scanned: int, reads: int, truncated: bool, limited: int, unsearched: int}
+     * @return array{rows: array<int, array>, scanned: int, reads: int, truncated: bool, limited: int, unsearched: int, stopped: ?string}
      *     the matching messages with their code; truncated: matching messages were left out; limited: devices whose older
-     *     messages in the window were not searched; unsearched: devices that were not searched at all
+     *     messages in the window were not searched; unsearched: devices that were not searched at all; stopped: the limit
+     *     that ended the reading before every message was read ('matches', 'scan' or 'reads'), null when none did
      */
     public function read(array $senders, callable $read, callable $classify): array
     {
-        $result = ['rows' => [], 'scanned' => 0, 'reads' => 0, 'truncated' => false, 'limited' => 0, 'unsearched' => 0];
+        $result = ['rows' => [], 'scanned' => 0, 'reads' => 0, 'truncated' => false, 'limited' => 0, 'unsearched' => 0, 'stopped' => null];
         $queue = array_fill_keys($senders, ['after' => null, 'size' => null]);
         $searched = [];
         while ($queue && $result['scanned'] < $this->scan && count($result['rows']) < $this->matches && $result['reads'] < $this->reads) {
@@ -100,7 +101,14 @@ class SyslogTurns
         }
         $result['unsearched'] = count(array_diff_key($queue, $searched));
         $result['limited'] = count($queue) - $result['unsearched'];
-        $result['truncated'] = $queue && count($result['rows']) >= $this->matches;
+        if ($queue) {
+            $result['stopped'] = match (true) {
+                count($result['rows']) >= $this->matches => 'matches',
+                $result['scanned'] >= $this->scan => 'scan',
+                default => 'reads',
+            };
+        }
+        $result['truncated'] = $result['stopped'] === 'matches';
 
         return $result;
     }

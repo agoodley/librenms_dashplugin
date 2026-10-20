@@ -30,6 +30,10 @@ class Navigation
             'route' => 'topology.l3', 'group' => 'maps', 'tab' => 'Layer 3', 'title' => 'Layer 3 Map', 'icon' => 'fa-project-diagram',
             'description' => 'Routers, L3 switches and firewalls joined through their IP subnets, with point-to-point links, LAN segments, VRFs and OSPF / BGP adjacencies.',
         ],
+        'sites' => [
+            'route' => 'topology.sites', 'group' => 'maps', 'tab' => 'Sites', 'title' => 'Site / WAN Map', 'icon' => 'fa-globe',
+            'description' => 'One node per location with its devices and outages, joined by the links, point-to-point subnets and OSPF / BGP sessions between sites, optionally placed by latitude and longitude.',
+        ],
         'stp' => [
             'route' => 'topology.stp', 'group' => 'diagnostics', 'tab' => 'Spanning Tree', 'title' => 'Spanning Tree Diagnostics', 'icon' => 'fa-stethoscope',
             'description' => 'Root bridge consistency, rogue roots, topology change storms, flapping and blocked ports, bridging loops, timer and protocol mismatches.',
@@ -38,9 +42,17 @@ class Navigation
             'route' => 'topology.links', 'group' => 'diagnostics', 'tab' => 'Link & VLAN', 'title' => 'Link & VLAN Diagnostics', 'icon' => 'fa-link',
             'description' => 'Both ends of every link compared: speed, duplex, MTU, trunk/native/allowed VLANs and port-channels, plus split VLANs, errors, optical levels and port descriptions.',
         ],
+        'routing' => [
+            'route' => 'topology.routing', 'group' => 'diagnostics', 'tab' => 'Routing & IP', 'title' => 'Routing & IP Diagnostics', 'icon' => 'fa-route',
+            'description' => 'OSPF router IDs, adjacencies, interface settings and area databases, BGP sessions with their last error as text and prefix limits, and IP problems: duplicate addresses, mask mismatches, subnets split between VRFs.',
+        ],
         'redundancy' => [
             'route' => 'topology.redundancy', 'group' => 'diagnostics', 'tab' => 'Redundancy', 'title' => 'Redundancy & Failure Impact', 'icon' => 'fa-code-branch',
             'description' => 'Single points of failure, uplinks that only look redundant (same switch, same stack member), redundancy lost right now, and outages with the devices behind them.',
+        ],
+        'coverage' => [
+            'route' => 'topology.coverage', 'group' => 'diagnostics', 'tab' => 'Coverage', 'title' => 'Monitoring Coverage', 'icon' => 'fa-binoculars',
+            'description' => 'Switches, routers, firewalls and access points seen as LLDP/CDP neighbors but not monitored, devices missing from the maps because they report no neighbors, and ports that look like unmanaged switches.',
         ],
         'changes' => [
             'route' => 'topology.changes', 'group' => 'history', 'tab' => 'Changes', 'title' => 'Topology Changes', 'icon' => 'fa-history',

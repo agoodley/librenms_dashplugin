@@ -864,8 +864,9 @@ class RedundancyAnalyzer
                 'single point of failure: ' . $name . ($this->nodes[$node]['managed'] ? '' : ' (unmanaged neighbor)'),
                 ($chosen ? "$name is the only core device of this part of the network. " : '')
                 . match (true) {
-                    $tie => "If $name fails, the network splits into $pieces parts of the same size and " . $this->lostText($lost, $node) . ' lose their connection: ',
-                    $onlyCore => "If $name fails, the network splits into $pieces parts and " . $this->lostText($lost, $node) . ' are cut off from the largest of them: ',
+                    $tie => "If $name fails, the network splits into $pieces parts of the same size and " . $this->lostText($lost, $node) . ' ' . $this->lose($lost, $node) . ' connection: ',
+                    $onlyCore => "If $name fails, the network splits into $pieces parts and " . $this->lostText($lost, $node)
+                        . ($this->lostCount($lost, $node) === 1 ? ' is' : ' are') . ' cut off from the largest of them: ',
                     default => "If $name fails, " . $this->lostText($lost, $node) . ' ' . $this->lose($lost, $node) . ' path to the core: ',
                 }
                 . $this->nameList($lost) . '.',
@@ -1681,8 +1682,17 @@ class RedundancyAnalyzer
      */
     private function lose(array $nodes, ?string $failed = null): string
     {
-        return count($nodes) + $this->unmanagedCount($nodes, $failed) - count(array_filter($nodes, fn ($n) => ! $this->nodes[$n]['managed'])) === 1
-            ? 'loses its' : 'lose their';
+        return $this->lostCount($nodes, $failed) === 1 ? 'loses its' : 'lose their';
+    }
+
+    /**
+     * Number of devices lostText() counts: monitored devices and unmanaged neighbours.
+     *
+     * @param  array<int, string>  $nodes
+     */
+    private function lostCount(array $nodes, ?string $failed = null): int
+    {
+        return count(array_filter($nodes, fn ($n) => $this->nodes[$n]['managed'])) + $this->unmanagedCount($nodes, $failed);
     }
 
     /**

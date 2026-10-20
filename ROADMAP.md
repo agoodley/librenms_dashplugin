@@ -20,16 +20,16 @@ The plugin's conventions apply to all of them:
 |---|---|---|---|
 | 1 | [Link & VLAN diagnostics](README.md#link--vlan-diagnostics) | **done** | – |
 | 3 | [Redundancy & failure impact](README.md#redundancy--failure-impact) | **done** | – |
+| 4 | [Routing & IP diagnostics](README.md#routing--ip-diagnostics) | **done** | – |
 | 5 | [Topology history, diff and baseline](README.md#topology-history-baseline-and-background-checks) | **done** | – |
 | 6 | [Background diagnostics → eventlog](README.md#topology-history-baseline-and-background-checks) | **done** | – |
 | 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
 | 7 | [Automatic device dependencies](README.md#device-dependencies) | **done** | – |
 | 9 | [More L3 map layers](README.md#layer-3-map-overlays) | **done** | – |
 | 10 | [Loop evidence on the STP page](README.md#spanning-tree-diagnostics) | **done** | – |
+| 12 | [Coverage report](README.md#coverage-report) | **done** | – |
+| 8 | [Site / WAN map](README.md#site--wan-map) | **done** | – |
 | 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
-| 4 | [Routing & IP diagnostics](#4-routing--ip-diagnostics) | planned | M |
-| 12 | [Coverage report](#12-coverage-report) | planned | S |
-| 8 | [Site / WAN view](#8-site--wan-view) | later | M |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
 | 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
 | 15 | [Maps at a point in time](#15-maps-at-a-point-in-time) | later | M |
@@ -64,46 +64,7 @@ L = several new parts (tables, jobs, UI).
 * Caveat: FDB and ARP tables are refreshed at discovery (every 6 hours by default); the `arp-table` poller module (off
   by default) refreshes ARP every poll. Show "last seen" with every answer.
 
-## Planned
-
-### 4. Routing & IP diagnostics
-
-The L3 counterpart of the spanning tree page.
-
-* **OSPF**
-  * duplicate router IDs (`ospf_instances.ospfRouterId`)
-  * neighbors stuck in ExStart / Exchange, which usually means an MTU mismatch (compare `ports.ifMtu` of both ends)
-  * hello / dead interval, area or network type mismatch on one subnet (`ospf_ports`)
-  * different costs in each direction (`ospfIfMetricValue`)
-  * routers of one area whose databases disagree (`ospf_areas.ospfAreaLsaCount` / `ospfAreaLsaCksumSum`)
-  * DR/BDR elections on point-to-point links
-* **BGP**
-  * last error decoded to text (`bgpPeerLastErrorCode` / `SubCode`, e.g. "hold timer expired")
-  * recent session resets (`bgpPeerFsmEstablishedTime`)
-  * peer configured with a remote AS that is not the peer's `bgpLocalAs`
-  * sessions configured on one side only
-  * accepted prefixes near the configured limit, or none at all (`bgpPeers_cbgp`)
-* **IP**
-  * duplicate addresses (the L3 map currently keeps one of them silently)
-  * different subnet masks on the two ends of a link
-  * the same subnet in two VRFs on neighboring devices
-* Builds on: the subnet index of `L3Builder`, the `Finding` format and the layout of the diagnostics pages.
-
-### 12. Coverage report
-
-* LLDP/CDP neighbors that look like switches, routers, APs or firewalls (`DeviceRole::fromPlatform`) but are not
-  monitored, where they are connected, with a link to add them.
-* Monitored devices without neighbor data, which leave gaps in the maps. The link diagnostics already report devices
-  that other switches see but that report no neighbors themselves.
-
-
 ## Later
-
-### 8. Site / WAN view
-
-* One node per location with the links between sites added up (count, capacity, utilization, status), optionally
-  placed geographically from `locations.lat` / `lng`; click a site to open its L2/L3 map.
-* Keeps large networks readable, since a device map is capped at *Maximum devices* (400 by default).
 
 ### 11. Sharing & export
 
