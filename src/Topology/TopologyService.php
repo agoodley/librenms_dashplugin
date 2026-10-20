@@ -260,7 +260,7 @@ class TopologyService
 
         $physicalPorts = array_values(array_unique(array_merge($linkPorts, $members)));
         $analyzer = new LinkAnalyzer(
-            $this->repo->devices($deviceIds),
+            $this->repo->devices($deviceIds, roles: false),
             $scope,
             $links,
             $ports,

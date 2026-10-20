@@ -65,9 +65,11 @@ class TopologyRepository
 
     /**
      * @param  int[]  $ids
+     * @param  bool  $roles  classify with the facts about bridging and routing (several queries); false
+     *                       classifies from the device type alone
      * @return array<int, array> device_id => row (with role and url)
      */
-    public function devices(array $ids): array
+    public function devices(array $ids, bool $roles = true): array
     {
         if (! $ids) {
             return [];
@@ -82,7 +84,7 @@ class TopologyRepository
                 'devices.uptime', 'devices.bgpLocalAs', 'locations.location as location',
             ]);
 
-        $facts = $this->roleFacts($ids);
+        $facts = $roles ? $this->roleFacts($ids) : [];
         $devices = [];
         foreach ($rows as $row) {
             $row = (array) $row;
@@ -384,7 +386,8 @@ class TopologyRepository
     /**
      * Weakest optical receive level of each port (the worst lane of multi-lane optics) with the
      * transceiver's low thresholds. Sensors are matched like LibreNMS does: through the
-     * transceiver's entity index, or as port sensors (entPhysicalIndex_measured = ports, index = ifIndex).
+     * transceiver's entity index first (Cisco marks these sensors as port sensors too, but with an
+     * entity index), otherwise as port sensors (entPhysicalIndex_measured = ports, index = ifIndex).
      *
      * @param  int[]  $portIds
      * @return array<int, array{rx: float, low: ?float, low_warn: ?float, sensor: string}>
@@ -407,13 +410,12 @@ class TopologyRepository
         $deviceIds = array_keys($deviceIds);
         $wanted = array_flip($portIds);
 
+        // every transceiver of the devices, so a sensor of another port is never taken for one of ours
         $byEntity = [];
         try {
             foreach (DB::table('transceivers')->whereIntegerInRaw('device_id', $deviceIds)->whereNotNull('entity_physical_index')
                 ->get(['port_id', 'device_id', 'entity_physical_index']) as $row) {
-                if (isset($wanted[(int) $row->port_id])) {
-                    $byEntity[$row->device_id . '|' . $row->entity_physical_index] = (int) $row->port_id;
-                }
+                $byEntity[$row->device_id . '|' . $row->entity_physical_index] = (int) $row->port_id;
             }
         } catch (\Throwable $e) {
             Log::debug('topology plugin: cannot read transceivers: ' . $e->getMessage());
@@ -430,7 +432,7 @@ class TopologyRepository
                 }
                 $key = $row->device_id . '|' . $row->entPhysicalIndex;
                 $portId = $byEntity[$key] ?? (in_array($row->entPhysicalIndex_measured, ['ports', 'port'], true) ? ($byIfIndex[$key] ?? null) : null);
-                if ($portId === null || (isset($result[$portId]) && $result[$portId]['rx'] <= (float) $row->sensor_current)) {
+                if ($portId === null || ! isset($wanted[$portId]) || (isset($result[$portId]) && $result[$portId]['rx'] <= (float) $row->sensor_current)) {
                     continue;
                 }
                 $result[$portId] = [

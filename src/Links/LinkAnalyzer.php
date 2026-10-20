@@ -77,6 +77,9 @@ class LinkAnalyzer
     /** @var array<int, true> devices that report port-channel membership at all (ifStackTable / PAgP) */
     private array $lagDevices = [];
 
+    /** @var array<int, array<int, true>> port (or aggregate) => devices at the other end of its links */
+    private array $farOf = [];
+
     /** @var array<int, array<int, array<int, true>>> device => local port => monitored neighbour, from its LLDP/CDP table */
     private array $reports = [];
 
@@ -272,6 +275,9 @@ class LinkAnalyzer
 
         foreach ([$link['a_port'], $link['b_port']] as $portId) {
             $port = $this->ports[$portId];
+            if (! $this->deviceUp((int) $port['device_id'])) {
+                continue; // LibreNMS keeps the last counters of an unreachable device
+            }
             $stats = $this->statistics[$portId] ?? [];
             $label = $this->endLabel($portId);
             $inErrors = self::delta($port, 'ifInErrors_delta');
@@ -335,11 +341,14 @@ class LinkAnalyzer
     private function checkOptics(array $link): void
     {
         $margin = $this->settings->int('links_rx_margin', 0, 20);
+        if (! $this->adminUp($link['a_port']) || ! $this->adminUp($link['b_port'])) {
+            return; // a port shut down on purpose sends no light
+        }
 
         foreach ([[$link['a_port'], $link['b_port']], [$link['b_port'], $link['a_port']]] as [$portId, $farId]) {
             $optic = $this->optics[$portId] ?? null;
-            if (! $optic || ! is_numeric($optic['rx'] ?? null)) {
-                continue;
+            if (! $optic || ! is_numeric($optic['rx'] ?? null) || ! $this->deviceUp((int) $this->ports[$portId]['device_id'])) {
+                continue; // no reading, or the stale reading of an unreachable device
             }
             $rx = (float) $optic['rx'];
             $low = is_numeric($optic['low'] ?? null) ? (float) $optic['low'] : null;
@@ -434,6 +443,8 @@ class LinkAnalyzer
      * VLANs in use on at least two devices of one L2 domain that are not connected to each other
      * in that VLAN: a trunk on the way does not carry it. Islands that may be joined outside the
      * analysis (through an unmanaged switch or a device outside the scope) are treated as one.
+     * The finding names where the VLAN stops: trunks between two parts and the links on the
+     * shortest path from every other part to the largest one.
      *
      * @return array<string, array<int, true>> logical link => VLANs already reported here
      */
@@ -448,7 +459,7 @@ class LinkAnalyzer
         $domain = new Graph;
         $inside = [];   // logical key => link between two analyzed devices (switchports only)
         $exits = [];    // [device, port end, external node] VLAN may continue outside the analysis
-        $joins = [];    // [device, device, port end] analyzed neighbours whose port LibreNMS did not resolve
+        $joins = [];    // [device, device, port end, port] analyzed neighbours whose port LibreNMS did not resolve
         $participating = [];
 
         foreach ($this->logical as $key => $link) {
@@ -478,7 +489,7 @@ class LinkAnalyzer
             }
             $remote = $partial['remote_device_id'];
             if ($remote && isset($this->scope[$remote])) {
-                $joins[] = [$deviceId, $remote, $end];
+                $joins[] = [$deviceId, $remote, $end, $partial['port_id']];
                 $domain->addEdge($deviceId, $remote, 'p' . $index);
                 $participating[$deviceId] = $participating[$remote] = true;
             } elseif ($remote) {
@@ -515,6 +526,17 @@ class LinkAnalyzer
             }
         }
 
+        // the L2 domains as adjacency lists, to find the way between two parts of a split VLAN
+        $adjacency = [];
+        foreach (array_keys($inside) as $key) {
+            $adjacency[$this->logical[$key]['a_dev']][] = [$this->logical[$key]['b_dev'], $key];
+            $adjacency[$this->logical[$key]['b_dev']][] = [$this->logical[$key]['a_dev'], $key];
+        }
+        foreach ($joins as $index => [$deviceId, $remote]) {
+            $adjacency[$deviceId][] = [$remote, 'j' . $index];
+            $adjacency[$remote][] = [$deviceId, 'j' . $index];
+        }
+
         ksort($users);
         foreach ($users as $vlan => $deviceIds) {
             $graph = new Graph;
@@ -522,12 +544,14 @@ class LinkAnalyzer
                 $graph->addNode($deviceId);
             }
 
-            $half = []; // logical key => end that carries the VLAN
+            $carried = []; // links of the L2 domains that carry the VLAN
+            $half = [];    // logical key => end that carries the VLAN while the other does not
             foreach ($inside as $key => [$a, $b]) {
                 $carriesA = self::carries($a, $vlan);
                 $carriesB = self::carries($b, $vlan);
                 if ($carriesA !== false && $carriesB !== false) {
                     $graph->addEdge($this->logical[$key]['a_dev'], $this->logical[$key]['b_dev'], $key);
+                    $carried[$key] = true;
                 } elseif ($carriesA === true || $carriesB === true) {
                     $half[$key] = $carriesA === true ? 'a' : 'b';
                 }
@@ -535,6 +559,7 @@ class LinkAnalyzer
             foreach ($joins as $index => [$deviceId, $remote, $end]) {
                 if (self::carries($end, $vlan) !== false) {
                     $graph->addEdge($deviceId, $remote, 'j' . $index);
+                    $carried['j' . $index] = true;
                 }
             }
             foreach ($exits as $index => [$deviceId, $end, $node]) {
@@ -567,19 +592,47 @@ class LinkAnalyzer
                     }
                 }
 
-                // trunks between two parts where one end carries the VLAN and the other does not
-                $halfLinks = [];
-                $ports = [];
+                // where the VLAN stops: trunks between two parts that carry it on one end only, and the
+                // links on the shortest way from every other part to the largest one, which can cross
+                // switches that do not carry the VLAN at all
+                $stops = [];
                 foreach ($half as $key => $carrier) {
                     $link = $this->logical[$key];
-                    if (! isset($islandOf[$link['a_dev']], $islandOf[$link['b_dev']]) || $islandOf[$link['a_dev']] === $islandOf[$link['b_dev']]) {
+                    if (isset($islandOf[$link['a_dev']], $islandOf[$link['b_dev']]) && $islandOf[$link['a_dev']] !== $islandOf[$link['b_dev']]) {
+                        $stops[$key] = true;
+                    }
+                }
+                $largest = array_flip(array_filter($islands[0]['nodes'], 'is_int'));
+                foreach (array_slice($islands, 1) as $island) {
+                    foreach (self::path($adjacency, array_filter($island['nodes'], 'is_int'), $largest) as $edge) {
+                        if (! isset($carried[$edge])) {
+                            $stops[$edge] = true;
+                        }
+                    }
+                }
+
+                $stopLabels = [];
+                $ports = [];
+                $oneEnded = false;
+                foreach (array_keys($stops) as $edge) {
+                    if (! isset($this->logical[$edge])) {
+                        [, $remote, , $portId] = $joins[(int) substr((string) $edge, 1)];
+                        $stopLabels[] = $this->endLabel($portId) . ' (toward ' . $this->deviceName($remote) . ') does not carry it';
+                        $ports[] = $portId;
                         continue;
                     }
-                    [$with, $without] = $carrier === 'a' ? [$link['a_port'], $link['b_port']] : [$link['b_port'], $link['a_port']];
-                    $halfLinks[] = $this->endLabel($with) . ' carries it, ' . $this->endLabel($without) . ' does not';
-                    $ports[] = $with;
-                    $ports[] = $without;
-                    $covered[$key][$vlan] = true;
+                    $link = $this->logical[$edge];
+                    $labelA = $this->endLabel($link['a_port']);
+                    $labelB = $this->endLabel($link['b_port']);
+                    $stopLabels[] = match ($half[$edge] ?? null) {
+                        'a' => "$labelA carries it, $labelB does not",
+                        'b' => "$labelB carries it, $labelA does not",
+                        default => "$labelA ↔ $labelB does not carry it",
+                    };
+                    $oneEnded = $oneEnded || isset($half[$edge]);
+                    $ports[] = $link['a_port'];
+                    $ports[] = $link['b_port'];
+                    $covered[$edge][$vlan] = true;
                 }
 
                 $parts = [];
@@ -593,10 +646,10 @@ class LinkAnalyzer
                 }
 
                 $this->add(new Finding(
-                    $halfLinks ? Finding::WARNING : Finding::INFO, 'vlan_split',
+                    $oneEnded ? Finding::WARNING : Finding::INFO, 'vlan_split',
                     "VLAN $vlan is split into " . count($islands) . ' unconnected parts',
                     "VLAN $vlan is in use (hosts or a VLAN interface) on switches that no trunk path connects in this VLAN: " . implode('; ', $parts) . '.'
-                    . ($halfLinks ? ' Allowed on one end only: ' . implode('; ', array_slice($halfLinks, 0, 10)) . '.' : ''),
+                    . ($stopLabels ? ' Where it stops: ' . implode('; ', array_slice($stopLabels, 0, 10)) . '.' : ''),
                     "Allow VLAN $vlan on both ends of the trunks between these switches, or remove it where it should not be used. If the VLAN "
                     . 'is local to each switch by design, add it to the ignored VLANs setting. Links without LLDP/CDP are invisible to this check.',
                     $vlan, $members, $ports,
@@ -727,17 +780,36 @@ class LinkAnalyzer
         foreach ($this->logical as $link) {
             $this->checkDegraded($link, $degradedSeen);
 
+            // load is compared on the end that bundles at least two of the links' members: on a
+            // multi-chassis port-channel that is the single-chassis end
             foreach (['a', 'b'] as $x) {
                 $aggregate = $link[$x . '_port'];
-                if (! empty($this->lagMembers[$aggregate])) {
-                    if (! isset($imbalanceSeen[$aggregate])) {
-                        $imbalanceSeen[$aggregate] = true;
-                        $this->checkImbalance($aggregate, (int) $link[$x . '_dev']);
-                    }
-                    break;
+                if (isset($imbalanceSeen[$aggregate]) || count($this->upMembers($aggregate)) < 2) {
+                    continue;
                 }
+                $imbalanceSeen[$link['a_port']] = $imbalanceSeen[$link['b_port']] = true;
+                $this->checkImbalance($aggregate, (int) $link[$x . '_dev']);
+                break;
             }
         }
+    }
+
+    /**
+     * Members of an aggregate that are up and report a speed.
+     *
+     * @return array<int, array> port_id => port row
+     */
+    private function upMembers(int $aggregate): array
+    {
+        $members = [];
+        foreach ($this->lagMembers[$aggregate] ?? [] as $member) {
+            $port = $this->ports[$member] ?? null;
+            if ($port && ($port['ifOperStatus'] ?? null) === 'up' && (int) ($port['ifSpeed'] ?? 0) > 0) {
+                $members[$member] = $port;
+            }
+        }
+
+        return $members;
     }
 
     /**
@@ -798,22 +870,12 @@ class LinkAnalyzer
     private function checkImbalance(int $aggregate, int $deviceId): void
     {
         $threshold = $this->settings->int('links_lag_imbalance', 0, 100);
-        if ($threshold <= 0) {
+        $members = $this->upMembers($aggregate);
+        if ($threshold <= 0 || count($members) < 2) {
             return;
         }
 
-        $members = [];
-        foreach ($this->lagMembers[$aggregate] as $member) {
-            $port = $this->ports[$member] ?? null;
-            if ($port && ($port['ifOperStatus'] ?? null) === 'up' && (int) ($port['ifSpeed'] ?? 0) > 0) {
-                $members[$member] = $port;
-            }
-        }
-        if (count($members) < 2) {
-            return;
-        }
-
-        $far = $this->farDevices($aggregate);
+        $far = array_keys($this->farOf[$aggregate] ?? []);
         foreach (['out' => 'ifOutOctets_rate', 'in' => 'ifInOctets_rate'] as $direction => $column) {
             $rates = array_map(fn ($port) => max(0, (int) ($port[$column] ?? 0)) * 8, $members);
             arsort($rates);
@@ -912,11 +974,10 @@ class LinkAnalyzer
         $expect = [];
         foreach ($this->physical as $link) {
             foreach ([['a', 'b'], ['b', 'a']] as [$x, $y]) {
-                $expect[$link[$x . '_port']] = [
-                    'device_id' => $link[$x . '_dev'],
-                    'far' => [$link[$y . '_dev'] => $this->portName($link[$y . '_port'])],
-                    'host' => null,
-                ];
+                // a port can see several neighbours (through an unmanaged switch passing LLDP/CDP)
+                $expect[$link[$x . '_port']]['device_id'] = $link[$x . '_dev'];
+                $expect[$link[$x . '_port']]['far'][$link[$y . '_dev']] = $this->portName($link[$y . '_port']);
+                $expect[$link[$x . '_port']]['host'] = null;
             }
         }
         foreach ($this->logical as $link) {
@@ -1009,7 +1070,7 @@ class LinkAnalyzer
         if ($expected['host']) {
             $host = L2Builder::shortHost($expected['host']['host']);
 
-            return trim($host . ' ' . InterfaceName::short($expected['host']['remote_port']));
+            return self::cleanDescription($host . ' ' . InterfaceName::short($expected['host']['remote_port']));
         }
 
         $names = [];
@@ -1018,7 +1079,7 @@ class LinkAnalyzer
         }
         $ports = array_values(array_unique($expected['far']));
         if (count($ports) === 1) {
-            return implode('/', $names) . ' ' . $ports[0];
+            return self::cleanDescription(implode('/', $names) . ' ' . $ports[0]);
         }
 
         $parts = [];
@@ -1026,7 +1087,19 @@ class LinkAnalyzer
             $parts[] = L2Builder::shortHost($this->deviceName($deviceId)) . ' ' . $port;
         }
 
-        return implode(' / ', $parts);
+        return self::cleanDescription(implode(' / ', $parts));
+    }
+
+    /**
+     * A description that is safe to paste into a CLI. Neighbour names come from LLDP/CDP, which
+     * any device can advertise: keep only characters host and port names use, so no line break,
+     * quote or variable can smuggle further commands into the configuration.
+     */
+    private static function cleanDescription(string $text): string
+    {
+        $text = preg_replace('/[^A-Za-z0-9 ._\/:+()#@,-]+/', '_', $text) ?? '';
+
+        return mb_substr(trim((string) preg_replace('/ {2,}/', ' ', $text)), 0, 80);
     }
 
     /**
@@ -1040,8 +1113,9 @@ class LinkAnalyzer
         $os = strtolower((string) ($this->devices[$deviceId]['os'] ?? ''));
         $lines = [];
         foreach ($descriptions as $portId => $description) {
-            $name = InterfaceName::label($this->ports[$portId] ?? []);
-            $description = str_replace('"', "'", $description);
+            // interface names come from the device itself; still strip anything that could end the line
+            $name = (string) preg_replace('/[\x00-\x1F\x7F"]+/', '', InterfaceName::label($this->ports[$portId] ?? []));
+            $description = self::cleanDescription($description);
             $lines[] = match ($os) {
                 'junos' => "set interfaces $name description \"$description\"",
                 'procurve' => "interface $name\n   name \"$description\"\n   exit",
@@ -1145,18 +1219,20 @@ class LinkAnalyzer
 
             $a = $this->endRow($link['a_dev'], $link['a_port'], array_column($members, 'a_port'));
             $b = $this->endRow($link['b_dev'], $link['b_port'], array_column($members, 'b_port'));
+            // like the findings, only compare what a link reports while it is up
+            $allUp = $up === count($members);
             $rows[] = [
                 'key' => $key,
-                'status' => $up === count($members) ? 'up' : ($up === 0 ? 'down' : 'degraded'),
+                'status' => $allUp ? 'up' : ($up === 0 ? 'down' : 'degraded'),
                 'lag' => $link['lag'] ? ['members' => count($members), 'up' => $up] : null,
                 'speed' => $speed,
                 'protocols' => array_values(array_unique(array_merge(...array_column($members, 'protocols')))),
                 'a' => $a,
                 'b' => $b,
                 'mismatch' => [
-                    'speed' => $a['speed'] && $b['speed'] && $a['speed'] !== $b['speed'],
-                    'duplex' => in_array('half', [$a['duplex'], $b['duplex']], true) || in_array('mixed', [$a['duplex'], $b['duplex']], true),
-                    'mtu' => $a['mtu'] && $b['mtu'] && abs($a['mtu'] - $b['mtu']) > self::MTU_TOLERANCE,
+                    'speed' => $allUp && $a['speed'] && $b['speed'] && $a['speed'] !== $b['speed'],
+                    'duplex' => $allUp && (in_array('half', [$a['duplex'], $b['duplex']], true) || in_array('mixed', [$a['duplex'], $b['duplex']], true)),
+                    'mtu' => $allUp && $a['mtu'] && $b['mtu'] && abs($a['mtu'] - $b['mtu']) > self::MTU_TOLERANCE,
                 ],
                 'issues' => [],
                 'severity' => 'ok',
@@ -1307,6 +1383,8 @@ class LinkAnalyzer
             ];
             $this->logical[$logicalKey]['members'][] = $key;
             $this->logical[$logicalKey]['lag'] = $this->logical[$logicalKey]['lag'] || $aPort !== $link['a_port'] || $bPort !== $link['b_port'];
+            $this->farOf[$aPort][$link['b_dev']] = true;
+            $this->farOf[$bPort][$link['a_dev']] = true;
         }
     }
 
@@ -1360,25 +1438,6 @@ class LinkAnalyzer
     }
 
     /**
-     * Devices at the other end of the links of an aggregate.
-     *
-     * @return int[]
-     */
-    private function farDevices(int $aggregate): array
-    {
-        $far = [];
-        foreach ($this->logical as $link) {
-            if ($link['a_port'] === $aggregate) {
-                $far[$link['b_dev']] = true;
-            } elseif ($link['b_port'] === $aggregate) {
-                $far[$link['a_dev']] = true;
-            }
-        }
-
-        return array_keys($far);
-    }
-
-    /**
      * @return array<int, true>
      */
     private function ignoredVlans(): array
@@ -1401,6 +1460,23 @@ class LinkAnalyzer
     private function isUp(int $portId): bool
     {
         return ($this->ports[$portId]['ifOperStatus'] ?? null) === 'up';
+    }
+
+    /**
+     * Not shut down on purpose (unknown counts as up).
+     */
+    private function adminUp(int $portId): bool
+    {
+        return ($this->ports[$portId]['ifAdminStatus'] ?? 'up') !== 'down';
+    }
+
+    /**
+     * Was the device reachable at its last poll? LibreNMS keeps the last counters and sensor
+     * readings of a device that went down. Unknown counts as up.
+     */
+    private function deviceUp(int $deviceId): bool
+    {
+        return (bool) ($this->devices[$deviceId]['status'] ?? true);
     }
 
     /**
@@ -1439,13 +1515,57 @@ class LinkAnalyzer
     }
 
     /**
-     * Short lowercase host name identifying an unmanaged neighbour; $fallback when it has none.
+     * Short lowercase host name identifying an unmanaged neighbour. A missing or factory default
+     * name ("Switch") would merge unrelated devices, so those get $fallback (one per local port).
      */
     private static function hostKey(string $hostname, string $fallback): string
     {
         $hostname = strtolower(trim($hostname));
+        $short = L2Builder::shortHost($hostname);
+        if ($hostname === '' || in_array($hostname, L2Builder::GENERIC_HOSTNAMES, true) || in_array($short, L2Builder::GENERIC_HOSTNAMES, true)) {
+            return 'port:' . $fallback;
+        }
 
-        return $hostname === '' ? 'port:' . $fallback : L2Builder::shortHost($hostname);
+        return $short;
+    }
+
+    /**
+     * Edges of a shortest path (breadth first) from any source node to any target node.
+     *
+     * @param  array<int|string, array<int, array{0: int|string, 1: string}>>  $adjacency  node => [neighbour, edge]
+     * @param  array<int|string>  $sources
+     * @param  array<int|string, mixed>  $targets  keyed by node
+     * @return string[] edges in path order, empty when no path exists
+     */
+    private static function path(array $adjacency, array $sources, array $targets): array
+    {
+        $previous = [];
+        $queue = [];
+        foreach ($sources as $node) {
+            $previous[$node] = null;
+            $queue[] = $node;
+        }
+
+        for ($i = 0; $i < count($queue); $i++) {
+            $node = $queue[$i];
+            if (isset($targets[$node])) {
+                $edges = [];
+                while ($previous[$node] !== null) {
+                    [$node, $edge] = $previous[$node];
+                    $edges[] = $edge;
+                }
+
+                return array_reverse($edges);
+            }
+            foreach ($adjacency[$node] ?? [] as [$next, $edge]) {
+                if (! array_key_exists($next, $previous)) {
+                    $previous[$next] = [$node, $edge];
+                    $queue[] = $next;
+                }
+            }
+        }
+
+        return [];
     }
 
     /**

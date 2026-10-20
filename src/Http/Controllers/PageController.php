@@ -38,32 +38,22 @@ class PageController extends Controller
      */
     public function stp(Request $request): View
     {
-        $settings = $this->settings();
-        $params = MapParams::parse($request->query(), $settings);
-        $repo = new TopologyRepository($request->user());
-
-        $result = null;
-        $error = null;
-        try {
-            $result = $this->service($request, $settings)->stp($params);
-        } catch (\Throwable $e) {
-            $error = $this->failure('spanning tree analysis', $e);
-        }
-
-        return view('topology::stp', [
-            'params' => $params,
-            'result' => $result,
-            'error' => $error,
-            'filters' => $repo->filterOptions(),
-            'deviceName' => $params['device'] ? $repo->deviceName($params['device']) : null,
-            'assetVersion' => self::assetVersion(),
-        ]);
+        return $this->diagnostics($request, 'stp', 'spanning tree analysis');
     }
 
     /**
      * plugin/topology/links: link and VLAN diagnostics.
      */
     public function links(Request $request): View
+    {
+        return $this->diagnostics($request, 'links', 'link analysis');
+    }
+
+    /**
+     * Diagnostics page rendered on the server: TopologyService::$analysis() shown with view
+     * topology::$analysis, plus the filter choices; a failure is shown on the page.
+     */
+    private function diagnostics(Request $request, string $analysis, string $what): View
     {
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
@@ -72,12 +62,12 @@ class PageController extends Controller
         $result = null;
         $error = null;
         try {
-            $result = $this->service($request, $settings)->links($params);
+            $result = $this->service($request, $settings)->$analysis($params);
         } catch (\Throwable $e) {
-            $error = $this->failure('link analysis', $e);
+            $error = $this->failure($what, $e);
         }
 
-        return view('topology::links', [
+        return view("topology::$analysis", [
             'params' => $params,
             'result' => $result,
             'error' => $error,

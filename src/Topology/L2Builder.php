@@ -20,7 +20,7 @@ class L2Builder
     ];
 
     /** Factory default names that many unrelated devices advertise. */
-    private const GENERIC_HOSTNAMES = [
+    public const GENERIC_HOSTNAMES = [
         'switch', 'router', 'ap', 'phone', 'host', 'localhost', 'localhost.localdomain', 'none', '(none)',
         'unknown', 'default', 'openwrt', 'ubnt', 'mikrotik', 'linux', 'esxi', 'debian', 'ubuntu',
     ];

@@ -98,9 +98,10 @@ class LinkAnalyzerTest extends TestCase
 
     public function testLinksThatAreDownAreNotComparedForSpeed(): void
     {
-        $codes = $this->codes($this->analyze(ports: [31 => ['ifSpeed' => 1000000000, 'ifOperStatus' => 'down']]));
+        $result = $this->analyze(ports: [31 => ['ifSpeed' => 1000000000, 'ifOperStatus' => 'down']]);
 
-        $this->assertArrayNotHasKey('speed_mismatch', $codes);
+        $this->assertArrayNotHasKey('speed_mismatch', $this->codes($result));
+        $this->assertFalse($this->row($result, 'acc1', 'Te1/1/1')['mismatch']['speed']);
     }
 
     public function testPortModeAndVlanMismatches(): void
@@ -335,11 +336,13 @@ class LinkAnalyzerTest extends TestCase
         $this->assertArrayNotHasKey('neighbor_not_reported', $codes);
     }
 
-    public function testMultiChassisPortChannelIsConsistent(): void
+    /**
+     * leafA and leafB each bundle one link toward Po70 of an access switch (MLAG / vPC).
+     */
+    private function multiChassis(int $accessId = 7, array $portOverrides = []): array
     {
-        // leafA(5) and leafB(6) each bundle one link toward acc7(7) Po70 (MLAG / vPC)
         $devices = [];
-        foreach ([5 => 'leafA', 6 => 'leafB', 7 => 'acc7'] as $id => $name) {
+        foreach ([5 => 'leafA', 6 => 'leafB', $accessId => 'acc7'] as $id => $name) {
             $devices[$id] = ['device_id' => $id, 'hostname' => $name, 'display' => $name, 'os' => 'eos'];
         }
         $ports = [
@@ -347,23 +350,138 @@ class LinkAnalyzerTest extends TestCase
             51 => LinkFixture::port(51, 5, 'Ethernet1', ['ifAlias' => 'acc7 Te1/1/1']),
             60 => LinkFixture::port(60, 6, 'Port-Channel10', ['ifAlias' => 'acc7 Po70']),
             61 => LinkFixture::port(61, 6, 'Ethernet1', ['ifAlias' => 'acc7 Te1/1/2']),
-            70 => LinkFixture::port(70, 7, 'Port-channel70', ['ifAlias' => 'leafA/leafB Po10']),
-            71 => LinkFixture::port(71, 7, 'TenGigabitEthernet1/1/1', ['ifAlias' => 'leafA Ethernet1']),
-            72 => LinkFixture::port(72, 7, 'TenGigabitEthernet1/1/2', ['ifAlias' => 'leafB Ethernet1']),
+            70 => LinkFixture::port(70, $accessId, 'Port-channel70', ['ifAlias' => 'leafA/leafB Po10']),
+            71 => LinkFixture::port(71, $accessId, 'TenGigabitEthernet1/1/1', ['ifAlias' => 'leafA Ethernet1']),
+            72 => LinkFixture::port(72, $accessId, 'TenGigabitEthernet1/1/2', ['ifAlias' => 'leafB Ethernet1']),
         ];
+        foreach ($portOverrides as $portId => $values) {
+            $ports[$portId] = array_merge($ports[$portId], $values);
+        }
         $lag = [51 => 50, 61 => 60, 71 => 70, 72 => 70];
         $links = [
-            LinkFixture::link(5, 51, 7, 71), LinkFixture::link(7, 71, 5, 51),
-            LinkFixture::link(6, 61, 7, 72), LinkFixture::link(7, 72, 6, 61),
+            LinkFixture::link(5, 51, $accessId, 71), LinkFixture::link($accessId, 71, 5, 51),
+            LinkFixture::link(6, 61, $accessId, 72), LinkFixture::link($accessId, 72, 6, 61),
         ];
         $vlans = [50 => [1 => true, 10 => false], 60 => [1 => true, 10 => false], 70 => [1 => true, 10 => false]];
 
-        $analyzer = new LinkAnalyzer($devices, [5, 6, 7], $links, $ports, $vlans, $lag, new PluginSettings(), [5 => [10 => true], 7 => [10 => true]]);
-        $result = $analyzer->analyze();
+        $analyzer = new LinkAnalyzer($devices, array_keys($devices), $links, $ports, $vlans, $lag, new PluginSettings(), [5 => [10 => true], $accessId => [10 => true]]);
+
+        return $analyzer->analyze();
+    }
+
+    public function testMultiChassisPortChannelIsConsistent(): void
+    {
+        $result = $this->multiChassis();
 
         $this->assertSame([], $result['findings'], json_encode($result['findings']));
         $this->assertSame(2, $result['summary']['links']);
         $this->assertSame(2, $result['summary']['lags']);
+    }
+
+    public function testUnevenLoadIsCheckedOnTheSingleChassisEndWhateverTheDeviceOrder(): void
+    {
+        $uneven = [71 => ['ifOutOctets_rate' => 937500000], 72 => ['ifOutOctets_rate' => 25000000]];
+        foreach ([7, 3] as $accessId) {
+            $codes = $this->codes($this->multiChassis($accessId, $uneven));
+            $this->assertSame('Traffic sent by acc7 Po70: Te1/1/1 7.5 Gbps (75%), Te1/1/2 200 Mbps (2%).', $codes['lag_imbalance'][0]['detail'] ?? null,
+                "access switch with device id $accessId");
+        }
+    }
+
+    public function testSuggestedConfigurationCannotCarryCommandsFromAnLldpName(): void
+    {
+        $links = LinkFixture::links();
+        $links[] = LinkFixture::link(3, 33, 0, null, "phone\nusername backdoor privilege 15 secret 0 pw", "port 1\r\nend");
+        $codes = $this->codes($this->analyze(
+            links: $links,
+            extraPorts: [33 => LinkFixture::port(33, 3, 'GigabitEthernet1/0/33', ['ifAlias' => 'to acc2'])],
+        ));
+
+        $config = $codes['description_wrong'][0]['config'];
+        $this->assertSame(['interface GigabitEthernet1/0/33', ' description phone_username backdoor privilege 15 secret 0 pw port 1_end'], explode("\n", $config));
+    }
+
+    public function testPortWithTwoMonitoredNeighborsMayNameEither(): void
+    {
+        // acc1 Gi1/0/33 sees core1 and acc2 through an unmanaged switch that passes LLDP
+        $links = LinkFixture::links();
+        foreach ([[3, 33, 1, 15], [1, 15, 3, 33], [3, 33, 4, 43], [4, 43, 3, 33]] as [$ld, $lp, $rd, $rp]) {
+            $links[] = LinkFixture::link($ld, $lp, $rd, $rp);
+        }
+        $codes = $this->codes($this->analyze(links: $links, extraPorts: [
+            15 => LinkFixture::port(15, 1, 'GigabitEthernet1/0/15', ['ifAlias' => 'acc1 Gi1/0/33']),
+            33 => LinkFixture::port(33, 3, 'GigabitEthernet1/0/33', ['ifAlias' => 'core1 Gi1/0/15']),
+            43 => LinkFixture::port(43, 4, 'GigabitEthernet1/0/43', ['ifAlias' => 'acc1 Gi1/0/33']),
+        ]));
+
+        $this->assertArrayNotHasKey('description_wrong', $codes);
+    }
+
+    public function testSplitVlanBehindATransitSwitchThatPrunesIt(): void
+    {
+        // core and acc both use VLAN 10 and allow it toward dist, but dist carries VLAN 1 only
+        $devices = [];
+        foreach ([1 => 'core', 2 => 'dist', 3 => 'acc'] as $id => $name) {
+            $devices[$id] = ['device_id' => $id, 'hostname' => $name, 'display' => $name, 'os' => 'ios'];
+        }
+        $ports = [
+            10 => LinkFixture::port(10, 1, 'TenGigabitEthernet1/0/1', ['ifAlias' => 'dist Te1/0/1']),
+            20 => LinkFixture::port(20, 2, 'TenGigabitEthernet1/0/1', ['ifAlias' => 'core Te1/0/1']),
+            21 => LinkFixture::port(21, 2, 'TenGigabitEthernet1/0/2', ['ifAlias' => 'acc Te1/0/1']),
+            30 => LinkFixture::port(30, 3, 'TenGigabitEthernet1/0/1', ['ifAlias' => 'dist Te1/0/2']),
+        ];
+        $links = [];
+        foreach ([[1, 10, 2, 20], [2, 20, 1, 10], [2, 21, 3, 30], [3, 30, 2, 21]] as [$ld, $lp, $rd, $rp]) {
+            $links[] = LinkFixture::link($ld, $lp, $rd, $rp);
+        }
+        $vlans = [10 => [1 => true, 10 => false], 20 => [1 => true], 21 => [1 => true], 30 => [1 => true, 10 => false]];
+
+        $analyzer = new LinkAnalyzer($devices, [1, 2, 3], $links, $ports, $vlans, [], new PluginSettings(), [1 => [10 => true], 3 => [10 => true]]);
+        $codes = $this->codes($analyzer->analyze());
+
+        $split = $codes['vlan_split'][0];
+        $this->assertSame('warning', $split['severity']);
+        $this->assertStringEndsWith('Where it stops: acc Te1/0/1 carries it, dist Te1/0/2 does not; core Te1/0/1 carries it, dist Te1/0/1 does not.', $split['detail']);
+        $this->assertEqualsCanonicalizing([10, 20, 21, 30], $split['ports']);
+    }
+
+    public function testUnmanagedSwitchesWithFactoryNamesDoNotJoinASplitVlan(): void
+    {
+        // two different desk switches both advertise "Switch": they are not one device
+        $links = LinkFixture::links();
+        $links[] = LinkFixture::link(1, 15, 0, null, 'Switch', 'port 1');
+        $links[] = LinkFixture::link(3, 33, 0, null, 'Switch', 'port 2');
+        $codes = $this->codes($this->analyze(
+            vlans: [31 => [1 => true], 32 => [1 => true], 15 => [10 => false], 33 => [10 => false]],
+            links: $links,
+            extraPorts: [15 => LinkFixture::port(15, 1, 'GigabitEthernet1/0/15'), 33 => LinkFixture::port(33, 3, 'GigabitEthernet1/0/33')],
+        ));
+
+        $this->assertSame('VLAN 10 is split into 2 unconnected parts', $codes['vlan_split'][0]['title'] ?? null);
+    }
+
+    public function testOpticsOfALinkShutDownOnPurposeAreIgnored(): void
+    {
+        $codes = $this->codes($this->analyze(
+            ports: [13 => ['ifAdminStatus' => 'down', 'ifOperStatus' => 'down'], 31 => ['ifOperStatus' => 'down']],
+            optics: [31 => ['rx' => -40.0, 'low' => -14.0, 'low_warn' => -12.0, 'sensor' => '']],
+        ));
+
+        $this->assertArrayNotHasKey('optical_rx', $codes);
+    }
+
+    public function testCountersAndOpticsOfAnUnreachableDeviceAreIgnored(): void
+    {
+        $devices = LinkFixture::devices();
+        $devices[3]['status'] = 0;
+        $codes = $this->codes($this->analyze(
+            ports: [31 => ['ifInErrors_delta' => 500]],
+            optics: [31 => ['rx' => -20.0, 'low' => -14.0, 'low_warn' => -12.0, 'sensor' => '']],
+            devices: $devices,
+        ));
+
+        $this->assertArrayNotHasKey('link_errors', $codes);
+        $this->assertArrayNotHasKey('optical_rx', $codes);
     }
 
     public function testDeviceFilterKeepsTheDevicesLinksAndFindings(): void
