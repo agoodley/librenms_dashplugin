@@ -129,6 +129,27 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
+     * How many LLDP/CDP links of these devices lead to devices the user may not see (links() hides their far end).
+     *
+     * @param  int[]  $ids
+     */
+    public function hiddenLinkCount(array $ids): int
+    {
+        if (! $ids) {
+            return 0;
+        }
+
+        $accessible = $this->accessible();
+        $count = 0;
+        foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $ids)->where('remote_device_id', '>', 0)
+            ->pluck('remote_device_id') as $remote) {
+            $count += isset($accessible[(int) $remote]) ? 0 : 1;
+        }
+
+        return $count;
+    }
+
+    /**
      * @param  int[]  $portIds
      * @param  string[]|null  $columns  only these columns and no url (large analyses)
      * @return array<int, array> port_id => row (with url)
@@ -614,6 +635,33 @@ class TopologyRepository extends ScopedRepository
     public function bgpPeers(array $ids): array
     {
         return $this->rows('bgpPeers', $ids, ['device_id', 'bgpPeerIdentifier', 'bgpPeerRemoteAs', 'bgpPeerState', 'bgpPeerAdminStatus', 'bgpLocalAddr', 'bgpPeerDescr', 'context_name']);
+    }
+
+    /**
+     * Whether a device takes part in routing, for the device overview panel: OSPF neighbors, BGP
+     * sessions, or addresses on two or more of its ports. Existence checks only, as the panel shows on
+     * every device page.
+     *
+     * @return array{ospf: bool, bgp: bool, routed: bool}
+     */
+    public function routingPresence(int $deviceId): array
+    {
+        $check = function (string $table, callable $query): bool {
+            try {
+                return (bool) $query();
+            } catch (\Throwable $e) {
+                Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
+
+                return false;
+            }
+        };
+
+        return [
+            'ospf' => $check('ospf_nbrs', fn () => DB::table('ospf_nbrs')->where('device_id', $deviceId)->exists()),
+            'bgp' => $check('bgpPeers', fn () => DB::table('bgpPeers')->where('device_id', $deviceId)->exists()),
+            'routed' => $check('ipv4_addresses', fn () => DB::table('ipv4_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
+                ->where('p.device_id', $deviceId)->distinct()->limit(2)->pluck('a.port_id')->count() >= 2),
+        ];
     }
 
     /**

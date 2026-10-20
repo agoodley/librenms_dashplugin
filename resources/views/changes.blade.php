@@ -14,7 +14,7 @@
     $windows = \Agoodley\LibrenmsTopology\History\Window::WINDOWS;
     $types = [
         'device_added' => 'new device', 'cable_moved' => 'cable moved', 'link_removed' => 'link gone', 'link_back' => 'link back',
-        'link_added' => 'new link', 'unmanaged_new' => 'new switch', 'neighbor_new' => 'new neighbor', 'lag_member_removed' => 'member left', 'lag_member_added' => 'member joined',
+        'link_added' => 'new link', 'unmanaged_new' => 'not monitored', 'neighbor_new' => 'new neighbor', 'lag_member_removed' => 'member left', 'lag_member_added' => 'member joined',
         'root_changed' => 'root moved', 'root_new' => 'new instance', 'root_gone' => 'instance gone', 'blocking_started' => 'blocking',
         'blocking_stopped' => 'forwarding', 'ospf_lost' => 'adjacency lost', 'ospf_up' => 'adjacency up', 'bgp_lost' => 'session down',
         'bgp_up' => 'session up',
@@ -167,7 +167,11 @@
                             @endforeach
                             @if(count($event['devices']) > 6) &hellip; @endif
                             @if($event['devices'])
-                                <a href="{{ route('topology.l2', ['device' => $event['devices'][0]]) }}" title="Open on the L2 map"><i class="fa fa-sitemap"></i></a>
+                                @if(str_starts_with($event['type'], 'ospf_') || str_starts_with($event['type'], 'bgp_'))
+                                    <a href="{{ route('topology.l3', ['device' => $event['devices'][0]]) }}" title="Open on the L3 map" aria-label="Open on the L3 map"><i class="fa fa-project-diagram"></i></a>
+                                @else
+                                    <a href="{{ route('topology.l2', ['device' => $event['devices'][0]]) }}" title="Open on the L2 map" aria-label="Open on the L2 map"><i class="fa fa-sitemap"></i></a>
+                                @endif
                             @endif
                         </td>
                     </tr>
@@ -248,8 +252,9 @@
                 @endif
             </div>
             @if($baseline['saved'])
+                <div class="table-responsive">
                 <table class="table table-condensed table-hover topo-stp-table">
-                    <thead><tr><th>Missing</th><th>What</th><th>Missing since</th>@if($admin)<th></th>@endif</tr></thead>
+                    <thead><tr><th>Missing</th><th>What</th><th>Missing since</th>@if($admin)<th><span class="sr-only">Action</span></th>@endif</tr></thead>
                     <tbody>
                     @forelse($baseline['missing'] as $fact)
                         <tr>
@@ -287,6 +292,7 @@
                     @endif
                     </tbody>
                 </table>
+                </div>
                 @if($baseline['new'])
                     <div class="panel-body" style="padding-top: 0">
                         <details>
@@ -314,8 +320,9 @@
                     <strong>Findings that came or went</strong>
                     <span class="text-muted">(background checks of the spanning tree, link, routing and redundancy pages)</span>
                 </div>
+                <div class="table-responsive">
                 <table class="table table-condensed table-hover topo-stp-table">
-                    <thead><tr><th>When</th><th></th><th>Severity</th><th>Finding</th><th>Devices</th></tr></thead>
+                    <thead><tr><th>When</th><th>Status</th><th>Severity</th><th>Finding</th><th>Devices</th></tr></thead>
                     <tbody>
                     @forelse($result['findings'] as $finding)
                         @php $resolved = $finding['status'] === 'resolved'; @endphp
@@ -339,6 +346,7 @@
                     @endif
                     </tbody>
                 </table>
+                </div>
             </div>
         @endif
 

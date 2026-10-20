@@ -1,7 +1,7 @@
 {{-- L2 / L3 / site map page (PageController::l2/l3, SiteController::show): filters and view options; resources/assets/topology.js draws the map from the JSON API. --}}
 @extends('layouts.librenmsv1')
 
-@section('title', ['l2' => 'Layer 2 Topology', 'l3' => 'Layer 3 Topology', 'sites' => 'Site / WAN Map'][$mode] ?? 'Topology')
+@section('title', ['l2' => 'Layer 2 Map', 'l3' => 'Layer 3 Map', 'sites' => 'Site / WAN Map'][$mode] ?? 'Topology')
 
 @push('styles')
     <link href="{{ route('topology.asset', 'topology.css') }}?v={{ $assetVersion }}" rel="stylesheet">
@@ -76,8 +76,8 @@
             <label title="Show LLDP/CDP neighbors that are not monitored by LibreNMS (phones, APs, unmanaged switches)">
                 <input type="checkbox" name="unmanaged" value="1" @checked($params['unmanaged'])> Unmanaged neighbors
             </label>
-            <label title="Draw port-channel / LAG members as one link">
-                <input type="checkbox" name="lag" value="1" @checked($params['lag'])> Collapse LAGs
+            <label title="Draw port-channel members as one link">
+                <input type="checkbox" name="lag" value="1" @checked($params['lag'])> Collapse port-channels
             </label>
             <label title="Include devices without any discovered neighbor">
                 <input type="checkbox" name="isolated" value="1" @checked($params['isolated'])> Isolated devices

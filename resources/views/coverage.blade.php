@@ -88,11 +88,7 @@
             $quietDevices = array_values(array_filter($result['devices'], fn ($d) => $d['state'] === 'quiet'));
         @endphp
         <div class="topo-cards">
-            <div class="topo-card topo-{{ $summary['status'] }}">
-                <h4>Health</h4>
-                <div class="topo-card-value"><span class="topo-sev topo-sev-{{ $summary['status'] }}" style="font-size: 16px">{{ $summary['status'] }}</span></div>
-                <p>{{ $summary['findings']['critical'] }} critical, {{ $summary['findings']['warning'] }} warnings, {{ $summary['findings']['info'] }} info</p>
-            </div>
+            @include('topology::partials.health-card', ['summary' => $summary])
             <div class="topo-card topo-{{ $worst(['unmonitored']) }}">
                 <h4>Not monitored</h4>
                 <div class="topo-card-value">{{ $summary['not_monitored'] }}</div>
@@ -109,7 +105,7 @@
                 <p>monitored network devices that report no LLDP/CDP neighbors</p>
             </div>
             <div class="topo-card topo-{{ $worst(['ports']) }}">
-                <h4>Possible unmanaged switches</h4>
+                <h4>Possible hubs or unmanaged switches</h4>
                 <div class="topo-card-value">{{ $summary['ports'] }}</div>
                 <p>ports with several LLDP/CDP neighbors{{ $result['mac_threshold'] ? ', or access ports with ' . $result['mac_threshold'] . ' or more MAC addresses and no neighbor that explains them' : ' (counting MAC addresses is off in the settings)' }}</p>
             </div>
@@ -199,9 +195,10 @@
 
         <div class="panel panel-default">
             <div class="panel-heading">
-                <strong>Ports that look like an unmanaged switch or hub</strong>
+                <strong>Possible hubs or unmanaged switches (no LLDP/CDP)</strong>
                 <span class="text-muted">(several LLDP/CDP neighbors on one port{{ $result['mac_threshold'] ? ', or ' . $result['mac_threshold'] . ' or more MAC addresses in the last discovery on an Ethernet access port without a neighbor that explains them (a phone does not); trunks, port-channels and ports whose addresses are in three or more VLANs are left out' : '' }})</span>
             </div>
+            <div class="table-responsive">
             <table class="table table-condensed table-hover topo-stp-table">
                 <thead><tr><th>Device</th><th>Port</th><th>Description</th><th>Evidence</th><th>VLANs</th><th>Last seen</th></tr></thead>
                 <tbody>
@@ -225,6 +222,7 @@
                 @endforelse
                 </tbody>
             </table>
+            </div>
             @if($cut('ports', 'ports, most neighbors and MAC addresses first'))
                 <div class="panel-footer text-muted">{{ $cut('ports', 'ports, most neighbors and MAC addresses first') }}</div>
             @endif
