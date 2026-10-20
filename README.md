@@ -68,7 +68,7 @@ carrier circuits (a port without an LLDP/CDP neighbor, also when the subnet is o
 of their own. BGP sessions to peers LibreNMS does not monitor join the site to a cloud per remote AS, which shows an
 MPLS VPN or internet transit provider and which sites hang off it. A private AS number is a cloud per site, since sites
 often reuse them, unless the sites peer with the same address and it is either not on a subnet of their routers (a
-cloud VPN gateway) or on a subnet they join with addresses of their own (a DMVPN hub): then they share that cloud.
+cloud VPN gateway) or on a tunnel subnet they join with addresses of their own (a DMVPN hub): then they share that cloud.
 
 ![Site / WAN map](docs/images/site-map.png)
 
@@ -440,9 +440,15 @@ vendor/bin/phpunit
   device group filter; BGP peers LibreNMS does not monitor are grouped by AS, so two providers in the same AS are one
   cloud. The devices without a location are one site, which the map never walks through (hops, hierarchy).
 * A provider in a private AS with its own PE at every branch (an MPLS L3VPN) looks like the firewalls of the branches,
-  so it is a cloud per site. Whether sites share a private AS cloud comes from the routers' addresses: the session's
-  local address, or the router's interface addresses while the session is down, so a shared cloud only splits when
-  LibreNMS has neither.
+  so it is a cloud per site, and so is a hub or route server on a shared Ethernet segment (VPLS): only a tunnel subnet
+  (DMVPN) counts as one network, since a template transit LAN at every branch looks the same. Whether sites share a
+  private AS cloud comes from the routers' addresses: the session's local address, or the router's interface addresses
+  while the session is down, so a shared cloud only splits when LibreNMS has neither.
+* A subnet between two sites only rides the cables between them when both ends reach them through their own site (a
+  VLAN interface, or a port facing a switch that leads to such a cable), which needs LLDP/CDP: a router behind a switch
+  that does not show up as its neighbor makes a transit VLAN to it a circuit of its own, counting its traffic twice.
+  Without VLAN data, a carrier circuit (a VPLS backup) between two routers that both sit behind their sites' switches,
+  next to a fiber between those switches, looks like such a transit VLAN and is counted as riding the fiber.
 
 * STP data comes from the BRIDGE-MIB as polled by LibreNMS: MST instances other than the CIST are not
   available, and findings reflect the last poll (a check can fire during re-convergence).

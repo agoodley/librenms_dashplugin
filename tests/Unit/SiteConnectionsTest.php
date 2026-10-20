@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
 use Agoodley\LibrenmsTopology\Topology\L2Builder;
 use Agoodley\LibrenmsTopology\Topology\L3Builder;
+use Agoodley\LibrenmsTopology\Topology\SiteBuilder;
 use Agoodley\LibrenmsTopology\Topology\SiteConnections;
 use PHPUnit\Framework\TestCase;
 
@@ -68,14 +69,21 @@ class SiteConnectionsTest extends TestCase
             }
         }
 
-        // the neighbors of each port, as SiteRepository::portNeighbors() finds them in the links
+        // the neighbors of each port and the links inside each site, as SiteRepository::portNeighbors() and
+        // siteAdjacency() find them
         $neighbors = [];
+        $inside = [];
         foreach ($links as $link) {
-            $neighbors[$link['local_port_id']][] = $devices[$link['remote_device_id']]['location_id'];
-            $neighbors[$link['remote_port_id']][] = $devices[$link['local_device_id']]['location_id'];
+            [$a, $b] = [$link['local_device_id'], $link['remote_device_id']];
+            $neighbors[$link['local_port_id']][] = ['device_id' => $b, 'location_id' => $devices[$b]['location_id']];
+            $neighbors[$link['remote_port_id']][] = ['device_id' => $a, 'location_id' => $devices[$a]['location_id']];
+            if (SiteBuilder::siteId($devices[$a]) === SiteBuilder::siteId($devices[$b])) {
+                $inside[SiteBuilder::siteId($devices[$a])][$a][] = $b;
+                $inside[SiteBuilder::siteId($devices[$a])][$b][] = $a;
+            }
         }
 
-        return $connections->addSubnets($l3, $ports, $stack, $neighbors)->all();
+        return $connections->addSubnets($l3, $ports, $stack, $neighbors, fn (string $site) => $inside[$site] ?? [])->all();
     }
 
     private static function ports(array ...$ports): array
@@ -304,6 +312,37 @@ class SiteConnectionsTest extends TestCase
             $this->assertSame([['l2', 'xe-0/1/0', '10.0.0.0/30', 10000000000], ['p2p', 'xe-0/2/0', '10.0.1.0/30', 10000000000]],
                 array_map(fn ($c) => [$c['kind'], $c['a']['port'], $c['network'], $c['speed']], $connections));
         }
+    }
+
+    public function testOnlyPortsThatReachTheOtherSiteThroughTheirOwnSiteRideItsCables(): void
+    {
+        // router ports facing the carrier's CPEs, monitored at the sites, and a fiber between the sites' switches: the
+        // CPEs lead to no cable to the other site, the routers' /30 is a circuit of its own
+        $devices = [1 => self::device(1, 'rtr-a', 1), 2 => self::device(2, 'rtr-b', 2), 3 => self::device(3, 'sw-a', 1), 4 => self::device(4, 'sw-b', 2),
+            5 => self::device(5, 'cpe-hq', 1), 6 => self::device(6, 'cpe-br', 2)];
+        $ports = self::ports(self::port(11, 1, 'GigabitEthernet0/0/1', 'ethernetCsmacd', 1000000000), self::port(21, 2, 'GigabitEthernet0/0/1', 'ethernetCsmacd', 1000000000),
+            self::port(31, 3, 'TenGigabitEthernet1/1/1'), self::port(41, 4, 'TenGigabitEthernet1/1/1'),
+            self::port(51, 5, 'ge-0/0/1', 'ethernetCsmacd', 1000000000), self::port(61, 6, 'ge-0/0/1', 'ethernetCsmacd', 1000000000));
+        $connections = self::connections($devices, $ports, [self::lldp(1, 11, 5, 51), self::lldp(2, 21, 6, 61), self::lldp(3, 31, 4, 41)],
+            [[$ports[11], '10.0.1.1', 30], [$ports[21], '10.0.1.2', 30]]);
+        $this->assertSame([['l2', ''], ['p2p', '10.0.1.0/30']], array_map(fn ($c) => [$c['kind'], (string) $c['network']], $connections));
+
+        // a transit VLAN from the HQ core to a branch router behind an access switch behind the branch core, which has
+        // the fiber: it rides the fiber
+        $devices = [1 => self::device(1, 'core', 1), 2 => self::device(2, 'core-b', 2), 3 => self::device(3, 'acc-b', 2), 4 => self::device(4, 'rtr-b', 2)];
+        $ports = self::ports(self::port(11, 1, 'TenGigabitEthernet1/1/1'), self::port(12, 1, 'Vlan900', 'propVirtual', 1000000000),
+            self::port(21, 2, 'TenGigabitEthernet1/1/1'), self::port(22, 2, 'TenGigabitEthernet1/1/2'), self::port(31, 3, 'TenGigabitEthernet1/1/1'),
+            self::port(32, 3, 'GigabitEthernet1/0/1', 'ethernetCsmacd', 1000000000), self::port(41, 4, 'GigabitEthernet0/0/0', 'ethernetCsmacd', 1000000000),
+            self::port(42, 4, 'GigabitEthernet0/0/0.900', 'l2vlan', 1000000000));
+        $links = [self::lldp(1, 11, 2, 21), self::lldp(2, 22, 3, 31), self::lldp(4, 41, 3, 32)];
+        $addresses = [[$ports[12], '10.9.0.1', 29], [$ports[42], '10.9.0.2', 29]];
+        $this->assertSame([['l2', '10.9.0.0/29']], array_map(fn ($c) => [$c['kind'], $c['network']], self::connections($devices, $ports, $links, $addresses, [], [[41, 42]])));
+
+        // the access switch only reaches the fiber through the router itself (cabled to the core-b behind it): not by its site
+        $links = [self::lldp(1, 11, 2, 21), self::lldp(4, 41, 3, 32), self::lldp(4, 43, 2, 22)];
+        $ports += self::ports(self::port(43, 4, 'GigabitEthernet0/0/2', 'ethernetCsmacd', 1000000000));
+        $this->assertSame([['l2', ''], ['p2p', '10.9.0.0/29']],
+            array_map(fn ($c) => [$c['kind'], (string) $c['network']], self::connections($devices, $ports, $links, $addresses, [], [[41, 42]])));
     }
 
     public function testInterfaceStackHelpers(): void

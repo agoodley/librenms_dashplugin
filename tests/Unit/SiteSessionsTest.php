@@ -184,20 +184,27 @@ class SiteSessionsTest extends TestCase
         $devices = [];
         $owners = [];
         $rows = [];
+        $tunnel = ['ifType' => 'tunnel', 'ifName' => 'Tunnel0', 'ifDescr' => 'Tunnel0'];
         foreach ([1, 2, 3] as $s) {
             $devices[$s] = self::device($s, "spoke-$s", $s, 65100 + $s);
-            $owners['10.0.0.' . (1 + $s)][] = ['device_id' => $s, 'prefixlen' => 24, 'vrf' => ''];
+            $owners['10.0.0.' . (1 + $s)][] = ['device_id' => $s, 'prefixlen' => 24, 'vrf' => '', 'port' => $tunnel];
             $rows[] = self::bgp($s, '10.0.0.1', 65000, 'established', '10.0.0.' . (1 + $s));
         }
         $this->assertSame(['as:65000@10.0.0.1'], array_values(array_unique(array_map(fn ($c) => $c['cloud']['id'],
             (new SiteSessions($devices, $owners))->addBgp($rows)->all()))));
+
+        // a template transit LAN: every branch's own firewall at .254 of the same /24, the routers at addresses of their
+        // own on Ethernet: three firewalls, a cloud per site
+        $lan = array_map(fn ($list) => array_map(fn ($owner) => ['port' => ['ifType' => 'ethernetCsmacd', 'ifName' => 'Gi0/0/1']] + $owner, $list), $owners);
+        $this->assertSame(['as:65000@site:1', 'as:65000@site:2', 'as:65000@site:3'], array_map(fn ($c) => $c['cloud']['id'],
+            (new SiteSessions($devices, $lan))->addBgp($rows)->all()));
 
         // every session down (no local address): the routers' interface addresses tell where the peer is, so the
         // cloud stays shared; the routers to look up are those of unknownSources()
         $down = array_map(fn ($row) => ['bgpPeerState' => 'active', 'bgpLocalAddr' => '0.0.0.0'] + $row, $rows);
         $this->assertSame([1, 2, 3], SiteSessions::unknownSources($down, $owners));
         $this->assertSame([], SiteSessions::unknownSources($rows, $owners));
-        $interfaces = array_map(fn ($s) => [['10.0.0.' . (1 + $s), 24], ['192.168.' . $s . '.1', 24]], [1 => 1, 2 => 2, 3 => 3]);
+        $interfaces = array_map(fn ($s) => [['10.0.0.' . (1 + $s), 24, $tunnel], ['192.168.' . $s . '.1', 24]], [1 => 1, 2 => 2, 3 => 3]);
         $this->assertSame(['as:65000@10.0.0.1'], array_values(array_unique(array_map(fn ($c) => $c['cloud']['id'],
             (new SiteSessions($devices, $owners, $interfaces))->addBgp($down)->all()))));
 
