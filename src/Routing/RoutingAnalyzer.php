@@ -13,14 +13,19 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
  * Routing and IP checks, the Layer 3 counterpart of the spanning tree diagnostics:
  *  - OSPF: duplicate router IDs, adjacencies that do not reach Full (ExStart / Exchange with the MTU
  *    of both ends), hello / dead interval, area, area type, network type and authentication
- *    mismatches between the interfaces of one subnet, costs that differ per direction, routers of
- *    one area whose link-state databases disagree and DR elections on point-to-point links;
- *  - BGP: sessions that are down with their last error as text, a configured remote AS that is not
- *    the peer's AS, sessions configured on one side only, recent resets, accepted prefixes near the
+ *    mismatches between the interfaces of one link, costs that differ per direction, routers of one
+ *    area whose link-state databases disagree and DR elections on point-to-point links;
+ *  - BGP: sessions that are down with their last error as text, a configured remote AS the peer is
+ *    rejected for, sessions configured on one side only, recent resets, accepted prefixes near the
  *    configured limit or none at all;
- *  - IP: duplicate addresses, different prefix lengths on the two ends of a link and one subnet in
- *    two VRFs on neighboring devices.
- * Pure PHP: all data is passed in as arrays so it can be tested without LibreNMS.
+ *  - IP: duplicate addresses, different prefix lengths on two neighbors and links that join
+ *    differently named VRFs.
+ * Subnets are reused by networks that never meet (customers, sites, VRFs), so interfaces and
+ * addresses are only compared where they are on one link: on two neighbors (LLDP/CDP, OSPF) or,
+ * for OSPF interfaces, within one OSPF domain.
+ * Pure PHP: all data is passed in (arrays or generators, each read once) so it can be tested
+ * without LibreNMS. It is indexed while it is read and kept in small objects (Address,
+ * OspfInterface, OspfNeighbor, BgpSession), for networks with thousands of routers.
  */
 class RoutingAnalyzer
 {
@@ -83,22 +88,43 @@ class RoutingAnalyzer
     /** A session reset this long after the router itself started was caused by the restart (seconds). */
     private const RESTART_MARGIN = 600;
 
+    /** AS_TRANS (RFC 6793): what a two-byte speaker sees instead of a four-byte AS, so it is compared with nothing. */
+    private const AS_TRANS = 23456;
+
+    /**
+     * Routers of one area whose LSA counts differ by at most this share (and one LSA) are taken as a
+     * change in progress: LibreNMS polls them at different moments.
+     */
+    private const LSDB_TOLERANCE = 0.01;
+
     /** @var array<int, true> reported devices (the group / location filter) */
     private array $scope;
 
-    /** @var array<int, array> interface addresses, see indexAddresses() */
-    private array $addresses = [];
+    /** @var array<string, Address|list<Address>> binary address => its row, or its rows when several ports have it */
+    private array $byIp = [];
 
-    /** @var array<string, int[]> "vrf|ip" => address indexes */
-    private array $owners = [];
-
-    /** @var array<string, int[]> ip => address indexes in any VRF */
-    private array $anyVrf = [];
-
-    /** @var array<int, int[]> device => address indexes */
+    /** @var array<int, list<Address>> device => its addresses */
     private array $byDevice = [];
 
-    /** @var array<string, array> "device|vrf" => OSPF instance */
+    /** @var array<int, array<int, true>> device => devices it is directly connected to (LLDP/CDP links, OSPF adjacencies) */
+    private array $adjacent = [];
+
+    /** @var array<int, array{0: int, 1: int, 2: int, 3: int}> port pair (see pair()) => LLDP/CDP link: device, port, device, port */
+    private array $links = [];
+
+    /** @var array<int, array<string, true>> device => names of its VRFs, lowercase */
+    private array $vrfsOf = [];
+
+    /** @var array<int, array<string, int>> device => VRF name => the VRF's own local AS */
+    private array $vrfAs = [];
+
+    /** @var array<string, true> VRF names in the data, for the filter */
+    private array $vrfNames = [];
+
+    /** @var array<string, string> strings shared by many rows (VRF names, areas, states) */
+    private array $strings = [];
+
+    /** @var array<string, array> "device|vrf" => OSPF instance with its areas and interface / neighbor counts */
     private array $instances = [];
 
     /** @var array<int, string[]> device => its OSPF instance keys */
@@ -107,31 +133,28 @@ class RoutingAnalyzer
     /** @var array<string, array<int, true>> router ID => devices using it */
     private array $routersWithId = [];
 
-    /** @var array<int, array> OSPF interfaces */
+    /** @var list<OspfInterface> */
     private array $interfaces = [];
 
-    /** @var array<string, int> "device|vrf|ip" => OSPF interface index */
+    /** @var array<string, OspfInterface> "device|vrf|ip" => OSPF interface */
     private array $interfaceAt = [];
 
-    /** @var array<string, int[]> instance key => OSPF interface indexes */
-    private array $interfacesOf = [];
-
-    /** @var array<string, int[]> instance key => OSPF neighbor indexes */
-    private array $neighborsOf = [];
-
-    /** @var array<string, true> "device|vrf|ip" of the OSPF interfaces with a neighbor */
-    private array $talking = [];
-
-    /** @var array<int, array> OSPF neighbors seen by the analyzed routers */
+    /** @var list<OspfNeighbor> OSPF neighbors seen by the analyzed routers */
     private array $neighbors = [];
+
+    /** @var array<int, array<string, true>> device => binary addresses of its OSPF neighbors */
+    private array $ospfPeers = [];
 
     /** @var array<string, int> "device|vrf" => OSPF domain (routers joined by adjacencies) */
     private array $domains = [];
 
-    /** @var array<int, array> BGP sessions */
+    /** @var list<array{0: int, 1: string, 2: string, 3: ?int, 4: string}> OSPF areas: device, vrf, area, LSA count, type */
+    private array $areas = [];
+
+    /** @var list<BgpSession> */
     private array $peers = [];
 
-    /** @var array<int, int[]> device => indexes of its BGP sessions */
+    /** @var array<int, list<BgpSession>> device => its BGP sessions */
     private array $peersOf = [];
 
     /** @var array<string, true> disabled check codes and categories */
@@ -143,39 +166,38 @@ class RoutingAnalyzer
     /** @var array<int, array{0: Finding, 1: string[]}> findings with their VRFs */
     private array $findings = [];
 
-    /** @var array<string, string> mask cache */
-    private static array $masks = [];
-
     /**
      * @param  array<int, array>  $devices  device_id => device row (display, hostname, sysName, status, uptime,
      *                                       bgpLocalAs) of every device the user may see
      * @param  int[]  $scope  reported devices (the group / location filter)
-     * @param  array<int, array>  $addresses  IPv4 and IPv6 interface addresses: device_id, port_id, ifName, ifDescr,
-     *                                        ifType, ifMtu, ifOperStatus, address, prefixlen and vrf (its VRF name)
-     * @param  array{instances?: array, areas?: array, ports?: array, neighbors?: array}  $ospf  rows of
-     *                                        ospf_instances, ospf_areas, ospf_ports and ospf_nbrs
-     * @param  array{peers?: array, prefixes?: array}  $bgp  rows of bgpPeers (with 'vrf', its VRF name) and
-     *                                        bgpPeers_cbgp
-     * @param  array<int, array<int, true>>  $adjacent  device => devices it has an LLDP/CDP link with (OSPF neighbors are
-     *                                                  added: both prove a direct connection)
-     * @param  array<int, array<string, int>>  $vrfAs  device => VRF name => local AS of that VRF
+     * @param  iterable<array>  $addresses  IPv4 and IPv6 interface addresses: device_id, port_id, ifName, ifDescr,
+     *                                      ifType, ifMtu, ifOperStatus, address, prefixlen and vrf (its VRF name)
+     * @param  array{instances?: iterable, areas?: iterable, ports?: iterable, neighbors?: iterable}  $ospf  rows of
+     *                                      ospf_instances, ospf_areas, ospf_ports and ospf_nbrs
+     * @param  array{peers?: iterable, prefixes?: iterable}  $bgp  rows of bgpPeers (with 'vrf', its VRF name) and
+     *                                      bgpPeers_cbgp
+     * @param  iterable<array>  $links  LLDP/CDP links between the devices: local_device_id, local_port_id,
+     *                                  remote_device_id, remote_port_id
+     * @param  array<int, array<string, ?int>>  $vrfs  device => its VRF names => the VRF's own local AS (null or 0: none)
      */
     public function __construct(
         private array $devices,
         array $scope,
-        array $addresses,
+        iterable $addresses,
         private PluginSettings $settings,
-        private array $ospf = [],
-        private array $bgp = [],
-        private array $adjacent = [],
-        private array $vrfAs = [],
+        array $ospf = [],
+        array $bgp = [],
+        iterable $links = [],
+        array $vrfs = [],
     ) {
         $this->scope = array_fill_keys(array_map('intval', $scope), true);
         $this->disabled = array_fill_keys(array_map('strtolower', $settings->list('routing_disabled_checks')), true);
         $this->ignored = $settings->list('routing_ignore_addresses');
-        $this->indexAddresses($addresses);
-        $this->prepareOspf();
-        $this->prepareBgp();
+        $this->readVrfs($vrfs);
+        $this->readLinks($links);
+        $this->readAddresses($addresses);
+        $this->readOspf($ospf);
+        $this->readBgp($bgp);
     }
 
     /**
@@ -211,11 +233,12 @@ class RoutingAnalyzer
         $key = fn ($f) => [Finding::SEVERITY_ORDER[$f['severity']], $categoryOrder[$f['category']] ?? 99, $codeOrder[$f['code']] ?? 99, $f['title']];
         usort($findings, fn ($a, $b) => $key($a) <=> $key($b));
 
-        $row = fn (array $r) => $keep(array_values(array_filter([$r['device_id'], $r['remote_device'] ?? null])), [$r['vrf']])
-            && isset($this->scope[$r['device_id']]);
-        $routers = array_values(array_filter($this->routerRows(), fn ($r) => $keep([$r['device_id']], [$r['vrf']])));
-        $adjacencies = array_values(array_filter($this->neighborRows(), $row));
-        $sessions = array_values(array_filter($this->sessionRows(), $row));
+        // table rows: of a reported router, and with the device on either end
+        $row = fn (int $deviceId, ?int $remote, string $vrf) => isset($this->scope[$deviceId])
+            && $keep($remote !== null && $remote !== $deviceId ? [$deviceId, $remote] : [$deviceId], [$vrf]);
+        $routers = $this->routerRows(fn (array $instance) => $keep([$instance['device_id']], [$instance['vrf']]));
+        $adjacencies = $this->neighborRows(fn (OspfNeighbor $n) => $row($n->device, $n->remoteDevice, $n->vrf));
+        $sessions = $this->sessionRows(fn (BgpSession $s) => $row($s->device, $s->remoteDevice, $s->vrf));
 
         $names = [];
         foreach ($findings as $finding) {
@@ -235,7 +258,7 @@ class RoutingAnalyzer
 
         return [
             'device_names' => $names,
-            'vrfs' => $this->vrfNames(),
+            'vrfs' => $this->vrfList(),
             'summary' => self::summarize($findings, $routers, $adjacencies, $sessions, $this->addressCount($device, $vrf)),
             'findings' => $findings,
             'ospf_routers' => $routers,
@@ -266,6 +289,7 @@ class RoutingAnalyzer
                 'sessions' => count($sessions),
                 'established' => count(array_filter($sessions, fn ($r) => $r['established'])),
                 'shut' => count(array_filter($sessions, fn ($r) => $r['shut'])),
+                'unknown' => count(array_filter($sessions, fn ($r) => $r['unknown'] && ! $r['shut'])),
             ],
             'addresses' => $addresses,
             'findings' => $counts,
@@ -277,60 +301,101 @@ class RoutingAnalyzer
     // ---------------------------------------------------------------- data
 
     /**
-     * Index the interface addresses: owner of each address (per VRF and in any VRF) and addresses
-     * per device. Link-local, loopback and multicast addresses are left out.
+     * VRF names of each device (lowercase) and the local AS of the VRFs that have their own.
      */
-    private function indexAddresses(array $rows): void
+    private function readVrfs(array $vrfs): void
+    {
+        foreach ($vrfs as $deviceId => $names) {
+            foreach ($names as $name => $as) {
+                $name = (string) $name;
+                if ($name !== '') {
+                    $this->vrfsOf[(int) $deviceId][strtolower($name)] = true;
+                    $this->vrfNames[$name] = true;
+                    if ((int) $as > 0) {
+                        $this->vrfAs[(int) $deviceId][$name] = (int) $as;
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * LLDP/CDP links: the devices they connect and, when both ports are known, the ports facing each other.
+     */
+    private function readLinks(iterable $links): void
+    {
+        foreach ($links as $link) {
+            $a = (int) ($link['local_device_id'] ?? 0);
+            $b = (int) ($link['remote_device_id'] ?? 0);
+            if ($a === $b || ! isset($this->devices[$a], $this->devices[$b])) {
+                continue;
+            }
+            $this->adjacent[$a][$b] = true;
+            $this->adjacent[$b][$a] = true;
+            $portA = (int) ($link['local_port_id'] ?? 0);
+            $portB = (int) ($link['remote_port_id'] ?? 0);
+            if ($portA > 0 && $portB > 0 && $portA !== $portB) {
+                $this->links[self::pair($portA, $portB)] ??= [$a, $portA, $b, $portB];
+            }
+        }
+    }
+
+    /**
+     * Index the interface addresses by address and by device. Link-local, loopback (127/8) and
+     * multicast addresses are left out.
+     */
+    private function readAddresses(iterable $rows): void
     {
         $portNames = [];
         foreach ($rows as $row) {
             $deviceId = (int) ($row['device_id'] ?? 0);
-            $packed = @inet_pton(trim((string) ($row['address'] ?? '')));
-            if ($packed === false || ! isset($this->devices[$deviceId]) || self::ignorable($packed)) {
+            $packed = Address::pack($row['address'] ?? null);
+            if ($packed === null || ! isset($this->devices[$deviceId]) || self::ignorable($packed)) {
                 continue;
             }
 
-            $ip = (string) inet_ntop($packed);
             $bits = strlen($packed) * 8;
-            $family = $bits === 128 ? 6 : 4;
-            $prefix = (int) ($row['prefixlen'] ?? 0);
-            $vrf = (string) ($row['vrf'] ?? '');
-            $network = $prefix >= 0 && $prefix <= $bits ? inet_ntop($packed & self::mask(strlen($packed), $prefix)) . '/' . $prefix : null;
-            $host = $prefix >= $bits || strtolower((string) ($row['ifType'] ?? '')) === 'softwareloopback';
+            $prefix = (int) ($row['prefixlen'] ?? $bits);
+            $prefix = $prefix >= 0 && $prefix <= $bits ? $prefix : $bits;
+            $vrf = $this->vrf($deviceId, (string) ($row['vrf'] ?? ''));
+            $status = strtolower(trim((string) ($row['ifOperStatus'] ?? '')));
             $name = ($row['ifName'] ?? '') . '|' . ($row['ifDescr'] ?? '');
-            $index = count($this->addresses);
-            $this->addresses[] = [
-                'device_id' => $deviceId,
-                'port_id' => ! empty($row['port_id']) ? (int) $row['port_id'] : null,
-                'port' => $portNames[$name] ??= InterfaceName::short(InterfaceName::label($row)),
-                'ip' => $ip,
-                'packed' => $packed,
-                'prefix' => $prefix,
-                'family' => $family,
-                'vrf' => $vrf,
-                'network' => $network,
-                'host' => $host,
-                'mtu' => (int) ($row['ifMtu'] ?? 0) ?: null,
-            ];
-            $this->owners[$vrf . '|' . $ip][] = $index;
-            $this->anyVrf[$ip][] = $index;
-            $this->byDevice[$deviceId][] = $index;
+            $address = new Address(
+                $deviceId,
+                ! empty($row['port_id']) ? (int) $row['port_id'] : null,
+                $portNames[$name] ??= InterfaceName::short(InterfaceName::label($row)),
+                $packed,
+                $prefix,
+                $vrf,
+                $prefix >= $bits || strtolower((string) ($row['ifType'] ?? '')) === 'softwareloopback',
+                $status === '' || $status === 'up',
+                (int) ($row['ifMtu'] ?? 0) ?: null,
+            );
+
+            $this->byDevice[$deviceId][] = $address;
+            if (! isset($this->byIp[$packed])) {
+                $this->byIp[$packed] = $address;
+            } elseif (is_array($this->byIp[$packed])) {
+                $this->byIp[$packed][] = $address;
+            } else {
+                $this->byIp[$packed] = [$this->byIp[$packed], $address];
+            }
         }
     }
 
     /**
      * OSPF instances, interfaces and neighbors of the devices that are up (a down device's rows are
      * from before it went down), with the interface facing each neighbor and the device owning the
-     * neighbor's address; then the OSPF domains (routers joined by adjacencies, per VRF).
+     * neighbor's address; then the OSPF domains (routers joined by adjacencies, per VRF) and the areas.
      */
-    private function prepareOspf(): void
+    private function readOspf(array $ospf): void
     {
-        foreach ($this->ospf['instances'] ?? [] as $row) {
+        foreach ($ospf['instances'] ?? [] as $row) {
             $deviceId = (int) ($row['device_id'] ?? 0);
             if (! $this->isUp($deviceId) || self::enum($row['ospfAdminStat'] ?? 'enabled', self::ADMIN) === 'disabled') {
                 continue;
             }
-            $vrf = (string) ($row['context_name'] ?? '');
+            $vrf = $this->vrf($deviceId, (string) ($row['context_name'] ?? ''));
             $key = $deviceId . '|' . $vrf;
             $routerId = self::ip((string) ($row['ospfRouterId'] ?? '')) ?? trim((string) ($row['ospfRouterId'] ?? ''));
             $this->instances[$key] = [
@@ -339,6 +404,10 @@ class RoutingAnalyzer
                 'router_id' => $routerId,
                 'abr' => self::enum($row['ospfAreaBdrRtrStatus'] ?? '', [1 => 'true', 2 => 'false']) === 'true',
                 'asbr' => self::enum($row['ospfASBdrRtrStatus'] ?? '', [1 => 'true', 2 => 'false']) === 'true',
+                'areas' => [],
+                'interfaces' => 0,
+                'neighbors' => 0,
+                'full' => 0,
             ];
             $this->instancesOf[$deviceId][] = $key;
             if (self::validRouterId($routerId)) {
@@ -346,84 +415,99 @@ class RoutingAnalyzer
             }
         }
 
-        foreach ($this->ospf['ports'] ?? [] as $row) {
+        foreach ($ospf['ports'] ?? [] as $row) {
             $deviceId = (int) ($row['device_id'] ?? 0);
-            $vrf = (string) ($row['context_name'] ?? '');
-            if (! isset($this->instances[$deviceId . '|' . $vrf]) || self::enum($row['ospfIfAdminStat'] ?? 'enabled', self::ADMIN) === 'disabled') {
+            $key = $deviceId . '|' . ($row['context_name'] ?? '');
+            if (! isset($this->instances[$key]) || self::enum($row['ospfIfAdminStat'] ?? 'enabled', self::ADMIN) === 'disabled') {
                 continue;
             }
+            $vrf = $this->instances[$key]['vrf'];
             $ip = self::ip((string) ($row['ospfIfIpAddress'] ?? ''));
-            $address = $ip !== null && $ip !== '0.0.0.0' ? $this->ownAddress($deviceId, $ip, $vrf) : null;
-            $index = count($this->interfaces);
-            $this->interfaceAt[$deviceId . '|' . $vrf . '|' . $ip] = $index;
-            $this->interfacesOf[$deviceId . '|' . $vrf][] = $index;
-            $this->interfaces[] = [
-                'device_id' => $deviceId,
-                'vrf' => $vrf,
-                'ip' => $ip,
-                'port_id' => (int) ($row['port_id'] ?? 0) ?: ($address['port_id'] ?? null),
-                'port' => $address['port'] ?? ($ip ?? ''),
-                'network' => $address['network'] ?? null,
-                'prefix' => $address['prefix'] ?? null,
-                'area' => self::area($row['ospfIfAreaId'] ?? ''),
-                'type' => self::enum($row['ospfIfType'] ?? null, self::IF_TYPES),
-                'state' => self::enum($row['ospfIfState'] ?? null, self::IF_STATES),
-                'hello' => isset($row['ospfIfHelloInterval']) ? (int) $row['ospfIfHelloInterval'] : null,
-                'dead' => isset($row['ospfIfRtrDeadInterval']) ? (int) $row['ospfIfRtrDeadInterval'] : null,
-                'auth' => self::enum($row['ospfIfAuthType'] ?? null, self::AUTH_TYPES),
-                'cost' => isset($row['ospfIfMetricValue']) ? (int) $row['ospfIfMetricValue'] : null,
-                'dr' => self::ip((string) ($row['ospfIfDesignatedRouter'] ?? '')),
-            ];
+            $address = $ip !== null && $ip !== '0.0.0.0' ? $this->ownAddress($deviceId, (string) inet_pton($ip), $vrf) : null;
+            $area = $this->intern(self::area($row['ospfIfAreaId'] ?? ''));
+            $interface = new OspfInterface(
+                $deviceId,
+                $vrf,
+                $ip,
+                $address,
+                (int) ($row['port_id'] ?? 0) ?: $address?->portId,
+                $area,
+                $this->intern(self::enum($row['ospfIfType'] ?? null, self::IF_TYPES)),
+                $this->intern(self::enum($row['ospfIfState'] ?? null, self::IF_STATES)),
+                isset($row['ospfIfHelloInterval']) ? (int) $row['ospfIfHelloInterval'] : null,
+                isset($row['ospfIfRtrDeadInterval']) ? (int) $row['ospfIfRtrDeadInterval'] : null,
+                $this->intern(self::enum($row['ospfIfAuthType'] ?? null, self::AUTH_TYPES)),
+                isset($row['ospfIfMetricValue']) ? (int) $row['ospfIfMetricValue'] : null,
+                self::ip((string) ($row['ospfIfDesignatedRouter'] ?? '')),
+            );
+            $this->interfaces[] = $interface;
+            if ($ip !== null) {
+                $this->interfaceAt[$key . '|' . $ip] = $interface;
+            }
+            $this->instances[$key]['interfaces']++;
+            if ($area !== '') {
+                $this->instances[$key]['areas'][$area] = true;
+            }
         }
 
-        foreach ($this->ospf['neighbors'] ?? [] as $row) {
+        foreach ($ospf['neighbors'] ?? [] as $row) {
             $deviceId = (int) ($row['device_id'] ?? 0);
-            $vrf = (string) ($row['context_name'] ?? '');
+            $key = $deviceId . '|' . ($row['context_name'] ?? '');
             $ip = self::ip((string) ($row['ospfNbrIpAddr'] ?? ''));
-            if ($ip === null || ! isset($this->instances[$deviceId . '|' . $vrf])) {
+            if ($ip === null || ! isset($this->instances[$key])) {
                 continue;
             }
+            $vrf = $this->instances[$key]['vrf'];
+            $packed = (string) inet_pton($ip);
             $routerId = self::ip((string) ($row['ospfNbrRtrId'] ?? '')) ?? trim((string) ($row['ospfNbrRtrId'] ?? ''));
-            $remote = $this->owner($ip, $vrf, $deviceId);
-            $local = $this->facing($deviceId, $ip, $vrf);
-            $interface = $local !== null ? ($this->interfaces[$this->interfaceAt[$deviceId . '|' . $vrf . '|' . $local['ip']] ?? -1] ?? null) : null;
-            if ($interface !== null) {
-                $this->talking[$deviceId . '|' . $vrf . '|' . $interface['ip']] = true;
+            [$remoteDevice, $remote] = $this->owner($packed, $vrf, $deviceId);
+            if ($remoteDevice === null && ($remoteDevice = $this->routerWithId($routerId, $deviceId)) !== null) {
+                $remote = $this->ownAddress($remoteDevice, $packed, $vrf);
             }
-            $this->neighborsOf[$deviceId . '|' . $vrf][] = count($this->neighbors);
-            $this->neighbors[] = [
-                'device_id' => $deviceId,
-                'vrf' => $vrf,
-                'ip' => $ip,
-                'router_id' => $routerId,
-                'state' => self::enum($row['ospfNbrState'] ?? null, self::NBR_STATES),
-                'remote_device' => $remote['device_id'] ?? $this->routerWithId($routerId, $deviceId),
-                'remote' => $remote,
-                'local' => $local,
-                'interface' => $interface,
-            ];
+            $local = $this->facing($deviceId, $packed, $vrf);
+            $interface = $local !== null ? ($this->interfaceAt[$key . '|' . $local->ip()] ?? null) : null;
+            if ($interface !== null) {
+                $interface->talking = true;
+            }
+            $neighbor = new OspfNeighbor($deviceId, $vrf, $ip, $routerId, $this->intern(self::enum($row['ospfNbrState'] ?? null, self::NBR_STATES)),
+                $remoteDevice, $remote, $local, $interface);
+            $this->neighbors[] = $neighbor;
+            $this->instances[$key]['neighbors']++;
+            $this->instances[$key]['full'] += $neighbor->ok() ? 1 : 0;
+            $this->ospfPeers[$deviceId][$packed] = true;
+            if ($remoteDevice !== null && $remoteDevice !== $deviceId) {
+                $this->adjacent[$deviceId][$remoteDevice] = true;
+                $this->adjacent[$remoteDevice][$deviceId] = true;
+            }
         }
 
-        // directly connected routers, and the OSPF domains: routers (per VRF) joined by the adjacencies they report
-        foreach ($this->neighbors as $neighbor) {
-            if ($neighbor['remote_device'] !== null && $neighbor['remote_device'] !== $neighbor['device_id']) {
-                $this->adjacent[$neighbor['device_id']][$neighbor['remote_device']] = true;
-                $this->adjacent[$neighbor['remote_device']][$neighbor['device_id']] = true;
-            }
-        }
         $graph = new Graph;
         foreach (array_keys($this->instances) as $key) {
             $graph->addNode($key);
         }
         foreach ($this->neighbors as $neighbor) {
-            $remote = $neighbor['remote_device'] === null ? null : $this->instanceKey($neighbor['remote_device'], $neighbor['remote']['vrf'] ?? $neighbor['vrf']);
+            $remote = $neighbor->remoteDevice === null ? null : $this->instanceKey($neighbor->remoteDevice, $neighbor->remote->vrf ?? $neighbor->vrf);
             if ($remote !== null) {
-                $graph->addEdge($neighbor['device_id'] . '|' . $neighbor['vrf'], $remote);
+                $graph->addEdge($neighbor->device . '|' . $neighbor->vrf, $remote);
             }
         }
         foreach ($graph->components() as $index => $component) {
             foreach ($component as $key) {
                 $this->domains[(string) $key] = $index;
+            }
+        }
+
+        foreach ($ospf['areas'] ?? [] as $row) {
+            $deviceId = (int) ($row['device_id'] ?? 0);
+            $key = $deviceId . '|' . ($row['context_name'] ?? '');
+            if (isset($this->instances[$key])) {
+                $this->areas[] = [
+                    $deviceId,
+                    $this->instances[$key]['vrf'],
+                    $this->intern(self::area($row['ospfAreaId'] ?? '')),
+                    isset($row['ospfAreaLsaCount']) ? (int) $row['ospfAreaLsaCount'] : null,
+                    $this->intern(self::enum($row['ospfImportAsExtern'] ?? null, self::AREA_TYPES)),
+                ];
             }
         }
     }
@@ -432,14 +516,14 @@ class RoutingAnalyzer
      * BGP sessions of the devices that are up, with the device owning the peer address, the local
      * AS (of the session's VRF) and the prefix counters of bgpPeers_cbgp.
      */
-    private function prepareBgp(): void
+    private function readBgp(array $bgp): void
     {
         $prefixes = [];
-        foreach ($this->bgp['prefixes'] ?? [] as $row) {
-            $ip = self::ip((string) ($row['bgpPeerIdentifier'] ?? ''));
-            if ($ip !== null) {
-                $prefixes[(int) $row['device_id'] . '|' . ($row['context_name'] ?? '') . '|' . $ip][] = [
-                    'family' => self::family((string) ($row['afi'] ?? ''), (string) ($row['safi'] ?? '')),
+        foreach ($bgp['prefixes'] ?? [] as $row) {
+            $packed = Address::pack($row['bgpPeerIdentifier'] ?? null);
+            if ($packed !== null) {
+                $prefixes[(int) ($row['device_id'] ?? 0) . '|' . ($row['context_name'] ?? '') . '|' . $packed][] = [
+                    'family' => $this->intern(self::family((string) ($row['afi'] ?? ''), (string) ($row['safi'] ?? ''))),
                     'accepted' => (int) ($row['AcceptedPrefixes'] ?? 0),
                     'denied' => (int) ($row['DeniedPrefixes'] ?? 0),
                     'limit' => (int) ($row['PrefixAdminLimit'] ?? 0),
@@ -448,41 +532,37 @@ class RoutingAnalyzer
             }
         }
 
-        foreach ($this->bgp['peers'] ?? [] as $row) {
+        foreach ($bgp['peers'] ?? [] as $row) {
             $deviceId = (int) ($row['device_id'] ?? 0);
             $ip = self::ip((string) ($row['bgpPeerIdentifier'] ?? '')) ?? self::ip((string) ($row['bgpPeerRemoteAddr'] ?? ''));
             if ($ip === null || ! $this->isUp($deviceId)) {
                 continue;
             }
-            $vrf = (string) ($row['vrf'] ?? $row['context_name'] ?? '');
-            $remoteAs = (int) ($row['bgpPeerRemoteAs'] ?? 0) ?: null;
-            $localAs = $this->localAs($deviceId, $vrf);
-            $state = self::enum($row['bgpPeerState'] ?? null, self::BGP_STATES);
-            $remote = $this->owner($ip, $vrf, $deviceId);
-            $localIp = self::ip((string) ($row['bgpLocalAddr'] ?? ''));
-            $local = ($localIp !== null && $localIp !== '0.0.0.0' ? $this->ownAddress($deviceId, $localIp, $vrf) : null) ?? $this->facing($deviceId, $ip, $vrf);
-            $text = trim((string) ($row['bgpPeerLastErrorText'] ?? ''));
-            $index = count($this->peers);
-            $this->peers[] = [
-                'device_id' => $deviceId,
-                'vrf' => $vrf,
-                'ip' => $ip,
-                'remote_as' => $remoteAs,
-                'local_as' => $localAs,
-                'type' => $remoteAs === null || $localAs === null ? null : ($remoteAs === $localAs ? 'iBGP' : 'eBGP'),
-                'state' => $state,
-                'established' => $state === 'established',
-                'shut' => in_array(self::enum($row['bgpPeerAdminStatus'] ?? null, self::BGP_ADMIN), self::BGP_SHUT, true),
-                'error' => BgpErrors::describe(self::number($row['bgpPeerLastErrorCode'] ?? null), self::number($row['bgpPeerLastErrorSubCode'] ?? null)),
-                'error_text' => $text,
-                'time' => max(0, (int) ($row['bgpPeerFsmEstablishedTime'] ?? 0)),
-                'description' => trim((string) ($row['bgpPeerDescr'] ?? '')) ?: trim((string) ($row['astext'] ?? '')),
-                'remote_device' => $remote['device_id'] ?? null,
-                'remote' => $remote,
-                'local' => $local,
-                'prefixes' => $prefixes[$deviceId . '|' . ($row['context_name'] ?? '') . '|' . $ip] ?? [],
-            ];
-            $this->peersOf[$deviceId][] = $index;
+            $packed = (string) inet_pton($ip);
+            $vrf = $this->vrf($deviceId, (string) ($row['vrf'] ?? $row['context_name'] ?? ''));
+            [$remoteDevice, $remote] = $this->owner($packed, $vrf, $deviceId);
+            $localIp = Address::pack($row['bgpLocalAddr'] ?? null);
+            $local = ($localIp !== null && trim($localIp, "\0") !== '' ? $this->ownAddress($deviceId, $localIp, $vrf) : null) ?? $this->facing($deviceId, $packed, $vrf);
+            $session = new BgpSession(
+                $deviceId,
+                $vrf,
+                $ip,
+                (int) ($row['bgpPeerRemoteAs'] ?? 0) ?: null,
+                $this->localAs($deviceId, $vrf),
+                $this->intern(self::enum($row['bgpPeerState'] ?? null, self::BGP_STATES)),
+                in_array(self::enum($row['bgpPeerAdminStatus'] ?? null, self::BGP_ADMIN), self::BGP_SHUT, true),
+                self::number($row['bgpPeerLastErrorCode'] ?? null),
+                self::number($row['bgpPeerLastErrorSubCode'] ?? null),
+                trim((string) ($row['bgpPeerLastErrorText'] ?? '')),
+                max(0, (int) ($row['bgpPeerFsmEstablishedTime'] ?? 0)),
+                trim((string) ($row['bgpPeerDescr'] ?? '')) ?: trim((string) ($row['astext'] ?? '')),
+                $remoteDevice,
+                $remote,
+                $local,
+                $prefixes[$deviceId . '|' . ($row['context_name'] ?? '') . '|' . $packed] ?? [],
+            );
+            $this->peers[] = $session;
+            $this->peersOf[$deviceId][] = $session;
         }
     }
 
@@ -525,22 +605,22 @@ class RoutingAnalyzer
         }
 
         foreach ($this->neighbors as $neighbor) {
-            $own = $this->instances[$neighbor['device_id'] . '|' . $neighbor['vrf']]['router_id'] ?? '';
-            if (! self::validRouterId($own) || $neighbor['router_id'] !== $own || isset($reported[$own])) {
+            $own = $this->instances[$neighbor->device . '|' . $neighbor->vrf]['router_id'] ?? '';
+            if (! self::validRouterId($own) || $neighbor->routerId !== $own || isset($reported[$own])) {
                 continue;
             }
             $reported[$own] = true;
             $this->add(new Finding(
                 Finding::CRITICAL,
                 'ospf_duplicate_router_id',
-                'OSPF neighbor ' . $neighbor['ip'] . ' of ' . $this->name($neighbor['device_id']) . ' uses the same router ID ' . $own,
-                'The neighbor (a router LibreNMS does not monitor) and ' . $this->name($neighbor['device_id']) . ' both use router ID ' . $own
+                'OSPF neighbor ' . $neighbor->ip . ' of ' . $this->name($neighbor->device) . ' uses the same router ID ' . $own,
+                'The neighbor (a router LibreNMS does not monitor) and ' . $this->name($neighbor->device) . ' both use router ID ' . $own
                 . ': their router LSAs replace each other and the adjacency cannot be trusted.',
                 'Give every router a unique router ID, usually its loopback address, then restart the OSPF process.',
                 null,
-                [$neighbor['device_id']],
-                array_filter([$neighbor['local']['port_id'] ?? null]),
-            ), [$neighbor['vrf']]);
+                [$neighbor->device],
+                array_filter([$neighbor->local?->portId]),
+            ), [$neighbor->vrf]);
         }
     }
 
@@ -553,45 +633,42 @@ class RoutingAnalyzer
     {
         $pairs = [];
         foreach ($this->neighbors as $neighbor) {
-            $state = $neighbor['state'];
-            $p2p = ($neighbor['interface']['type'] ?? null) === 'pointtopoint';
-            if ($state === 'full' || ($state === 'twoway' && ! $p2p) || $state === '') {
+            if ($neighbor->ok() || $neighbor->state === '') {
                 continue;
             }
-            $here = 'd:' . $neighbor['device_id'];
-            $there = $neighbor['remote_device'] !== null ? 'd:' . $neighbor['remote_device'] : 'ip:' . $neighbor['ip'];
-            $network = $neighbor['local']['network'] ?? $neighbor['ip'];
-            $key = (strcmp($here, $there) < 0 ? "$here|$there" : "$there|$here") . '|' . $neighbor['vrf'] . '|' . $network;
-            $pairs[$key][] = $neighbor;
+            $here = 'd:' . $neighbor->device;
+            $there = $neighbor->remoteDevice !== null ? 'd:' . $neighbor->remoteDevice : 'ip:' . $neighbor->ip;
+            $network = $neighbor->local?->network() ?? $neighbor->ip;
+            $pairs[(strcmp($here, $there) < 0 ? "$here|$there" : "$there|$here") . '|' . $network][] = $neighbor;
         }
 
         $rank = ['exchangestart' => 0, 'exchange' => 0, 'init' => 1, 'loading' => 2, 'twoway' => 3, 'attempt' => 4, 'down' => 4];
         foreach ($pairs as $rows) {
-            usort($rows, fn ($a, $b) => ($rank[$a['state']] ?? 9) <=> ($rank[$b['state']] ?? 9));
+            usort($rows, fn ($a, $b) => ($rank[$a->state] ?? 9) <=> ($rank[$b->state] ?? 9));
             $first = $rows[0];
-            $state = $first['state'];
-            $devices = array_values(array_unique(array_filter([$first['device_id'], $first['remote_device']], fn ($d) => $d !== null)));
-            $ports = array_values(array_filter([$first['local']['port_id'] ?? null, $first['remote']['port_id'] ?? null]));
-            $seen = implode(', ', array_map(fn ($r) => $this->name($r['device_id']) . ' sees ' . $r['ip'] . ' in ' . self::label($r['state']), $rows));
-            $pair = $this->end($first['device_id'], $first['local']['port'] ?? null) . ' ↔ '
-                . ($first['remote_device'] !== null ? $this->end($first['remote_device'], $first['remote']['port'] ?? null) : $first['ip'] . ' (router ID ' . $first['router_id'] . ')');
-            $down = $first['remote_device'] !== null && ! $this->isUp($first['remote_device']) ? ' ' . $this->name($first['remote_device']) . ' itself is down.' : '';
+            $state = $first->state;
+            $devices = array_values(array_unique(array_filter([$first->device, $first->remoteDevice], fn ($d) => $d !== null)));
+            $ports = array_values(array_filter([$first->local?->portId, $first->remote?->portId]));
+            $seen = implode(', ', array_map(fn ($r) => $this->name($r->device) . ' sees ' . $r->ip . ' in ' . self::label($r->state), $rows));
+            $pair = $this->end($first->device, $first->local?->port) . ' ↔ '
+                . ($first->remoteDevice !== null ? $this->end($first->remoteDevice, $first->remote?->port) : $first->ip . ' (router ID ' . $first->routerId . ')');
+            $down = $first->remoteDevice !== null && ! $this->isUp($first->remoteDevice) ? ' ' . $this->name($first->remoteDevice) . ' itself is down.' : '';
 
             if (in_array($state, ['exchangestart', 'exchange'], true)) {
-                $mtuHere = $first['local']['mtu'] ?? null;
-                $mtuThere = $first['remote']['mtu'] ?? null;
+                $mtuHere = $first->local?->mtu;
+                $mtuThere = $first->remote?->mtu;
                 if ($mtuHere !== null && $mtuThere !== null && $mtuHere !== $mtuThere) {
                     $this->add(new Finding(
                         Finding::CRITICAL,
                         'ospf_mtu_mismatch',
                         "OSPF adjacency $pair stuck in " . self::label($state) . ": MTU $mtuHere vs $mtuThere",
                         "The routers start the database exchange but never finish it: $seen. The interface MTUs differ ($mtuHere on "
-                        . $this->name($first['device_id']) . ", $mtuThere on " . $this->name((int) $first['remote_device']) . '), so the larger database packets of one side are dropped by the other.',
+                        . $this->name($first->device) . ", $mtuThere on " . $this->name((int) $first->remoteDevice) . '), so the larger database packets of one side are dropped by the other.',
                         'Set the same IP MTU on both interfaces. ip ospf mtu-ignore brings the adjacency up but large packets are still dropped.',
                         null,
                         $devices,
                         $ports,
-                    ), [$first['vrf']]);
+                    ), [$first->vrf]);
 
                     continue;
                 }
@@ -630,122 +707,183 @@ class RoutingAnalyzer
      * @param  int[]  $devices
      * @param  int[]  $ports
      */
-    private function stuck(array $neighbor, string $pair, string $what, string $detail, string $fix, array $devices, array $ports): void
+    private function stuck(OspfNeighbor $neighbor, string $pair, string $what, string $detail, string $fix, array $devices, array $ports): void
     {
-        $this->add(new Finding(Finding::WARNING, 'ospf_neighbor_stuck', "OSPF adjacency $pair $what", $detail, $fix, null, $devices, $ports), [$neighbor['vrf']]);
+        $this->add(new Finding(Finding::WARNING, 'ospf_neighbor_stuck', "OSPF adjacency $pair $what", $detail, $fix, null, $devices, $ports), [$neighbor->vrf]);
     }
 
     /**
-     * Interfaces of one subnet must agree on hello / dead intervals, area, authentication and
-     * network type; costs that differ per direction make routing asymmetric; and a point-to-point
-     * link (/30, /31, /126, /127) with the broadcast network type elects a DR for nothing.
+     * Interfaces on one link must agree on hello / dead intervals, area, authentication and network
+     * type; costs that differ per direction make routing asymmetric; and a point-to-point link (/30,
+     * /31, /126, /127) with the broadcast network type elects a DR for nothing. The interfaces of a
+     * subnet are only compared where they are on one link (see links()).
      */
     private function checkInterfaces(): void
     {
-        $groups = [];
+        $subnets = [];
         foreach ($this->interfaces as $interface) {
-            if ($interface['network'] !== null) {
-                $groups[$interface['vrf'] . '|' . $interface['network']][] = $interface;
+            if ($interface->address !== null && ! $interface->address->host) {
+                $subnets[$interface->address->key()][] = $interface;
             }
         }
-        ksort($groups);
 
-        foreach ($groups as $key => $interfaces) {
-            [$vrf, $network] = explode('|', $key, 2);
-            $devices = array_values(array_unique(array_column($interfaces, 'device_id')));
-            $ports = array_values(array_filter(array_column($interfaces, 'port_id')));
-            $where = $network . ($vrf !== '' ? " (VRF $vrf)" : '');
+        foreach ($subnets as $interfaces) {
+            foreach ($this->links($interfaces) as $link) {
+                $this->compareInterfaces($link);
+            }
+        }
+    }
 
-            if (count($devices) >= 2) {
-                $timers = $this->differing($interfaces, fn ($i) => $i['hello'] === null && $i['dead'] === null ? null : ($i['hello'] ?? '?') . '/' . ($i['dead'] ?? '?') . 's');
-                if ($timers) {
-                    $this->add(new Finding(Finding::CRITICAL, 'ospf_timer_mismatch',
-                        "OSPF hello / dead intervals differ on $where: $timers",
-                        'Routers only form an adjacency when their hello and dead intervals are equal, so these routers cannot become neighbors on this subnet.',
-                        'Use the same intervals on every interface of the subnet (ip ospf hello-interval / dead-interval), or the defaults everywhere.',
-                        null, $devices, $ports), [$vrf]);
-                }
-                $areas = $this->differing($interfaces, fn ($i) => $i['area'] === '' ? null : 'area ' . $i['area']);
-                if ($areas) {
-                    $this->add(new Finding(Finding::CRITICAL, 'ospf_area_mismatch',
-                        "OSPF area differs on $where: $areas",
-                        'Interfaces in one subnet must be in the same area; hellos from another area are ignored, so no adjacency forms.',
-                        'Put every interface of the subnet in the same area.',
-                        null, $devices, $ports), [$vrf]);
-                }
-                $auth = $this->differing($interfaces, fn ($i) => $i['auth'] === '' ? null : self::label($i['auth']));
-                if ($auth) {
-                    $this->add(new Finding(Finding::CRITICAL, 'ospf_auth_mismatch',
-                        "OSPF authentication differs on $where: $auth",
-                        'Hellos with another authentication type are dropped, so no adjacency forms.',
-                        'Configure the same authentication type and key on every interface of the subnet (or in the area).',
-                        null, $devices, $ports), [$vrf]);
-                }
-                $types = $this->differing($interfaces, fn ($i) => $i['type'] === '' ? null : self::label($i['type']));
-                if ($types) {
-                    $this->add(new Finding(Finding::WARNING, 'ospf_network_type_mismatch',
-                        "OSPF network type differs on $where: $types",
-                        'With different network types the routers describe the link differently (a transit network on one side, a point-to-point link on the other): adjacencies can form while routes over the link are missing, and the default timers differ.',
-                        'Use the same network type on every interface of the subnet, point-to-point for a link between two routers.',
-                        null, $devices, $ports), [$vrf]);
-                }
-                $costs = array_values(array_filter($interfaces, fn ($i) => $i['cost'] !== null));
-                if (count($interfaces) === 2 && count($devices) === 2 && count($costs) === 2 && $costs[0]['cost'] !== $costs[1]['cost']) {
-                    $this->add(new Finding(Finding::INFO, 'ospf_cost_asymmetric',
-                        "OSPF cost differs per direction on $where: " . $this->values($costs, fn ($i) => (string) $i['cost']),
-                        'Traffic between ' . $this->names($devices) . ' can take different paths in each direction: stateful firewalls drop the half they do not see, and troubleshooting gets harder.',
-                        'Use the same cost on both interfaces (ip ospf cost), unless the asymmetry is on purpose.',
-                        null, $devices, $ports), [$vrf]);
-                }
+    /**
+     * The interfaces of one subnet grouped by link: two interfaces are on one link when their routers
+     * are in one OSPF domain or the interfaces face each other (faces()). Networks that never meet
+     * reuse subnets, so their interfaces are not compared.
+     *
+     * @param  list<OspfInterface>  $interfaces
+     * @return list<list<OspfInterface>>
+     */
+    private function links(array $interfaces): array
+    {
+        if (count($interfaces) === 1) {
+            return [$interfaces];
+        }
+
+        $parent = array_keys($interfaces);
+        $find = function (int $i) use (&$parent): int {
+            while ($parent[$i] !== $i) {
+                $i = $parent[$i] = $parent[$parent[$i]];
             }
 
-            // only prefixes with room for two addresses (a LAN with two routers also has hosts), and only
-            // where OSPF talks to a neighbor: a passive interface elects itself without consequence
-            $prefix = (int) explode('/', $network)[1];
-            $p2p = in_array($prefix, Cidr::family($network) === 4 ? [30, 31] : [126, 127], true);
-            $talking = count($devices) >= 2 || array_filter($interfaces, fn ($i) => isset($this->talking[$i['device_id'] . '|' . $i['vrf'] . '|' . $i['ip']]));
-            $elected = array_filter($interfaces, fn ($i) => in_array($i['type'], ['broadcast', 'nbma'], true)
-                && (in_array($i['state'], ['designatedrouter', 'backupdesignatedrouter', 'otherdesignatedrouter'], true) || ($i['dr'] !== null && $i['dr'] !== '0.0.0.0')));
-            if ($p2p && $talking && $elected) {
-                $this->add(new Finding(Finding::INFO, 'ospf_dr_on_p2p',
-                    "DR election on the point-to-point link $where: " . $this->values($interfaces, fn ($i) => self::label($i['type'])),
-                    'Only two routers share this subnet, but the broadcast network type makes them elect a designated router: the adjacency comes up slower and the link adds a network LSA.',
-                    'Set the network type to point-to-point on both ends (ip ospf network point-to-point; Junos: interface-type p2p).',
-                    null, $devices, $ports), [$vrf]);
+            return $i;
+        };
+        $join = function (int $i, int $j) use (&$parent, $find): void {
+            $parent[$find($i)] = $find($j);
+        };
+
+        $byDomain = [];
+        $byDevice = [];
+        foreach ($interfaces as $i => $interface) {
+            $domain = $this->domains[$interface->device . '|' . $interface->vrf] ?? null;
+            if ($domain !== null && isset($byDomain[$domain])) {
+                $join($i, $byDomain[$domain]);
+            } elseif ($domain !== null) {
+                $byDomain[$domain] = $i;
             }
+            $byDevice[$interface->device][] = $i;
+        }
+        foreach ($interfaces as $i => $interface) {
+            foreach ($byDevice as $deviceId => $indexes) {
+                if (! isset($this->adjacent[$interface->device][$deviceId])) {
+                    continue;
+                }
+                foreach ($indexes as $j) {
+                    if ($j > $i && $this->faces($interface->address, $interfaces[$j]->address)) {
+                        $join($i, $j);
+                    }
+                }
+            }
+        }
+
+        $links = [];
+        foreach ($interfaces as $i => $interface) {
+            $links[$find($i)][] = $interface;
+        }
+
+        return array_values($links);
+    }
+
+    /**
+     * Compare the OSPF interfaces of one link.
+     *
+     * @param  list<OspfInterface>  $interfaces
+     */
+    private function compareInterfaces(array $interfaces): void
+    {
+        $network = $interfaces[0]->address->network();
+        $vrfs = array_values(array_unique(array_map(fn ($i) => $i->vrf, $interfaces)));
+        $where = $network . ($vrfs !== [''] ? ' (VRF ' . implode(' / ', array_map(fn ($vrf) => $vrf === '' ? 'global' : $vrf, $vrfs)) . ')' : '');
+        $devices = array_values(array_unique(array_map(fn ($i) => $i->device, $interfaces)));
+        $ports = array_values(array_filter(array_map(fn ($i) => $i->portId, $interfaces)));
+
+        if (count($devices) >= 2) {
+            $timers = $this->differing($interfaces, fn ($i) => $i->hello === null && $i->dead === null ? null : ($i->hello ?? '?') . '/' . ($i->dead ?? '?') . 's');
+            if ($timers) {
+                $this->add(new Finding(Finding::CRITICAL, 'ospf_timer_mismatch',
+                    "OSPF hello / dead intervals differ on $where: $timers",
+                    'Routers only form an adjacency when their hello and dead intervals are equal, so these routers cannot become neighbors on this link.',
+                    'Use the same intervals on every interface of the link (ip ospf hello-interval / dead-interval), or the defaults everywhere.',
+                    null, $devices, $ports), $vrfs);
+            }
+            $areas = $this->differing($interfaces, fn ($i) => $i->area === '' ? null : 'area ' . $i->area);
+            if ($areas) {
+                $this->add(new Finding(Finding::CRITICAL, 'ospf_area_mismatch',
+                    "OSPF area differs on $where: $areas",
+                    'Interfaces on one link must be in the same area; hellos from another area are ignored, so no adjacency forms.',
+                    'Put every interface of the link in the same area.',
+                    null, $devices, $ports), $vrfs);
+            }
+            $auth = $this->differing($interfaces, fn ($i) => $i->auth === '' ? null : self::label($i->auth));
+            if ($auth) {
+                $this->add(new Finding(Finding::CRITICAL, 'ospf_auth_mismatch',
+                    "OSPF authentication differs on $where: $auth",
+                    'Hellos with another authentication type are dropped, so no adjacency forms.',
+                    'Configure the same authentication type and key on every interface of the link (or in the area).',
+                    null, $devices, $ports), $vrfs);
+            }
+            $types = $this->differing($interfaces, fn ($i) => $i->type === '' ? null : self::label($i->type));
+            if ($types) {
+                $this->add(new Finding(Finding::WARNING, 'ospf_network_type_mismatch',
+                    "OSPF network type differs on $where: $types",
+                    'With different network types the routers describe the link differently (a transit network on one side, a point-to-point link on the other): adjacencies can form while routes over the link are missing, and the default timers differ.',
+                    'Use the same network type on every interface of the link, point-to-point for a link between two routers.',
+                    null, $devices, $ports), $vrfs);
+            }
+            $costs = array_values(array_filter($interfaces, fn ($i) => $i->cost !== null));
+            if (count($interfaces) === 2 && count($devices) === 2 && count($costs) === 2 && $costs[0]->cost !== $costs[1]->cost) {
+                $this->add(new Finding(Finding::INFO, 'ospf_cost_asymmetric',
+                    "OSPF cost differs per direction on $where: " . $this->values($costs, fn ($i) => (string) $i->cost),
+                    'Traffic between ' . $this->names($devices) . ' can take different paths in each direction: stateful firewalls drop the half they do not see, and troubleshooting gets harder.',
+                    'Use the same cost on both interfaces (ip ospf cost), unless the asymmetry is on purpose.',
+                    null, $devices, $ports), $vrfs);
+            }
+        }
+
+        // only prefixes with room for two addresses (a LAN with two routers also has hosts), and only
+        // where OSPF talks to a neighbor: a passive interface elects itself without consequence
+        $prefix = $interfaces[0]->address->prefix;
+        $p2p = in_array($prefix, strlen($interfaces[0]->address->packed) === 4 ? [30, 31] : [126, 127], true);
+        $talking = count($devices) >= 2 || array_filter($interfaces, fn ($i) => $i->talking);
+        $elected = array_filter($interfaces, fn ($i) => in_array($i->type, ['broadcast', 'nbma'], true)
+            && (in_array($i->state, ['designatedrouter', 'backupdesignatedrouter', 'otherdesignatedrouter'], true) || ($i->dr !== null && $i->dr !== '0.0.0.0')));
+        if ($p2p && $talking && $elected) {
+            $this->add(new Finding(Finding::INFO, 'ospf_dr_on_p2p',
+                "DR election on the point-to-point link $where: " . $this->values($interfaces, fn ($i) => self::label($i->type)),
+                'Only two routers share this subnet, but the broadcast network type makes them elect a designated router: the adjacency comes up slower and the link adds a network LSA.',
+                'Set the network type to point-to-point on both ends (ip ospf network point-to-point; Junos: interface-type p2p).',
+                null, $devices, $ports), $vrfs);
         }
     }
 
     /**
      * Routers of one area and one OSPF domain must agree on the area type (stub / NSSA) and, once
-     * converged, hold the same link-state database (LSA count and checksum sum of the area).
+     * converged, hold the same link-state database. The LSA checksum sum is not compared: it changes
+     * whenever an LSA is refreshed (every 30 minutes each), so routers polled at different moments
+     * rarely agree on it.
      */
     private function checkAreas(): void
     {
-        $areas = [];
-        foreach ($this->ospf['areas'] ?? [] as $row) {
-            $deviceId = (int) ($row['device_id'] ?? 0);
-            $key = $deviceId . '|' . ($row['context_name'] ?? '');
-            if (! isset($this->instances[$key])) {
-                continue;
-            }
-            $area = self::area($row['ospfAreaId'] ?? '');
-            $areas[($this->domains[$key] ?? $key) . '|' . $area][] = [
-                'device_id' => $deviceId,
-                'vrf' => (string) ($row['context_name'] ?? ''),
-                'area' => $area,
-                'count' => isset($row['ospfAreaLsaCount']) ? (int) $row['ospfAreaLsaCount'] : null,
-                'sum' => isset($row['ospfAreaLsaCksumSum']) ? (int) $row['ospfAreaLsaCksumSum'] : null,
-                'type' => self::enum($row['ospfImportAsExtern'] ?? null, self::AREA_TYPES),
-            ];
+        $groups = [];
+        foreach ($this->areas as [$deviceId, $vrf, $area, $count, $type]) {
+            $key = $deviceId . '|' . $vrf;
+            $groups[($this->domains[$key] ?? $key) . '|' . $area][] = ['device_id' => $deviceId, 'vrf' => $vrf, 'area' => $area, 'count' => $count, 'type' => $type];
         }
 
-        foreach ($areas as $routers) {
-            if (count(array_unique(array_column($routers, 'device_id'))) < 2) {
+        foreach ($groups as $routers) {
+            $devices = array_values(array_unique(array_column($routers, 'device_id')));
+            if (count($devices) < 2) {
                 continue;
             }
             $area = $routers[0]['area'];
-            $devices = array_values(array_unique(array_column($routers, 'device_id')));
             $vrfs = array_values(array_unique(array_column($routers, 'vrf')));
 
             $types = $this->differing($routers, fn ($r) => $r['type'] === '' ? null : self::label($r['type']), false);
@@ -758,14 +896,12 @@ class RoutingAnalyzer
             }
 
             $known = array_values(array_filter($routers, fn ($r) => $r['count'] !== null));
-            $databases = array_unique(array_map(fn ($r) => $r['count'] . '/' . $r['sum'], $known));
-            if (count($databases) > 1) {
-                $sameCount = count(array_unique(array_column($known, 'count'))) === 1;
+            $counts = array_column($known, 'count');
+            if (count($counts) >= 2 && max($counts) - min($counts) > max(1, (int) floor(max($counts) * self::LSDB_TOLERANCE))) {
                 $this->add(new Finding(Finding::WARNING, 'ospf_lsdb_mismatch',
                     "OSPF area $area: the link-state databases differ (" . $this->values($known, fn ($r) => $r['count'] . ' LSAs', false) . ')',
-                    ($sameCount ? 'The routers hold the same number of LSAs but different contents (checksum sum). ' : '')
-                    . 'Routers of one area should hold the same LSAs. A difference can be a moment during a change (devices are polled minutes apart); if it stays, LSAs are not flooded between them.',
-                    'Look for adjacencies that are not Full, MTU problems or LSA filtering between these routers, and compare their OSPF databases.',
+                    'Routers of one area hold the same LSAs once the area has converged. LibreNMS polls them minutes apart, so a difference can be a change in progress; if it persists over several polls, LSAs are not flooded between these routers.',
+                    'If it persists, look for adjacencies that are not Full, MTU problems or LSA filtering between these routers, and compare their OSPF databases.',
                     null, $devices), $vrfs);
             }
         }
@@ -777,123 +913,150 @@ class RoutingAnalyzer
      * Sessions that are not established (unless shut down on purpose): the cause when LibreNMS
      * can tell (remote AS mismatch, no neighbor on the other router), else the last error as text.
      * Established sessions that were reset recently or accept no prefixes are reported too.
+     * Sessions in a state outside the BGP state machine ("unknown") carry no data.
      */
     private function checkSessions(): void
     {
         $window = $this->settings->int('routing_bgp_reset_hours', 0, 8760) * 3600;
         foreach ($this->peers as $peer) {
-            if ($peer['shut']) {
+            if ($peer->shut || ! $peer->known()) {
                 continue;
             }
-            $devices = array_values(array_unique(array_filter([$peer['device_id'], $peer['remote_device']], fn ($d) => $d !== null)));
-            $ports = array_values(array_filter([$peer['local']['port_id'] ?? null, $peer['remote']['port_id'] ?? null]));
+            $devices = array_values(array_unique(array_filter([$peer->device, $peer->remoteDevice], fn ($d) => $d !== null)));
+            $ports = array_values(array_filter([$peer->local?->portId, $peer->remote?->portId]));
             $session = $this->session($peer);
 
-            if ($peer['established']) {
+            if ($peer->established()) {
                 $this->checkReset($peer, $session, $window, $devices, $ports);
                 $this->checkNoPrefixes($peer, $session, $devices, $ports);
 
                 continue;
             }
 
-            if ($this->checkRemoteAs($peer, $session, $devices, $ports) || $this->checkOneSided($peer, $session, $devices, $ports)) {
-                continue;
+            if (! $this->checkRemoteAs($peer, $session, $devices, $ports) && ! $this->checkOneSided($peer, $session, $devices, $ports)) {
+                $this->sessionDown($peer, $session, $devices, $ports);
             }
-
-            $error = $peer['error'];
-            $severity = $error !== null && $error['code'] === 6 && $error['subcode'] === 2 ? Finding::INFO : Finding::WARNING;
-            $detail = $error
-                ? 'Last error: ' . $error['text'] . ($error['cause'] !== '' ? ': ' . $error['cause'] : '') . '.'
-                : 'No error was exchanged: the TCP connection to ' . $peer['ip'] . ' never came up.';
-            if ($peer['error_text'] !== '') {
-                $detail .= ' The router says: "' . $peer['error_text'] . '".';
-            }
-            $detail .= $peer['time'] > 0 ? ' Last established ' . StpAnalyzer::duration($peer['time']) . ' ago.' : '';
-            if ($peer['remote_device'] !== null && ! $this->isUp($peer['remote_device'])) {
-                $detail .= ' ' . $this->name($peer['remote_device']) . ' itself is down.';
-            } elseif ($peer['remote_device'] !== null && ! isset($this->peersOf[$peer['remote_device']])) {
-                $detail .= ' ' . $this->name($peer['remote_device']) . ' reports no BGP sessions: BGP is not configured there, or its bgp-peers module is off.';
-            }
-            $local = $peer['local']['ip'] ?? 'this router';
-            $this->add(new Finding(
-                $severity,
-                'bgp_session_down',
-                'BGP session ' . $session . ' is ' . self::label($peer['state']) . ($error ? ': ' . explode(' (', $error['text'])[0] : ''),
-                $detail,
-                match (true) {
-                    $error !== null && $error['code'] === 6 && $error['subcode'] === 3 => 'The neighbor was removed on the other router: remove it here too, or configure it again there.',
-                    $error !== null && $error['code'] === 6 && $error['subcode'] === 2 => 'If the session should be up, enable it again on the router that shut it down.',
-                    $error !== null => 'Fix the cause above, then reset the session.',
-                    default => "Check that $peer[ip] is reachable from $local, that TCP port 179 is allowed in between, that the peer has a neighbor for $local, and for eBGP between loopbacks that ebgp-multihop and update-source are set.",
-                },
-                null,
-                $devices,
-                $ports,
-            ), [$peer['vrf']]);
         }
     }
 
     /**
-     * A session that is not up because the remote AS configured here is not the AS of the peer
-     * (when the peer is monitored). An established session with another AS uses local-as or a
-     * confederation, so it is not reported.
+     * A session that is down with its last error as text and what usually causes it.
+     *
+     * @param  int[]  $devices
+     * @param  int[]  $ports
      */
-    private function checkRemoteAs(array $peer, string $session, array $devices, array $ports): bool
+    private function sessionDown(BgpSession $peer, string $session, array $devices, array $ports): void
     {
-        if ($peer['remote_device'] === null || $peer['remote_as'] === null) {
-            return false;
+        $error = $peer->error();
+        $detail = match (true) {
+            $error !== null => 'Last error: ' . $error['text'] . ($error['cause'] !== '' ? ': ' . $error['cause'] : '') . '.',
+            $peer->time > 0 => 'The session went down without a NOTIFICATION: the TCP connection was closed or timed out (the path or the peer failed, or the peer restarted).',
+            default => 'No error was exchanged: the TCP connection to ' . $peer->ip . ' never came up.',
+        };
+        if ($peer->errorText !== '') {
+            $detail .= ' The router says: "' . $peer->errorText . '".';
         }
-        $peerAs = $this->localAs($peer['remote_device'], $peer['remote']['vrf'] ?? $peer['vrf']);
-        if ($peerAs === null || $peerAs === $peer['remote_as']) {
-            return false;
+        $detail .= $peer->time > 0 ? ' Last established ' . StpAnalyzer::duration($peer->time) . ' ago.' : '';
+        $remote = $peer->remoteDevice;
+        if ($remote !== null && ! $this->isUp($remote)) {
+            $detail .= ' ' . $this->name($remote) . ' itself is down.';
+        } elseif ($remote !== null && ! isset($this->peersOf[$remote])) {
+            $detail .= ' ' . $this->name($remote) . ' reports no BGP sessions: BGP is not configured there, or its bgp-peers module is off.';
+        } elseif ($remote !== null && $peer->remote !== null && ! $this->hasSessionsIn($remote, $peer->remote->vrf)) {
+            $detail .= ' ' . $this->name($remote) . ' reports no BGP sessions in VRF ' . $peer->remote->vrf . ' (LibreNMS only polls the BGP sessions of a VRF with an SNMP context).';
         }
+        $local = $peer->local?->ip() ?? 'this router';
 
         $this->add(new Finding(
-            Finding::CRITICAL,
-            'bgp_remote_as_mismatch',
-            "BGP session $session: remote AS $peer[remote_as] configured, " . $this->name($peer['remote_device']) . " is AS $peerAs",
-            'The session cannot come up: ' . $this->name($peer['remote_device']) . " opens it with AS $peerAs, which " . $this->name($peer['device_id'])
-            . ' rejects (OPEN Message Error / Bad Peer AS).'
-            . ($peer['error'] !== null && ! ($peer['error']['code'] === 2 && $peer['error']['subcode'] === 2) ? ' Last error: ' . $peer['error']['text'] . '.' : ''),
-            'Correct the remote AS of the neighbor on ' . $this->name($peer['device_id']) . ' (or the local AS of ' . $this->name($peer['remote_device']) . ').',
+            $error !== null && $error['code'] === 6 && $error['subcode'] === 2 ? Finding::INFO : Finding::WARNING,
+            'bgp_session_down',
+            'BGP session ' . $session . ' is ' . self::label($peer->state) . ($error ? ': ' . explode(' (', $error['text'])[0] : ''),
+            $detail,
+            match (true) {
+                $error !== null && $error['code'] === 6 && $error['subcode'] === 3 => 'The neighbor was removed on the other router: remove it here too, or configure it again there.',
+                $error !== null && $error['code'] === 6 && $error['subcode'] === 2 => 'If the session should be up, enable it again on the router that shut it down.',
+                $error !== null => 'Fix the cause above, then reset the session.',
+                $peer->time > 0 => "Check the path between $local and {$peer->ip} and the peer itself: the session worked until " . StpAnalyzer::duration($peer->time) . ' ago.',
+                default => "Check that {$peer->ip} is reachable from $local, that TCP port 179 is allowed in between, that the peer has a neighbor for $local, and for eBGP between loopbacks that ebgp-multihop and update-source are set.",
+            },
             null,
             $devices,
             $ports,
-        ), [$peer['vrf']]);
+        ), [$peer->vrf]);
+    }
+
+    /**
+     * A session that is not up because the remote AS configured here is not the AS of the
+     * (monitored) peer. Only when the peer was rejected for it (Bad Peer AS on either side) or the
+     * session never came up: one that worked before presents another AS on purpose (local-as, a
+     * confederation). AS_TRANS (23456) is never compared.
+     *
+     * @param  int[]  $devices
+     * @param  int[]  $ports
+     */
+    private function checkRemoteAs(BgpSession $peer, string $session, array $devices, array $ports): bool
+    {
+        if ($peer->remoteDevice === null || $peer->remoteAs === null || $peer->remoteAs === self::AS_TRANS) {
+            return false;
+        }
+        $peerAs = $this->localAs($peer->remoteDevice, $peer->remote->vrf ?? $peer->vrf);
+        if ($peerAs === null || $peerAs === self::AS_TRANS || $peerAs === $peer->remoteAs) {
+            return false;
+        }
+        $reverse = $this->reverse($peer);
+        $rejected = $peer->hasError(2, 2) || ($reverse !== null && $reverse->hasError(2, 2));
+        if (! $rejected && $peer->time > 0) {
+            return false;
+        }
+
+        $here = $this->name($peer->device);
+        $there = $this->name($peer->remoteDevice);
+        $error = $peer->error();
+        $this->add(new Finding(
+            Finding::CRITICAL,
+            'bgp_remote_as_mismatch',
+            "BGP session $session: remote AS {$peer->remoteAs} configured, $there is AS $peerAs",
+            ($rejected
+                ? "The session cannot come up: $there opens it with AS $peerAs, which $here rejects (OPEN Message Error / Bad Peer AS)."
+                : "The session has never come up, and $there is AS $peerAs: $here rejects its OPEN (Bad Peer AS) unless $there presents AS {$peer->remoteAs} to it (local-as, a confederation).")
+            . ($error !== null && ! $peer->hasError(2, 2) ? ' Last error: ' . $error['text'] . '.' : ''),
+            "Correct the remote AS of the neighbor on $here (or the local AS of $there).",
+            null,
+            $devices,
+            $ports,
+        ), [$peer->vrf]);
 
         return true;
     }
 
     /**
-     * A session that is not up because the monitored peer has no neighbor for any address of this
-     * router (when the peer reports BGP sessions at all).
+     * A session that never came up because the monitored peer has no neighbor for any address of
+     * this router. Only when the peer's sessions in the VRF of the peer address are polled (the
+     * sessions of a VRF need an SNMP context), and not for a session that was up before.
+     *
+     * @param  int[]  $devices
+     * @param  int[]  $ports
      */
-    private function checkOneSided(array $peer, string $session, array $devices, array $ports): bool
+    private function checkOneSided(BgpSession $peer, string $session, array $devices, array $ports): bool
     {
-        $remote = $peer['remote_device'];
-        if ($remote === null || $remote === $peer['device_id'] || ! isset($this->peersOf[$remote]) || ! $this->isUp($remote)) {
+        $remote = $peer->remoteDevice;
+        if ($remote === null || $remote === $peer->device || $peer->time > 0 || $peer->remote === null || ! $this->isUp($remote)
+            || ! $this->hasSessionsIn($remote, $peer->remote->vrf) || $this->reverse($peer) !== null) {
             return false;
         }
-        foreach ($this->peersOf[$remote] as $index) {
-            foreach ($this->anyVrf[$this->peers[$index]['ip']] ?? [] as $address) {
-                if ($this->addresses[$address]['device_id'] === $peer['device_id']) {
-                    return false;
-                }
-            }
-        }
 
-        $local = $peer['local']['ip'] ?? $this->name($peer['device_id']);
+        $local = $peer->local?->ip() ?? $this->name($peer->device);
         $this->add(new Finding(
             Finding::WARNING,
             'bgp_one_sided',
-            "BGP session $session is configured on " . $this->name($peer['device_id']) . ' only',
-            $this->name($remote) . ' has BGP sessions, but none to an address of ' . $this->name($peer['device_id'])
-            . ', so this session can never come up (it is ' . self::label($peer['state']) . ').',
-            'Add the neighbor ' . $local . ' on ' . $this->name($remote) . ', or remove the neighbor ' . $peer['ip'] . ' from ' . $this->name($peer['device_id']) . '.',
+            "BGP session $session is configured on " . $this->name($peer->device) . ' only',
+            $this->name($remote) . ' has BGP sessions' . ($peer->remote->vrf !== '' ? ' in VRF ' . $peer->remote->vrf : '') . ', but none to an address of ' . $this->name($peer->device)
+            . ', so this session can never come up (it is ' . self::label($peer->state) . ' and was never established).',
+            'Add the neighbor ' . $local . ' on ' . $this->name($remote) . ', or remove the neighbor ' . $peer->ip . ' from ' . $this->name($peer->device) . '.',
             null,
             $devices,
             $ports,
-        ), [$peer['vrf']]);
+        ), [$peer->vrf]);
 
         return true;
     }
@@ -901,23 +1064,27 @@ class RoutingAnalyzer
     /**
      * An established session that came up less than the window ago: it was reset. Resets caused by
      * a restart of the router itself are told apart (uptime), protocol errors are warnings.
+     *
+     * @param  int[]  $devices
+     * @param  int[]  $ports
      */
-    private function checkReset(array $peer, string $session, int $window, array $devices, array $ports): void
+    private function checkReset(BgpSession $peer, string $session, int $window, array $devices, array $ports): void
     {
-        if ($window <= 0 || $peer['time'] <= 0 || $peer['time'] >= $window) {
+        if ($window <= 0 || $peer->time <= 0 || $peer->time >= $window) {
             return;
         }
-        $uptime = (int) ($this->devices[$peer['device_id']]['uptime'] ?? 0);
-        $restart = $uptime > 0 && $uptime <= $peer['time'] + self::RESTART_MARGIN;
-        $error = $peer['error'];
-        $planned = $error !== null && (BgpErrors::administrative($error['code'], $error['subcode']) || ($error['code'] === 6 && $error['subcode'] === 7));
+        $uptime = (int) ($this->devices[$peer->device]['uptime'] ?? 0);
+        $restart = $uptime > 0 && $uptime <= $peer->time + self::RESTART_MARGIN;
+        $error = $peer->error();
+        $planned = $error !== null && (BgpErrors::administrative($error['code'], $error['subcode']) || $peer->hasError(6, 7));
         $protocol = $error !== null && ! $planned;
 
-        $detail = 'Up for ' . StpAnalyzer::duration($peer['time']) . '.';
+        $detail = 'Up for ' . StpAnalyzer::duration($peer->time) . '.';
         if ($restart) {
-            $detail .= ' ' . $this->name($peer['device_id']) . ' itself restarted ' . StpAnalyzer::duration($uptime) . ' ago.';
+            $detail .= ' ' . $this->name($peer->device) . ' itself restarted ' . StpAnalyzer::duration($uptime) . ' ago.';
         } elseif ($error !== null) {
-            $detail .= ' Last error: ' . $error['text'] . ($error['cause'] !== '' ? ': ' . $error['cause'] : '') . '.';
+            $detail .= ' Last error: ' . $error['text'] . ($error['cause'] !== '' ? ': ' . $error['cause'] : '') . '.'
+                . ' (Routers keep the last error until the next one, so it can be from an earlier reset.)';
         } else {
             $detail .= ' No error was recorded (the TCP connection was closed, or the peer restarted).';
         }
@@ -925,7 +1092,7 @@ class RoutingAnalyzer
         $this->add(new Finding(
             $protocol && ! $restart ? Finding::WARNING : Finding::INFO,
             'bgp_recent_reset',
-            "BGP session $session was reset " . StpAnalyzer::duration($peer['time']) . ' ago',
+            "BGP session $session was reset " . StpAnalyzer::duration($peer->time) . ' ago',
             $detail,
             match (true) {
                 $restart => 'Nothing to do if the restart was planned.',
@@ -935,19 +1102,22 @@ class RoutingAnalyzer
             null,
             $devices,
             $ports,
-        ), [$peer['vrf']]);
+        ), [$peer->vrf]);
     }
 
     /**
      * An established session that accepts no prefixes in any address family (only when the router
      * reports prefix counters, bgpPeers_cbgp).
+     *
+     * @param  int[]  $devices
+     * @param  int[]  $ports
      */
-    private function checkNoPrefixes(array $peer, string $session, array $devices, array $ports): void
+    private function checkNoPrefixes(BgpSession $peer, string $session, array $devices, array $ports): void
     {
-        if (! $peer['prefixes'] || array_sum(array_column($peer['prefixes'], 'accepted')) > 0) {
+        if (! $peer->prefixes || array_sum(array_column($peer->prefixes, 'accepted')) > 0) {
             return;
         }
-        $denied = array_sum(array_column($peer['prefixes'], 'denied'));
+        $denied = array_sum(array_column($peer->prefixes, 'denied'));
         $this->add(new Finding(
             Finding::INFO,
             'bgp_no_prefixes',
@@ -955,11 +1125,11 @@ class RoutingAnalyzer
             $denied > 0
                 ? "All $denied prefixes it received were denied by the inbound policy."
                 : 'The peer sends nothing, or nothing passes the inbound policy. Peers that only receive routes look like this too.',
-            'Check the inbound route-map / prefix-list on ' . $this->name($peer['device_id']) . ' and what the peer advertises.',
+            'Check the inbound route-map / prefix-list on ' . $this->name($peer->device) . ' and what the peer advertises.',
             null,
             $devices,
             $ports,
-        ), [$peer['vrf']]);
+        ), [$peer->vrf]);
     }
 
     /**
@@ -971,10 +1141,10 @@ class RoutingAnalyzer
     {
         $share = $this->settings->int('routing_prefix_warn_percent', 0, 100) ?: 100;
         foreach ($this->peers as $peer) {
-            if ($peer['shut']) {
+            if ($peer->shut) {
                 continue;
             }
-            foreach ($peer['prefixes'] as $counters) {
+            foreach ($peer->prefixes as $counters) {
                 if ($counters['limit'] <= 0 || $counters['accepted'] * 100 < $counters['limit'] * $share) {
                     continue;
                 }
@@ -988,9 +1158,9 @@ class RoutingAnalyzer
                     . ($counters['threshold'] > 0 ? ' The router\'s own warning threshold is ' . $counters['threshold'] . '%.' : ''),
                     'Raise the maximum-prefix limit with headroom, or ask the peer to aggregate or filter what it sends.',
                     null,
-                    array_values(array_unique(array_filter([$peer['device_id'], $peer['remote_device']], fn ($d) => $d !== null))),
-                    array_values(array_filter([$peer['local']['port_id'] ?? null])),
-                ), [$peer['vrf']]);
+                    array_values(array_unique(array_filter([$peer->device, $peer->remoteDevice], fn ($d) => $d !== null))),
+                    array_values(array_filter([$peer->local?->portId])),
+                ), [$peer->vrf]);
             }
         }
     }
@@ -998,93 +1168,122 @@ class RoutingAnalyzer
     // ---------------------------------------------------------------- IP checks
 
     /**
-     * The same address in one VRF on several devices. When each device also has its own address
-     * in the subnet it is probably a shared gateway (VRRP, HSRP, anycast gateway) reported as an
-     * interface address; on three or more devices probably an anycast address.
+     * The same address in one VRF on several devices of one network (devices joined by LLDP/CDP
+     * links and OSPF adjacencies: networks that never meet reuse addresses), on interfaces that are
+     * up of devices that are up (a down port does not answer for its address, a down device's
+     * addresses are from before it went down). When each device also has its own address in the
+     * subnet it is probably a shared gateway (VRRP, HSRP, anycast gateway) reported as an interface
+     * address; a loopback or host address, or one on three or more devices, is probably anycast.
      */
     private function checkDuplicates(): void
     {
-        $groups = [];
-        foreach ($this->addresses as $index => $address) {
-            if (! $this->isIgnored($address['ip'])) {
-                $groups[$address['vrf'] . '|' . $address['ip']][] = $index;
-            }
-        }
-
-        foreach ($groups as $indexes) {
-            $rows = array_map(fn ($i) => $this->addresses[$i], $indexes);
-            $devices = array_values(array_unique(array_column($rows, 'device_id')));
-            if (count($devices) < 2) {
+        $networks = $this->networks();
+        foreach ($this->byIp as $entries) {
+            if (! is_array($entries)) {
                 continue;
             }
-            $first = $rows[0];
-            $shared = ! $first['host'] && count($devices) === 2 && array_reduce($devices, fn ($all, $deviceId) => $all && $this->hasOtherAddress($deviceId, $first), true);
-            $anycast = count($devices) > 2;
-            $where = $first['vrf'] !== '' ? ' (VRF ' . $first['vrf'] . ')' : '';
-            $this->add(new Finding(
-                $shared || $anycast ? Finding::INFO : Finding::WARNING,
-                'ip_duplicate',
-                'duplicate IP address ' . $first['ip'] . $where . ' on ' . implode(', ', array_map(fn ($r) => $this->end($r['device_id'], $r['port']), $rows)),
-                match (true) {
-                    $shared => 'Both devices also have their own address in ' . $first['network'] . ', so this is probably a shared gateway address (VRRP, HSRP or an anycast gateway) that the devices report as an interface address.',
-                    $anycast => 'The address is on ' . count($devices) . ' devices: probably an anycast address on purpose.',
-                    default => 'Both devices answer for the address: traffic to it reaches whichever device answered ARP / neighbor discovery last, so connections break at random. The L3 map shows only one of them.',
-                },
-                $shared || $anycast
-                    ? 'If the address is shared on purpose, add it to the ignored addresses in the routing settings.'
-                    : 'Give one of the interfaces another address.',
-                null,
-                $devices,
-                array_values(array_filter(array_column($rows, 'port_id'))),
-            ), [$first['vrf']]);
+            $groups = [];
+            foreach ($entries as $address) {
+                if ($address->up && $this->isUp($address->device)) {
+                    $groups[strtolower($address->vrf) . '|' . ($networks[$address->device] ?? 'd' . $address->device)][] = $address;
+                }
+            }
+
+            foreach ($groups as $rows) {
+                $devices = array_values(array_unique(array_map(fn ($a) => $a->device, $rows)));
+                $first = $rows[0];
+                if (count($devices) < 2 || $this->isIgnored($first->ip())) {
+                    continue;
+                }
+                $shared = ! $first->host && count($devices) === 2 && array_reduce($devices, fn ($all, $deviceId) => $all && $this->hasOtherAddress($deviceId, $first), true);
+                $anycast = count($devices) > 2 || $first->host;
+                $where = $first->vrf !== '' ? ' (VRF ' . $first->vrf . ')' : '';
+                $this->add(new Finding(
+                    $shared || $anycast ? Finding::INFO : Finding::WARNING,
+                    'ip_duplicate',
+                    'duplicate IP address ' . $first->ip() . $where . ' on ' . implode(', ', array_map(fn ($a) => $this->end($a->device, $a->port), $rows)),
+                    match (true) {
+                        $shared => 'Both devices also have their own address in ' . $first->network() . ', so this is probably a shared gateway address (VRRP, HSRP or an anycast gateway) that the devices report as an interface address.',
+                        $anycast => 'The address is on ' . (count($devices) > 2 ? count($devices) . ' devices' : 'a loopback or as a host address on two devices') . ': probably an anycast address on purpose.',
+                        default => 'Both devices answer for the address: traffic to it reaches whichever device answered ARP / neighbor discovery last, so connections break at random. The L3 map shows only one of them.',
+                    },
+                    $shared || $anycast
+                        ? 'If the address is shared on purpose, add it to the ignored addresses in the routing settings.'
+                        : 'Give one of the interfaces another address.',
+                    null,
+                    $devices,
+                    array_values(array_filter(array_map(fn ($a) => $a->portId, $rows))),
+                ), array_values(array_unique(array_map(fn ($a) => $a->vrf, $rows))));
+            }
         }
     }
 
     /**
-     * Two ends of a link with different prefix lengths: the address of one device lies in the
-     * longer prefix of the other (so both consider the other on-link) while the prefixes differ.
-     * Host routes and loopbacks are left out.
+     * Two addresses that face each other (faces()) with different prefix lengths, where each lies in
+     * the other's subnet (so both consider the other on-link) while the subnets differ. Host routes
+     * and loopbacks are left out, and so are devices that are down.
      */
     private function checkMasks(): void
     {
-        $byNetwork = [];
-        $prefixes = [];
-        foreach ($this->addresses as $index => $address) {
-            if ($address['host'] || $address['network'] === null || $this->isIgnored($address['ip'])) {
+        // subnets of the devices that have neighbors, and the prefix lengths of each such device
+        $subnets = [];
+        $prefixesOf = [];
+        foreach ($this->byDevice as $deviceId => $addresses) {
+            if (! isset($this->adjacent[$deviceId]) || ! $this->isUp($deviceId)) {
                 continue;
             }
-            $byNetwork[$address['vrf'] . '|' . $address['network']][] = $index;
-            $prefixes[$address['vrf'] . '|' . $address['family']][$address['prefix']] = true;
+            foreach ($addresses as $address) {
+                if ($address->host) {
+                    continue;
+                }
+                $key = $address->key();
+                if (! isset($subnets[$key])) {
+                    $subnets[$key] = $address;
+                } elseif (is_array($subnets[$key])) {
+                    $subnets[$key][] = $address;
+                } else {
+                    $subnets[$key] = [$subnets[$key], $address];
+                }
+                $prefixesOf[$deviceId][strlen($address->packed)][$address->prefix] = true;
+            }
         }
 
         $reported = [];
-        foreach ($byNetwork as $indexes) {
-            foreach ($indexes as $shortIndex) {
-                $short = $this->addresses[$shortIndex];
-                foreach (array_keys($prefixes[$short['vrf'] . '|' . $short['family']]) as $prefix) {
-                    if ($prefix <= $short['prefix']) {
+        $longer = [];
+        foreach ($subnets as $entries) {
+            foreach (is_array($entries) ? $entries : [$entries] as $short) {
+                // prefix lengths of the neighbors' addresses
+                $bytes = strlen($short->packed);
+                if (! isset($longer[$short->device][$bytes])) {
+                    $longer[$short->device][$bytes] = [];
+                    foreach (array_keys($this->adjacent[$short->device]) as $neighbor) {
+                        $longer[$short->device][$bytes] += $prefixesOf[$neighbor][$bytes] ?? [];
+                    }
+                }
+                foreach (array_keys($longer[$short->device][$bytes]) as $prefix) {
+                    if ($prefix <= $short->prefix || ! isset($subnets[$short->key($prefix)])) {
                         continue;
                     }
-                    $key = $short['vrf'] . '|' . inet_ntop($short['packed'] & self::mask(strlen($short['packed']), $prefix)) . '/' . $prefix;
-                    foreach ($byNetwork[$key] ?? [] as $longIndex) {
-                        $long = $this->addresses[$longIndex];
-                        $pair = $longIndex . '|' . $shortIndex;
-                        if ($long['device_id'] === $short['device_id'] || $long['ip'] === $short['ip'] || isset($reported[$pair])) {
+                    $found = $subnets[$short->key($prefix)];
+                    foreach (is_array($found) ? $found : [$found] as $long) {
+                        $pair = $long->packed . '|' . $short->packed . '|' . $long->device . '|' . $short->device;
+                        if ($long->packed === $short->packed || isset($reported[$pair]) || ! $this->faces($short, $long)
+                            || $this->isIgnored($long->ip()) || $this->isIgnored($short->ip())) {
                             continue;
                         }
                         $reported[$pair] = true;
                         $this->add(new Finding(
                             Finding::WARNING,
                             'ip_mask_mismatch',
-                            'Subnet mask mismatch: ' . $this->end($long['device_id'], $long['port']) . ' ' . $long['ip'] . '/' . $long['prefix'] . ' and '
-                            . $this->end($short['device_id'], $short['port']) . ' ' . $short['ip'] . '/' . $short['prefix'],
-                            'Both addresses lie in ' . $long['network'] . ', but ' . $this->name($short['device_id']) . ' uses a /' . $short['prefix']
-                            . ': the devices disagree on which addresses are on the link, so traffic to the rest of ' . $short['network'] . ' is sent to the wrong place.',
+                            'Subnet mask mismatch: ' . $this->end($long->device, $long->port) . ' ' . $long->ip() . '/' . $long->prefix . ' and '
+                            . $this->end($short->device, $short->port) . ' ' . $short->ip() . '/' . $short->prefix,
+                            'Both addresses lie in ' . $long->network() . ', but ' . $this->name($short->device) . ' uses a /' . $short->prefix
+                            . ': the devices disagree on which addresses are on the link, so traffic to the rest of ' . $short->network() . ' is sent to the wrong place.',
                             'Use the same prefix length on both ends.',
                             null,
-                            [$long['device_id'], $short['device_id']],
-                            array_values(array_filter([$long['port_id'], $short['port_id']])),
-                        ), [$long['vrf']]);
+                            [$long->device, $short->device],
+                            array_values(array_filter([$long->portId, $short->portId])),
+                        ), array_values(array_unique([$long->vrf, $short->vrf])));
                     }
                 }
             }
@@ -1092,80 +1291,105 @@ class RoutingAnalyzer
     }
 
     /**
-     * One subnet in two VRFs on two neighbors (LLDP/CDP or OSPF): the interfaces facing each other
-     * are in different routing tables. A device that uses no VRF at all with its address in the global
-     * table is left out (a customer router on a provider's VRF interface).
+     * A link that joins two differently named VRFs: the two ports of an LLDP/CDP link, or the two
+     * addresses of an OSPF adjacency, share a subnet but are in VRFs of different names (compared
+     * without case). VRF names are local to each router, so this is only reported when both routers
+     * have both VRFs (the global table is on every router): a provider edge facing a customer router,
+     * or inter-AS option A with other names, joins VRFs on purpose.
      */
     private function checkVrfs(): void
     {
-        $byNetwork = [];
-        $usesVrfs = [];
-        foreach ($this->addresses as $index => $address) {
-            if ($address['vrf'] !== '') {
-                $usesVrfs[$address['device_id']] = true;
-            }
-            if (! $address['host'] && $address['network'] !== null && ! $this->isIgnored($address['ip'])) {
-                $byNetwork[$address['network']][$address['vrf']][$address['device_id']] ??= $index;
-            }
+        $reported = [];
+        $linked = [];
+        foreach ($this->links as [$deviceA, $portA, $deviceB, $portB]) {
+            $linked[$portA] = $linked[$portB] = true;
         }
-
-        foreach ($byNetwork as $network => $vrfs) {
-            if (count($vrfs) < 2) {
-                continue;
-            }
-            ksort($vrfs);
-            $names = array_keys($vrfs);
-            $reported = [];
-            foreach ($names as $i => $vrfA) {
-                foreach (array_slice($names, $i + 1) as $vrfB) {
-                    foreach ($vrfs[$vrfA] as $deviceA => $indexA) {
-                        foreach ($vrfs[$vrfB] as $deviceB => $indexB) {
-                            $pair = min($deviceA, $deviceB) . '|' . max($deviceA, $deviceB);
-                            if ($deviceA === $deviceB || isset($reported[$pair]) || ! isset($this->adjacent[$deviceA][$deviceB])) {
-                                continue;
-                            }
-                            if (((string) $vrfA === '' && ! isset($usesVrfs[$deviceA])) || ((string) $vrfB === '' && ! isset($usesVrfs[$deviceB]))) {
-                                continue;
-                            }
-                            $reported[$pair] = true;
-                            $a = $this->addresses[$indexA];
-                            $b = $this->addresses[$indexB];
-                            $table = fn ($vrf) => (string) $vrf === '' ? 'the global table' : "VRF $vrf";
-                            $this->add(new Finding(
-                                Finding::WARNING,
-                                'ip_vrf_mismatch',
-                                "$network is in " . $table($vrfA) . ' on ' . $this->end($deviceA, $a['port']) . ' and in ' . $table($vrfB) . ' on ' . $this->end($deviceB, $b['port']),
-                                $this->name($deviceA) . ' and ' . $this->name($deviceB) . ' are neighbors (LLDP/CDP or OSPF) with an address in the same subnet, but in different routing tables: the two interfaces cannot reach each other.',
-                                'Put both interfaces in the same VRF, or use another subnet if they are separate networks.',
-                                null,
-                                [$deviceA, $deviceB],
-                                array_values(array_filter([$a['port_id'], $b['port_id']])),
-                            ), [(string) $vrfA, (string) $vrfB]);
-                        }
-                    }
+        $onPort = [];
+        foreach ($linked ? $this->byDevice : [] as $addresses) {
+            foreach ($addresses as $address) {
+                if ($address->portId !== null && isset($linked[$address->portId])) {
+                    $onPort[$address->portId][] = $address;
                 }
             }
         }
+        foreach ($this->links as [$deviceA, $portA, $deviceB, $portB]) {
+            foreach ($onPort[$portA] ?? [] as $a) {
+                foreach ($onPort[$portB] ?? [] as $b) {
+                    $this->joinedVrfs($a, $b, 'an LLDP/CDP link', $reported);
+                }
+            }
+        }
+        foreach ($this->neighbors as $neighbor) {
+            if ($neighbor->local !== null && $neighbor->remote !== null) {
+                $this->joinedVrfs($neighbor->local, $neighbor->remote, 'an OSPF adjacency', $reported);
+            }
+        }
+    }
+
+    /**
+     * Report two addresses facing each other in differently named VRFs (see checkVrfs()).
+     *
+     * @param  array<string, true>  $reported
+     */
+    private function joinedVrfs(Address $a, Address $b, string $via, array &$reported): void
+    {
+        $vrfA = strtolower($a->vrf);
+        $vrfB = strtolower($b->vrf);
+        if ($vrfA === $vrfB || $a->device === $b->device || $a->host || $b->host || ! ($a->contains($b->packed) || $b->contains($a->packed))
+            || ! $this->hasVrf($a->device, $vrfB) || ! $this->hasVrf($b->device, $vrfA) || ! $this->isUp($a->device) || ! $this->isUp($b->device)) {
+            return;
+        }
+        if (strcmp($this->name($a->device), $this->name($b->device)) > 0) {
+            [$a, $b] = [$b, $a];
+        }
+        $key = $a->device . '|' . $a->packed . '|' . $b->device . '|' . $b->packed;
+        if (isset($reported[$key]) || $this->isIgnored($a->ip()) || $this->isIgnored($b->ip())) {
+            return;
+        }
+        $reported[$key] = true;
+
+        $table = fn (Address $address) => $address->vrf === '' ? 'the global table' : 'VRF ' . $address->vrf;
+        $network = ($a->prefix <= $b->prefix ? $a : $b)->network();
+        $this->add(new Finding(
+            Finding::INFO,
+            'ip_vrf_mismatch',
+            $table($a) . ' on ' . $this->end($a->device, $a->port) . ' is joined to ' . $table($b) . ' on ' . $this->end($b->device, $b->port) . " ($network)",
+            'The two interfaces face each other (' . $via . ') in ' . $network . ', but are in different routing tables, although '
+            . $this->name($a->device) . ' and ' . $this->name($b->device) . ' both have ' . $table($a) . ' and ' . $table($b)
+            . ': routes and traffic pass from one into the other here. VRF names are local to each router, so this can be on purpose (a route leak, inter-AS option A).',
+            'If the VRFs should stay apart, put both interfaces in the same VRF.',
+            null,
+            [$a->device, $b->device],
+            array_values(array_filter([$a->portId, $b->portId])),
+        ), [$a->vrf, $b->vrf]);
     }
 
     // ---------------------------------------------------------------- tables
 
     /**
      * One row per OSPF router (per VRF): router ID, ABR / ASBR, areas and its adjacencies.
+     *
+     * @param  callable(array): bool  $keep
      */
-    private function routerRows(): array
+    private function routerRows(callable $keep): array
     {
         $rows = [];
-        foreach ($this->instances as $key => $instance) {
-            $interfaces = array_map(fn ($i) => $this->interfaces[$i], $this->interfacesOf[$key] ?? []);
-            $neighbors = array_map(fn ($i) => $this->neighbors[$i], $this->neighborsOf[$key] ?? []);
-            $areas = array_values(array_unique(array_filter(array_column($interfaces, 'area'), fn ($area) => $area !== '')));
+        foreach ($this->instances as $instance) {
+            if (! $keep($instance)) {
+                continue;
+            }
+            $areas = array_map('strval', array_keys($instance['areas']));
             sort($areas);
-            $rows[] = $instance + [
+            $rows[] = [
+                'device_id' => $instance['device_id'],
+                'vrf' => $instance['vrf'],
+                'router_id' => $instance['router_id'],
+                'abr' => $instance['abr'],
+                'asbr' => $instance['asbr'],
                 'areas' => $areas,
-                'interfaces' => count($interfaces),
-                'neighbors' => count($neighbors),
-                'full' => count(array_filter($neighbors, fn ($n) => $this->adjacencyOk($n))),
+                'interfaces' => $instance['interfaces'],
+                'neighbors' => $instance['neighbors'],
+                'full' => $instance['full'],
             ];
         }
         usort($rows, fn ($a, $b) => [$this->name($a['device_id']), $a['vrf']] <=> [$this->name($b['device_id']), $b['vrf']]);
@@ -1175,23 +1399,28 @@ class RoutingAnalyzer
 
     /**
      * One row per OSPF neighbor a router reports, problems first.
+     *
+     * @param  callable(OspfNeighbor): bool  $keep
      */
-    private function neighborRows(): array
+    private function neighborRows(callable $keep): array
     {
         $rows = [];
         foreach ($this->neighbors as $neighbor) {
+            if (! $keep($neighbor)) {
+                continue;
+            }
             $rows[] = [
-                'device_id' => $neighbor['device_id'],
-                'vrf' => $neighbor['vrf'],
-                'port_id' => $neighbor['local']['port_id'] ?? null,
-                'port' => $neighbor['local']['port'] ?? null,
-                'area' => $neighbor['interface']['area'] ?? null,
-                'ip' => $neighbor['ip'],
-                'router_id' => $neighbor['router_id'],
-                'remote_device' => $neighbor['remote_device'],
-                'remote_port_id' => $neighbor['remote']['port_id'] ?? null,
-                'state' => self::label($neighbor['state']),
-                'ok' => $this->adjacencyOk($neighbor),
+                'device_id' => $neighbor->device,
+                'vrf' => $neighbor->vrf,
+                'port_id' => $neighbor->local?->portId,
+                'port' => $neighbor->local?->port,
+                'area' => $neighbor->interface?->area,
+                'ip' => $neighbor->ip,
+                'router_id' => $neighbor->routerId,
+                'remote_device' => $neighbor->remoteDevice,
+                'remote_port_id' => $neighbor->remote?->portId,
+                'state' => self::label($neighbor->state),
+                'ok' => $neighbor->ok(),
             ];
         }
         usort($rows, fn ($a, $b) => [$a['ok'], $this->name($a['device_id']), $a['ip']] <=> [$b['ok'], $this->name($b['device_id']), $b['ip']]);
@@ -1200,33 +1429,37 @@ class RoutingAnalyzer
     }
 
     /**
-     * One row per BGP session, sessions that are not up first.
+     * One row per BGP session, sessions that are not up first; prefix counters per address family.
+     *
+     * @param  callable(BgpSession): bool  $keep
      */
-    private function sessionRows(): array
+    private function sessionRows(callable $keep): array
     {
         $rows = [];
         foreach ($this->peers as $peer) {
-            $limits = array_filter(array_column($peer['prefixes'], 'limit'));
+            if (! $keep($peer)) {
+                continue;
+            }
             $rows[] = [
-                'device_id' => $peer['device_id'],
-                'vrf' => $peer['vrf'],
-                'ip' => $peer['ip'],
-                'local_ip' => $peer['local']['ip'] ?? null,
-                'remote_as' => $peer['remote_as'],
-                'type' => $peer['type'],
-                'description' => $peer['description'],
-                'remote_device' => $peer['remote_device'],
-                'state' => $peer['shut'] ? 'shut down' : self::label($peer['state']),
-                'established' => $peer['established'],
-                'shut' => $peer['shut'],
-                'time' => $peer['time'] ?: null,
-                'error' => $peer['error']['text'] ?? null,
-                'error_text' => $peer['error_text'] ?: null,
-                'accepted' => $peer['prefixes'] ? array_sum(array_column($peer['prefixes'], 'accepted')) : null,
-                'limit' => $limits ? min($limits) : null,
+                'device_id' => $peer->device,
+                'vrf' => $peer->vrf,
+                'ip' => $peer->ip,
+                'local_ip' => $peer->local?->ip(),
+                'remote_as' => $peer->remoteAs,
+                'type' => $peer->type(),
+                'description' => $peer->description,
+                'remote_device' => $peer->remoteDevice,
+                'state' => $peer->shut ? 'shut down' : self::label($peer->state ?: 'unknown'),
+                'established' => $peer->established(),
+                'shut' => $peer->shut,
+                'unknown' => ! $peer->known(),
+                'time' => $peer->time ?: null,
+                'error' => $peer->error()['text'] ?? null,
+                'error_text' => $peer->errorText ?: null,
+                'prefixes' => array_map(fn ($c) => ['family' => $c['family'], 'accepted' => $c['accepted'], 'limit' => $c['limit'] ?: null], $peer->prefixes),
             ];
         }
-        $rank = fn ($r) => $r['established'] ? 2 : ($r['shut'] ? 1 : 0);
+        $rank = fn ($r) => $r['established'] ? 2 : ($r['shut'] || $r['unknown'] ? 1 : 0);
         usort($rows, fn ($a, $b) => [$rank($a), $this->name($a['device_id']), $a['ip']] <=> [$rank($b), $this->name($b['device_id']), $b['ip']]);
 
         return $rows;
@@ -1234,36 +1467,49 @@ class RoutingAnalyzer
 
     // ---------------------------------------------------------------- helpers
 
-    private function adjacencyOk(array $neighbor): bool
-    {
-        return $neighbor['state'] === 'full' || ($neighbor['state'] === 'twoway' && ($neighbor['interface']['type'] ?? null) !== 'pointtopoint');
-    }
-
     /**
-     * Address of the device that owns $ip (in the VRF first), other than $not.
+     * Device owning a (binary) address, other than $not, and its address row: among the addresses in
+     * VRFs of the same name first, else in any VRF. Nobody when several devices have it, unless only
+     * one of them is up (no guessing, as LibreNMS does for bgpPeerIface); the row is null when the
+     * device has the address more than once (in several VRFs).
+     *
+     * @return array{0: ?int, 1: ?Address}
      */
-    private function owner(string $ip, string $vrf, ?int $not = null): ?array
+    private function owner(string $packed, string $vrf, ?int $not = null): array
     {
-        foreach ([$this->owners[$vrf . '|' . $ip] ?? [], $this->anyVrf[$ip] ?? []] as $indexes) {
-            foreach ($indexes as $index) {
-                if ($this->addresses[$index]['device_id'] !== $not) {
-                    return $this->addresses[$index];
+        $entries = $this->byIp[$packed] ?? [];
+        $entries = is_array($entries) ? $entries : [$entries];
+        $vrf = strtolower($vrf);
+        foreach ([true, false] as $sameVrf) {
+            $found = [];
+            foreach ($entries as $address) {
+                if ($address->device !== $not && (! $sameVrf || strtolower($address->vrf) === $vrf)) {
+                    $found[$address->device][] = $address;
                 }
+            }
+            if (count($found) > 1) {
+                $found = array_filter($found, fn ($deviceId) => $this->isUp($deviceId), ARRAY_FILTER_USE_KEY);
+                if (count($found) !== 1) {
+                    return [null, null];
+                }
+            }
+            foreach ($found as $deviceId => $rows) {
+                return [$deviceId, count($rows) === 1 ? $rows[0] : null];
             }
         }
 
-        return null;
+        return [null, null];
     }
 
     /**
-     * The device's own address row for $ip (in the VRF first).
+     * The device's own address row for a (binary) address, in the VRF first.
      */
-    private function ownAddress(int $deviceId, string $ip, string $vrf): ?array
+    private function ownAddress(int $deviceId, string $packed, string $vrf): ?Address
     {
+        $entries = $this->byIp[$packed] ?? [];
         $found = null;
-        foreach ($this->anyVrf[$ip] ?? [] as $index) {
-            $address = $this->addresses[$index];
-            if ($address['device_id'] === $deviceId && ($found === null || $address['vrf'] === $vrf)) {
+        foreach (is_array($entries) ? $entries : [$entries] as $address) {
+            if ($address->device === $deviceId && ($found === null || strtolower($address->vrf) === strtolower($vrf))) {
                 $found = $address;
             }
         }
@@ -1272,29 +1518,124 @@ class RoutingAnalyzer
     }
 
     /**
-     * The device's interface address whose subnet holds $ip: the longest prefix, in the VRF first.
+     * The device's interface address whose subnet holds a (binary) address: the longest prefix, in
+     * the VRF first.
      */
-    private function facing(int $deviceId, string $ip, string $vrf): ?array
+    private function facing(int $deviceId, string $packed, string $vrf): ?Address
     {
-        $packed = (string) @inet_pton($ip);
+        $vrf = strtolower($vrf);
         $best = null;
         $bestScore = null;
-        foreach ($this->byDevice[$deviceId] ?? [] as $index) {
-            $address = $this->addresses[$index];
-            if ($address['host'] || strlen($address['packed']) !== strlen($packed)) {
+        foreach ($this->byDevice[$deviceId] ?? [] as $address) {
+            if ($address->host || ! $address->contains($packed)) {
                 continue;
             }
-            $mask = self::mask(strlen($packed), $address['prefix']);
-            if (($address['packed'] & $mask) !== ($packed & $mask)) {
-                continue;
-            }
-            $score = [$address['vrf'] === $vrf ? 1 : 0, $address['prefix']];
+            $score = [strtolower($address->vrf) === $vrf ? 1 : 0, $address->prefix];
             if ($bestScore === null || $score > $bestScore) {
                 [$best, $bestScore] = [$address, $score];
             }
         }
 
         return $best;
+    }
+
+    /**
+     * Do two addresses face each other? Their devices are neighbors (LLDP/CDP, OSPF) and their ports
+     * are the two ends of an LLDP/CDP link, an OSPF adjacency joins them, or they are in VRFs of the
+     * same name.
+     */
+    private function faces(?Address $a, ?Address $b): bool
+    {
+        if ($a === null || $b === null || $a->device === $b->device || ! isset($this->adjacent[$a->device][$b->device])) {
+            return false;
+        }
+
+        return ($a->portId !== null && $b->portId !== null && isset($this->links[self::pair($a->portId, $b->portId)]))
+            || isset($this->ospfPeers[$a->device][$b->packed]) || isset($this->ospfPeers[$b->device][$a->packed])
+            || strtolower($a->vrf) === strtolower($b->vrf);
+    }
+
+    /**
+     * Networks of devices joined by LLDP/CDP links and OSPF adjacencies (a device without either is a
+     * network of its own and has no entry).
+     *
+     * @return array<int, int> device => network
+     */
+    private function networks(): array
+    {
+        $graph = new Graph;
+        foreach ($this->adjacent as $a => $neighbors) {
+            foreach (array_keys($neighbors) as $b) {
+                if ($a < $b) {
+                    $graph->addEdge($a, $b);
+                }
+            }
+        }
+        $networks = [];
+        foreach ($graph->components() as $index => $component) {
+            foreach ($component as $deviceId) {
+                $networks[(int) $deviceId] = $index;
+            }
+        }
+
+        return $networks;
+    }
+
+    /**
+     * The peer's own session back to this router: a session of the peer device to an address of this
+     * device, the one to this session's local address first.
+     */
+    private function reverse(BgpSession $peer): ?BgpSession
+    {
+        $found = null;
+        foreach ($this->peersOf[$peer->remoteDevice] ?? [] as $other) {
+            $packed = (string) inet_pton($other->ip);
+            if ($peer->local !== null && $packed === $peer->local->packed) {
+                return $other;
+            }
+            if ($found === null && $this->owns($peer->device, $packed)) {
+                $found = $other;
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * Does the device have this (binary) address on any port?
+     */
+    private function owns(int $deviceId, string $packed): bool
+    {
+        $entries = $this->byIp[$packed] ?? [];
+        foreach (is_array($entries) ? $entries : [$entries] as $address) {
+            if ($address->device === $deviceId) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Does the device report BGP sessions in this VRF?
+     */
+    private function hasSessionsIn(int $deviceId, string $vrf): bool
+    {
+        foreach ($this->peersOf[$deviceId] ?? [] as $session) {
+            if (strtolower($session->vrf) === strtolower($vrf)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Does the device have a VRF of this (lowercase) name? Every device has the global table ('').
+     */
+    private function hasVrf(int $deviceId, string $vrf): bool
+    {
+        return $vrf === '' || isset($this->vrfsOf[$deviceId][$vrf]);
     }
 
     /**
@@ -1330,13 +1671,13 @@ class RoutingAnalyzer
     }
 
     /**
-     * Does the device have another address than $address in the same subnet?
+     * Does the device have another address than $address in the same subnet and VRF?
      */
-    private function hasOtherAddress(int $deviceId, array $address): bool
+    private function hasOtherAddress(int $deviceId, Address $address): bool
     {
-        foreach ($this->byDevice[$deviceId] ?? [] as $index) {
-            $other = $this->addresses[$index];
-            if ($other['ip'] !== $address['ip'] && $other['vrf'] === $address['vrf'] && $other['network'] === $address['network']) {
+        foreach ($this->byDevice[$deviceId] ?? [] as $other) {
+            if ($other->packed !== $address->packed && $other->prefix === $address->prefix && strtolower($other->vrf) === strtolower($address->vrf)
+                && $other->contains($address->packed)) {
                 return true;
             }
         }
@@ -1347,24 +1688,25 @@ class RoutingAnalyzer
     /**
      * "core1 → 10.0.0.2 (AS 65001, ISP-A)" or "core1 → edge1 (10.0.0.2, AS 65001)" for a monitored peer.
      */
-    private function session(array $peer): string
+    private function session(BgpSession $peer): string
     {
         $details = array_filter([
-            $peer['remote_as'] !== null ? 'AS ' . $peer['remote_as'] : null,
-            $peer['description'] !== '' && $peer['remote_device'] === null ? $peer['description'] : null,
-            $peer['vrf'] !== '' ? 'VRF ' . $peer['vrf'] : null,
+            $peer->remoteAs !== null ? 'AS ' . $peer->remoteAs : null,
+            $peer->description !== '' && $peer->remoteDevice === null ? $peer->description : null,
+            $peer->vrf !== '' ? 'VRF ' . $peer->vrf : null,
         ]);
-        $target = $peer['remote_device'] !== null ? $this->name($peer['remote_device']) . ' (' . $peer['ip'] . ($details ? ', ' . implode(', ', $details) : '') . ')'
-            : $peer['ip'] . ($details ? ' (' . implode(', ', $details) . ')' : '');
+        $target = $peer->remoteDevice !== null ? $this->name($peer->remoteDevice) . ' (' . $peer->ip . ($details ? ', ' . implode(', ', $details) : '') . ')'
+            : $peer->ip . ($details ? ' (' . implode(', ', $details) . ')' : '');
 
-        return $this->name($peer['device_id']) . ' → ' . $target;
+        return $this->name($peer->device) . ' → ' . $target;
     }
 
     /**
      * "core1 Te1/0/1: 10/40s, dist1 Te1/0/1: 5/20s" when the items do not all have the same value
      * (items without a value are left out), else ''.
      *
-     * @param  callable(array): ?string  $value
+     * @param  list<OspfInterface|array>  $items  interfaces, or rows with a device_id
+     * @param  callable(mixed): ?string  $value
      */
     private function differing(array $items, callable $value, bool $withPort = true): string
     {
@@ -1379,11 +1721,14 @@ class RoutingAnalyzer
     /**
      * "core1 Te1/0/1: 10, dist1 Te1/0/1: 100".
      *
-     * @param  callable(array): string  $value
+     * @param  list<OspfInterface|array>  $items  interfaces, or rows with a device_id
+     * @param  callable(mixed): string  $value
      */
     private function values(array $items, callable $value, bool $withPort = true): string
     {
-        return implode(', ', array_map(fn ($item) => $this->end($item['device_id'], $withPort ? ($item['port'] ?? null) : null) . ': ' . $value($item), $items));
+        return implode(', ', array_map(fn ($item) => $item instanceof OspfInterface
+            ? $this->end($item->device, $withPort ? $item->port() : null) . ': ' . $value($item)
+            : $this->end($item['device_id'], null) . ': ' . $value($item), $items));
     }
 
     private function end(int $deviceId, ?string $port): string
@@ -1437,26 +1782,52 @@ class RoutingAnalyzer
      */
     private function addressCount(?int $device, ?string $vrf): int
     {
-        return count(array_filter($this->addresses, fn ($a) => isset($this->scope[$a['device_id']])
-            && ($device === null || $a['device_id'] === $device) && ($vrf === null || $a['vrf'] === $vrf)));
+        $count = 0;
+        foreach ($device !== null ? [$device] : array_keys($this->scope) as $deviceId) {
+            if (! isset($this->scope[$deviceId])) {
+                continue;
+            }
+            foreach ($this->byDevice[$deviceId] ?? [] as $address) {
+                $count += $vrf === null || $address->vrf === $vrf ? 1 : 0;
+            }
+        }
+
+        return $count;
     }
 
     /**
-     * VRF names in the data, for the filter.
+     * VRF names of the devices and the data, for the filter.
      *
      * @return string[]
      */
-    private function vrfNames(): array
+    private function vrfList(): array
     {
-        $names = array_merge(
-            array_column($this->addresses, 'vrf'),
-            array_column($this->instances, 'vrf'),
-            array_column($this->peers, 'vrf'),
-        );
-        $names = array_values(array_unique(array_filter(array_map('strval', $names), fn ($name) => $name !== '')));
+        $names = array_map('strval', array_keys($this->vrfNames));
         sort($names);
 
         return $names;
+    }
+
+    /**
+     * A VRF name of a device's data: shared between its rows, and recorded for the filter and as one
+     * of the device's VRFs.
+     */
+    private function vrf(int $deviceId, string $name): string
+    {
+        if ($name !== '') {
+            $this->vrfNames[$name] = true;
+            $this->vrfsOf[$deviceId][strtolower($name)] = true;
+        }
+
+        return $this->intern($name);
+    }
+
+    /**
+     * One copy of a string that many rows hold (VRF names, areas, states).
+     */
+    private function intern(string $value): string
+    {
+        return $this->strings[$value] ??= $value;
     }
 
     private function add(Finding $finding, array $vrfs): void
@@ -1465,6 +1836,14 @@ class RoutingAnalyzer
         if (! isset($this->disabled[$code]) && ! isset($this->disabled[self::CHECKS[$code] ?? ''])) {
             $this->findings[] = [$finding, array_values(array_unique(array_map('strval', $vrfs)))];
         }
+    }
+
+    /**
+     * One integer for a pair of port ids, in either order.
+     */
+    private static function pair(int $a, int $b): int
+    {
+        return (min($a, $b) << 32) | max($a, $b);
     }
 
     /**
@@ -1479,7 +1858,7 @@ class RoutingAnalyzer
             foreach (['127.0.0.0/8', '169.254.0.0/16', '0.0.0.0/8', '224.0.0.0/4', 'fe80::/10', '::1/128', '::/128', 'ff00::/8'] as $cidr) {
                 [$network, $prefix] = explode('/', $cidr);
                 $bytes = (string) inet_pton($network);
-                $ranges[strlen($bytes)][] = [$bytes, self::mask(strlen($bytes), (int) $prefix)];
+                $ranges[strlen($bytes)][] = [$bytes, Address::mask(strlen($bytes), (int) $prefix)];
             }
         }
         foreach ($ranges[strlen($packed)] ?? [] as [$network, $mask]) {
@@ -1496,9 +1875,9 @@ class RoutingAnalyzer
      */
     private static function ip(string $address): ?string
     {
-        $packed = @inet_pton(trim($address));
+        $packed = Address::pack($address);
 
-        return $packed === false ? null : (string) inet_ntop($packed);
+        return $packed === null ? null : (string) inet_ntop($packed);
     }
 
     /**
@@ -1563,23 +1942,5 @@ class RoutingAnalyzer
         };
 
         return trim("$name $sub");
-    }
-
-    /**
-     * Binary netmask of $prefix bits for an address of $bytes bytes.
-     */
-    private static function mask(int $bytes, int $prefix): string
-    {
-        $key = $bytes . '/' . $prefix;
-        if (! isset(self::$masks[$key])) {
-            $prefix = max(0, min($bytes * 8, $prefix));
-            $mask = str_repeat("\xff", intdiv($prefix, 8));
-            if ($prefix % 8) {
-                $mask .= chr((0xff << (8 - $prefix % 8)) & 0xff);
-            }
-            self::$masks[$key] = str_pad($mask, $bytes, "\x00");
-        }
-
-        return self::$masks[$key];
     }
 }

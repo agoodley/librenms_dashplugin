@@ -18,7 +18,8 @@
     $rowLimit = 500;
     $cards = [
         'OSPF' => ['ospf', fn ($s) => $s['ospf']['full'] . ' / ' . $s['ospf']['neighbors'], fn ($s) => 'adjacencies full on ' . $s['ospf']['routers'] . ' router' . ($s['ospf']['routers'] === 1 ? '' : 's')],
-        'BGP' => ['bgp', fn ($s) => $s['bgp']['established'] . ' / ' . ($s['bgp']['sessions'] - $s['bgp']['shut']), fn ($s) => 'sessions established' . ($s['bgp']['shut'] ? ', ' . $s['bgp']['shut'] . ' shut down on purpose' : '')],
+        'BGP' => ['bgp', fn ($s) => $s['bgp']['established'] . ' / ' . ($s['bgp']['sessions'] - $s['bgp']['shut'] - $s['bgp']['unknown']), fn ($s) => 'sessions established'
+            . ($s['bgp']['shut'] ? ', ' . $s['bgp']['shut'] . ' shut down on purpose' : '') . ($s['bgp']['unknown'] ? ', ' . $s['bgp']['unknown'] . ' without a state' : '')],
         'IP' => ['ip', fn ($s) => $s['categories']['ip'] ?? 0, fn ($s) => 'address problems in ' . number_format($s['addresses']) . ' interface addresses'],
     ];
 @endphp
@@ -120,7 +121,10 @@
 
         @if($result['ospf_routers'])
             <div class="panel panel-default">
-                <div class="panel-heading"><strong>OSPF routers</strong> <span class="text-muted">({{ count($result['ospf_routers']) }})</span></div>
+                <div class="panel-heading">
+                    <strong>OSPF routers</strong>
+                    <span class="text-muted">({{ count($result['ospf_routers']) }}{{ count($result['ospf_routers']) > $rowLimit ? ', showing the first ' . $rowLimit : '' }})</span>
+                </div>
                 <div class="table-responsive">
                 <table class="table table-condensed table-hover topo-stp-table">
                     <thead><tr><th>Router</th><th>VRF</th><th>Router ID</th><th>Role</th><th>Areas</th><th>Interfaces</th><th>Adjacencies</th><th></th></tr></thead>
@@ -199,15 +203,16 @@
                             </td>
                             <td>{{ $row['remote_as'] ?? '-' }}</td>
                             <td>{{ $row['type'] ?? '-' }}</td>
-                            <td><span class="{{ $row['established'] ? 'topo-status-up' : ($row['shut'] ? 'topo-status-disabled' : 'topo-status-down') }}">{{ $row['state'] }}</span></td>
+                            <td><span class="{{ $row['established'] ? 'topo-status-up' : ($row['shut'] || $row['unknown'] ? 'topo-status-disabled' : 'topo-status-down') }}">{{ $row['state'] }}</span></td>
                             <td>{{ $row['time'] === null ? '-' : ($row['established'] ? 'up ' : '') . $duration($row['time']) . ($row['established'] ? '' : ' ago') }}</td>
                             <td class="topo-wrap">{{ $row['error'] ?? '-' }}@if($row['error_text'])<br><small class="text-muted">{{ $row['error_text'] }}</small>@endif</td>
-                            <td>
-                                @if($row['accepted'] !== null)
-                                    {{ number_format($row['accepted']) }}@if($row['limit']) <small class="text-muted">/ {{ number_format($row['limit']) }}</small>@endif
-                                @else
+                            <td style="white-space: nowrap">
+                                @forelse($row['prefixes'] as $counters)
+                                    @if(count($row['prefixes']) > 1)<small class="text-muted">{{ $counters['family'] }}</small> @endif{{ number_format($counters['accepted']) }}@if($counters['limit']) <small class="text-muted">/ {{ number_format($counters['limit']) }}</small>@endif
+                                    @if(! $loop->last)<br>@endif
+                                @empty
                                     <span class="text-muted">-</span>
-                                @endif
+                                @endforelse
                             </td>
                         </tr>
                     @endforeach
@@ -219,8 +224,9 @@
 
         <p class="text-muted" style="font-size: 12px">
             Built from what LibreNMS polls: OSPF (ospf module) and BGP (bgp-peers module) every poll, interface addresses and
-            VRFs at discovery. Prefix counters need bgpPeers_cbgp (Cisco). Adjacency states are a snapshot of the last poll,
-            so a state seen during a change can show up once.
+            VRFs at discovery. Accepted prefix counts come from Cisco, Junos, Arista, Dell OS10 and Huawei VRP routers, the
+            maximum-prefix limits only from Cisco. Adjacency and session states are a snapshot of the last poll, so a state seen
+            during a change can show up once.
         </p>
     @endif
 </div>

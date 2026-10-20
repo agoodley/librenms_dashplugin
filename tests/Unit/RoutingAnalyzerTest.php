@@ -33,11 +33,10 @@ class RoutingAnalyzerTest extends TestCase
         $this->assertSame([], $result['findings']);
         $this->assertSame('ok', $result['summary']['status']);
         $this->assertSame(['routers' => 4, 'neighbors' => 8, 'full' => 8], $result['summary']['ospf']);
-        $this->assertSame(['sessions' => 3, 'established' => 3, 'shut' => 0], $result['summary']['bgp']);
+        $this->assertSame(['sessions' => 3, 'established' => 3, 'shut' => 0, 'unknown' => 0], $result['summary']['bgp']);
         $this->assertSame(['0.0.0.0', '0.0.0.1'], $result['ospf_routers'][2]['areas'], 'r3 is an ABR between both areas');
         $isp = array_values(array_filter($result['bgp_sessions'], fn ($r) => $r['ip'] === '203.0.113.1'))[0];
-        $this->assertSame(800, $isp['accepted']);
-        $this->assertSame(2000, $isp['limit']);
+        $this->assertSame([['family' => 'IPv4 unicast', 'accepted' => 800, 'limit' => 2000]], $isp['prefixes']);
     }
 
     public function testDuplicateRouterIds(): void
@@ -181,7 +180,7 @@ class RoutingAnalyzerTest extends TestCase
     public function testAreaDatabasesAndTypes(): void
     {
         $net = RoutingFixture::network();
-        $net->update('areas', ['device_id' => 2, 'ospfAreaId' => '0.0.0.0'], ['ospfAreaLsaCount' => 11]);
+        $net->update('areas', ['device_id' => 2, 'ospfAreaId' => '0.0.0.0'], ['ospfAreaLsaCount' => 9]);
         $net->update('areas', ['device_id' => 4], ['ospfImportAsExtern' => 'importNoExternal']);
         // a router of another domain with a different area 0 is not compared
         $net->router(9, 'lab1')->ospfRouter(9, '9.9.9.9')->area(9, '0.0.0.0', 3, 100);
@@ -189,7 +188,8 @@ class RoutingAnalyzerTest extends TestCase
 
         $lsdb = self::find($result, 'ospf_lsdb_mismatch');
         $this->assertSame('warning', $lsdb['severity']);
-        $this->assertSame('OSPF area 0.0.0.0: the link-state databases differ (r1: 12 LSAs, r2: 11 LSAs, r3: 12 LSAs)', $lsdb['title']);
+        $this->assertSame('OSPF area 0.0.0.0: the link-state databases differ (r1: 12 LSAs, r2: 9 LSAs, r3: 12 LSAs)', $lsdb['title']);
+        $this->assertStringContainsString('if it persists', $lsdb['detail']);
         $this->assertSame([1, 2, 3], $lsdb['devices']);
 
         $type = self::find($result, 'ospf_area_type_mismatch');
@@ -198,13 +198,21 @@ class RoutingAnalyzerTest extends TestCase
         $this->assertCount(2, $result['findings']);
     }
 
-    public function testSameChecksumSumWithDifferentContents(): void
+    public function testChecksumSumsAndSmallLsaCountDifferencesAreNotReported(): void
     {
+        // the checksum sum changes with every LSA refresh, and routers are polled at different moments
         $net = RoutingFixture::network();
         $net->update('areas', ['device_id' => 3, 'ospfAreaId' => '0.0.0.1'], ['ospfAreaLsaCksumSum' => 90001]);
-        $finding = self::find($net->analyzer()->analyze(), 'ospf_lsdb_mismatch');
+        $this->assertNull(self::find($net->analyzer()->analyze(), 'ospf_lsdb_mismatch'));
 
-        $this->assertStringContainsString('the same number of LSAs but different contents', $finding['detail']);
+        // one LSA, or 1 % of a large area, is a change in progress
+        $net->update('areas', ['device_id' => 2, 'ospfAreaId' => '0.0.0.0'], ['ospfAreaLsaCount' => 11]);
+        $this->assertNull(self::find($net->analyzer()->analyze(), 'ospf_lsdb_mismatch'));
+        $net->update('areas', ['ospfAreaId' => '0.0.0.0'], ['ospfAreaLsaCount' => 5000]);
+        $net->update('areas', ['device_id' => 2, 'ospfAreaId' => '0.0.0.0'], ['ospfAreaLsaCount' => 4950]);
+        $this->assertNull(self::find($net->analyzer()->analyze(), 'ospf_lsdb_mismatch'));
+        $net->update('areas', ['device_id' => 2, 'ospfAreaId' => '0.0.0.0'], ['ospfAreaLsaCount' => 4900]);
+        $this->assertNotNull(self::find($net->analyzer()->analyze(), 'ospf_lsdb_mismatch'));
     }
 
     public function testBgpSessionDownWithItsLastError(): void
@@ -274,7 +282,7 @@ class RoutingAnalyzerTest extends TestCase
     public function testSessionConfiguredOnOneSideOnly(): void
     {
         $net = RoutingFixture::network();
-        $net->bgpPeer(3, '10.0.23.1', 65000, ['bgpPeerState' => 'active']);
+        $net->bgpPeer(3, '10.0.23.1', 65000, ['bgpPeerState' => 'active', 'bgpPeerFsmEstablishedTime' => 0]);
         $result = $net->analyzer()->analyze();
 
         $finding = self::find($result, 'bgp_one_sided');
@@ -283,9 +291,15 @@ class RoutingAnalyzerTest extends TestCase
         $this->assertStringContainsString('Add the neighbor 10.0.23.2 on r2', $finding['recommendation']);
         $this->assertNull(self::find($result, 'bgp_session_down'));
 
+        // a session that was established before was configured on both sides then
+        $net->update('peers', ['device_id' => 3, 'bgpPeerIdentifier' => '10.0.23.1'], ['bgpPeerFsmEstablishedTime' => 3600]);
+        $result = $net->analyzer()->analyze();
+        $this->assertNull(self::find($result, 'bgp_one_sided'));
+        $this->assertNotNull(self::find($result, 'bgp_session_down', 'r3 → r2'));
+
         // a peer that reports no BGP at all may simply not be polled
         $net = RoutingFixture::network();
-        $net->bgpPeer(3, '10.1.34.2', 65000, ['bgpPeerState' => 'active']);
+        $net->bgpPeer(3, '10.1.34.2', 65000, ['bgpPeerState' => 'active', 'bgpPeerFsmEstablishedTime' => 0]);
         $result = $net->analyzer()->analyze();
         $this->assertNull(self::find($result, 'bgp_one_sided'));
         $this->assertStringContainsString('r4 reports no BGP sessions', self::find($result, 'bgp_session_down')['detail']);
@@ -405,39 +419,90 @@ class RoutingAnalyzerTest extends TestCase
         $this->assertSame([1, 2], $finding['devices']);
     }
 
-    public function testSubnetInTwoVrfsOnNeighbors(): void
+    public function testLinkJoiningTwoVrfs(): void
     {
+        // the two ports of an LLDP link, on routers that both have PROD and DEV
         $net = RoutingFixture::network();
-        $net->address(1, 'Te0/0/5', '10.30.0.1/30', 'PROD');
-        $net->address(2, 'Te0/0/5', '10.30.0.2/30', 'DEV');
-        // r1 and r9 are no LLDP neighbors
-        $net->router(9, 'r9')->address(9, 'Te0/0/5', '10.30.0.1/30', 'LAB');
-        // global table on a router without VRFs facing a VRF: a customer router on a provider edge
-        $net->address(3, 'Te0/0/6', '10.31.0.1/30', 'CUST');
-        $net->address(4, 'Te0/0/6', '10.31.0.2/30');
+        $net->vrfs = [1 => ['PROD' => null, 'DEV' => null], 2 => ['PROD' => null, 'DEV' => null]];
+        $net->link(1, $net->address(1, 'Te0/0/5', '10.30.0.1/30', 'PROD'), 2, $net->address(2, 'Te0/0/5', '10.30.0.2/30', 'DEV'));
         $result = $net->analyzer()->analyze();
 
-        $finding = self::find($result, 'ip_vrf_mismatch');
-        $this->assertSame('10.30.0.0/30 is in VRF DEV on r2 Te0/0/5 and in VRF PROD on r1 Te0/0/5', $finding['title']);
-        $this->assertSame(['DEV', 'PROD'], $finding['vrfs']);
-        $this->assertNull(self::find($result, 'ip_vrf_mismatch', '10.31.0.0/30'));
-        $this->assertCount(1, $result['findings']);
+        $this->assertSame(['ip_vrf_mismatch'], self::codes($result));
+        $finding = $result['findings'][0];
+        $this->assertSame('info', $finding['severity']);
+        $this->assertSame('VRF PROD on r1 Te0/0/5 is joined to VRF DEV on r2 Te0/0/5 (10.30.0.0/30)', $finding['title']);
+        $this->assertStringContainsString('face each other (an LLDP/CDP link)', $finding['detail']);
+        $this->assertSame(['PROD', 'DEV'], $finding['vrfs']);
 
-        // once r4 uses VRFs itself, its global address facing a VRF is a mistake
-        $net->address(4, 'Te0/0/7', '10.32.0.1/30', 'MGMT');
-        $this->assertNotNull(self::find($net->analyzer()->analyze(), 'ip_vrf_mismatch', '10.31.0.0/30 is in the global table on r4'));
+        // the two addresses of an OSPF adjacency: r3's VRF RED instance is a neighbor of r4's VRF BLUE instance
+        $net = RoutingFixture::network();
+        $net->vrfs = [3 => ['RED' => null, 'BLUE' => null], 4 => ['RED' => null, 'BLUE' => null]];
+        $net->ospfRouter(3, '3.3.3.30', 'RED')->ospfRouter(4, '4.4.4.40', 'BLUE');
+        $net->address(3, 'Te0/0/9', '10.33.0.1/30', 'RED');
+        $net->address(4, 'Te0/0/9', '10.33.0.2/30', 'BLUE');
+        $net->neighbor(3, '10.33.0.2', '4.4.4.40', 'full', 'RED')->neighbor(4, '10.33.0.1', '3.3.3.30', 'full', 'BLUE');
+        $finding = self::find($net->analyzer()->analyze(), 'ip_vrf_mismatch');
+        $this->assertSame('VRF RED on r3 Te0/0/9 is joined to VRF BLUE on r4 Te0/0/9 (10.33.0.0/30)', $finding['title']);
+        $this->assertStringContainsString('(an OSPF adjacency)', $finding['detail']);
     }
 
-    public function testOspfNeighborsCountAsDirectlyConnected(): void
+    public function testSubnetReusedInTwoCustomerVrfsOnCoreNeighbors(): void
+    {
+        // r1 and r2 are core neighbors; each reuses the same PE-CE /30 on a customer port that faces neither router
+        $net = RoutingFixture::network();
+        $net->address(1, 'Gi0/0/10', '192.168.255.1/30', 'CUST-A');
+        $net->address(2, 'Gi0/0/10', '192.168.255.1/30', 'CUST-B');
+
+        $this->assertSame([], $net->analyzer()->analyze()['findings']);
+    }
+
+    public function testSameVrfNamedInAnotherCase(): void
+    {
+        // PROD on a Cisco PE, prod on a Junos PE, on the two ends of one link
+        $net = RoutingFixture::network();
+        $net->link(1, $net->address(1, 'Te0/0/5', '10.30.0.1/30', 'PROD'), 2, $net->address(2, 'xe-0/0/5.0', '10.30.0.2/30', 'prod'));
+
+        $this->assertSame([], $net->analyzer()->analyze()['findings']);
+    }
+
+    public function testCustomerRouterWithAManagementVrf(): void
+    {
+        // a managed CE (global table, and a Mgmt-intf VRF as every IOS-XE box) facing the PE's customer VRF
+        $net = RoutingFixture::network();
+        $net->link(3, $net->address(3, 'Gi0/0/7', '10.31.0.1/30', 'CUST'), 4, $net->address(4, 'Gi0/0/0', '10.31.0.2/30'));
+        $net->address(4, 'Gi0', '192.0.2.44/24', 'Mgmt-intf');
+        $this->assertSame([], $net->analyzer()->analyze()['findings'], 'r4 has no VRF CUST: the PE joins it to the CE on purpose');
+
+        // a router that has VRF CUST itself and faces it with its global table
+        $net->vrfs[4]['CUST'] = null;
+        $finding = self::find($net->analyzer()->analyze(), 'ip_vrf_mismatch');
+        $this->assertSame('VRF CUST on r3 Gi0/0/7 is joined to the global table on r4 Gi0/0/0 (10.31.0.0/30)', $finding['title']);
+    }
+
+    public function testMaskMismatchBetweenOspfNeighborsWithoutLldp(): void
     {
         $net = RoutingFixture::network();
-        $net->lldp = [];
-        $net->address(3, 'Te0/0/5', '10.30.0.1/30', 'PROD');
-        $net->address(4, 'Te0/0/5', '10.30.0.2/30', 'DEV');
-        $finding = self::find($net->analyzer()->analyze(), 'ip_vrf_mismatch');
+        $net->links = [];
+        $net->address(3, 'Te0/0/5', '10.30.0.1/30');
+        $net->address(4, 'Te0/0/5', '10.30.0.2/24');
+        $finding = self::find($net->analyzer()->analyze(), 'ip_mask_mismatch');
 
-        $this->assertEqualsCanonicalizing([3, 4], $finding['devices'], 'r3 and r4 are OSPF neighbors on their area 1 link');
-        $this->assertStringContainsString('are neighbors (LLDP/CDP or OSPF)', $finding['detail']);
+        $this->assertSame('Subnet mask mismatch: r3 Te0/0/5 10.30.0.1/30 and r4 Te0/0/5 10.30.0.2/24', $finding['title'], 'r3 and r4 are OSPF neighbors on their area 1 link');
+    }
+
+    public function testMaskCheckOnlyBetweenNeighbors(): void
+    {
+        // two unrelated customer sites (an MSP): a LAN 192.168.1.1/24 and a router-firewall /30 in the same range
+        $net = RoutingFixture::network();
+        $net->router(7, 'custX-rtr', null)->address(7, 'Vl1', '192.168.1.1/24');
+        $net->router(8, 'custY-rtr', null)->address(8, 'Gi0/1', '192.168.1.2/30');
+        $this->assertSame([], $net->analyzer()->analyze()['findings']);
+
+        // the same addresses on two neighbors in different VRFs that do not face each other
+        $net = RoutingFixture::network();
+        $net->address(1, 'Vl1', '192.168.1.1/24', 'CUST-A');
+        $net->address(2, 'Gi0/1', '192.168.1.2/30', 'CUST-B');
+        $this->assertSame([], $net->analyzer()->analyze()['findings']);
     }
 
     public function testScopeDeviceAndVrfFilters(): void
@@ -445,8 +510,8 @@ class RoutingAnalyzerTest extends TestCase
         $net = RoutingFixture::network();
         $net->update('neighbors', ['device_id' => 3, 'ospfNbrIpAddr' => '10.1.34.2'], ['ospfNbrState' => 'init']);
         $net->update('peers', ['bgpPeerIdentifier' => '203.0.113.1'], ['bgpPeerState' => 'active']);
-        $net->address(1, 'Te0/0/5', '10.30.0.1/30', 'PROD');
-        $net->address(2, 'Te0/0/5', '10.30.0.2/30', 'DEV');
+        $net->vrfs = [1 => ['PROD' => null, 'DEV' => null], 2 => ['PROD' => null, 'DEV' => null]];
+        $net->link(1, $net->address(1, 'Te0/0/5', '10.30.0.1/30', 'PROD'), 2, $net->address(2, 'Te0/0/5', '10.30.0.2/30', 'DEV'));
 
         $all = $net->analyzer()->analyze();
         $this->assertSame(['bgp_session_down', 'ip_vrf_mismatch', 'ospf_neighbor_stuck'], self::codes($all));
@@ -520,6 +585,212 @@ class RoutingAnalyzerTest extends TestCase
         $net->router(1, 'r1', null);
         $this->assertNull($net->analyzer()->analyze()['bgp_sessions'][0]['type']);
         $this->assertSame(['r1', 'r2', 'r3', 'r4'], array_map(fn ($r) => $result['device_names'][$r['device_id']], $result['ospf_routers']));
+    }
+
+    public function testUnconnectedNetworksReusingASubnetAreNotCompared(): void
+    {
+        // two customers' OSPF networks that never meet use the same transit /30 with other settings
+        $net = RoutingFixture::network();
+        $net->router(11, 'custA-r1')->router(12, 'custA-r2')->router(13, 'custB-r1')->router(14, 'custB-r2');
+        foreach ([11, 12, 13, 14] as $id) {
+            $net->ospfRouter($id, "172.31.0.$id");
+        }
+        $net->ospfLink(11, 'Gi0/1', 12, 'Gi0/1', '10.99.0.0/30');
+        $fast = ['ospfIfHelloInterval' => 5, 'ospfIfRtrDeadInterval' => 20];
+        $net->ospfLink(13, 'Gi0/1', 14, 'Gi0/1', '10.99.0.0/30', '0.0.0.7', $fast, $fast);
+
+        $this->assertSame([], $net->analyzer()->analyze()['findings'], 'no interface mismatch and no duplicate addresses between the two networks');
+    }
+
+    public function testInterfacesOfOneLinkWithoutAnAdjacencyAreCompared(): void
+    {
+        // r5's only link (to r4) has other timers, so no adjacency forms: r5 is an OSPF domain of its own,
+        // but LLDP shows that the two interfaces face each other
+        $net = RoutingFixture::network();
+        $net->router(5, 'r5')->ospfRouter(5, '5.5.5.5');
+        $net->ospfLink(4, 'Te0/0/2', 5, 'Te0/0/1', '10.1.45.0/30', '0.0.0.1', [], ['ospfIfHelloInterval' => 5, 'ospfIfRtrDeadInterval' => 20]);
+        $net->ospf['neighbors'] = array_values(array_filter($net->ospf['neighbors'], fn ($n) => ! in_array($n['ospfNbrIpAddr'], ['10.1.45.1', '10.1.45.2'], true)));
+
+        $finding = self::find($net->analyzer()->analyze(), 'ospf_timer_mismatch');
+        $this->assertSame('OSPF hello / dead intervals differ on 10.1.45.0/30: r4 Te0/0/2: 10/40s, r5 Te0/0/1: 5/20s', $finding['title']);
+
+        // without the LLDP link nothing shows that they are on one link
+        array_pop($net->links);
+        $this->assertNull(self::find($net->analyzer()->analyze(), 'ospf_timer_mismatch'));
+    }
+
+    public function testPeerAddressOnTwoCustomerRoutersIsNotGuessed(): void
+    {
+        // PE r1 reuses the PE-CE /30 for two customers; CE-B's session is down (its circuit is down)
+        $net = RoutingFixture::network();
+        $net->router(7, 'ce-a', 65101)->address(7, 'Gi0/0', '10.255.254.2/30');
+        $net->router(8, 'ce-b', 65102)->address(8, 'Gi0/0', '10.255.254.2/30');
+        $net->address(1, 'Gi0/1.100', '10.255.254.1/30', 'CUST-A');
+        $net->address(1, 'Gi0/1.200', '10.255.254.1/30', 'CUST-B');
+        $net->bgpPeer(1, '10.255.254.2', 65101, ['vrf' => 'CUST-A'])
+            ->bgpPeer(1, '10.255.254.2', 65102, ['vrf' => 'CUST-B', 'bgpPeerState' => 'active', 'bgpPeerFsmEstablishedTime' => 600]);
+        $net->bgpPeer(7, '10.255.254.1', 65000)->bgpPeer(8, '10.255.254.1', 65000, ['bgpPeerState' => 'active']);
+        $result = $net->analyzer()->analyze();
+
+        $this->assertSame(['bgp_session_down', 'bgp_session_down'], self::codes($result));
+        $this->assertNotNull(self::find($result, 'bgp_session_down', 'r1 → 10.255.254.2 (AS 65102, VRF CUST-B) is Active'));
+        $this->assertNotNull(self::find($result, 'bgp_session_down', 'ce-b → r1 (10.255.254.1, AS 65000) is Active'), 'r1 is the only device with the address');
+        foreach ($result['bgp_sessions'] as $session) {
+            if ($session['device_id'] === 1 && $session['ip'] === '10.255.254.2') {
+                $this->assertNull($session['remote_device'], 'ce-a and ce-b both have the address');
+            }
+        }
+    }
+
+    public function testAnycastAddressOnTwoLoopbacksIsInfo(): void
+    {
+        // an anycast RP: the same /32 on Loopback1 of two routers
+        $net = RoutingFixture::network();
+        $net->address(1, 'Loopback1', '10.255.255.1/32', '', ['ifType' => 'softwareLoopback']);
+        $net->address(2, 'Loopback1', '10.255.255.1/32', '', ['ifType' => 'softwareLoopback']);
+        $finding = self::find($net->analyzer()->analyze(), 'ip_duplicate');
+
+        $this->assertSame('info', $finding['severity']);
+        $this->assertStringContainsString('anycast', $finding['detail']);
+    }
+
+    public function testReplacedRouterThatIsDownIsNoDuplicate(): void
+    {
+        // r4 was replaced: the old device is down and still has its addresses, the new device uses them
+        $net = RoutingFixture::network();
+        $net->router(4, 'r4-old', 65000, ['status' => 0]);
+        $net->router(5, 'r4-new');
+        $net->link(3, null, 5, null);
+        $net->address(5, 'Te0/0/1', '10.1.34.2/30');
+
+        $this->assertNull(self::find($net->analyzer()->analyze(), 'ip_duplicate'));
+    }
+
+    public function testDuplicateAddressesOnPortsThatAreDownAreIgnored(): void
+    {
+        // virbr0 192.168.122.1/24 on two KVM hosts (connected to one switch), the bridges are down
+        $net = RoutingFixture::network();
+        $down = ['ifOperStatus' => 'down', 'ifType' => 'bridge'];
+        $net->router(7, 'kvm1', null)->address(7, 'virbr0', '192.168.122.1/24', '', $down);
+        $net->router(8, 'kvm2', null)->address(8, 'virbr0', '192.168.122.1/24', '', $down);
+        $net->link(7, null, 8, null);
+        $this->assertSame([], $net->analyzer()->analyze()['findings']);
+
+        $net->update('addresses', ['address' => '192.168.122.1'], ['ifOperStatus' => 'up']);
+        $this->assertSame('warning', self::find($net->analyzer()->analyze(), 'ip_duplicate')['severity']);
+    }
+
+    public function testLocalAsSessionDownForAnotherReason(): void
+    {
+        // r3 presents local-as 65100 to r4; the session is down because the hold timer expired
+        $net = RoutingFixture::network();
+        $net->router(4, 'r4', 65004);
+        $hold = ['bgpPeerState' => 'idle', 'bgpPeerLastErrorCode' => 4, 'bgpPeerLastErrorSubCode' => 0];
+        $net->bgpPeer(4, '10.1.34.1', 65100, $hold)->bgpPeer(3, '10.1.34.2', 65004, $hold);
+        $result = $net->analyzer()->analyze();
+
+        $this->assertNull(self::find($result, 'bgp_remote_as_mismatch'));
+        $this->assertSame('BGP session r4 → r3 (10.1.34.1, AS 65100) is Idle: Hold Timer Expired', self::find($result, 'bgp_session_down', 'r4 → r3')['title']);
+
+        // a session that never came up is checked
+        $net->update('peers', ['device_id' => 4], ['bgpPeerFsmEstablishedTime' => 0]);
+        $finding = self::find($net->analyzer()->analyze(), 'bgp_remote_as_mismatch');
+        $this->assertSame('BGP session r4 → r3 (10.1.34.1, AS 65100): remote AS 65100 configured, r3 is AS 65000', $finding['title']);
+        $this->assertStringContainsString('has never come up', $finding['detail']);
+        $this->assertStringContainsString('Last error: Hold Timer Expired (4/0)', $finding['detail']);
+    }
+
+    public function testAsTransIsNotCompared(): void
+    {
+        // a two-byte-only peer sees the four-byte AS of r4 as AS_TRANS
+        $net = RoutingFixture::network();
+        $net->router(4, 'r4', 4200000004);
+        $net->bgpPeer(3, '10.1.34.2', 23456, ['bgpPeerState' => 'active', 'bgpPeerFsmEstablishedTime' => 0]);
+
+        $this->assertNull(self::find($net->analyzer()->analyze(), 'bgp_remote_as_mismatch'));
+    }
+
+    public function testOneSidedNeedsThePeersSessionsInTheVrf(): void
+    {
+        // ce1 peers with r1's VRF CUST address; r1's VRF sessions are not polled (no SNMP context)
+        $net = RoutingFixture::network();
+        $net->router(7, 'ce1', 65101)->address(7, 'Gi0/0', '10.40.0.2/30');
+        $net->address(1, 'Gi0/2', '10.40.0.1/30', 'CUST');
+        $net->bgpPeer(7, '10.40.0.1', 65000, ['bgpPeerState' => 'active', 'bgpPeerLastErrorCode' => 4, 'bgpPeerFsmEstablishedTime' => 0]);
+        $result = $net->analyzer()->analyze();
+
+        $this->assertNull(self::find($result, 'bgp_one_sided'));
+        $finding = self::find($result, 'bgp_session_down', 'ce1 → r1');
+        $this->assertSame('BGP session ce1 → r1 (10.40.0.1, AS 65000) is Active: Hold Timer Expired', $finding['title']);
+        $this->assertStringContainsString('r1 reports no BGP sessions in VRF CUST', $finding['detail']);
+
+        // once r1's sessions in VRF CUST are polled, the missing neighbor shows
+        $net->bgpPeer(1, '10.40.0.6', 65102, ['vrf' => 'CUST']);
+        $this->assertNotNull(self::find($net->analyzer()->analyze(), 'bgp_one_sided', 'ce1 → r1'));
+    }
+
+    public function testUnknownBgpStateIsNoData(): void
+    {
+        // Junos peers polled before the walk matched them: state and admin status "unknown"
+        $net = RoutingFixture::network();
+        $net->update('peers', ['bgpPeerIdentifier' => '203.0.113.1'], ['bgpPeerState' => 'unknown', 'bgpPeerAdminStatus' => 'unknown']);
+        $result = $net->analyzer()->analyze();
+
+        $this->assertSame([], $result['findings']);
+        $isp = array_values(array_filter($result['bgp_sessions'], fn ($r) => $r['ip'] === '203.0.113.1'))[0];
+        $this->assertSame('unknown', $isp['state']);
+        $this->assertTrue($isp['unknown']);
+        $this->assertSame(1, $result['summary']['bgp']['unknown']);
+    }
+
+    public function testPrefixCountersPerAddressFamily(): void
+    {
+        $net = RoutingFixture::network();
+        $net->prefixes(1, '203.0.113.1', 300, 500, ['afi' => 'ipv6']);
+        $result = $net->analyzer()->analyze();
+
+        $isp = array_values(array_filter($result['bgp_sessions'], fn ($r) => $r['ip'] === '203.0.113.1'))[0];
+        $this->assertSame([
+            ['family' => 'IPv4 unicast', 'accepted' => 800, 'limit' => 2000],
+            ['family' => 'IPv6 unicast', 'accepted' => 300, 'limit' => 500],
+        ], $isp['prefixes']);
+    }
+
+    public function testSessionDownWithoutANotification(): void
+    {
+        $net = RoutingFixture::network();
+        $net->update('peers', ['bgpPeerIdentifier' => '203.0.113.1'], ['bgpPeerState' => 'active']);
+        $finding = self::find($net->analyzer()->analyze(), 'bgp_session_down');
+
+        $this->assertStringContainsString('went down without a NOTIFICATION', $finding['detail']);
+        $this->assertStringNotContainsString('never came up', $finding['detail']);
+        $this->assertStringContainsString('Last established 30d ago', $finding['detail']);
+        $this->assertStringContainsString('Check the path between 203.0.113.2 and 203.0.113.1', $finding['recommendation']);
+    }
+
+    public function testRowsCanBeStreamed(): void
+    {
+        // the repository passes generators, each read once
+        $net = RoutingFixture::network();
+        $net->update('neighbors', ['device_id' => 3, 'ospfNbrIpAddr' => '10.1.34.2'], ['ospfNbrState' => 'init']);
+        $net->address(3, 'Vl50', '10.50.0.9/24');
+        $net->address(4, 'Vl50', '10.50.0.9/24');
+        $stream = function (array $rows) {
+            yield from $rows;
+        };
+        $streamed = new \Agoodley\LibrenmsTopology\Routing\RoutingAnalyzer(
+            $net->devices,
+            array_keys($net->devices),
+            $stream($net->addresses),
+            new \Agoodley\LibrenmsTopology\Support\PluginSettings([]),
+            array_map($stream, $net->ospf),
+            array_map($stream, $net->bgp),
+            $stream($net->links),
+            $net->vrfs,
+        );
+
+        $this->assertSame($net->analyzer()->analyze(), $streamed->analyze());
+        $this->assertSame(['ip_duplicate', 'ospf_neighbor_stuck'], self::codes($streamed->analyze()));
     }
 
     public function testBgpErrorsAsText(): void

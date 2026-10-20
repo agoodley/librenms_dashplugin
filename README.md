@@ -94,16 +94,24 @@ addresses of every device you can see are checked against each other:
 |---|---|
 | **Duplicate OSPF router ID** on two routers (critical when they are in one OSPF domain), or a neighbor reporting the router's own ID | critical / warning |
 | **OSPF adjacency stuck in ExStart / Exchange** with the MTU of both ends (critical when the interface MTUs differ) | critical / warning |
-| OSPF hello / dead interval, area, area type (stub / NSSA) or authentication that differs between the interfaces of one subnet or the routers of one area: no adjacency can form | critical |
-| **BGP remote AS** configured on one router that is not the local AS of the (monitored) peer | critical |
+| OSPF hello / dead interval, area, area type (stub / NSSA) or authentication that differs between the interfaces of one link or the routers of one area: no adjacency can form | critical |
+| **BGP remote AS** configured on one router that is not the local AS of the (monitored) peer, when the peer was rejected for it (Bad Peer AS) or the session never came up | critical |
 | OSPF adjacency stuck in Init or Loading, 2-Way on a point-to-point interface, a configured neighbor that is down | warning |
-| OSPF network type that differs on one subnet; routers of one area whose link-state databases differ (LSA count and checksum) | warning |
-| **BGP session down** (unless shut down on purpose), with its last error as text ("Cease / Maximum Number of Prefixes Reached (6/1)") and what usually causes it; sessions configured on one router only | warning |
-| Accepted prefixes near (warning) or at (critical) the peer's maximum-prefix limit | warning / critical |
-| **Duplicate IP address** in one VRF; the same subnet with different prefix lengths on the two ends of a link; one subnet in two VRFs on two neighbors (LLDP/CDP or OSPF) | warning |
+| OSPF network type that differs on one link; routers of one area whose LSA counts differ by more than 1 % | warning |
+| **BGP session down** (unless shut down on purpose), with its last error as text ("Cease / Maximum Number of Prefixes Reached (6/1)") and what usually causes it; sessions configured on one router only (never established, while the peer's sessions in that VRF are polled) | warning |
+| Accepted prefixes near (warning) or at (critical) the peer's maximum-prefix limit, per address family | warning / critical |
+| **Duplicate IP address** in one VRF on interfaces that are up; different prefix lengths on two neighbors | warning |
 | BGP session reset recently (with its cause, or the router's own restart); session up without any accepted prefix | info / warning |
 | OSPF cost that differs per direction on a link; DR election on a point-to-point link (/30, /31) | info |
-| Shared addresses on several devices: a gateway address when each device also has its own (VRRP, HSRP, anycast gateway), anycast on three or more | info |
+| Shared addresses on several devices: a gateway address when each device also has its own (VRRP, HSRP, anycast gateway), anycast on loopbacks, host addresses or three or more devices | info |
+| A link (LLDP/CDP, or an OSPF adjacency) that joins two differently named VRFs, on routers that both have both VRFs | info |
+
+Subnets are reused by networks that never meet (customers, sites, VRFs), so interfaces and addresses are only compared
+where they are on one link: on two neighbors (LLDP/CDP, OSPF), between the ports of one LLDP/CDP link or, for OSPF
+interfaces, within one OSPF domain; duplicates only between devices of one network (joined by LLDP/CDP or OSPF).
+VRF names are local to each router and compared without case: a provider edge facing a customer router joins VRFs on
+purpose and is not reported. LSA checksum sums are not compared (they change with every LSA refresh), BGP sessions in a
+state outside the BGP state machine (Junos peers that LibreNMS has not matched yet) are listed but not checked.
 
 Below the findings the page lists the OSPF routers (router ID, ABR / ASBR, areas), every adjacency as each router
 reports it, and every BGP session with its state, uptime, last error and prefixes, problems first. Filter by device,
@@ -247,7 +255,9 @@ root bridge on such a device is not reported as a rogue switch.
 * `src/Links/LinkAnalyzer.php` – the link and VLAN checks (both ends of each link, port-channels, VLAN islands per
   L2 domain, descriptions and their configuration lines).
 * `src/Routing/RoutingAnalyzer.php` – the OSPF, BGP and IP checks (OSPF domains from the adjacencies, the interface
-  facing each neighbor, BGP peers resolved to monitored devices); `BgpErrors` turns NOTIFICATION codes into text.
+  facing each neighbor, BGP peers resolved to monitored devices); `BgpErrors` turns NOTIFICATION codes into text. The
+  rows are streamed in and kept in small objects (2,000 routers with 50,000 addresses take about 50 MB and 0.6 s);
+  with a device selected, `RoutingService` reads only the addresses its checks need.
 * `src/Redundancy/RedundancyAnalyzer.php` – single points of failure (cut vertices and bridges toward the core,
   `Support\Graph::cuts()`), fake and lost redundancy and outages; `CoreFinder` picks the core, `PortUnits` reads stack
   members and line cards from the hardware inventory.
@@ -274,10 +284,13 @@ vendor/bin/phpunit
   at the next discovery, so "redundancy lost" covers failures since the last discovery run; a link that has been down
   for longer is simply missing (roadmap item 5 keeps a baseline). It looks at device and link failures, not at VLANs:
   a backup trunk that does not carry a VLAN is a link & VLAN finding.
-* The routing checks see what LibreNMS polls: OSPFv2 (OSPF-MIB; OSPFv3 is not checked), BGP sessions and, for prefix
-  limits, the Cisco prefix counters (bgpPeers_cbgp). Adjacency and session states are a snapshot of the last poll, so a
-  state seen during a change can show up once. A session or address is matched to a device only when that device is
-  monitored and visible to you; a one-sided session needs the peer's BGP to be polled.
+* The routing checks see what LibreNMS polls: OSPFv2 (OSPF-MIB; OSPFv3 is not checked) and BGP sessions; accepted
+  prefix counts come from Cisco, Junos, Arista, Dell OS10 and Huawei VRP routers (bgpPeers_cbgp), the maximum-prefix
+  limits only from Cisco. Adjacency and session states are a snapshot of the last poll, so a state seen during a change
+  can show up once. A session or address is matched to a device only when that device is monitored and visible to you
+  and the address is on that device only; a one-sided session needs the peer's BGP sessions in that VRF to be polled
+  (an SNMP context per VRF). A session that has never come up to a confederation peer can be reported as a remote AS
+  mismatch, and interfaces on one LAN behind a switch are only compared when their routers are in one OSPF domain.
 * Servers, access points and phones are recognized by their LibreNMS device type, unmanaged neighbors by their LLDP/CDP
   platform; an unmanaged neighbor without a platform counts as a switch. Down devices without any LLDP/CDP neighbor are
   not listed as outages: nothing tells what they depend on.

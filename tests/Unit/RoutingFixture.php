@@ -7,8 +7,9 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
 
 /**
  * Builds routed networks for the routing tests. network() is healthy: three routers in OSPF area 0
- * (a triangle of /30 links), r4 behind r3 in area 1, iBGP between the loopbacks of r1 and r2 (AS
- * 65000) and an eBGP session from r1 to an ISP (AS 64500) with 800 prefixes of a 2,000 limit.
+ * (a triangle of /30 links, each with an LLDP link), r4 behind r3 in area 1, iBGP between the
+ * loopbacks of r1 and r2 (AS 65000) and an eBGP session from r1 to an ISP (AS 64500) with 800
+ * prefixes of a 2,000 limit.
  *
  *          r1 ---- r2         r1 -- ISP 203.0.113.1 (AS 64500)
  *            \    /
@@ -24,9 +25,11 @@ class RoutingFixture
 
     public array $bgp = ['peers' => [], 'prefixes' => []];
 
-    public array $lldp = [];
+    /** @var list<array> LLDP/CDP links (rows of the links table) */
+    public array $links = [];
 
-    public array $vrfAs = [];
+    /** @var array<int, array<string, ?int>> device => its VRF names => the VRF's own local AS */
+    public array $vrfs = [];
 
     private int $nextPort = 100;
 
@@ -67,12 +70,16 @@ class RoutingFixture
     }
 
     /**
-     * An interface address ("10.0.12.1/30") on a new port; returns the port_id.
+     * An interface address ("10.0.12.1/30") on a new port (or on the port $values['port_id']); returns
+     * the port_id. A VRF is added to the device's VRFs.
      */
     public function address(int $device, string $port, string $cidr, string $vrf = '', array $values = []): int
     {
         [$ip, $prefix] = explode('/', $cidr);
-        $portId = ++$this->nextPort;
+        $portId = $values['port_id'] ?? ++$this->nextPort;
+        if ($vrf !== '') {
+            $this->vrfs[$device][$vrf] ??= null;
+        }
         $this->addresses[] = array_merge([
             'device_id' => $device, 'port_id' => $portId, 'ifName' => $port, 'ifDescr' => $port, 'ifType' => 'ethernetCsmacd',
             'ifMtu' => 1500, 'ifOperStatus' => 'up', 'address' => $ip, 'prefixlen' => (int) $prefix, 'vrf' => $vrf,
@@ -103,8 +110,9 @@ class RoutingFixture
         [$base, $prefix] = explode('/', $network);
         $first = long2ip(ip2long($base) + 1);
         $second = long2ip(ip2long($base) + 2);
+        $ports = [];
         foreach ([[$a, $aPort, $first, $aIf], [$b, $bPort, $second, $bIf]] as [$device, $port, $ip, $if]) {
-            $portId = $this->address($device, $port, "$ip/$prefix", $vrf, isset($if['ifMtu']) ? ['ifMtu' => $if['ifMtu']] : []);
+            $ports[] = $portId = $this->address($device, $port, "$ip/$prefix", $vrf, isset($if['ifMtu']) ? ['ifMtu' => $if['ifMtu']] : []);
             unset($if['ifMtu']);
             $this->ospf['ports'][] = array_merge([
                 'device_id' => $device, 'port_id' => $portId, 'ospfIfIpAddress' => $ip, 'ospfAddressLessIf' => 0, 'ospfIfAreaId' => $area,
@@ -114,8 +122,17 @@ class RoutingFixture
             ], $if);
         }
         $this->neighbor($a, $second, "$b.$b.$b.$b", $aSees, $vrf)->neighbor($b, $first, "$a.$a.$a.$a", $bSees, $vrf);
-        $this->lldp[$a][$b] = true;
-        $this->lldp[$b][$a] = true;
+        $this->link($a, $ports[0], $b, $ports[1]);
+
+        return $this;
+    }
+
+    /**
+     * An LLDP/CDP link between two ports (the port of the remote end may be unknown).
+     */
+    public function link(int $a, ?int $aPort, int $b, ?int $bPort): self
+    {
+        $this->links[] = ['local_device_id' => $a, 'local_port_id' => $aPort, 'remote_device_id' => $b, 'remote_port_id' => $bPort];
 
         return $this;
     }
@@ -202,8 +219,8 @@ class RoutingFixture
             new PluginSettings($settings),
             $this->ospf,
             $this->bgp,
-            $this->lldp,
-            $this->vrfAs,
+            $this->links,
+            $this->vrfs,
         );
     }
 }
