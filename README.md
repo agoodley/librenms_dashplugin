@@ -44,7 +44,8 @@ edge says the state is seen from the drawn side only. At most 100 of these devic
 limit; the others appear as their address or AS, and the status line says so. An unmonitored peer is one external
 node per address, whatever saw it (a router can be OSPF neighbor, LSP tail and IPsec peer at once); BGP peers that no
 device owns still go to the cloud of their AS. Addresses are looked up in the global table first, so a customer VRF
-that reuses a loopback range does not hide the router.
+that reuses a loopback range does not hide the router; a session in a customer VRF only finds a device outside the map
+that has the address in that same VRF, as customer address space overlaps.
 
 LibreNMS keeps no pseudowire state and loses most peers: it never sets `peer_device_id`, and `peer_ldp_id` is a signed
 INT that holds 2147483647 for every LDP ID from 128.0.0.0 on. When both ends lost it, a pseudowire is paired with the
