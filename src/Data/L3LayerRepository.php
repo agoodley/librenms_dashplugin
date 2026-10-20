@@ -62,7 +62,7 @@ class L3LayerRepository extends ScopedRepository
         $counts = [];
         foreach (self::TABLES as $layer => $table) {
             $counts[$layer] = [];
-            if ($this->columns($layer) === null) {
+            if (! $this->allowsTable($table) || $this->columns($layer) === null) {
                 continue;
             }
             foreach (array_chunk($ids, self::CHUNK) as $chunk) {
@@ -95,11 +95,11 @@ class L3LayerRepository extends ScopedRepository
         $result = [];
         foreach (array_intersect(array_keys(self::TABLES), $layers) as $layer) {
             $result[$layer] = [];
-            $columns = $this->columns($layer);
+            $table = self::TABLES[$layer];
+            $columns = $this->allowsTable($table) ? $this->columns($layer) : null;
             if ($columns === null) {
                 continue;
             }
-            $table = self::TABLES[$layer];
             $local = self::LOCAL_PORT[$layer] ?? [];
             $select = array_merge(array_map(fn ($column) => "l.$column", $columns), array_map(fn ($column) => "p.$column", $local));
             foreach (array_chunk($ids, self::CHUNK) as $chunk) {
@@ -283,6 +283,9 @@ class L3LayerRepository extends ScopedRepository
      */
     private function each(string $table, string $column, array $values, array $columns, callable $handle, bool $integers = false, ?callable $join = null, int $chunk = self::CHUNK): void
     {
+        if (! $this->allowsTable($table)) {
+            return;
+        }
         foreach (array_chunk(array_values(array_unique($values)), $chunk) as $part) {
             try {
                 $query = DB::table($table);

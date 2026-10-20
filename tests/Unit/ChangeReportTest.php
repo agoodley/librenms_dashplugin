@@ -106,8 +106,8 @@ class ChangeReportTest extends TestCase
             $byType[$event['type']][] = $event['text'];
         }
 
-        $this->assertSame(['New unmanaged switch desk-switch (TP-Link TL-SG108E) on acc1 Gi1/0/20'], $byType['unmanaged_new']);
-        $this->assertSame(['New unmanaged neighbor printer-1 (HP LaserJet) on acc2 Gi1/0/49'], $byType['neighbor_new'], 'an unknown LLDP speaker, as info');
+        $this->assertSame(['New switch not monitored: desk-switch (TP-Link TL-SG108E) on acc1 Gi1/0/20'], $byType['unmanaged_new']);
+        $this->assertSame(['New neighbor not monitored: printer-1 (HP LaserJet) on acc2 Gi1/0/49'], $byType['neighbor_new'], 'an unknown LLDP speaker, as info');
         $this->assertSame(['New link acc1 Gi1/0/50 ↔ old-hub port 2'], $byType['link_added'], 'a known unmanaged switch on a new port is a plain new link');
     }
 

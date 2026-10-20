@@ -38,15 +38,20 @@ class PortTab implements PortTabHook
         // port page: render it here so no error can escape
         try {
             $user = auth()->user();
-            $service = new HostService(new HostRepository($user), new TopologyRepository($user), new PluginSettings($settings));
-            $view = view("$pluginName::port-tab", ['tab' => $service->portTab((int) $port->device_id, (int) $port->port_id)]);
+            $topology = new TopologyRepository($user);
+            $service = new HostService(new HostRepository($user), $topology, new PluginSettings($settings));
+            $view = view("$pluginName::port-tab", [
+                'tab' => $service->portTab((int) $port->device_id, (int) $port->port_id),
+                // what the user's role may not read of what the tab shows
+                'hidden' => $topology->hiddenKinds(['links', 'ports_fdb', 'ipv4_mac', 'ports_nac', 'stp', 'ports_stp']),
+            ]);
             $view->render();
 
             return $view;
         } catch (\Throwable $e) {
             Log::error('topology plugin: port tab failed: ' . $e->getMessage());
 
-            return view("$pluginName::port-tab", ['tab' => null]);
+            return view("$pluginName::port-tab", ['tab' => null, 'hidden' => []]);
         }
     }
 }

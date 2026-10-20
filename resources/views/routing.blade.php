@@ -72,11 +72,7 @@
     @if($result)
         @php $summary = $result['summary']; @endphp
         <div class="topo-cards">
-            <div class="topo-card topo-{{ $summary['status'] }}">
-                <h4>Health</h4>
-                <div class="topo-card-value"><span class="topo-sev topo-sev-{{ $summary['status'] }}" style="font-size: 16px">{{ $summary['status'] }}</span></div>
-                <p>{{ $summary['findings']['critical'] }} critical, {{ $summary['findings']['warning'] }} warnings, {{ $summary['findings']['info'] }} info</p>
-            </div>
+            @include('topology::partials.health-card', ['summary' => $summary])
             @foreach($cards as $title => [$category, $value, $text])
                 @php $worst = \Agoodley\LibrenmsTopology\Stp\Finding::worst(array_column(array_filter($result['findings'], fn ($f) => $f['category'] === $category), 'severity')); @endphp
                 <div class="topo-card topo-{{ $worst }}">

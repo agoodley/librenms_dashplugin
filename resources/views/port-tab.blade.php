@@ -10,6 +10,9 @@
         @endif
     </div>
     <div class="panel-body">
+    @if(! empty($hidden))
+        <p class="text-muted"><i class="fa fa-lock"></i> Your LibreNMS role may not view {{ implode(', ', $hidden) }}: they are left out.</p>
+    @endif
     @if(! $tab)
         <p class="text-muted">The topology information of this port could not be loaded, see logs/librenms.log.</p>
     @elseif(! $tab['visible'])
@@ -59,6 +62,7 @@
 
         @if($tab['stp'])
             <h5>Spanning tree</h5>
+            <div class="table-responsive">
             <table class="table table-condensed table-hover topo-stp-table" style="width: auto">
                 <thead><tr><th>Instance</th><th>State</th><th>Role</th><th>Cost</th><th>To forwarding</th></tr></thead>
                 <tbody>
@@ -73,6 +77,7 @@
                 @endforeach
                 </tbody>
             </table>
+            </div>
         @endif
 
         <h5>MAC addresses learned
@@ -84,6 +89,7 @@
             </small>
         </h5>
         @if($tab['macs'])
+            <div class="table-responsive">
             <table class="table table-condensed table-hover topo-stp-table">
                 <thead><tr><th>MAC address</th><th>Vendor</th><th>VLAN</th><th>IP addresses</th><th>Last seen</th><th></th></tr></thead>
                 <tbody>
@@ -99,12 +105,14 @@
                 @endforeach
                 </tbody>
             </table>
+            </div>
         @else
             <p class="text-muted">None in the forwarding table LibreNMS has for this switch{{ $tab['parent'] ? ' (neither on this port nor on its port-channel)' : '' }}.</p>
         @endif
 
         @if($tab['nac'])
             <h5>802.1X / MAB sessions</h5>
+            <div class="table-responsive">
             <table class="table table-condensed table-hover topo-stp-table">
                 <thead><tr><th>MAC address</th><th>User</th><th>Status</th><th>Method</th><th>Host mode</th><th>VLAN</th></tr></thead>
                 <tbody>
@@ -120,6 +128,7 @@
                 @endforeach
                 </tbody>
             </table>
+            </div>
         @endif
     @endif
     </div>

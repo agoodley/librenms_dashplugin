@@ -172,7 +172,7 @@
                 <table class="table table-condensed table-hover topo-stp-table">
                     <thead>
                     <tr>
-                        @if($canApply)<th style="width: 28px"><input type="checkbox" id="topo-dependencies-all" title="Select every change shown" @disabled(! $changing)></th>@endif
+                        @if($canApply)<th style="width: 28px"><input type="checkbox" id="topo-dependencies-all" title="Select every change shown" aria-label="Select every change shown" @disabled(! $changing)></th>@endif
                         <th>Device</th><th title="hops from the core devices">Hops</th><th>Current parents</th><th>Derived parents</th><th>Change</th><th>Outages</th>
                     </tr>
                     </thead>
@@ -183,7 +183,7 @@
                             @if($canApply)
                                 <td>
                                     @if($row['change'] === 'new' || $row['change'] === 'changed')
-                                        <input type="checkbox" name="devices[]" value="{{ $row['device_id'] }}:{{ implode(',', $row['derived']) }}" class="topo-dependencies-pick">
+                                        <input type="checkbox" name="devices[]" value="{{ $row['device_id'] }}:{{ implode(',', $row['derived']) }}" class="topo-dependencies-pick" aria-label="Apply the derived parents of {{ $name($row['device_id']) }}">
                                     @endif
                                 </td>
                             @endif

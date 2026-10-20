@@ -838,7 +838,7 @@ class CoverageAnalyzer
      * Ports of the analyzed devices that look like an unmanaged switch or hub:
      *  - several LLDP/CDP neighbours on one port (two or more that are not phones, or two phones): something
      *    between them passes their announcements;
-     *  - access ports with at least coverage_mac_threshold MAC addresses in the last forwarding table
+     *  - access ports with at least shared_port_macs MAC addresses in the last forwarding table
      *    discovery and no neighbour that explains them (a phone does not). Trunks, port-channels, ports
      *    that are not Ethernet and ports whose addresses spread over three or more VLANs (an access point,
      *    a hypervisor or a trunk) are left out.
@@ -871,7 +871,7 @@ class CoverageAnalyzer
             ));
         }
 
-        $threshold = $this->settings->int('coverage_mac_threshold', 0, 1000000);
+        $threshold = $this->settings->sharedPortMacs();
         if ($threshold && $this->busyPorts) {
             $aggregates = array_flip(array_map('intval', $this->lagParent));
             foreach ($this->busyPorts as $portId => $busy) {
