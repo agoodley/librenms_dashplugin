@@ -23,13 +23,13 @@ The plugin's conventions apply to all of them:
 | 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
 | 7 | [Automatic device dependencies](README.md#device-dependencies) | **done** | – |
 | 9 | [More L3 map layers](README.md#layer-3-map-overlays) | **done** | – |
+| 10 | [Loop evidence on the STP page](README.md#spanning-tree-diagnostics) | **done** | – |
+| 12 | [Coverage report](README.md#coverage-report) | **done** | – |
+| 8 | [Site / WAN map](README.md#site--wan-map) | **done** | – |
 | 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
 | 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
 | 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
 | 4 | [Routing & IP diagnostics](#4-routing--ip-diagnostics) | planned | M |
-| 12 | [Coverage report](#12-coverage-report) | planned | S |
-| 10 | [Loop evidence on the STP page](#10-loop-evidence-on-the-stp-page) | planned | S–M |
-| 8 | [Site / WAN map](README.md#site--wan-map) | **done** | – |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
 | 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
 
@@ -107,19 +107,6 @@ The L3 counterpart of the spanning tree page.
   * different subnet masks on the two ends of a link
   * the same subnet in two VRFs on neighboring devices
 * Builds on: the subnet index of `L3Builder`, the `Finding` format and the layout of the diagnostics pages.
-
-### 12. Coverage report
-
-* LLDP/CDP neighbors that look like switches, routers, APs or firewalls (`DeviceRole::fromPlatform`) but are not
-  monitored, where they are connected, with a link to add them.
-* Monitored devices without neighbor data, which leave gaps in the maps. The link diagnostics already report devices
-  that other switches see but that report no neighbors themselves.
-
-### 10. Loop evidence on the STP page
-
-* Broadcast / multicast storms on inter-switch links (`ports_statistics` broadcast and multicast packet rates).
-* Messages from the `syslog` table, for devices that send syslog to LibreNMS: MAC flapping, err-disable, BPDU / loop /
-  root guard, UDLD, CDP duplex and native VLAN mismatch. Vendor message patterns should be configurable.
 
 ## Later
 

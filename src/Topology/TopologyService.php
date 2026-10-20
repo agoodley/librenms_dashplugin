@@ -3,12 +3,15 @@
 namespace Agoodley\LibrenmsTopology\Topology;
 
 use Agoodley\LibrenmsTopology\Data\L3LayerRepository;
+use Agoodley\LibrenmsTopology\Data\LoopEvidenceRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
 use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
 use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
+use Agoodley\LibrenmsTopology\Stp\LoopEvidence;
 use Agoodley\LibrenmsTopology\Stp\StpAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
+use Agoodley\LibrenmsTopology\Stp\SyslogPatterns;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
@@ -203,8 +206,9 @@ class TopologyService
         }
         $portIds = array_merge($portIds, array_keys($lag), array_values($lag));
 
+        $devices = $this->repo->devices($scope);
         $analyzer = new StpAnalyzer(
-            $this->repo->devices($scope),
+            $devices,
             $index,
             $links,
             $this->repo->analysisPorts($portIds),
@@ -217,12 +221,51 @@ class TopologyService
         $result['vlans'] = $this->repo->stpVlans($scope);
         $result['notice'] = $notice;
         $result['filter'] = $p + ['effective_vlan' => $vlan];
+        $result = LoopEvidence::merge($result, $this->loopEvidence($devices, $links, $p['device']));
 
         if ($p['device']) {
             $result = self::filterStpForDevice($result, $p['device']);
         }
 
         return $result;
+    }
+
+    /**
+     * Loop evidence of the devices in scope: broadcast / multicast counters of their inter-switch
+     * ports and the loop related syslog messages of their switches and routers (when the user may
+     * read syslog). For one device: its ports, its neighbors' ports toward it and its own messages.
+     */
+    private function loopEvidence(array $devices, array $links, ?int $deviceId): array
+    {
+        if ($deviceId) {
+            $links = array_values(array_filter($links, fn ($l) => (int) $l['local_device_id'] === $deviceId || (int) ($l['remote_device_id'] ?? 0) === $deviceId));
+        }
+        $repo = $this->repo->sibling(LoopEvidenceRepository::class);
+        $ports = $repo->portRates(array_keys(LoopEvidence::interSwitchPorts($devices, $links)));
+
+        $senders = array_keys(array_filter($devices, fn ($d) => in_array($d['role'] ?? '', [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER], true)));
+        if ($deviceId) {
+            $senders = array_values(array_intersect($senders, [$deviceId]));
+        }
+        $patterns = new SyslogPatterns($this->settings);
+        $hidden = ! $repo->canViewSyslog();
+        $syslog = ['rows' => [], 'senders' => 0, 'scanned' => 0, 'truncated' => false, 'limited' => 0, 'unsearched' => 0, 'stopped' => null];
+        if (! $hidden && $patterns->usable()) {
+            $since = time() - $this->settings->int('stp_syslog_hours', 1, 720) * 3600;
+            $syslog = $repo->syslog($senders, $since, fn (string $text) => $patterns->classify($text));
+        }
+
+        return (new LoopEvidence($devices, $links, $ports, $syslog['rows'], $repo->portNames(array_column($syslog['rows'], 'device_id')),
+            $this->settings, patterns: $patterns))->analyze([
+                'syslog_hidden' => $hidden,
+                'syslog_truncated' => $syslog['truncated'],
+                'syslog_limited' => $syslog['limited'],
+                'syslog_unsearched' => $syslog['unsearched'],
+                'syslog_stopped' => $syslog['stopped'],
+                'syslog_scanned' => $syslog['scanned'],
+                'syslog_devices' => $syslog['senders'],
+                'syslog_scope' => count($senders),
+            ]);
     }
 
     /**

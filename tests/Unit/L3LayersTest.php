@@ -522,6 +522,28 @@ class L3LayersTest extends TestCase
         $this->assertSame(['shown' => 3, 'total' => 150], $result['limits']['outside']);
     }
 
+    public function testSessionsInACustomerVrfOnlyMatchDevicesWithTheAddressInThatVrf(): void
+    {
+        // pe1's BGP session, OSPF and OSPFv3 adjacencies in VRF CUST_A with an unmonitored CE at 192.168.1.2,
+        // while ce-b, outside the map, has 192.168.1.2 in its global table (overlapping customer address space)
+        $bgp = [['device_id' => 1, 'bgpPeerIdentifier' => '192.168.1.2', 'bgpPeerRemoteAs' => 65001, 'bgpPeerState' => 'established', 'context_name' => 'CUST_A']];
+        $ospf = [['device_id' => 1, 'ospfNbrIpAddr' => '192.168.1.2', 'ospfNbrRtrId' => '192.168.1.2', 'ospfNbrState' => 'full', 'context_name' => 'CUST_A']];
+        $layers = ['ospfv3' => [self::ospfv3(1, '192.168.1.2', 'full', 'fe80::2', 'CUST_A')]];
+        $result = self::build($layers, ['addresses' => ['192.168.1.2' => 8], 'devices' => [8 => self::other(8, 'ce-b')]], [], $ospf, $bgp);
+
+        $this->assertSame(['d:1-as:65001'], array_keys(self::pairs($result, 'bgp')));
+        $this->assertSame(['d:1-x:CUST_A|192.168.1.2'], array_keys(self::pairs($result, 'ospf')));
+        $this->assertSame(['d:1-x:CUST_A|192.168.1.2'], array_keys(self::pairs($result, 'ospfv3')));
+        $this->assertArrayNotHasKey('d:8', self::nodes($result));
+
+        // ce-a has it in VRF CUST_A
+        $result = self::build($layers, ['addresses' => ['192.168.1.2' => 8], 'vrfAddresses' => ['CUST_A|192.168.1.2' => 9],
+            'devices' => [8 => self::other(8, 'ce-b'), 9 => self::other(9, 'ce-a')]], [], $ospf, $bgp);
+        foreach (['bgp', 'ospf', 'ospfv3'] as $kind) {
+            $this->assertSame(['d:1-d:9'], array_keys(self::pairs($result, $kind)), $kind);
+        }
+    }
+
     public function testAnAddressInACustomerVrfHidesNoGlobalOwner(): void
     {
         // pe1's LSP to pe2's loopback, while pe3 has 10.255.0.2/24 in VRF CUST

@@ -152,6 +152,8 @@ class SupportTest extends TestCase
             'Cisco IOS XR Software, Version 7.5.2' => DeviceRole::ROUTER,
             'VyOS 1.4-rolling-202307250317' => DeviceRole::ROUTER,
             'ArubaOS (MODEL: 515), Version 8.10.0.6' => DeviceRole::WIRELESS,
+            'Cisco IOS Software [Cupertino], C9800 Software (C9800_IOSXE-K9), Version 17.9.4a' => DeviceRole::WIRELESS,
+            'U6-LR 6.5.62.14789' => DeviceRole::WIRELESS,
             'Cisco Firepower Threat Defense, Version 7.2.5' => DeviceRole::FIREWALL,
         ];
         foreach ($descriptions as $description => $role) {

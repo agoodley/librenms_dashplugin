@@ -126,6 +126,8 @@
             </table>
         </div>
 
+        @include('topology::partials.stp-loop-evidence')
+
         <div class="panel panel-default">
             <div class="panel-heading"><strong>Spanning tree domains</strong> <span class="text-muted">(one row per VLAN instance and connected L2 domain)</span></div>
             <div class="table-responsive">

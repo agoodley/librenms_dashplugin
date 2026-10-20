@@ -80,11 +80,8 @@ class LinkAnalyzer
     /** @var array<int, array<int, true>> port (or aggregate) => devices at the other end of its links */
     private array $farOf = [];
 
-    /** @var array<int, array<int, array<int, true>>> device => local port => monitored neighbour, from its LLDP/CDP table */
-    private array $reports = [];
-
-    /** @var array<int, true> devices with at least one LLDP/CDP neighbour */
-    private array $reporting = [];
+    /** Which device reports which monitored neighbour on which port, from the LLDP/CDP tables. */
+    private NeighborReports $neighbors;
 
     /** @var array<string, true> disabled check codes and categories */
     private array $disabled;
@@ -916,8 +913,8 @@ class LinkAnalyzer
             if (! isset($this->scope[$link['a_dev']], $this->scope[$link['b_dev']])) {
                 continue; // the neighbour table of a device outside the scope is not loaded
             }
-            $byA = isset($this->reports[$link['a_dev']][$link['a_port']][$link['b_dev']]);
-            $byB = isset($this->reports[$link['b_dev']][$link['b_port']][$link['a_dev']]);
+            $byA = $this->neighbors->reports($link['a_dev'], $link['a_port'], $link['b_dev']);
+            $byB = $this->neighbors->reports($link['b_dev'], $link['b_port'], $link['a_dev']);
             if ($byA && ! $byB) {
                 $missing[$link['b_dev']][] = [$link['b_port'], $link['a_port']];
             } elseif ($byB && ! $byA) {
@@ -937,7 +934,7 @@ class LinkAnalyzer
             }
             $reporters = array_values(array_unique(array_map(fn ($item) => (int) $this->ports[$item[1]]['device_id'], $items)));
 
-            if (isset($this->reporting[$deviceId])) {
+            if ($this->neighbors->reportsNeighbors($deviceId)) {
                 $this->add(new Finding(
                     Finding::INFO, 'neighbor_not_reported',
                     "neighbors not seen by $name",
@@ -1323,6 +1320,7 @@ class LinkAnalyzer
      */
     private function prepareLinks(): void
     {
+        $this->neighbors = new NeighborReports($this->links, $this->devices);
         foreach ($this->links as $link) {
             $ld = (int) $link['local_device_id'];
             $lp = (int) ($link['local_port_id'] ?? 0);
@@ -1332,11 +1330,7 @@ class LinkAnalyzer
                 continue;
             }
 
-            $this->reporting[$ld] = true;
             $managed = $rd && isset($this->devices[$rd]);
-            if ($managed && $lp) {
-                $this->reports[$ld][$lp][$rd] = true;
-            }
 
             if ($managed && $lp && $rp && isset($this->ports[$lp], $this->ports[$rp])) {
                 $key = min($lp, $rp) . '-' . max($lp, $rp);
