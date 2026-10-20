@@ -2,19 +2,18 @@
 
 namespace Agoodley\LibrenmsTopology\Console;
 
+use Agoodley\LibrenmsTopology\History\Jobs;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use LibreNMS\Interfaces\Plugins\PluginManagerInterface;
 
 /**
  * `lnms topology:checks`: the background checks of the topology history (spanning tree, link and
- * redundancy analyses over all devices; findings history and eventlog). The plugin schedules each
- * analysis in its own process, apart from the snapshot, so one running out of memory does not stop
- * the others.
+ * redundancy analyses over all devices; findings history and eventlog). topology:snapshot runs it
+ * for each analysis in a process of its own; it fails when an analysis fails.
  */
 class ChecksCommand extends HistoryCommand
 {
-    protected $signature = 'topology:checks
-        {analysis?* : stp, links or redundancy (default: those of the Background checks setting)}';
+    protected $signature = Jobs::CHECKS;
 
     protected $description = 'Run the background checks of the topology plugin';
 
@@ -25,8 +24,6 @@ class ChecksCommand extends HistoryCommand
             return $plugins->pluginEnabled(TopologyServiceProvider::PLUGIN_NAME) ? self::FAILURE : self::SUCCESS;
         }
 
-        $this->checks($service, $this->argument('analysis') ?: null);
-
-        return self::SUCCESS;
+        return $this->checks($service, $this->argument('analysis') ?: null) ? self::SUCCESS : self::FAILURE;
     }
 }

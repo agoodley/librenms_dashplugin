@@ -51,7 +51,15 @@ class HistoryService
         $ids = $topology->deviceIds();
         $stats = ['devices' => count($ids), 'facts' => 0, 'added' => 0, 'removed' => 0, 'updated' => 0];
         $recorded = [];
-        foreach ($this->collect($topology, $ids) as $kind => $current) {
+        foreach ($this->sources($topology, $ids) as $kind => $source) {
+            try {
+                $current = $source();
+            } catch (\Throwable $e) {
+                // a read error is no empty kind: its facts stay as they were until the next snapshot
+                Log::error("topology plugin: snapshot of $kind skipped: " . $e->getMessage());
+                $stats['skipped'][] = $kind;
+                continue;
+            }
             // spanning tree facts keep their VLANs in the data: a change of them is a new period the Changes page can compare
             $diff = FactDiff::diff($this->history->openFacts($kind), $current, in_array($kind, [FactCollector::STP_ROOT, FactCollector::STP_BLOCKED], true));
             $stats['facts'] += count($current);
@@ -99,7 +107,9 @@ class HistoryService
         $run = $this->history->startRun($analysis, $started);
         $params = MapParams::parse([], $this->settings);
         try {
-            $findings = (new TopologyService($this->topology, $this->settings, $this->history))->$analysis($params)['findings'] ?? [];
+            $service = new TopologyService($this->topology, $this->settings, $this->history);
+            // the spanning tree check goes one VLAN at a time (a PVST network has an instance per VLAN)
+            $findings = ($analysis === 'stp' ? $service->stpFindings($params) : $service->$analysis($params))['findings'] ?? [];
         } catch (\Throwable $e) {
             Log::error("topology plugin: background $analysis check failed: " . $e->getMessage());
             $this->history->finishRun($run, ['error' => 1, 'recorded' => Runs::record($previous['stats'] ?? null, [])], Carbon::now());
@@ -145,6 +155,10 @@ class HistoryService
 
         $window = $this->history->windowFacts($from, $to, $ids);
         $rows = $window['rows'];
+        if ($window['since'] !== null) {
+            // too many changes: only those since the boundary of the rows read, with both halves of each
+            $from = Carbon::createFromTimestamp(max($from->getTimestamp(), $window['since']), $from->getTimezone());
+        }
         $nodes = [];
         $firstFacts = []; // device => when its first new fact of the window was seen
         foreach ($rows as $row) {
@@ -177,6 +191,7 @@ class HistoryService
             'events' => $report['events'],
             'counts' => $report['counts'],
             'truncated' => $window['truncated'],
+            'since' => $window['since'] !== null ? $from->toDateTimeString() : null,
             'baseline' => $this->baselineComparison($ids, $text),
             'findings' => $findings,
             'findings_truncated' => $windowFindings['truncated'],
@@ -227,47 +242,59 @@ class HistoryService
     }
 
     /**
-     * Take one missing fact out of the baseline of the page's scope (gone on purpose).
+     * Take one missing fact out of the baseline of the page's scope (gone on purpose); for a root
+     * bridge only the VLANs given.
      *
      * @param  array{device: ?int, group: ?int, location: ?int}  $p
+     * @param  int[]|null  $vlans
      */
-    public function acceptMissing(array $p, string $hash): int
+    public function acceptMissing(array $p, string $hash, ?array $vlans = null): int
     {
-        return $this->history->forgetBaselineFact($hash, $this->scopeIds($p));
+        return $this->history->forgetBaselineFact($hash, $this->scopeIds($p), $vlans);
     }
 
     /**
-     * Facts of the devices as they are now, from the LibreNMS tables, one kind at a time: a large
-     * network has tens of thousands of them.
+     * The facts of the devices as they are now, from the LibreNMS tables: one reader per kind, so a
+     * large network is read a kind at a time and a kind that cannot be read is skipped alone.
      *
      * @param  int[]  $ids
-     * @return \Generator<string, array<string, array>> kind => (hash => fact), every kind once
+     * @return array<string, callable(): array<string, array>> kind => reader (hash => fact)
      */
-    private function collect(TopologyRepository $topology, array $ids): \Generator
+    private function sources(TopologyRepository $topology, array $ids): array
     {
         $names = $this->history->names($ids);
         $hostNames = $this->history->hostNames($ids);
         $collector = fn (array $portIds) => new FactCollector($names, $topology->ports($portIds, self::PORT_COLUMNS), $hostNames);
 
-        $links = $topology->links($ids);
-        yield FactCollector::LINK => $collector(array_merge(array_column($links, 'local_port_id'), array_column($links, 'remote_port_id')))->links($links);
-        unset($links);
+        return [
+            FactCollector::LINK => function () use ($topology, $ids, $collector) {
+                $links = $topology->links($ids);
 
-        $lag = $topology->lagParents($ids);
-        yield FactCollector::LAG => $collector(array_merge(array_keys($lag), array_values($lag)))->lagMembers($lag);
-        unset($lag);
+                return $collector(array_merge(array_column($links, 'local_port_id'), array_column($links, 'remote_port_id')))->links($links);
+            },
+            FactCollector::LAG => function () use ($topology, $ids, $collector) {
+                $lag = $topology->lagParents($ids);
 
-        yield FactCollector::STP_ROOT => $collector([])->stpRoots($this->history->stpRoots($ids));
+                return $collector(array_merge(array_keys($lag), array_values($lag)))->lagMembers($lag);
+            },
+            FactCollector::STP_ROOT => fn () => $collector([])->stpRoots($this->history->stpRoots($ids)),
+            FactCollector::STP_BLOCKED => function () use ($ids, $names, $collector) {
+                $blocked = FactCollector::blockingPorts($this->history->blockedPorts($ids), $names);
 
-        $blocked = FactCollector::blockingPorts($this->history->blockedPorts($ids), $names);
-        yield FactCollector::STP_BLOCKED => $collector(array_merge([], ...array_map('array_keys', array_values($blocked))))->blockedPortFacts($blocked);
-        unset($blocked);
+                return $collector(array_merge([], ...array_map('array_keys', array_values($blocked))))->blockedPortFacts($blocked);
+            },
+            FactCollector::OSPF => function () use ($ids, $collector) {
+                $ospf = $this->history->ospfNeighbors($ids);
 
-        $ospf = $this->history->ospfNeighbors($ids);
-        $bgp = $this->history->bgpPeers($ids);
-        $addresses = $this->history->addressOwners(array_merge(array_column($ospf, 'ospfNbrIpAddr'), array_map('strtolower', array_column($bgp, 'bgpPeerIdentifier'))), $ids);
-        yield FactCollector::OSPF => $collector(array_column($ospf, 'port_id'))->ospf($ospf, $this->history->routerIds($ids), $addresses);
-        yield FactCollector::BGP => $collector([])->bgp($bgp, $addresses);
+                return $collector(array_column($ospf, 'port_id'))->ospf($ospf, $this->history->routerIds($ids),
+                    $this->history->addressOwners(array_column($ospf, 'ospfNbrIpAddr'), $ids));
+            },
+            FactCollector::BGP => function () use ($ids, $collector) {
+                $bgp = $this->history->bgpPeers($ids);
+
+                return $collector([])->bgp($bgp, $this->history->addressOwners(array_map('strtolower', array_column($bgp, 'bgpPeerIdentifier')), $ids));
+            },
+        ];
     }
 
     /**
@@ -283,24 +310,31 @@ class HistoryService
             return ['saved' => null, 'missing' => [], 'missing_total' => 0, 'new' => [], 'new_total' => 0];
         }
 
-        $baseline = $this->history->baselineHashes($ids);
-        $current = $this->history->currentHashes($ids, Baseline::KINDS);
+        // root bridges per switch and VLAN (one fact holds the VLANs of a root bridge), the rest by identity
+        $kinds = array_values(array_diff(Baseline::KINDS, [FactCollector::STP_ROOT]));
+        $baseline = array_filter($this->history->baselineHashes($ids), fn ($kind) => $kind !== FactCollector::STP_ROOT);
+        $current = $this->history->currentHashes($ids, $kinds);
         $missingHashes = array_keys(array_diff_key($baseline, $current));
         $newHashes = array_keys(array_diff_key($current, $baseline));
-        $since = $this->history->goneSince(array_slice($missingHashes, 0, self::LISTED));
+        $roots = Baseline::compareRoots($this->history->baselineFactsOfKind($ids, FactCollector::STP_ROOT),
+            $this->history->currentFactsOfKind($ids, FactCollector::STP_ROOT));
+
         $describe = fn (array $fact) => [
             'kind' => $fact['kind'],
             'hash' => $fact['hash'],
+            'vlans' => $fact['kind'] === FactCollector::STP_ROOT ? FactText::vlans($fact['data']) : null,
             'text' => $text->describe($fact),
             'devices' => array_values(array_filter([$fact['device_a'], $fact['device_b']], fn ($id) => $text->visible($id))),
         ];
-        $missing = array_map(fn ($fact) => $describe($fact) + ['since' => $since[$fact['hash']] ?? null],
-            $this->history->baselineFactsByHash($missingHashes, self::LISTED));
-        $new = array_map($describe, $this->history->currentFactsByHash($newHashes, self::LISTED));
+        $missingFacts = array_merge(array_slice($roots['missing'], 0, self::LISTED), $this->history->baselineFactsByHash($missingHashes, self::LISTED));
+        $since = $this->history->goneSince(array_column($missingFacts, 'hash'));
+        $missing = array_map(fn ($fact) => $describe($fact) + ['since' => $since[$fact['hash']] ?? null], $missingFacts);
+        $new = array_map($describe, array_merge(array_slice($roots['new'], 0, self::LISTED), $this->history->currentFactsByHash($newHashes, self::LISTED)));
         usort($missing, fn ($a, $b) => [$a['kind'], $a['text']] <=> [$b['kind'], $b['text']]);
         usort($new, fn ($a, $b) => [$a['kind'], $a['text']] <=> [$b['kind'], $b['text']]);
 
-        return ['saved' => $info, 'missing' => $missing, 'missing_total' => count($missingHashes), 'new' => $new, 'new_total' => count($newHashes)];
+        return ['saved' => $info, 'missing' => array_slice($missing, 0, self::LISTED), 'missing_total' => count($missingHashes) + count($roots['missing']),
+            'new' => array_slice($new, 0, self::LISTED), 'new_total' => count($newHashes) + count($roots['new'])];
     }
 
     /**

@@ -450,6 +450,17 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
+     * stp rows of the devices, one at a time (a PVST network has one per switch and VLAN).
+     *
+     * @param  int[]  $ids
+     * @return iterable<int, object>
+     */
+    public function stpInstanceRows(array $ids): iterable
+    {
+        return $ids ? DB::table('stp')->whereIntegerInRaw('device_id', $ids)->cursor() : [];
+    }
+
+    /**
      * Port rows (ports_stp) of the devices. ports_stp grows with ports x VLANs on PVST networks,
      * so callers usually load a single instance per device.
      *

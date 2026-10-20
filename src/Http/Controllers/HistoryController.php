@@ -79,7 +79,9 @@ class HistoryController extends Controller
                 $message = "Baseline cleared: $removed facts removed.";
             } elseif ($request->input('action') === 'accept') {
                 abort_unless(is_string($hash) && preg_match('/^[0-9a-f]{40}$/', $hash), 422);
-                $message = $service->acceptMissing($params, $hash) ? 'Removed from the baseline: it is no longer expected.' : 'Nothing to remove: the baseline has changed.';
+                $vlans = is_string($request->input('vlans')) && preg_match('/^\d+(,\d+)*$/', $request->input('vlans'))
+                    ? array_map('intval', explode(',', $request->input('vlans'))) : null;
+                $message = $service->acceptMissing($params, $hash, $vlans) ? 'Removed from the baseline: it is no longer expected.' : 'Nothing to remove: the baseline has changed.';
                 $message .= " ($hash)";
             } else {
                 $saved = $service->saveBaseline($params, $user);

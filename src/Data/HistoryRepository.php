@@ -112,7 +112,9 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * Rows of a per-device table, one at a time (none when the table does not exist).
+     * Rows of a per-device table, one at a time; none when the table does not exist on this
+     * LibreNMS version, while a read error is thrown (the snapshot then skips that kind of fact
+     * rather than take it for gone).
      *
      * @param  int[]  $ids
      * @param  callable(Builder): Builder  $query
@@ -120,15 +122,38 @@ class HistoryRepository extends ScopedRepository
      */
     private function stream(string $table, array $ids, callable $query): \Generator
     {
-        try {
-            foreach (array_chunk($ids, 1000) as $chunk) {
-                foreach ($query(DB::table($table)->whereIntegerInRaw('device_id', $chunk))->cursor() as $row) {
-                    yield (array) $row;
-                }
-            }
-        } catch (\Throwable $e) {
-            Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
+        if (! Schema::hasTable($table)) {
+            return;
         }
+        foreach (array_chunk($ids, 1000) as $chunk) {
+            foreach ($query(DB::table($table)->whereIntegerInRaw('device_id', $chunk))->cursor() as $row) {
+                yield (array) $row;
+            }
+        }
+    }
+
+    /**
+     * All rows of a per-device table, none when the table does not exist; a read error is thrown
+     * (see stream()).
+     *
+     * @param  int[]  $ids
+     * @param  string[]  $columns
+     * @return array<int, array>
+     */
+    private function strictRows(string $table, array $ids, array $columns): array
+    {
+        if (! $ids || ! Schema::hasTable($table)) {
+            return [];
+        }
+
+        $rows = [];
+        foreach (array_chunk($ids, 5000) as $chunk) {
+            foreach (DB::table($table)->whereIntegerInRaw('device_id', $chunk)->get($columns) as $row) {
+                $rows[] = (array) $row;
+            }
+        }
+
+        return $rows;
     }
 
     /**
@@ -136,7 +161,7 @@ class HistoryRepository extends ScopedRepository
      */
     public function ospfNeighbors(array $ids): array
     {
-        return $this->rows('ospf_nbrs', $ids, ['device_id', 'port_id', 'ospfNbrIpAddr', 'ospfNbrRtrId', 'ospfNbrState', 'context_name']);
+        return $this->strictRows('ospf_nbrs', $ids, ['device_id', 'port_id', 'ospfNbrIpAddr', 'ospfNbrRtrId', 'ospfNbrState', 'context_name']);
     }
 
     /**
@@ -146,7 +171,7 @@ class HistoryRepository extends ScopedRepository
     public function routerIds(array $ids): array
     {
         $result = [];
-        foreach ($this->rows('ospf_instances', $ids, ['device_id', 'ospfRouterId']) as $row) {
+        foreach ($this->strictRows('ospf_instances', $ids, ['device_id', 'ospfRouterId']) as $row) {
             if (! empty($row['ospfRouterId'])) {
                 $result[(string) $row['ospfRouterId']] = (int) $row['device_id'];
             }
@@ -160,7 +185,7 @@ class HistoryRepository extends ScopedRepository
      */
     public function bgpPeers(array $ids): array
     {
-        return $this->rows('bgpPeers', $ids, ['device_id', 'bgpPeerIdentifier', 'bgpPeerRemoteAs', 'bgpPeerState', 'bgpPeerDescr', 'context_name', 'vrf_id']);
+        return $this->strictRows('bgpPeers', $ids, ['device_id', 'bgpPeerIdentifier', 'bgpPeerRemoteAs', 'bgpPeerState', 'bgpPeerDescr', 'context_name', 'vrf_id']);
     }
 
     /**
@@ -184,7 +209,7 @@ class HistoryRepository extends ScopedRepository
 
         $owners = [];
         $wanted = array_flip($ids);
-        try {
+        if (Schema::hasTable('ipv4_addresses')) {
             foreach (array_chunk($v4, 1000) as $chunk) {
                 foreach (DB::table('ipv4_addresses')->join('ports', 'ports.port_id', '=', 'ipv4_addresses.port_id')
                     ->whereIn('ipv4_addresses.ipv4_address', $chunk)->get(['ipv4_addresses.ipv4_address as address', 'ports.device_id']) as $row) {
@@ -193,6 +218,8 @@ class HistoryRepository extends ScopedRepository
                     }
                 }
             }
+        }
+        if (Schema::hasTable('ipv6_addresses')) {
             foreach (array_chunk($v6, 1000) as $chunk) {
                 foreach (DB::table('ipv6_addresses')->join('ports', 'ports.port_id', '=', 'ipv6_addresses.port_id')
                     ->where(fn (Builder $q) => $q->whereIn('ipv6_addresses.ipv6_compressed', $chunk)->orWhereIn('ipv6_addresses.ipv6_address', $chunk))
@@ -203,8 +230,6 @@ class HistoryRepository extends ScopedRepository
                     }
                 }
             }
-        } catch (\Throwable $e) {
-            Log::debug('topology plugin: cannot read interface addresses: ' . $e->getMessage());
         }
 
         return $owners;
@@ -302,11 +327,11 @@ class HistoryRepository extends ScopedRepository
 
     /**
      * Facts of the devices that started (not with the first snapshot of their kind) or ended in
-     * [$from, $to], with their data decoded: the newest WINDOW_LIMIT of each, truncated when there
-     * were more.
+     * [$from, $to], with their data decoded: the newest WINDOW_LIMIT of each, cut at a common
+     * boundary when there were more (Window::merge()).
      *
      * @param  int[]  $ids
-     * @return array{rows: array<int, array>, truncated: bool}
+     * @return array{rows: array<int, array>, truncated: bool, since: ?int}
      */
     public function windowFacts(CarbonInterface $from, CarbonInterface $to, array $ids): array
     {
@@ -459,6 +484,40 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
+     * Baseline facts of one kind that involve the devices, decoded.
+     *
+     * @param  int[]  $ids
+     * @return array<string, array> hash => fact
+     */
+    public function baselineFactsOfKind(array $ids, string $kind): array
+    {
+        $facts = [];
+        foreach ($this->touching(DB::table('topology_baseline'), $ids)->where('kind', $kind)->get() as $row) {
+            $fact = self::baselineRow((array) $row);
+            $facts[$fact['hash']] = $fact;
+        }
+
+        return $facts;
+    }
+
+    /**
+     * Facts of one kind present at the last snapshot that involve the devices, decoded.
+     *
+     * @param  int[]  $ids
+     * @return array<string, array> hash => fact
+     */
+    public function currentFactsOfKind(array $ids, string $kind): array
+    {
+        $facts = [];
+        foreach ($this->touching(DB::table('topology_facts'), $ids)->where('kind', $kind)->whereNull('removed_at')->get() as $row) {
+            $fact = self::factRow((array) $row);
+            $facts[$fact['hash']] = $fact;
+        }
+
+        return $facts;
+    }
+
+    /**
      * Baseline facts by identity, decoded (at most $limit).
      *
      * @param  string[]  $hashes
@@ -524,13 +583,25 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * Take one fact out of the baseline (an admin accepted that it is gone).
+     * Take one fact out of the baseline (an admin accepted that it is gone); of a root bridge fact
+     * only the VLANs given, the fact goes with its last VLAN.
      *
      * @param  int[]  $ids  devices of the page's scope; the fact must involve one of them
+     * @param  int[]|null  $vlans
      */
-    public function forgetBaselineFact(string $hash, array $ids): int
+    public function forgetBaselineFact(string $hash, array $ids, ?array $vlans = null): int
     {
-        return $this->touching(DB::table('topology_baseline'), $ids)->where('hash', $hash)->delete();
+        $query = $this->touching(DB::table('topology_baseline'), $ids)->where('hash', $hash);
+        $row = $vlans !== null ? (clone $query)->first() : null;
+        if ($row !== null) {
+            $data = json_decode((string) $row->data, true) ?: [];
+            $left = array_values(array_diff(array_map('intval', $data['vlans'] ?? []), array_map('intval', $vlans)));
+            if ($left) {
+                return DB::table('topology_baseline')->where('id', $row->id)->update(['data' => FactCollector::json(['vlans' => $left] + $data)]);
+            }
+        }
+
+        return $query->delete();
     }
 
     /**
@@ -662,6 +733,7 @@ class HistoryRepository extends ScopedRepository
     public function applyFindings(string $analysis, array $run, CarbonInterface $time, bool $initial): void
     {
         $rows = [];
+        $confirmed = array_fill_keys($run['confirmed'], true);
         foreach ($run['insert'] as $hash => $finding) {
             $rows[] = [
                 'analysis' => $analysis,
@@ -671,7 +743,7 @@ class HistoryRepository extends ScopedRepository
                 'title' => FindingHistory::title($finding),
                 'devices' => json_encode(array_values(array_map('intval', $finding['devices'] ?? []))),
                 'initial' => $initial,
-                'confirmed' => $initial,
+                'confirmed' => isset($confirmed[$hash]),
                 'first_seen' => $time,
                 'missed_at' => null,
                 'resolved_at' => null,
@@ -715,7 +787,7 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * Findings that started or were resolved in [$from, $to], involve the devices and only devices
+     * Confirmed findings that started or were resolved in [$from, $to], involve the devices and only devices
      * the user may see (their titles name devices: the diagnostics pages show the user's own); the
      * newest WINDOW_FINDINGS of them, read page by page so a restricted view is not left empty.
      *
@@ -729,7 +801,8 @@ class HistoryRepository extends ScopedRepository
         $rows = [];
         $before = null;
         do {
-            $query = DB::table('topology_findings')
+            // confirmed findings only (reported by two runs in a row): one that comes and goes every run is no news
+            $query = DB::table('topology_findings')->where('confirmed', 1)
                 ->where(fn (Builder $q) => $q->where(fn (Builder $q) => $q->whereBetween('first_seen', [$from, $to])->where('initial', 0))
                     ->orWhereBetween('resolved_at', [$from, $to]))
                 ->orderByDesc('id')->limit(2000);

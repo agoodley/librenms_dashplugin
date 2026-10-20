@@ -7,10 +7,11 @@ use Agoodley\LibrenmsTopology\Stp\Finding;
 /**
  * Findings history of the background checks. A finding is the same finding while its code,
  * devices, ports and VLAN stay the same; its wording and severity may change. A finding is
- * confirmed once two runs in a row reported it and resolved once two runs in a row did not, so a
- * check that flickers from run to run (error counters of the last poll) does not fill the
- * eventlog; a finding that was never confirmed ends at its first absence. If it comes back later
- * it starts a new period.
+ * confirmed once two runs in a row reported it, or reported a finding of the same check on one
+ * of its devices (a finding whose ports change from run to run goes on), and resolved once two
+ * runs in a row did not report it, so a check that flickers from run to run (error counters of the
+ * last poll) does not fill the eventlog; a finding that was never confirmed ends at its first
+ * absence. If it comes back later it starts a new period.
  *
  * The eventlog of a device gets an entry when the device gets its first confirmed finding of a
  * check or loses its last one. The entry names the check only: findings are computed over the
@@ -92,10 +93,11 @@ class FindingHistory
      * @param  array<int, array>  $findings  findings of this run
      * @param  string  $time  time of this run (Y-m-d H:i:s)
      * @param  bool  $initial  first successful run of the analysis: its findings existed before and are confirmed
-     * @return array{insert: array<string, array>, resolve: array<int, string>, miss: int[], unmiss: int[], confirm: int[],
-     *     update: array<int, array>, before: array<int, array>, after: array<int, array>} findings to insert (hash =>
-     *     finding), id => resolved_at, ids missed by this run, ids back after one miss, ids confirmed now, id => finding
-     *     with another severity or wording, and the confirmed findings (code, severity, devices) before and after the run
+     * @return array{insert: array<string, array>, confirmed: string[], resolve: array<int, string>, miss: int[], unmiss: int[],
+     *     confirm: int[], update: array<int, array>, before: array<int, array>, after: array<int, array>} findings to insert
+     *     (hash => finding) and the hashes of those inserted as confirmed, id => resolved_at, ids missed by this run, ids
+     *     back after one miss, ids confirmed now, id => finding with another severity or wording, and the confirmed
+     *     findings (code, severity, devices) before and after the run
      */
     public static function run(string $analysis, array $open, array $findings, string $time, bool $initial): array
     {
@@ -104,7 +106,27 @@ class FindingHistory
             $current[self::hash($analysis, $finding)] ??= $finding;
         }
 
-        $result = ['insert' => $current, 'resolve' => [], 'miss' => [], 'unmiss' => [], 'confirm' => [], 'update' => [], 'before' => [], 'after' => []];
+        // check and device of every finding the previous run reported (open and not missed by it)
+        $previous = [];
+        foreach ($open as $row) {
+            if ($row['missed_at'] === null) {
+                foreach ($row['devices'] as $device) {
+                    $previous[$row['code'] . '|' . $device] = true;
+                }
+            }
+        }
+        $goesOn = function (array $finding) use ($previous): bool {
+            foreach ($finding['devices'] ?? [] as $device) {
+                if (isset($previous[$finding['code'] . '|' . (int) $device])) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        $result = ['insert' => $current, 'confirmed' => [], 'resolve' => [], 'miss' => [], 'unmiss' => [], 'confirm' => [], 'update' => [],
+            'before' => [], 'after' => []];
         $seen = [];
         foreach ($open as $row) {
             $id = (int) $row['id'];
@@ -123,7 +145,7 @@ class FindingHistory
                 unset($result['insert'][$hash]);
                 if ($row['missed_at'] !== null) {
                     $result['unmiss'][] = $id; // back after one run without it
-                } elseif (! $row['confirmed'] && $row['first_seen'] < $time) {
+                } elseif (! $row['confirmed'] && ($row['first_seen'] < $time || $goesOn($finding))) {
                     $result['confirm'][] = $id; // reported by the previous run and this one
                 }
                 if ($row['severity'] !== $finding['severity'] || $row['title'] !== self::title($finding)) {
@@ -141,8 +163,10 @@ class FindingHistory
                 $result['after'][] = self::state($row['code'], $row['severity'], $row['devices']);
             }
         }
-        if ($initial) {
-            foreach ($result['insert'] as $finding) {
+        foreach ($result['insert'] as $hash => $finding) {
+            // the first run finds what existed before; a new finding of a check the previous run reported on one of its devices goes on
+            if ($initial || $goesOn($finding)) {
+                $result['confirmed'][] = $hash;
                 $result['after'][] = self::state($finding['code'], $finding['severity'], $finding['devices'] ?? []);
             }
         }

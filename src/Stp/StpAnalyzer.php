@@ -164,6 +164,48 @@ class StpAnalyzer
     }
 
     /**
+     * The same analysis on another index and port rows, keeping the prepared links: the
+     * background checks analyze one instance (VLAN) at a time.
+     *
+     * @param  array<int, array>  $ports  port_id => port row (the link ports and those of the index)
+     */
+    public function withInstance(StpIndex $index, array $ports): static
+    {
+        $analyzer = clone $this;
+        $analyzer->stp = $index;
+        $analyzer->ports = $ports;
+
+        return $analyzer;
+    }
+
+    /**
+     * Findings of one instance (VLAN key), without the bridge, port and domain rows of the page;
+     * with $networkWide also the checks that do not depend on an instance (inter-switch ports and
+     * switches without spanning tree, loops through them, eventlog), which the background checks
+     * run in one pass only. Merge the passes with mergeAcrossVlans().
+     *
+     * @param  array<string, array>  $rootLookups  keyed by root MAC
+     * @return array<int, array> findings in their array form
+     */
+    public function instanceFindings(array $rootLookups, int $vlanKey, bool $networkWide): array
+    {
+        $this->findings = [];
+        $this->rootLookups = $rootLookups;
+        $members = $this->stp->byVlan()[$vlanKey] ?? [];
+        foreach ($this->domainsFor($vlanKey, $members) as [$memberIds, $graph]) {
+            $this->analyzeDomain($vlanKey, $memberIds, $members, $graph, $rootLookups);
+        }
+        if ($networkWide) {
+            $this->checkPortsWithoutStp();
+            $this->checkDevicesWithoutStp();
+            $this->checkLoopsWithoutStp();
+            $this->checkEvents();
+        }
+
+        return array_map(fn (Finding $f) => $f->toArray() + ['category' => self::CHECKS[$f->code] ?? 'other'], $this->findings);
+    }
+
+    /**
      * Summary cards of a (possibly filtered) analysis result.
      *
      * @param  int  $recentWindow  seconds within which a topology change counts as recent
@@ -190,7 +232,8 @@ class StpAnalyzer
 
     /**
      * PVST runs one instance per VLAN, so the same problem is usually found in many VLANs:
-     * report it once with the list of affected VLANs.
+     * report it once with the list of affected VLANs (the union of the lists of already merged
+     * findings, so results of several passes can be merged again).
      */
     public static function mergeAcrossVlans(array $findings): array
     {
@@ -198,12 +241,15 @@ class StpAnalyzer
         foreach ($findings as $finding) {
             $key = implode('|', [$finding['severity'], $finding['code'], $finding['title'], $finding['detail'],
                 implode(',', $finding['devices']), implode(',', $finding['ports'])]);
+            $vlans = array_merge($finding['vlans'] ?? [], $finding['vlan'] !== null ? [$finding['vlan']] : []);
             if (! isset($merged[$key])) {
                 $merged[$key] = $finding;
-                continue;
+                $merged[$key]['vlans'] = [];
             }
-            if ($finding['vlan'] !== null && ! in_array($finding['vlan'], $merged[$key]['vlans'], true)) {
-                $merged[$key]['vlans'][] = $finding['vlan'];
+            foreach ($vlans as $vlan) {
+                if (! in_array($vlan, $merged[$key]['vlans'], true)) {
+                    $merged[$key]['vlans'][] = $vlan;
+                }
             }
         }
 

@@ -2,19 +2,21 @@
 
 namespace Agoodley\LibrenmsTopology\Console;
 
+use Agoodley\LibrenmsTopology\History\Jobs;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use Illuminate\Support\Facades\Log;
 use LibreNMS\Interfaces\Plugins\PluginManagerInterface;
+use Symfony\Component\Process\Process;
 
 /**
- * `lnms topology:snapshot`: record the topology history, by hand also the background checks. The
- * plugin schedules it with --no-checks every *History interval* minutes, and topology:checks apart.
+ * `lnms topology:snapshot`: record the topology history, then run the background checks, each in
+ * a process of its own and one after the other: they read the finished snapshot, a check that runs
+ * out of memory does not stop the others, and only one process needs its memory at a time. The
+ * plugin schedules it every *History interval* minutes.
  */
 class SnapshotCommand extends HistoryCommand
 {
-    protected $signature = 'topology:snapshot
-        {--no-checks : only record the topology, skip the background checks}
-        {--baseline : then save the recorded topology as the baseline of every device}';
+    protected $signature = Jobs::SNAPSHOT;
 
     protected $description = 'Record the topology history of the topology plugin (and run its background checks)';
 
@@ -38,10 +40,20 @@ class SnapshotCommand extends HistoryCommand
                 $this->info($message);
             }
         });
-        if ($done && ! $this->option('no-checks')) {
-            $this->checks($service);
+        if (! $done || $this->option('no-checks')) {
+            return self::SUCCESS;
         }
 
-        return self::SUCCESS;
+        $failed = false;
+        foreach ($service->enabledChecks() as $analysis) {
+            $process = new Process([PHP_BINARY, base_path('artisan'), 'topology:checks', $analysis], base_path(), null, null, 3600);
+            $process->run(fn ($type, $output) => $this->output->write($output));
+            if (! $process->isSuccessful()) {
+                $failed = true;
+                $this->error("Background $analysis checks failed (exit code {$process->getExitCode()}), see above.");
+            }
+        }
+
+        return $failed ? self::FAILURE : self::SUCCESS;
     }
 }

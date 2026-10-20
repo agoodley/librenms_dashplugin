@@ -39,22 +39,38 @@ class Window
 
     /**
      * Facts that started and facts that ended in the window, each read newest first and capped at
-     * $limit rows, as one list in the order they were recorded; truncated when a cap was reached
-     * (the oldest changes are left out).
+     * $limit rows, as one list in the order they were recorded. When a cap was reached, both lists
+     * are cut at the later of their oldest times (`since`), so a change never loses its other half
+     * (a moved cable is a removed and an added fact); the changes before it are left out.
      *
-     * @param  array<int, array>  $added  rows with an id
-     * @param  array<int, array>  $removed  rows with an id
-     * @return array{rows: array<int, array>, truncated: bool}
+     * @param  array<int, array>  $added  rows with id and first_seen (timestamp)
+     * @param  array<int, array>  $removed  rows with id and removed_at (timestamp)
+     * @return array{rows: array<int, array>, truncated: bool, since: ?int}
      */
     public static function merge(array $added, array $removed, int $limit): array
     {
+        $since = null;
+        if (count($added) >= $limit) {
+            $since = min(array_column($added, 'first_seen'));
+        }
+        if (count($removed) >= $limit) {
+            $since = max($since ?? 0, min(array_column($removed, 'removed_at')));
+        }
+
         $rows = [];
-        foreach (array_merge($added, $removed) as $row) {
-            $rows[(int) $row['id']] ??= $row;
+        foreach ($added as $row) {
+            if ($since === null || $row['first_seen'] >= $since) {
+                $rows[(int) $row['id']] ??= $row;
+            }
+        }
+        foreach ($removed as $row) {
+            if ($since === null || $row['removed_at'] >= $since) {
+                $rows[(int) $row['id']] ??= $row;
+            }
         }
         ksort($rows);
 
-        return ['rows' => array_values($rows), 'truncated' => count($added) >= $limit || count($removed) >= $limit];
+        return ['rows' => array_values($rows), 'truncated' => $since !== null, 'since' => $since];
     }
 
     private static function time(mixed $value): ?int

@@ -74,18 +74,23 @@ abstract class HistoryCommand extends Command
      * Run the background checks the settings enable (of $only), each under its own lock.
      *
      * @param  string[]|null  $only
+     * @return bool false when one of them failed
      */
-    protected function checks(HistoryService $service, ?array $only = null): void
+    protected function checks(HistoryService $service, ?array $only = null): bool
     {
+        $ok = true;
         foreach ($service->enabledChecks($only) as $analysis) {
-            $this->locked("checks-$analysis", function () use ($service, $analysis): void {
+            $this->locked("checks-$analysis", function () use ($service, $analysis, &$ok): void {
                 $counts = $service->check($analysis);
+                $ok = $ok && ! isset($counts['error']);
                 $this->info(isset($counts['error'])
                     ? "Background $analysis checks failed, see the LibreNMS log."
                     : sprintf('Background %s checks: %d findings, %d new, %d confirmed, %d resolved, %d eventlog entries%s.', $analysis, $counts['findings'],
                         $counts['new'], $counts['confirmed'], $counts['resolved'], $counts['eventlog'], $counts['initial'] ? ' (first run: recorded without eventlog entries)' : ''));
             });
         }
+
+        return $ok;
     }
 
     /**

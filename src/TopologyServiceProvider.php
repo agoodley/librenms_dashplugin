@@ -4,8 +4,8 @@ namespace Agoodley\LibrenmsTopology;
 
 use Agoodley\LibrenmsTopology\Console\ChecksCommand;
 use Agoodley\LibrenmsTopology\Console\SnapshotCommand;
-use Agoodley\LibrenmsTopology\History\HistoryService;
 use Agoodley\LibrenmsTopology\History\Interval;
+use Agoodley\LibrenmsTopology\History\Jobs;
 use Agoodley\LibrenmsTopology\Hooks\DeviceOverview;
 use Agoodley\LibrenmsTopology\Hooks\MenuEntry;
 use Agoodley\LibrenmsTopology\Hooks\Page;
@@ -62,25 +62,20 @@ class TopologyServiceProvider extends ServiceProvider
     }
 
     /**
-     * The history snapshot and each background check every *History interval* minutes, each in its
-     * own process, while the plugin and its history are enabled (LibreNMS runs `artisan
-     * schedule:run` every minute). Their output goes to topology-snapshot.log in the LibreNMS log
-     * directory, a failure to the eventlog.
+     * The history snapshot, then the background checks, every *History interval* minutes while the
+     * plugin and its history are enabled (LibreNMS runs `artisan schedule:run` every minute; see
+     * History\Jobs). The output goes to topology-snapshot.log in the LibreNMS log directory, a
+     * failure to the eventlog.
      */
     private function schedule(Schedule $schedule, PluginManagerInterface $pluginManager): void
     {
         $cron = Interval::cron(self::settings($pluginManager)->int('history_interval', 5, 1440));
         $log = rtrim((string) self::config('log_dir', storage_path('logs')), '/') . '/topology-snapshot.log';
         $enabled = fn () => $pluginManager->pluginEnabled(self::PLUGIN_NAME) && self::settings($pluginManager)->bool('history_enabled');
-        $jobs = [[SnapshotCommand::class, ['--no-checks' => true], 'topology:snapshot', $enabled]];
-        foreach (HistoryService::ANALYSES as $analysis) {
-            $jobs[] = [ChecksCommand::class, [$analysis], "topology:checks $analysis",
-                fn () => $enabled() && in_array($analysis, array_map('strtolower', self::settings($pluginManager)->list('history_checks')), true)];
-        }
-        foreach ($jobs as [$command, $options, $name, $when]) {
-            $schedule->command($command, $options)
+        foreach (Jobs::SCHEDULED as $name => $parameters) {
+            $schedule->command($name, $parameters)
                 ->cron($cron)
-                ->when($when)
+                ->when($enabled)
                 ->withoutOverlapping(180)
                 ->onOneServer()
                 ->runInBackground()

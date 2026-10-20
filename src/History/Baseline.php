@@ -29,6 +29,23 @@ class Baseline
     }
 
     /**
+     * Root bridges per switch and VLAN: a root bridge fact holds the VLANs it is the root of, so a
+     * VLAN whose root moved is missing from its old fact and new in another one, while the other
+     * VLANs of both facts are as expected.
+     *
+     * @param  array<string, array>  $baseline  hash => saved root bridge fact
+     * @param  array<string, array>  $current  hash => root bridge fact now
+     * @return array{missing: array<int, array>, new: array<int, array>} facts limited to the VLANs that differ
+     */
+    public static function compareRoots(array $baseline, array $current): array
+    {
+        return [
+            'missing' => self::differingVlans($baseline, self::rootsByVlan($current)),
+            'new' => self::differingVlans($current, self::rootsByVlan($baseline)),
+        ];
+    }
+
+    /**
      * Baseline links that are gone, leaving out those whose port now has another cable: a port
      * holds one cable, so that is a moved cable (the Changes page reports it), not a second path.
      *
@@ -95,6 +112,44 @@ class Baseline
         }
 
         return $rows;
+    }
+
+    /**
+     * @param  array<string, array>  $facts  root bridge facts
+     * @return array<int, array<int, string>> device => VLAN key => root bridge MAC
+     */
+    private static function rootsByVlan(array $facts): array
+    {
+        $roots = [];
+        foreach ($facts as $fact) {
+            foreach (FactText::vlans($fact['data']) as $vlan) {
+                $roots[(int) $fact['data']['device']][$vlan] = $fact['data']['root'];
+            }
+        }
+
+        return $roots;
+    }
+
+    /**
+     * The facts limited to their VLANs whose root bridge is another one in $other.
+     *
+     * @param  array<string, array>  $facts  root bridge facts
+     * @param  array<int, array<int, string>>  $other  device => VLAN key => root bridge MAC
+     * @return array<int, array>
+     */
+    private static function differingVlans(array $facts, array $other): array
+    {
+        $result = [];
+        foreach ($facts as $fact) {
+            $device = (int) $fact['data']['device'];
+            $vlans = array_values(array_filter(FactText::vlans($fact['data']), fn ($vlan) => ($other[$device][$vlan] ?? null) !== $fact['data']['root']));
+            if ($vlans) {
+                $fact['data']['vlans'] = $vlans;
+                $result[] = $fact;
+            }
+        }
+
+        return $result;
     }
 
     /**

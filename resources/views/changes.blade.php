@@ -174,8 +174,8 @@
             </table>
             </div>
             @if(! empty($result['truncated']))
-                <div class="panel-footer text-warning"><i class="fa fa-exclamation-triangle"></i> Only the newest changes are shown, there were more:
-                    choose a shorter window or filter by device, group or location.</div>
+                <div class="panel-footer text-warning"><i class="fa fa-exclamation-triangle"></i> Too many changes: only those since
+                    {{ $result['since'] }} are shown. Choose a shorter window or filter by device, group or location.</div>
             @endif
         </div>
 
@@ -240,6 +240,7 @@
                                         @csrf
                                         <input type="hidden" name="action" value="accept">
                                         <input type="hidden" name="hash" value="{{ $fact['hash'] }}">
+                                        @if($fact['vlans'] !== null)<input type="hidden" name="vlans" value="{{ implode(',', $fact['vlans']) }}">@endif
                                         @foreach($keep as $key => $value)<input type="hidden" name="{{ $key }}" value="{{ $value }}">@endforeach
                                         <button type="submit" class="btn btn-xs btn-default" title="Gone on purpose: remove it from the baseline"><i class="fa fa-check"></i> Accept</button>
                                     </form>

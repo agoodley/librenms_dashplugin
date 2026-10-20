@@ -237,6 +237,50 @@ class TopologyService
     }
 
     /**
+     * Spanning tree findings of the devices in scope for the background checks, one instance
+     * (VLAN) at a time: a PVST network has an instance per VLAN and ports_stp rows per port and
+     * VLAN, too many to analyze at once. The instance rows, links, link ports and root bridge
+     * lookups are read once; the page's bridge, port and domain rows are left out.
+     *
+     * @param  array{group: ?int, location: ?int}  $p
+     * @return array{findings: array<int, array>}
+     */
+    public function stpFindings(array $p): array
+    {
+        $scope = $this->repo->deviceIds($p['group'] ?? null, $p['location'] ?? null);
+        $lag = $this->repo->lagParents($scope);
+        $base = new StpIndex($this->repo->stpInstanceRows($scope), [], $lag);
+        $links = $this->repo->links($scope);
+        $linkPorts = array_merge(array_keys($lag), array_values($lag));
+        foreach ($links as $link) {
+            $linkPorts[] = (int) $link['local_port_id'];
+            $linkPorts[] = (int) $link['remote_port_id'];
+        }
+        // has_stp of a link port covers every instance (portHasStp() trusts it)
+        $linkPortRows = $this->repo->analysisPorts($linkPorts);
+        $analyzer = new StpAnalyzer($this->repo->devices($scope), $base, $links, $linkPortRows, $lag, $this->settings,
+            $this->repo->stpEvents($scope, $this->settings->int('stp_event_days', 1, 365)));
+        $lookups = $this->repo->rootLookups($base->unknownRootMacs());
+
+        $findings = [];
+        $networkWide = true;
+        foreach ($this->repo->stpVlans($scope) ?: [0] as $key) {
+            $keys = [];
+            foreach ($base->deviceIds() as $deviceId) {
+                if ($base->instance($deviceId, $key) !== null) {
+                    $keys[$deviceId] = $key;
+                }
+            }
+            $index = $base->withPorts($this->repo->stpPorts(array_keys($keys), $keys));
+            $ports = $linkPortRows + $this->repo->analysisPorts(array_values(array_diff($index->portIds(), array_keys($linkPortRows))));
+            array_push($findings, ...$analyzer->withInstance($index, $ports)->instanceFindings($lookups, $key, $networkWide));
+            $networkWide = false;
+        }
+
+        return ['findings' => StpAnalyzer::mergeAcrossVlans($findings)];
+    }
+
+    /**
      * Loop evidence of the devices in scope: broadcast / multicast counters of their inter-switch
      * ports and the loop related syslog messages of their switches and routers (when the user may
      * read syslog). For one device: its ports, its neighbors' ports toward it and its own messages.

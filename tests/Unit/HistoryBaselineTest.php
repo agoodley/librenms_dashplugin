@@ -128,7 +128,7 @@ class HistoryBaselineTest extends TestCase
             foreach ($run['insert'] as $hash => $finding) {
                 $id = count($rows) + 1;
                 $rows[$id] = ['id' => $id, 'hash' => $hash, 'code' => $finding['code'], 'severity' => $finding['severity'], 'title' => FindingHistory::title($finding),
-                    'devices' => $finding['devices'], 'confirmed' => $index === 0, 'missed_at' => null, 'first_seen' => $time, 'resolved_at' => null];
+                    'devices' => $finding['devices'], 'confirmed' => in_array($hash, $run['confirmed'], true), 'missed_at' => null, 'first_seen' => $time, 'resolved_at' => null];
             }
             foreach ($run['resolve'] as $id => $at) {
                 $rows[$id]['resolved_at'] = $at;
@@ -208,8 +208,9 @@ class HistoryBaselineTest extends TestCase
 
         $entries = self::simulate([[], [$before], [$before], [$after], [$after], [$after]]);
 
-        $this->assertSame([], $entries[3], 'the new extent is not confirmed yet, the old one is missed once');
-        $this->assertSame([[4, 'warning'], [2, 'ok']], array_map(fn ($e) => [$e['device_id'], $e['severity']], $entries[4]));
+        $this->assertSame([[4, 'warning']], array_map(fn ($e) => [$e['device_id'], $e['severity']], $entries[3]),
+            'the check goes on on devices 1 and 3: the new extent is confirmed at once, the old one is missed once');
+        $this->assertSame([[2, 'ok']], array_map(fn ($e) => [$e['device_id'], $e['severity']], $entries[4]), 'the old extent is resolved');
         $this->assertSame([], $entries[5]);
 
         $many = self::finding('no_stp_data', range(1, 14));
@@ -273,12 +274,59 @@ class HistoryBaselineTest extends TestCase
         }
     }
 
-    public function testWindowRowsAreTruncatedAtTheLimit(): void
+    public function testWindowRowsAreCutAtACommonBoundary(): void
     {
-        $row = fn (int $id) => ['id' => $id];
+        $added = fn (int $id, int $time) => ['id' => $id, 'first_seen' => $time, 'removed_at' => null];
+        $removed = fn (int $id, int $time) => ['id' => $id, 'first_seen' => 0, 'removed_at' => $time];
 
-        $this->assertSame(['rows' => [$row(1), $row(2), $row(3)], 'truncated' => false], Window::merge([$row(3), $row(2)], [$row(2), $row(1)], 3));
-        $this->assertTrue(Window::merge([$row(3), $row(2), $row(1)], [], 3)['truncated']);
+        $this->assertSame(['rows' => [$removed(1, 10), $added(2, 20), $added(3, 30)], 'truncated' => false, 'since' => null],
+            Window::merge([$added(3, 30), $added(2, 20)], [$removed(1, 10)], 3));
+
+        // the added facts were capped at 30: the removed fact of 20 (half of a moved cable from 20?) goes too
+        $cut = Window::merge([$added(5, 50), $added(4, 40), $added(3, 30)], [$removed(1, 20), $removed(2, 35)], 3);
+        $this->assertSame([2, 3, 4, 5], array_column($cut['rows'], 'id'));
+        $this->assertSame([true, 30], [$cut['truncated'], $cut['since']]);
+
+        // both capped: the later of the two oldest times
+        $both = Window::merge([$added(5, 50), $added(4, 40)], [$removed(1, 45), $removed(2, 42)], 2);
+        $this->assertSame([42, [1, 2, 5]], [$both['since'], array_column($both['rows'], 'id')]);
+    }
+
+    public function testFindingWhosePortsChangeEveryRunGoesOn(): void
+    {
+        // link errors on another port of the same switch every run: the check stays on the switch
+        $runs = [[]];
+        foreach ([31, 32, 33, 34, 35, 36] as $port) {
+            $runs[] = [self::finding('speed_mismatch', [3], [$port])];
+        }
+        $runs[] = [];
+        $runs[] = [];
+
+        $entries = self::simulate($runs);
+
+        $this->assertSame([], $entries[1]);
+        $this->assertSame([[3, 'warning']], array_map(fn ($e) => [$e['device_id'], $e['severity']], $entries[2]), 'two runs in a row on the switch');
+        $this->assertSame([], array_merge(...array_slice($entries, 3, 5)), 'no false "resolved" while another port has it');
+        $this->assertSame([[3, 'ok']], array_map(fn ($e) => [$e['device_id'], $e['severity']], $entries[8]), 'resolved after two runs without it');
+    }
+
+    public function testRootBridgesAreComparedPerVlan(): void
+    {
+        $collector = new FactCollector([1 => 'core1', 2 => 'core2', 3 => 'acc1'], []);
+        $stp = fn (callable $root) => $collector->stpRoots(array_map(fn ($vlan) => ['device_id' => 3, 'vlan' => $vlan,
+            'designatedRoot' => $root($vlan), 'bridgeAddress' => '00ab03000001'], range(1, 40)));
+        $baseline = $stp(fn ($vlan) => $vlan % 2 ? '00ab01000001' : '00ab02000001');
+
+        // VLAN 31 moved from core1 to core2, VLAN 40 is new
+        $now = $collector->stpRoots(array_merge(array_map(fn ($vlan) => ['device_id' => 3, 'vlan' => $vlan,
+            'designatedRoot' => $vlan % 2 && $vlan !== 31 ? '00ab01000001' : '00ab02000001', 'bridgeAddress' => '00ab03000001'], range(1, 40)),
+            [['device_id' => 3, 'vlan' => 41, 'designatedRoot' => '00ab02000001', 'bridgeAddress' => '00ab03000001']]));
+
+        $result = Baseline::compareRoots($baseline, $now);
+
+        $this->assertSame([['00ab01000001', [31]]], array_map(fn ($f) => [$f['data']['root'], $f['data']['vlans']], $result['missing']));
+        $this->assertSame([['00ab02000001', [31, 41]]], array_map(fn ($f) => [$f['data']['root'], $f['data']['vlans']], $result['new']));
+        $this->assertSame(['missing' => [], 'new' => []], Baseline::compareRoots($baseline, $baseline));
     }
 
     public function testNewMarksExpireWhenTheChecksStop(): void
