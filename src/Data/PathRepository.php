@@ -326,7 +326,8 @@ class PathRepository extends ScopedRepository
 
         $summary = null;
         try {
-            $summary = Cache::remember(self::ROUTE_DATA_KEY, self::ROUTE_DATA_SECONDS, fn () => self::routeSummary());
+            // per database: installs that share a cache store keep their own
+            $summary = Cache::remember(self::ROUTE_DATA_KEY . '.' . DB::connection()->getDatabaseName(), self::ROUTE_DATA_SECONDS, fn () => self::routeSummary());
         } catch (\Throwable $e) {
             Log::debug('topology plugin: route table summary not cached: ' . $e->getMessage());
         }

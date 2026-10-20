@@ -314,7 +314,7 @@ class PathServiceTest extends TestCase
 
         $result = self::service($net)->trace(['a' => '10.90.110.11', 'b' => '10.90.110.12']);
         $this->assertSame(['acc1', 'dist1', 'acc2'], array_slice(self::names($result), 1, 3));
-        $this->assertStringContainsString('acc1 run a single spanning tree instance in LibreNMS', implode(' ', array_column($result['notes'], 'text')));
+        $this->assertStringContainsString('acc1 runs a single spanning tree instance in LibreNMS', implode(' ', array_column($result['notes'], 'text')));
     }
 }
 

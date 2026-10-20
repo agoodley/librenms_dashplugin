@@ -272,9 +272,10 @@ class PathAssembler
         }
         $common = $this->network->commonInstance(array_values(array_filter(array_column($trace['hops'], 'device_id'))), $vlan);
         if ($common) {
+            $one = count($common) === 1;
             $this->log->note('info', implode(', ', array_map(fn ($id) => $this->network->name($id), array_slice($common, 0, 4))) . (count($common) > 4 ? ' and ' . (count($common) - 4) . ' more' : '')
-                . ' run a single spanning tree instance in LibreNMS (RSTP, or MSTP, whose other instances LibreNMS does not read): its port states are taken for VLAN ' . $vlan
-                . '. With MSTP the VLAN can map to another instance whose states differ.');
+                . ($one ? ' runs' : ' run') . ' a single spanning tree instance in LibreNMS (RSTP, or MSTP, whose other instances LibreNMS does not read): '
+                . ($one ? 'its' : 'their') . ' port states are taken for VLAN ' . $vlan . '. With MSTP the VLAN can map to another instance whose states differ.');
         }
 
         return ['rows' => array_map(fn ($hop) => array_merge(self::emptyRow(), $hop, ['in_vlan' => $vlan, 'out_vlan' => $vlan]), $trace['hops']), 'blockers' => []];

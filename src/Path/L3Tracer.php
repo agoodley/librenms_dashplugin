@@ -77,6 +77,9 @@ class L3Tracer
     /** @var array<int, array<int, array>>|null device_id => [neighbor device_id => how] */
     private ?array $adjacent = null;
 
+    /** Address family of the trace's destination: the interfaces of a port are taken in it first. */
+    private int $family = 4;
+
     /**
      * @param  array<int, array>  $interfaces  device_id, port_id, address, prefixlen, vrf ('' for the global table), up (default
      *                                         true) of the routing devices the user may see; link-local IPv6 addresses included
@@ -126,6 +129,7 @@ class L3Tracer
     public function trace(int $start, ?int $ingressPort, string $vrf, string $destination): array
     {
         $destination = Cidr::canonical($destination) ?? $destination;
+        $this->family = Cidr::family($destination);
         $hops = [];
         $visited = [];
         $device = $start;
@@ -332,24 +336,31 @@ class L3Tracer
     }
 
     /**
-     * The interface of a device on one port (a global address before a link-local one).
+     * The interface of a device on one port: an address of the trace's family (a global one before a link-local one),
+     * else any.
      */
     public function interfaceOn(int $deviceId, int $portId): ?array
     {
+        $found = [];
         foreach ($this->byDevice[$deviceId] ?? [] as $interface) {
             if ($interface['port_id'] === $portId) {
-                return $interface;
+                $found[] = $interface;
             }
         }
         foreach ($this->linkLocal as $interfaces) {
             foreach ($interfaces as $interface) {
                 if ($interface['device_id'] === $deviceId && $interface['port_id'] === $portId) {
-                    return $interface;
+                    $found[] = $interface;
                 }
             }
         }
+        foreach ($found as $interface) {
+            if (Cidr::family($interface['address']) === $this->family) {
+                return $interface;
+            }
+        }
 
-        return null;
+        return $found[0] ?? null;
     }
 
     /**
