@@ -12,6 +12,13 @@ class CustomMapLayoutTest extends TestCase
     private const STYLE = ['text_face' => 'arial', 'text_size' => 14, 'text_colour' => '#343434', 'node_size' => 25,
         'edge_text_face' => 'courier', 'edge_text_size' => 11, 'edge_text_colour' => '#111111', 'edge_text_align' => 'top'];
 
+    /**
+     * The icons of LibreNMS' node dialog, copied from resources/views/map/custom-node-modal.blade.php (LibreNMS
+     * 26.10), for when that file is not at hand (LIBRENMS_DIR, or the plugin installed in LibreNMS' vendor directory).
+     */
+    private const EDITOR_ICONS = ['f6ff', 'f4d7', 'f796', 'f1eb', 'f519', 'f7c0', 'f7bf', 'f0c2', 'f0ac', 'f1ad', 'f3ed', 'f023', 'f1e6', 'f011',
+        'f240', 'f233', 'f1c0', 'f0a0', 'f2db', 'f390', 'f109', 'f3fa', 'f3ce', 'f02f', 'f061', 'f060', 'f062', 'f063'];
+
     private static function device(int $id, string $role, string $label = ''): array
     {
         return ['id' => 'd:' . $id, 'type' => 'device', 'managed' => true, 'device_id' => $id, 'role' => $role, 'label' => $label ?: 'dev' . $id];
@@ -76,14 +83,33 @@ class CustomMapLayoutTest extends TestCase
 
         $this->assertSame(['icon', 'f4d7', 1, null], [$n['d:1']['style'], $n['d:1']['icon'], $n['d:1']['device_id'], $n['d:1']['colour_bdr']],
             'no color for a monitored device: LibreNMS colors its icon by status');
-        $this->assertSame(['f0e8', 'f233', 'f796'], [$n['d:2']['icon'], $n['d:3']['icon'], $n['d:4']['icon']]);
-        $this->assertSame(['icon', 'f095', null, CustomMapLayout::UNMANAGED_COLOR], [$n['u:phone-1']['style'], $n['u:phone-1']['icon'], $n['u:phone-1']['device_id'], $n['u:phone-1']['colour_bdr']]);
-        $this->assertSame('f6ff', $n['u:box']['icon']);
+        $this->assertSame(['f6ff', 'f233', 'f796'], [$n['d:2']['icon'], $n['d:3']['icon'], $n['d:4']['icon']]);
+        $this->assertSame(['icon', 'f3ce', null, CustomMapLayout::UNMANAGED_COLOR], [$n['u:phone-1']['style'], $n['u:phone-1']['icon'], $n['u:phone-1']['device_id'], $n['u:phone-1']['colour_bdr']]);
+        $this->assertSame('f2db', $n['u:box']['icon']);
         $this->assertSame(['box', null, '#FFF6D5', "10.0.0.0/24\nBLUE"], [$n['s:abc']['style'], $n['s:abc']['icon'], $n['s:abc']['colour_bg'], $n['s:abc']['label']]);
         $this->assertSame(['icon', 'f0c2'], [$n['as:65001']['style'], $n['as:65001']['icon']]);
         $this->assertSame(25, $n['d:1']['size']);
         $this->assertLessThan(25, $n['u:phone-1']['size']);
         $this->assertSame(['devices' => 4, 'unmanaged' => 2, 'subnets' => 1, 'clouds' => 1], array_intersect_key($layout['stats'], array_flip(['devices', 'unmanaged', 'subnets', 'clouds'])));
+    }
+
+    public function testIconsAreOnesLibreNmsEditorOffers(): void
+    {
+        $icons = self::EDITOR_ICONS;
+        foreach (array_filter([getenv('LIBRENMS_DIR') ?: null, dirname(__DIR__, 5)]) as $dir) {
+            $file = $dir . '/resources/views/map/custom-node-modal.blade.php';
+            if (is_file($file)) {
+                preg_match('/<select id="nodeicon"[^>]*>(.*?)<\/select>/s', (string) file_get_contents($file), $select);
+                preg_match_all('/<option value="([0-9a-f]+)"/', $select[1] ?? '', $options);
+                $this->assertNotEmpty($options[1], "icons of $file");
+                $icons = $options[1];
+                break;
+            }
+        }
+
+        foreach (CustomMapLayout::ICONS as $role => $icon) {
+            $this->assertContains($icon, $icons, "the icon of $role is one of the editor's");
+        }
     }
 
     public function testLabelsCannotCarryHtmlIntoLibreNms(): void
@@ -102,6 +128,20 @@ class CustomMapLayoutTest extends TestCase
         $this->assertSame(str_repeat('ü', 50), CustomMapLayout::label(str_repeat('ü', 60), 50), 'cut by characters');
         $this->assertSame("10.0.0.0/24\nBLUE", CustomMapLayout::label("10.0.0.0/24\nBLUE", 50), 'line breaks stay');
         $this->assertSame('o?k', CustomMapLayout::label("o\xffk", 50), 'invalid UTF-8 does not empty the label');
+        $this->assertSame('Gi1/0/1 uplink', CustomMapLayout::label("Gi1/0/1\tuplink", 50), 'a control character between words is a space');
+        $this->assertSame("core1\n10.0.0.1", CustomMapLayout::label("core1 \t\r\n\x00 10.0.0.1 ", 50));
+        $this->assertSame('a b', CustomMapLayout::label("a\x1b\x07  b", 50));
+        $this->assertSame('core', CustomMapLayout::label('core switch', 5), 'no space at the end of a cut label');
+    }
+
+    public function testMapNamesSurviveLibreNmsEditorScript(): void
+    {
+        $this->assertSame('Layer 2 - HQ', CustomMapLayout::mapName("  Layer 2 - HQ\n"));
+        $this->assertSame('Core Distribution', CustomMapLayout::mapName("Core\r\nDistribution"));
+        $this->assertSame('C:＼users＼x＼', CustomMapLayout::mapName('C:\\users\\x\\'), 'no backslash: "\\u" and a trailing one break the script');
+        $this->assertSame('', CustomMapLayout::mapName(['name']));
+        $this->assertSame('42', CustomMapLayout::mapName(42));
+        $this->assertSame('o?k', CustomMapLayout::mapName("o\xffk"));
     }
 
     public function testEdgesUseLibreNmsEdgeTextSettings(): void
@@ -202,6 +242,40 @@ class CustomMapLayoutTest extends TestCase
         $this->assertSame([110, false], $edges['d:1-d:10'], 'core-a\'s Po10 is only this link');
         $this->assertSame([120, true], $edges['d:10-d:2'], 'not acc10\'s Po1, which also carries the link to core-a: core-b\'s Po20, which is down');
         $this->assertSame([130, true], $edges['d:11-d:2'], 'not one of acc11\'s cables: core-b\'s Po30');
+    }
+
+    /**
+     * acc10's Po1 bundles two cables to core-a, which are down, and two to core-b, which are up but have no links rows
+     * (core-b speaks only CDP): Po1 is up and carries core-b's traffic, so the link to core-a must not show it. "d:10"
+     * sorts before "d:30": acc10 is side A.
+     */
+    public function testAPortChannelWithMembersThatLldpDoesNotSeeIsNotTheLink(): void
+    {
+        $edge = function (array $lagParent): array {
+            $devices = [];
+            foreach ([10 => 'acc10', 30 => 'core-a'] as $id => $name) {
+                $devices[$id] = ['device_id' => $id, 'hostname' => $name, 'display' => $name, 'status' => 1, 'disabled' => 0, 'role' => 'switch'];
+            }
+            $ports = [];
+            foreach ([100 => ['Port-channel1', 'up'], 101 => ['Te1/1/1', 'down'], 102 => ['Te1/1/2', 'down'], 103 => ['Te1/1/3', 'up'], 104 => ['Te1/1/4', 'up'],
+                300 => ['Port-channel10', 'down'], 301 => ['Te1/0/1', 'down'], 302 => ['Te1/0/2', 'down']] as $id => [$name, $oper]) {
+                $ports[$id] = ['port_id' => $id, 'device_id' => $id < 300 ? 10 : 30, 'ifIndex' => $id, 'ifName' => $name, 'ifDescr' => $name,
+                    'ifSpeed' => 10000000000, 'ifOperStatus' => $oper, 'ifAdminStatus' => 'up', 'ifType' => 'ethernetCsmacd'];
+            }
+            $links = [];
+            foreach ([[101, 301], [102, 302]] as [$local, $remote]) {
+                $links[] = ['local_device_id' => 10, 'local_port_id' => $local, 'remote_device_id' => 30, 'remote_port_id' => $remote,
+                    'remote_hostname' => 'core-a', 'remote_port' => $ports[$remote]['ifName'], 'remote_platform' => '', 'remote_version' => '', 'protocol' => 'lldp'];
+            }
+            $map = (new L2Builder($devices, $links, $ports, [], $lagParent, new StpIndex([], [], $lagParent)))->build(['collapseLag' => true]);
+            $edge = CustomMapLayout::build($map, [], self::STYLE)['edges'][0];
+
+            return [$edge['from'], $edge['port_id'], $edge['reverse']];
+        };
+
+        $acc10 = [101 => 100, 102 => 100, 103 => 100, 104 => 100];
+        $this->assertSame(['d:10', 300, true], $edge($acc10 + [301 => 300, 302 => 300]), 'core-a\'s Po10, which is only this link (down)');
+        $this->assertSame(['d:10', null, false], $edge($acc10), 'core-a has no port stack: no port of one cable for two');
     }
 
     public function testParallelLinksAreMovedApart(): void

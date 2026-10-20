@@ -82,8 +82,8 @@ class ExportController extends Controller
     private function respond(Request $request, callable $then): JsonResponse
     {
         $page = $request->input('page');
-        $name = trim((string) (is_scalar($request->input('name')) ? $request->input('name') : ''));
-        $group = trim((string) (is_scalar($request->input('menu_group')) ? $request->input('menu_group') : ''));
+        $name = CustomMapLayout::mapName($request->input('name'));
+        $group = CustomMapLayout::mapName($request->input('menu_group'));
         $replace = $request->input('replace');
         $error = match (true) {
             ! in_array($page, ['l2', 'l3'], true) => 'Unknown map.',

@@ -3039,12 +3039,12 @@
             return;
         }
         target.addEventListener('change', function () {
-            (self.customMapMaps || []).forEach(function (map) {
-                if (String(map.id) === target.value) {
-                    name.value = map.name;
-                    group.value = map.menu_group || '';
-                }
-            });
+            var chosen = (self.customMapMaps || []).filter(function (map) {
+                return String(map.id) === target.value;
+            })[0];
+            // a map to replace keeps its name and menu group, a new one gets the defaults again
+            name.value = chosen ? chosen.name : self.customMapName();
+            group.value = chosen ? chosen.menu_group || '' : group.defaultValue;
             self.previewCustomMap();
         });
         name.addEventListener('input', function () {
@@ -3056,17 +3056,17 @@
     };
 
     /**
-     * Open the custom map dialog for the map as it is now, named after its scope, with the preview.
+     * Open the custom map dialog for the map as it is now: a new map named after its scope, in the default
+     * menu group (not those of a map picked to replace before), with the preview.
      */
     TopologyMap.prototype.openCustomMap = function () {
         if (!this.network || !this.data || !window.jQuery) {
             return;
         }
-        var name = document.getElementById('topo-custommap-name');
-        if (!name.value || name.value === this.customMapDefault) {
-            name.value = this.customMapDefault = this.customMapName();
-        }
+        var group = document.getElementById('topo-custommap-group');
         document.getElementById('topo-custommap-target').value = '';
+        document.getElementById('topo-custommap-name').value = this.customMapName();
+        group.value = group.defaultValue;
         window.jQuery('#topo-custommap-modal').modal('show');
         this.previewCustomMap();
     };

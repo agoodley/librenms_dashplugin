@@ -27,20 +27,22 @@ class CustomMapLayout
     private const GRID = [120, 100];
 
     /**
-     * Font Awesome icons (the custom map editor's icon style) by role. LibreNMS colors the icon of a
-     * monitored device by its status, blue when up and red when down; unmanaged neighbors are grey.
+     * Font Awesome icons (the custom map editor's icon style) by role, all from the icon list of LibreNMS'
+     * node dialog (resources/views/map/custom-node-modal.blade.php): a node with another icon loses it
+     * when it is edited there. LibreNMS colors the icon of a monitored device by its status, blue when up
+     * and red when down; unmanaged neighbors are grey.
      */
     public const ICONS = [
         DeviceRole::SWITCH => 'f796', // ethernet
-        DeviceRole::L3SWITCH => 'f0e8', // sitemap
+        DeviceRole::L3SWITCH => 'f6ff', // network-wired
         DeviceRole::ROUTER => 'f4d7', // route: the editor's "router"
         DeviceRole::FIREWALL => 'f3ed', // shield
         DeviceRole::WIRELESS => 'f1eb', // wifi
         DeviceRole::SERVER => 'f233', // server
-        DeviceRole::PHONE => 'f095', // phone
+        DeviceRole::PHONE => 'f3ce', // mobile
         DeviceRole::OTHER => 'f2db', // microchip
         'cloud' => 'f0c2', // cloud: an external AS on the L3 map
-        DeviceRole::UNKNOWN => 'f6ff', // network-wired
+        DeviceRole::UNKNOWN => 'f2db', // microchip
     ];
 
     /** Color of the icons of unmanaged neighbors and AS clouds, which have no status. */
@@ -136,13 +138,30 @@ class CustomMapLayout
 
     /**
      * A label written to LibreNMS: the characters that matter in HTML become look-alikes (UNSAFE),
-     * control characters other than line breaks go, and it is cut to the column's length.
+     * control characters other than line breaks become spaces (one between two words: "Gi1/0/1\tuplink"
+     * is "Gi1/0/1 uplink"), and it is cut to the column's length.
      */
     public static function label(string $text, int $length): string
     {
-        $text = (string) preg_replace('/[\x00-\x09\x0B-\x1F\x7F]+/u', '', strtr(mb_scrub($text, 'UTF-8'), self::UNSAFE));
+        $text = (string) preg_replace('/[\x00-\x09\x0B-\x1F\x7F]+/u', ' ', strtr(mb_scrub($text, 'UTF-8'), self::UNSAFE));
+        $text = (string) preg_replace(['/ {2,}/', '/ ?\n ?/'], [' ', "\n"], $text);
 
-        return mb_substr(trim($text), 0, $length);
+        return rtrim(mb_substr(trim($text), 0, $length));
+    }
+
+    /**
+     * A map name or menu group as LibreNMS' map editor can show it: it puts the name into a JavaScript
+     * string, which a line break ends and a backslash escapes (a trailing one takes its closing quote,
+     * "\u" or "\x" are errors), so control characters become spaces and backslashes their look-alike.
+     * Anything but a string or number is no name ('').
+     */
+    public static function mapName(mixed $input): string
+    {
+        if (! is_scalar($input)) {
+            return '';
+        }
+
+        return trim(str_replace('\\', '＼', (string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', mb_scrub((string) $input, 'UTF-8'))));
     }
 
     /**

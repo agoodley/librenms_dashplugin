@@ -126,11 +126,14 @@ The dialog previews what will be written (nodes, links, size) before anything is
   down); unmanaged neighbors are grey icons, subnets of the L3 map boxes. A new map takes LibreNMS' defaults for new
   custom maps (the `custom_map` settings: fonts, legend colours, background);
 * each link takes its status and utilization from a port that is that link only: the port-channel of either end when all
-  its cables are this link, else the port of a link that is one cable. A port-channel split over two switches (MLAG) is
-  used for neither of its links, which then take the other end's port-channel; a link of several cables without one has
-  no port. OSPF/BGP adjacencies and the other L3 overlays have no port either and are drawn without utilization;
+  of its members that are up (by the port stack, whether LLDP/CDP reports their cables or not) are this link's cables,
+  else the port of a link that is one cable. A port-channel split over two switches (MLAG) is used for neither of its
+  links, which then take the other end's port-channel; a link of several cables without one has no port. OSPF/BGP
+  adjacencies and the other L3 overlays have no port either and are drawn without utilization;
 * names are written with look-alikes for the characters HTML uses (`<` `>` `"` `'` `&` `` ` `` become ‹ › ″ ’ ＆ ˋ):
-  LibreNMS' map editor puts labels into HTML, and LLDP/CDP neighbors name themselves;
+  LibreNMS' map editor puts labels into HTML, and LLDP/CDP neighbors name themselves. The editor puts the map's name
+  into its script, so line breaks in the name and menu group become spaces and a backslash becomes ＼. The icons are
+  among those of the editor's node dialog, so a node edited there keeps its icon;
 * *Map* can replace a custom map this plugin made before: its nodes and links are written again (also changes made in
   the editor), its id, menu group, settings, legend and background stay, so dashboards keep showing it. If it changed in
   the editor after the preview, the export stops and shows a new preview. Maps made in LibreNMS are never changed. The

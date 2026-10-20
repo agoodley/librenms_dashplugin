@@ -25,17 +25,17 @@ class L2Builder
         'unknown', 'default', 'openwrt', 'ubnt', 'mikrotik', 'linux', 'esxi', 'debian', 'ubuntu',
     ];
 
+    /** @var array<int, int[]>|null aggregate port_id => its member ports (the port stack) */
+    private ?array $lagMembers = null;
+
     /**
      * @param  array<int, array>  $devices  device_id => device row (with 'role', 'url')
      * @param  array<int, array>  $links  rows of the links table
-     * @param  array<int, array>  $ports  port_id => port row (link ports and their aggregates)
+     * @param  array<int, array>  $ports  port_id => port row (link ports, their aggregates and the aggregates' members)
      * @param  array<int, array<int, bool>>  $portVlans  port_id => [vlan => untagged]
      * @param  array<int, int>  $lagParent  member port_id => aggregate port_id
      * @param  array<int, array<int, string>>  $deviceVlans  device_id => [vlan => name]
      */
-    /** @var array<int, array<int, true>>|null aggregate port_id => its member ports that have a link */
-    private ?array $linkedMembers = null;
-
     public function __construct(
         private array $devices,
         private array $links,
@@ -546,31 +546,33 @@ class L2Builder
     }
 
     /**
-     * Do all members of this aggregate that have a link (to any neighbor, on the map or not) run in
-     * this edge ($ports: the edge's member ports on that side)? Members without a link do not count:
-     * a cable whose LLDP is gone still belongs to its port-channel.
+     * Is this aggregate only this edge ($ports: the edge's member ports on that side)? Every member of it in the
+     * port stack that is up must run in this edge, whether LLDP/CDP reports its cable or not (a neighbor that
+     * speaks only the other protocol). Members that are down do not count: a cable whose link went down with its
+     * LLDP row still belongs to its port-channel. A member whose port row is missing counts as up.
      *
      * @param  array<int, ?int>  $ports
      */
     private function wholeAggregate(?int $parent, array $ports): bool
     {
-        if (! $parent) {
+        $edge = array_flip(array_filter($ports));
+        if (! $parent || ! $edge) {
             return false;
         }
-        if ($this->linkedMembers === null) {
-            $this->linkedMembers = [];
-            foreach ($this->links as $link) {
-                foreach (['local_port_id', 'remote_port_id'] as $key) {
-                    $port = (int) ($link[$key] ?? 0);
-                    if ($port && isset($this->lagParent[$port])) {
-                        $this->linkedMembers[$this->lagParent[$port]][$port] = true;
-                    }
-                }
+        if ($this->lagMembers === null) {
+            $this->lagMembers = [];
+            foreach ($this->lagParent as $member => $aggregate) {
+                $this->lagMembers[$aggregate][] = (int) $member;
             }
         }
-        $linked = $this->linkedMembers[$parent] ?? [];
+        foreach ($this->lagMembers[$parent] ?? [] as $member) {
+            $oper = $this->ports[$member]['ifOperStatus'] ?? 'up';
+            if (! isset($edge[$member]) && ! in_array($oper, ['down', 'lowerLayerDown', 'notPresent'], true)) {
+                return false;
+            }
+        }
 
-        return $linked !== [] && ! array_diff_key($linked, array_flip(array_filter($ports)));
+        return true;
     }
 
     /**
