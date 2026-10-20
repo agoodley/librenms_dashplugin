@@ -7,9 +7,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
- * Saved views of the maps (topology_views, Sharing\SavedView). A user sees their own views and the ones
- * others shared, and changes their own; LibreNMS admins may also change and delete any shared view. A
- * view's positions are only handed out for the nodes of the map the viewer is shown (layoutFor()).
+ * Saved views of the maps (topology_views): storage, and the facts SavedView's rules need (the user,
+ * whether they are an admin, the names they may see). A user sees their own views and the ones others
+ * shared, and changes their own; LibreNMS admins may also change and delete any shared view. A view's
+ * positions are only handed out for the nodes of the map the viewer is shown (layoutFor()).
  */
 class ViewRepository extends ScopedRepository
 {
@@ -18,6 +19,11 @@ class ViewRepository extends ScopedRepository
 
     /** @var array<int, ?string> names of the views' centered devices, null for those the user may not see */
     private array $devices = [];
+
+    /** @var array<string, bool> VRF name => a device the user may see has it */
+    private array $vrfs = [];
+
+    private ?bool $admin = null;
 
     /**
      * Does the table exist (the plugin's migration ran)?
@@ -74,7 +80,7 @@ class ViewRepository extends ScopedRepository
         }
         $row = DB::table('topology_views as v')->leftJoin('users as u', 'u.user_id', '=', 'v.user_id')->where('v.id', $id)
             ->first(['v.id', 'v.user_id', 'v.name', 'v.page', 'v.query', 'v.layout', 'v.options', 'v.shared', 'v.updated_at', 'u.username']);
-        if (! $row || ((int) $row->user_id !== $this->userId() && ! $row->shared)) {
+        if (! $row || ! SavedView::canOpen((array) $row, $this->userId())) {
             return null;
         }
 
@@ -172,9 +178,7 @@ class ViewRepository extends ScopedRepository
     }
 
     /**
-     * What is shown about a view: name, map, parameters (without a device, group or location the user may
-     * not see), scope in words (only names the user may see), owner, whether it is the user's, shared, may
-     * be changed by the user, and its URL.
+     * What the user is shown of a view (SavedView::present()) and its URL.
      *
      * @return array{id: int, name: string, page: string, params: array, options: array, scope: string, owner: string, mine: bool,
      *     shared: bool, can_edit: bool, updated_at: ?string, url: string}
@@ -182,40 +186,16 @@ class ViewRepository extends ScopedRepository
     public function meta(array $row): array
     {
         $params = json_decode((string) $row['query'], true);
-        $params = is_array($params) ? $params : [];
-        $options = json_decode((string) ($row['options'] ?? ''), true);
-        $mine = (int) $row['user_id'] === $this->userId();
-        $shared = (bool) $row['shared'];
-        $page = (string) $row['page'];
-        $names = $this->names($params);
-        $scope = SavedView::describe($page, $params, $names);
-        // the device, group and location the user may not see are left out, as their ids would name them
-        foreach (['device', 'group', 'location'] as $key) {
-            if (! empty($params[$key]) && $names[$key] === null) {
-                $params[$key] = null;
-            }
-        }
+        $view = SavedView::present($row, $this->userId(), $this->isAdmin(), $this->names(is_array($params) ? $params : []));
+        $view['url'] = isset(SavedView::PAGES[$view['page']]) ? route('topology.' . $view['page'], ['view' => $view['id']]) : '';
 
-        return [
-            'id' => (int) $row['id'],
-            'name' => (string) $row['name'],
-            'page' => $page,
-            'params' => $params,
-            'options' => SavedView::options($options),
-            'scope' => $scope,
-            'owner' => $mine ? 'you' : (string) ($row['username'] ?? 'a former user'),
-            'mine' => $mine,
-            'shared' => $shared,
-            'can_edit' => $mine || ($shared && $this->isAdmin()),
-            'updated_at' => $row['updated_at'] ?? null,
-            'url' => isset(SavedView::PAGES[$page]) ? route('topology.' . $page, ['view' => (int) $row['id']]) : '',
-        ];
+        return $view;
     }
 
     /**
-     * Names of the device, group and location of a view's parameters that the user may see.
+     * Names of the device, group, location and VRF of a view's parameters that the user may see.
      *
-     * @return array{device: ?string, group: ?string, location: ?string}
+     * @return array{device: ?string, group: ?string, location: ?string, vrf: ?string}
      */
     private function names(array $params): array
     {
@@ -233,11 +213,35 @@ class ViewRepository extends ScopedRepository
             $this->devices[$device] = $this->deviceName($device);
         }
 
+        $vrf = isset($params['vrf']) && is_string($params['vrf']) && $params['vrf'] !== '' ? $params['vrf'] : null;
+
         return [
             'device' => $device ? $this->devices[$device] : null,
             'group' => $this->filterNames['groups'][$id('group')] ?? null,
             'location' => $this->filterNames['locations'][$id('location')] ?? null,
+            'vrf' => $vrf !== null && $this->hasVrf($vrf) ? $vrf : null,
         ];
+    }
+
+    /**
+     * Does a device the user may see have this VRF (as the L3 map finds it: a VRF of the device, or the
+     * context of an address)?
+     */
+    private function hasVrf(string $vrf): bool
+    {
+        if (! array_key_exists($vrf, $this->vrfs)) {
+            $ids = array_keys($this->accessible());
+            $ports = fn ($query) => $query->select('port_id')->from('ports')->whereIntegerInRaw('device_id', $ids);
+            try {
+                $this->vrfs[$vrf] = $ids && (DB::table('vrfs')->whereIntegerInRaw('device_id', $ids)->where('vrf_name', $vrf)->exists()
+                    || DB::table('ipv4_addresses')->where('context_name', $vrf)->whereIn('port_id', $ports)->exists()
+                    || DB::table('ipv6_addresses')->where('context_name', $vrf)->whereIn('port_id', $ports)->exists());
+            } catch (\Throwable) {
+                $this->vrfs[$vrf] = false;
+            }
+        }
+
+        return $this->vrfs[$vrf];
     }
 
     private function userId(): int
@@ -250,6 +254,6 @@ class ViewRepository extends ScopedRepository
      */
     private function isAdmin(): bool
     {
-        return $this->user !== null && ($this->user->can('admin') || (method_exists($this->user, 'isAdmin') && $this->user->isAdmin()));
+        return $this->admin ??= $this->user !== null && ($this->user->can('admin') || (method_exists($this->user, 'isAdmin') && $this->user->isAdmin()));
     }
 }

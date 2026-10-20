@@ -72,7 +72,8 @@
             </label>
             <label><input type="checkbox" name="ospf" value="1" @checked($params['ospf'])> OSPF</label>
             <label><input type="checkbox" name="bgp" value="1" @checked($params['bgp'])> BGP</label>
-            {{-- more overlays, shown by topology.js when the map's devices have such data; disabled until then so they stay out of the URL --}}
+            {{-- more overlays, shown by topology.js when the map's devices have such data; disabled until then so they stay out of the URL,
+                 unless the page's query (with an open saved view's parameters) sets them --}}
             @foreach([
                 'ospfv3' => ['OSPFv3', 'OSPFv3 adjacencies'],
                 'isis' => ['IS-IS', 'IS-IS adjacencies'],
@@ -80,7 +81,7 @@
                 'mpls' => ['MPLS LSPs', 'MPLS label switched paths, with an arrow toward the tail (off by default: a full mesh joins every two PEs)'],
                 'pw' => ['Pseudowires', 'Pseudowires between PE devices, with the MTU check of their attachment circuits'],
             ] as $layer => [$layerLabel, $layerTitle])
-                <label data-layer="{{ $layer }}" title="{{ $layerTitle }}" style="display: none"><input type="checkbox" name="{{ $layer }}" value="1" @checked($params[$layer]) @disabled(! request()->has($layer))> {{ $layerLabel }}</label>
+                <label data-layer="{{ $layer }}" title="{{ $layerTitle }}" style="display: none"><input type="checkbox" name="{{ $layer }}" value="1" @checked($params[$layer]) @disabled(! array_key_exists($layer, $query))> {{ $layerLabel }}</label>
             @endforeach
             <label><input type="checkbox" name="ipv6" value="1" @checked($params['ipv6'])> IPv6</label>
             <label title="Include every device with an IP address, not only routers, L3 switches and firewalls">
@@ -197,12 +198,13 @@
                 <p class="text-muted">Keeps the scope, filters, device positions and display options of this map.</p>
                 <div class="form-group">
                     <label for="topo-view-name">Name</label>
-                    <input id="topo-view-name" class="form-control" maxlength="100" autocomplete="off">
+                    <input id="topo-view-name" class="form-control" maxlength="100" autocomplete="off" placeholder="e.g. Core and distribution">
                 </div>
                 <div class="checkbox">
                     <label><input type="checkbox" id="topo-view-shared"> Share with everyone who can open the maps</label>
                 </div>
-                <p class="text-muted small">Each user sees a shared view with their own permissions: only the devices they may see.</p>
+                <p class="text-muted small">Each user sees a shared view with their own permissions: only the devices they may see. Its name is
+                    shown to all of them, so leave out names of devices, groups or locations they should not see.</p>
                 <div id="topo-view-message"></div>
             </div>
             <div class="modal-footer">

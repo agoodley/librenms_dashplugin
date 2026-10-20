@@ -2212,6 +2212,16 @@
     }
 
     /**
+     * Text of a yEd label: yEd draws a label that starts with <html> as HTML (which can load images from
+     * anywhere), and names come from devices and their neighbors, so such a label gets a zero-width
+     * space in front.
+     */
+    function yedLabel(value) {
+        var text = String(value === null || value === undefined ? '' : value);
+        return /^\s*<\s*html/i.test(text) ? '\u200B' + text : text;
+    }
+
+    /**
      * Coordinate or size for the files, two decimals.
      */
     function coordinate(value) {
@@ -2533,7 +2543,7 @@
         var out = [];
         var label = function (text, attributes, border) {
             return '<y:EdgeLabel alignment="center" fontFamily="Dialog" fontSize="10" fontStyle="plain" hasBackgroundColor="true" backgroundColor="#FFFFFF" ' +
-                (border ? 'hasLineColor="true" lineColor="' + border + '"' : 'hasLineColor="false"') + ' visible="true" ' + attributes + '>' + xmlText(text) + '</y:EdgeLabel>';
+                (border ? 'hasLineColor="true" lineColor="' + border + '"' : 'hasLineColor="false"') + ' visible="true" ' + attributes + '>' + xmlText(yedLabel(text)) + '</y:EdgeLabel>';
         };
         var description = function (item, isEdge) {
             return self.diagramProperties(item, isEdge).map(function (pair) {
@@ -2553,7 +2563,7 @@
                 '<y:BorderStyle color="' + faded(shape.border, node.opacity).toUpperCase() + '" type="line" width="' + (subnet ? '1.5' : '1.0') + '"/>' +
                 '<y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="' + (subnet ? 'Monospaced' : 'Dialog') + '" fontSize="' + (subnet ? 11 : (node.data.managed ? 12 : 11)) +
                 '" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" textColor="' + faded('#222222', Math.max(node.opacity, 0.5)).toUpperCase() + '" visible="true" ' +
-                (subnet ? 'modelName="internal" modelPosition="c"' : 'modelName="sides" modelPosition="s"') + '>' + xmlText(node.label) + '</y:NodeLabel>' +
+                (subnet ? 'modelName="internal" modelPosition="c"' : 'modelName="sides" modelPosition="s"') + '>' + xmlText(yedLabel(node.label)) + '</y:NodeLabel>' +
                 '<y:Shape type="' + (subnet ? 'roundrectangle' : DIAGRAM_SHAPES[shape.role].yed) + '"/></y:ShapeNode></data></node>');
         });
 
@@ -2695,13 +2705,14 @@
     };
 
     /**
-     * Name of a new view: the map and its scope, as for a custom map.
+     * The dialog to save the map as a view. Its name starts empty: a scope in words would show the names
+     * of devices, groups and locations to everyone the view is shared with.
      */
     TopologyMap.prototype.openSaveView = function () {
         if (!this.network || !this.data || !window.jQuery) {
             return;
         }
-        document.getElementById('topo-view-name').value = this.customMapName();
+        document.getElementById('topo-view-name').value = '';
         document.getElementById('topo-view-message').innerHTML = '';
         window.jQuery('#topo-view-modal').modal('show');
     };
@@ -2766,8 +2777,9 @@
     // ------------------------------------------------------------------ export to a LibreNMS Custom Map (admins)
 
     /**
-     * Wire the custom map dialog: a change of its fields asks for a new preview (the server only writes
-     * what was previewed); picking a map to replace takes its name.
+     * Wire the custom map dialog: picking the map to write asks for a new preview (the server only writes
+     * what was previewed) and takes that map's name and menu group; the name and menu group are not part
+     * of the preview.
      */
     TopologyMap.prototype.bindCustomMap = function () {
         var self = this;
@@ -2778,24 +2790,18 @@
         if (!target || !name || !group || !create) {
             return;
         }
-        var changed = function () {
-            self.customMapPreview = null;
-            create.disabled = true;
-            clearTimeout(self.customMapTimer);
-            self.customMapTimer = setTimeout(function () {
-                self.previewCustomMap();
-            }, 400);
-        };
         target.addEventListener('change', function () {
             (self.customMapMaps || []).forEach(function (map) {
                 if (String(map.id) === target.value) {
                     name.value = map.name;
+                    group.value = map.menu_group || '';
                 }
             });
-            changed();
+            self.previewCustomMap();
         });
-        name.addEventListener('input', changed);
-        group.addEventListener('input', changed);
+        name.addEventListener('input', function () {
+            create.disabled = !self.customMapPreview || !name.value.trim();
+        });
         create.addEventListener('click', function () {
             self.writeCustomMap();
         });
@@ -2938,7 +2944,7 @@
             this.row('Writes', preview.replace
                 ? 'Replaces the ' + preview.replace.nodes + ' nodes and ' + preview.replace.edges + ' links of &ldquo;' + esc(preview.replace.name) + '&rdquo; (#' +
                     esc(preview.replace.id) + '), also changes made to them in LibreNMS&rsquo; editor; its settings, legend and background stay'
-                : 'A new custom map' + (preview.menu_group ? ' in the menu group &ldquo;' + esc(preview.menu_group) + '&rdquo;' : '')) +
+                : 'A new custom map') +
             this.row('Nodes', esc(nodes || 'none')) +
             this.row('Links', esc(stats.edges + (stats.edges ? ', ' + stats.ports + ' with live utilization' : ''))) +
             this.row('Size', esc(preview.width + ' × ' + preview.height + ' px')) + '</table>';
@@ -2949,7 +2955,7 @@
         }
         box.innerHTML = html;
         create.innerHTML = '<i class="fa fa-check"></i> ' + (preview.replace ? 'Replace map' : 'Create map');
-        create.disabled = false;
+        create.disabled = !document.getElementById('topo-custommap-name').value.trim();
     };
 
     /**

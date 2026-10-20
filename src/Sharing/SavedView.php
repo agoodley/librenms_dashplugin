@@ -3,9 +3,11 @@
 namespace Agoodley\LibrenmsTopology\Sharing;
 
 /**
- * What a saved map view holds and how it is read back: the map's parameters as MapParams parses them,
- * the positions of its nodes, the options of the map's view bar, and its scope in words. Positions only
- * ever leave the server for the nodes of the map the viewer is shown (forMap()).
+ * What a saved map view holds and the rules for reading it back: the map's parameters as MapParams
+ * parses them, the positions of its nodes and the options of the map's view bar; who may open and
+ * change a view, and what a user is shown of it (present()): never a device, group, location or VRF
+ * they may not see. Positions only ever leave the server for the nodes of the map the viewer is shown
+ * (forMap()).
  */
 class SavedView
 {
@@ -52,6 +54,83 @@ class SavedView
         }
 
         return $query;
+    }
+
+    /**
+     * Query of a map page that opens a view: the URL's own parameters (without view) win over the
+     * view's, which fill in the rest, the L3 overlay toggles too (the map page only submits a toggle
+     * that is in its query).
+     *
+     * @param  array<string, mixed>  $url  the request's query
+     * @param  array  $params  the view's parameters (present())
+     * @return array<string, mixed>
+     */
+    public static function mergeQuery(string $page, array $url, array $params): array
+    {
+        unset($url['view']);
+
+        return $url + self::query($page, $params);
+    }
+
+    /**
+     * May the user open the view: their own, or a shared one?
+     *
+     * @param  array{user_id: int|string, shared: mixed}  $row  topology_views row
+     */
+    public static function canOpen(array $row, int $userId): bool
+    {
+        return (int) $row['user_id'] === $userId || (bool) $row['shared'];
+    }
+
+    /**
+     * May the user change (rename, share, update, delete) the view: their own, or a shared one when they
+     * are a LibreNMS admin?
+     *
+     * @param  array{user_id: int|string, shared: mixed}  $row
+     */
+    public static function canEdit(array $row, int $userId, bool $admin): bool
+    {
+        return (int) $row['user_id'] === $userId || ((bool) $row['shared'] && $admin);
+    }
+
+    /**
+     * What a user is shown of a view they may open: its parameters without the device, group,
+     * location and VRF they may not see (their ids and names would tell them), its scope in words,
+     * owner and whether they may change it. The url is added by the caller.
+     *
+     * @param  array{id: int|string, user_id: int|string, name: string, page: string, query: ?string, options?: ?string,
+     *     shared: mixed, updated_at?: ?string, username?: ?string}  $row  topology_views row with its owner's username
+     * @param  array{device?: ?string, group?: ?string, location?: ?string, vrf?: ?string}  $names  the names of the view's
+     *     device, group, location and VRF that the user may see, null for the others
+     * @return array{id: int, name: string, page: string, params: array, options: array, scope: string, owner: string, mine: bool,
+     *     shared: bool, can_edit: bool, updated_at: ?string}
+     */
+    public static function present(array $row, int $userId, bool $admin, array $names): array
+    {
+        $params = json_decode((string) $row['query'], true);
+        $params = is_array($params) ? $params : [];
+        $page = (string) $row['page'];
+        $scope = self::describe($page, $params, $names);
+        foreach (['device', 'group', 'location', 'vrf'] as $key) {
+            if (! empty($params[$key]) && ($names[$key] ?? null) === null) {
+                $params[$key] = null;
+            }
+        }
+        $mine = (int) $row['user_id'] === $userId;
+
+        return [
+            'id' => (int) $row['id'],
+            'name' => (string) $row['name'],
+            'page' => $page,
+            'params' => $params,
+            'options' => self::options(json_decode((string) ($row['options'] ?? ''), true)),
+            'scope' => $scope,
+            'owner' => $mine ? 'you' : (string) (($row['username'] ?? null) ?: 'a former user'),
+            'mine' => $mine,
+            'shared' => (bool) $row['shared'],
+            'can_edit' => self::canEdit($row, $userId, $admin),
+            'updated_at' => $row['updated_at'] ?? null,
+        ];
     }
 
     /**
@@ -144,7 +223,8 @@ class SavedView
      * Scope of a view in words: "core1, 2 hops · location HQ · VLAN 30", or "whole network".
      *
      * @param  array  $params  MapParams::parse() output
-     * @param  array{device?: ?string, group?: ?string, location?: ?string}  $names  names the viewer may see, null otherwise
+     * @param  array{device?: ?string, group?: ?string, location?: ?string, vrf?: ?string}  $names  names the viewer may see,
+     *     null otherwise
      */
     public static function describe(string $page, array $params, array $names): string
     {
@@ -162,7 +242,7 @@ class SavedView
             $parts[] = 'VLAN ' . (int) $params['vlan'];
         }
         if ($page === 'l3' && ! empty($params['vrf'])) {
-            $parts[] = 'VRF ' . $params['vrf'];
+            $parts[] = 'VRF ' . (($names['vrf'] ?? null) ?: '(one you cannot see)');
         }
 
         return $parts ? implode(' · ', $parts) : 'whole network';

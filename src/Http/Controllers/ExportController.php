@@ -36,7 +36,8 @@ class ExportController extends Controller
 
     /**
      * POST api/custom-map/preview: what the export would write (page, query, positions, name, menu_group,
-     * replace), with the plugin's earlier maps and a fingerprint that the export must send back.
+     * replace), with the plugin's earlier maps and a fingerprint of the map and the replaced map's state that
+     * the export must send back. It writes nothing.
      */
     public function preview(Request $request): JsonResponse
     {
@@ -57,7 +58,7 @@ class ExportController extends Controller
         return $this->respond($request, function (array $plan, CustomMapRepository $repo) use ($request) {
             $fingerprint = $request->input('fingerprint');
             if (! is_string($fingerprint) || ! hash_equals($plan['fingerprint'], $fingerprint)) {
-                return response()->json(['error' => 'The map or the export settings changed since the preview: check the new preview and export again.',
+                return response()->json(['error' => 'The map, or the custom map it replaces, changed since the preview: check the new preview and export again.',
                     'preview' => $this->summary($plan)], 409);
             }
             $id = $repo->write($plan['layout'], $plan['name'], $plan['group'], $plan['page'], $plan['params'], $plan['replace']['id'] ?? null);
@@ -115,7 +116,7 @@ class ExportController extends Controller
             parse_str(is_string($request->input('query')) ? $request->input('query') : '', $query);
             $params = MapParams::parse($query, $settings);
             $data = $this->service($request, $settings)->$page($params);
-            $layout = CustomMapLayout::build($data, self::positions($request->input('positions')), $repo->images(array_values(CustomMapLayout::IMAGES)), $repo->style());
+            $layout = CustomMapLayout::build($data, self::positions($request->input('positions')), $repo->style());
             if (! $layout['nodes']) {
                 return response()->json(['error' => 'The map is empty: there is nothing to export.'], 422);
             }
@@ -130,7 +131,9 @@ class ExportController extends Controller
                 'layout' => $layout,
                 'scope' => $data['scope'] ?? [],
             ];
-            $plan['fingerprint'] = sha1((string) json_encode([$page, $params, $plan['name'], $plan['group'], $replace, $layout['nodes'], $layout['edges'], $layout['width'], $layout['height']]));
+            // what is written and what it replaces, as previewed: the map, and the state of the map it replaces (changes made
+            // in LibreNMS' editor since change its update times and counts); not the name and menu group, typed after the preview
+            $plan['fingerprint'] = sha1((string) json_encode([$page, $params, $plan['replace'], $layout['nodes'], $layout['edges'], $layout['width'], $layout['height']]));
 
             return $then($plan, $repo);
         } catch (\Throwable $e) {

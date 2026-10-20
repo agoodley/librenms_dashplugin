@@ -58,6 +58,21 @@ class L2BuilderTest extends TestCase
         $this->assertSame('phone', $phone[0]['role']);
     }
 
+    public function testAggregatesThatAreWhollyTheLinkAreFlagged(): void
+    {
+        [$po] = $this->edgeBetween($this->build(), 'd:1', 'd:2');
+        $this->assertTrue($po['lag']['a_whole']);
+        $this->assertTrue($po['lag']['b_whole']);
+
+        // core1's Po1 also takes the uplink to acc1 (an MLAG member): it is not only the link to core2
+        $lagParent = CampusFixture::lagParent() + [13 => 10];
+        $builder = new L2Builder(CampusFixture::devices(), CampusFixture::links(), CampusFixture::ports(), CampusFixture::portVlans(), $lagParent,
+            new StpIndex(CampusFixture::stpInstances(), CampusFixture::stpPorts(), $lagParent));
+        [$po] = $this->edgeBetween($builder->build(), 'd:1', 'd:2');
+        $this->assertFalse($po['lag']['a_whole']);
+        $this->assertTrue($po['lag']['b_whole']);
+    }
+
     public function testWithoutLagCollapseMembersAreParallelEdges(): void
     {
         $result = $this->build(['collapseLag' => false, 'unmanaged' => false]);

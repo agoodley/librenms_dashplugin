@@ -74,26 +74,28 @@ class CustomMapRepository extends ScopedRepository
     }
 
     /**
-     * The custom maps this plugin created that still exist, newest first: custom_map_id => name, page,
-     * created_by, updated_at, nodes and edges. Rows of maps deleted in LibreNMS are removed.
+     * The custom maps this plugin created that still exist, newest first, with what tells whether one
+     * changed (in LibreNMS' editor too): its name, menu group and update time, and the number and latest
+     * update of its nodes and edges. Reading only: rows of deleted maps are removed by write().
      *
-     * @return array<int, array{id: int, name: string, page: string, created_by: ?string, updated_at: ?string, nodes: int, edges: int}>
+     * @return array<int, array{id: int, name: string, menu_group: ?string, page: string, created_by: ?string, updated_at: ?string,
+     *     map_updated_at: ?string, nodes: int, edges: int, nodes_updated_at: ?string, edges_updated_at: ?string}>
      */
     public function pluginMaps(): array
     {
-        DB::table('topology_custom_maps')->whereNotIn('custom_map_id', DB::table('custom_maps')->select('custom_map_id'))->delete();
-
         $maps = [];
         foreach (DB::table('topology_custom_maps as t')->join('custom_maps as m', 'm.custom_map_id', '=', 't.custom_map_id')
-            ->orderByDesc('t.updated_at')->get(['t.custom_map_id', 'm.name', 't.page', 't.created_by', 't.updated_at']) as $row) {
-            $maps[(int) $row->custom_map_id] = ['id' => (int) $row->custom_map_id, 'name' => (string) $row->name, 'page' => (string) $row->page,
-                'created_by' => $row->created_by, 'updated_at' => $row->updated_at, 'nodes' => 0, 'edges' => 0];
+            ->orderByDesc('t.updated_at')->get(['t.custom_map_id', 'm.name', 'm.menu_group', 'm.updated_at as map_updated_at', 't.page', 't.created_by', 't.updated_at']) as $row) {
+            $maps[(int) $row->custom_map_id] = ['id' => (int) $row->custom_map_id, 'name' => (string) $row->name, 'menu_group' => $row->menu_group,
+                'page' => (string) $row->page, 'created_by' => $row->created_by, 'updated_at' => $row->updated_at,
+                'map_updated_at' => $row->map_updated_at, 'nodes' => 0, 'edges' => 0, 'nodes_updated_at' => null, 'edges_updated_at' => null];
         }
         if ($maps) {
             foreach (['nodes' => 'custom_map_nodes', 'edges' => 'custom_map_edges'] as $key => $table) {
                 foreach (DB::table($table)->whereIntegerInRaw('custom_map_id', array_keys($maps))->groupBy('custom_map_id')
-                    ->get(['custom_map_id', DB::raw('count(*) as n')]) as $row) {
+                    ->get(['custom_map_id', DB::raw('count(*) as n'), DB::raw('max(updated_at) as latest')]) as $row) {
                     $maps[(int) $row->custom_map_id][$key] = (int) $row->n;
+                    $maps[(int) $row->custom_map_id][$key . '_updated_at'] = $row->latest;
                 }
             }
         }
@@ -102,20 +104,10 @@ class CustomMapRepository extends ScopedRepository
     }
 
     /**
-     * The images of LibreNMS' custom map icon set (html/images/custommap/icons) among $files.
-     *
-     * @param  string[]  $files
-     * @return string[]
-     */
-    public function images(array $files): array
-    {
-        return array_values(array_filter($files, fn (string $file) => is_file(base_path('html/images/custommap/icons/' . $file))));
-    }
-
-    /**
      * LibreNMS' defaults for the text and size of new custom map nodes and edges.
      *
-     * @return array{text_face: string, text_size: int, text_colour: string, edge_text_size: int, node_size: int}
+     * @return array{text_face: string, text_size: int, text_colour: string, node_size: int, edge_text_face: string,
+     *     edge_text_size: int, edge_text_colour: string, edge_text_align: string}
      */
     public function style(): array
     {
@@ -123,8 +115,11 @@ class CustomMapRepository extends ScopedRepository
             'text_face' => (string) self::config('custom_map.node_font_face', 'arial'),
             'text_size' => (int) self::config('custom_map.node_font_size', 14),
             'text_colour' => (string) self::config('custom_map.node_font_color', '#343434'),
-            'edge_text_size' => (int) self::config('custom_map.edge_font_size', 12),
             'node_size' => (int) self::config('custom_map.node_size', 25),
+            'edge_text_face' => (string) self::config('custom_map.edge_font_face', 'arial'),
+            'edge_text_size' => (int) self::config('custom_map.edge_font_size', 12),
+            'edge_text_colour' => (string) self::config('custom_map.edge_font_color', '#343434'),
+            'edge_text_align' => (string) self::config('custom_map.edge_font_align', 'horizontal'),
         ];
     }
 
@@ -175,6 +170,8 @@ class CustomMapRepository extends ScopedRepository
             } else {
                 DB::table('topology_custom_maps')->insert($record + ['custom_map_id' => $id, 'created_at' => $now]);
             }
+            // forget the maps deleted in LibreNMS since
+            DB::table('topology_custom_maps')->whereNotIn('custom_map_id', DB::table('custom_maps')->select('custom_map_id'))->delete();
 
             return $id;
         });
@@ -196,6 +193,7 @@ class CustomMapRepository extends ScopedRepository
     private function newMap(): array
     {
         $background = self::config('custom_map.background_data', null);
+        $legend = self::legendColours();
 
         return [
             'node_align' => (int) self::config('custom_map.node_align', 10),
@@ -236,7 +234,26 @@ class CustomMapRepository extends ScopedRepository
             'background_type' => (string) self::config('custom_map.background_type', 'none'),
             'background_data' => $background === null ? null : json_encode($background),
             'background_version' => 0, // before LibreNMS 24.5 only
-        ];
+        ] + ($legend !== null ? ['legend_colours' => json_encode($legend), 'legend_steps' => count($legend) - 2] : []);
+    }
+
+    /**
+     * Legend colours of a new map from the custom_map.legend_colours setting, checked as LibreNMS'
+     * CustomMapController::getDefaultLegendColours() does; null without the setting.
+     *
+     * @return array<int|string, string>|null percentage (-2 down, -1 invalid) => #rrggbb
+     */
+    private static function legendColours(): ?array
+    {
+        $colours = self::config('custom_map.legend_colours', null);
+        if (! is_array($colours) || ! $colours) {
+            return null;
+        }
+        // the same check as LibreNMS, whose character class only takes the digit 0
+        $colours = array_filter($colours, fn ($colour, $key) => is_numeric($key) && preg_match('/^#[A-Fa-f0-0]{6}$/', (string) $colour),
+            ARRAY_FILTER_USE_BOTH);
+
+        return $colours + ['-2' => '#8B0000', '-1' => '#000000', '0' => '#00FF00'];
     }
 
     /**

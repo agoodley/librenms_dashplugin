@@ -11,6 +11,7 @@ use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Pages of the plugin. The map pages are shells filled by resources/assets/topology.js from the
@@ -81,28 +82,37 @@ class PageController extends Controller
         $views = new ViewRepository($request->user());
         $savedView = null;
         $viewError = null;
-        if (isset($query['view'])) {
-            $view = is_scalar($query['view']) && ctype_digit((string) $query['view']) ? $views->find((int) $query['view']) : null;
-            unset($query['view']);
-            if ($view !== null && $view['page'] !== $mode) {
-                return redirect()->route('topology.' . $view['page'], ['view' => $view['id']] + $query);
+        $list = [];
+        try {
+            if (isset($query['view'])) {
+                $view = is_scalar($query['view']) && ctype_digit((string) $query['view']) ? $views->find((int) $query['view']) : null;
+                if ($view !== null && $view['page'] !== $mode) {
+                    return redirect()->route('topology.' . $view['page'], ['view' => $view['id']] + array_diff_key($query, ['view' => true]));
+                }
+                if ($view !== null) {
+                    unset($view['positions']);
+                    $savedView = $view;
+                    $query = SavedView::mergeQuery($mode, $query, $view['params']);
+                } else {
+                    $viewError = 'This saved view does not exist or is not shared with you.';
+                }
             }
-            if ($view !== null) {
-                unset($view['positions']);
-                $savedView = $view;
-                $query += SavedView::query($mode, $view['params']);
-            } else {
-                $viewError = 'This saved view does not exist or is not shared with you.';
-            }
+            $list = $views->visible($mode);
+        } catch (\Throwable $e) {
+            // the map works without its saved views (table missing or broken)
+            Log::warning('topology plugin: cannot read the saved views: ' . $e->getMessage());
+            $viewError = isset($query['view']) && $savedView === null ? 'The saved views cannot be read, see logs/librenms.log.' : null;
         }
+        unset($query['view']);
         $params = MapParams::parse($query, $settings);
         $repo = new TopologyRepository($request->user());
 
         return view('topology::map', [
             'mode' => $mode,
+            'query' => $query,
             'savedView' => $savedView,
             'viewError' => $viewError,
-            'views' => $views->visible($mode),
+            'views' => $list,
             'params' => $params,
             'filters' => $repo->filterOptions(),
             'deviceName' => $params['device'] ? $repo->deviceName($params['device']) : null,

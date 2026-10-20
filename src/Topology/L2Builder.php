@@ -33,6 +33,9 @@ class L2Builder
      * @param  array<int, int>  $lagParent  member port_id => aggregate port_id
      * @param  array<int, array<int, string>>  $deviceVlans  device_id => [vlan => name]
      */
+    /** @var array<int, array<int, true>>|null aggregate port_id => its member ports that have a link */
+    private ?array $linkedMembers = null;
+
     public function __construct(
         private array $devices,
         private array $links,
@@ -519,6 +522,10 @@ class L2Builder
                 'b' => $bParent ? $b['short'] : null,
                 'members' => count($members),
                 'up' => $up,
+                // the aggregate of a side is only this link (its counters and status are the link's): not one
+                // split over two switches (MLAG) or one whose other members go elsewhere
+                'a_whole' => $this->wholeAggregate($aParent, array_column($members, 'a_port')),
+                'b_whole' => $this->wholeAggregate($bParent, array_column($members, 'b_port')),
             ] : null,
             'members' => $memberDetails,
             'speed' => $speed,
@@ -534,6 +541,34 @@ class L2Builder
             'errors' => $errors,
             'protocols' => array_values(array_unique($protocols)),
         ];
+    }
+
+    /**
+     * Do all members of this aggregate that have a link (to any neighbor, on the map or not) run in
+     * this edge ($ports: the edge's member ports on that side)? Members without a link do not count:
+     * a cable whose LLDP is gone still belongs to its port-channel.
+     *
+     * @param  array<int, ?int>  $ports
+     */
+    private function wholeAggregate(?int $parent, array $ports): bool
+    {
+        if (! $parent) {
+            return false;
+        }
+        if ($this->linkedMembers === null) {
+            $this->linkedMembers = [];
+            foreach ($this->links as $link) {
+                foreach (['local_port_id', 'remote_port_id'] as $key) {
+                    $port = (int) ($link[$key] ?? 0);
+                    if ($port && isset($this->lagParent[$port])) {
+                        $this->linkedMembers[$this->lagParent[$port]][$port] = true;
+                    }
+                }
+            }
+        }
+        $linked = $this->linkedMembers[$parent] ?? [];
+
+        return $linked !== [] && ! array_diff_key($linked, array_flip(array_filter($ports)));
     }
 
     /**

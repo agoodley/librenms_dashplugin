@@ -8,7 +8,7 @@ use Agoodley\LibrenmsTopology\Support\DeviceRole;
 /**
  * A LibreNMS Custom Map (custom_maps, custom_map_nodes, custom_map_edges) of an L2 or L3 map: one node
  * per map node where it is on the plugin's map, one edge per link with the port LibreNMS reads its
- * utilization from. Plain arrays; Data\CustomMapRepository writes them.
+ * status and utilization from. Plain arrays; Data\CustomMapRepository writes them.
  */
 class CustomMapLayout
 {
@@ -26,27 +26,32 @@ class CustomMapLayout
     /** Grid of the nodes that had no position (new since the page was loaded): cell size in pixels. */
     private const GRID = [120, 100];
 
-    /** Images of LibreNMS' custom map icon set (html/images/custommap/icons) for these roles. */
-    public const IMAGES = [
-        DeviceRole::SWITCH => 'switch-l2.svg',
-        DeviceRole::L3SWITCH => 'switch-l3.svg',
-        DeviceRole::ROUTER => 'router.svg',
-        DeviceRole::FIREWALL => 'firewall.svg',
-    ];
-
-    /** Font Awesome icons of the custom map editor for the roles without an image (or when the image is missing). */
+    /**
+     * Font Awesome icons (the custom map editor's icon style) by role. LibreNMS colors the icon of a
+     * monitored device by its status, blue when up and red when down; unmanaged neighbors are grey.
+     */
     public const ICONS = [
-        DeviceRole::SWITCH => 'f6ff', // network-wired
-        DeviceRole::L3SWITCH => 'f6ff',
-        DeviceRole::ROUTER => 'f4d7', // the editor's "router"
+        DeviceRole::SWITCH => 'f796', // ethernet
+        DeviceRole::L3SWITCH => 'f0e8', // sitemap
+        DeviceRole::ROUTER => 'f4d7', // route: the editor's "router"
         DeviceRole::FIREWALL => 'f3ed', // shield
         DeviceRole::WIRELESS => 'f1eb', // wifi
         DeviceRole::SERVER => 'f233', // server
-        DeviceRole::PHONE => 'f3ce', // mobile
+        DeviceRole::PHONE => 'f095', // phone
         DeviceRole::OTHER => 'f2db', // microchip
         'cloud' => 'f0c2', // cloud: an external AS on the L3 map
-        DeviceRole::UNKNOWN => 'f6ff',
+        DeviceRole::UNKNOWN => 'f6ff', // network-wired
     ];
+
+    /** Color of the icons of unmanaged neighbors and AS clouds, which have no status. */
+    public const UNMANAGED_COLOR = '#8B9CAD';
+
+    /**
+     * Characters that mean something in HTML and their look-alikes: LibreNMS' map editor puts labels
+     * into HTML (the options of its edge dialog), and names come from devices and their LLDP/CDP
+     * neighbors, which anyone on an access port can name. vis.js shows labels as text, so no entities.
+     */
+    private const UNSAFE = ['<' => '‹', '>' => '›', '"' => '″', "'" => '’', '&' => '＆', '`' => 'ˋ'];
 
     /** Labels of the L3 links that have no address of their own. */
     private const KINDS = ['ospfv3' => 'OSPFv3', 'isis' => 'IS-IS', 'ipsec' => 'IPsec', 'mpls' => 'MPLS LSP', 'pw' => 'Pseudowire'];
@@ -55,20 +60,20 @@ class CustomMapLayout
      * @param  array{nodes: array, edges: array}  $map  api/l2 or api/l3 data (L2Builder, L3Builder)
      * @param  array<string, array{0: float, 1: float}>  $positions  map node id => [x, y] on the plugin's map; ids
      *     that are not nodes of $map are ignored
-     * @param  string[]  $images  the files of IMAGES this LibreNMS has; other roles get the device's OS icon
-     * @param  array{text_face: string, text_size: int, text_colour: string, edge_text_size: int, node_size: int}  $style
-     *     LibreNMS' defaults for new nodes and edges
+     * @param  array{text_face: string, text_size: int, text_colour: string, node_size: int, edge_text_face: string,
+     *     edge_text_size: int, edge_text_colour: string, edge_text_align: string}  $style  LibreNMS' defaults for new
+     *     nodes and edges
      * @return array{nodes: array<string, array>, edges: array<int, array>, width: int, height: int,
      *     stats: array{devices: int, unmanaged: int, subnets: int, clouds: int, edges: int, ports: int, unplaced: int}}
      *     nodes by map node id; edges name their nodes by map node id (from, to)
      */
-    public static function build(array $map, array $positions, array $images, array $style): array
+    public static function build(array $map, array $positions, array $style): array
     {
         $nodes = [];
         $placed = [];
         foreach ($map['nodes'] ?? [] as $node) {
             $id = (string) $node['id'];
-            $nodes[$id] = self::node($node, $images, $style);
+            $nodes[$id] = self::node($node, $style);
             $position = $positions[$id] ?? null;
             if (is_array($position) && count($position) === 2 && is_numeric($position[0] ?? null) && is_numeric($position[1] ?? null)
                 && is_finite((float) $position[0]) && is_finite((float) $position[1])) {
@@ -100,11 +105,11 @@ class CustomMapLayout
                 'style' => 'dynamic', // LibreNMS' default: a straight line through the middle when nothing moves
                 'showpct' => $portId !== null,
                 'showbps' => false,
-                'label' => mb_substr(self::edgeLabel($edge), 0, 255),
-                'text_face' => $style['text_face'],
+                'label' => self::label(self::edgeLabel($edge), 255),
+                'text_face' => $style['edge_text_face'],
                 'text_size' => $style['edge_text_size'],
-                'text_colour' => $style['text_colour'],
-                'text_align' => 'horizontal',
+                'text_colour' => $style['edge_text_colour'],
+                'text_align' => $style['edge_text_align'],
                 'mid_x' => $midX,
                 'mid_y' => $midY,
             ];
@@ -130,11 +135,22 @@ class CustomMapLayout
     }
 
     /**
-     * Node of the custom map for a map node: monitored devices by device id (LibreNMS shows their
-     * live status), unmanaged neighbours and AS clouds, each with LibreNMS' image of its role or
-     * else an icon of the role; subnets as boxes.
+     * A label written to LibreNMS: the characters that matter in HTML become look-alikes (UNSAFE),
+     * control characters other than line breaks go, and it is cut to the column's length.
      */
-    private static function node(array $node, array $images, array $style): array
+    public static function label(string $text, int $length): string
+    {
+        $text = (string) preg_replace('/[\x00-\x09\x0B-\x1F\x7F]+/u', '', strtr(mb_scrub($text, 'UTF-8'), self::UNSAFE));
+
+        return mb_substr(trim($text), 0, $length);
+    }
+
+    /**
+     * Node of the custom map for a map node: monitored devices by device id, unmanaged neighbors and
+     * AS clouds, each as the icon of its role (LibreNMS colors a monitored device's icon by status);
+     * subnets as boxes.
+     */
+    private static function node(array $node, array $style): array
     {
         $type = (string) ($node['type'] ?? 'device');
         $managed = ! empty($node['managed']) && ! empty($node['device_id']);
@@ -147,9 +163,9 @@ class CustomMapLayout
                 default => 'unmanaged',
             },
             'device_id' => $managed ? (int) $node['device_id'] : null,
-            'label' => mb_substr(trim((string) ($node['label'] ?? $node['name'] ?? $node['id'])), 0, 50),
-            'style' => 'image',
-            'icon' => null,
+            'label' => self::label((string) ($node['label'] ?? $node['name'] ?? $node['id']), 50),
+            'style' => 'icon',
+            'icon' => self::ICONS[$role] ?? self::ICONS[DeviceRole::UNKNOWN],
             'image' => '',
             'size' => $managed || $type === 'subnet' ? $style['node_size'] : (int) round($style['node_size'] * 0.7),
             'border_width' => 1,
@@ -157,22 +173,14 @@ class CustomMapLayout
             'text_size' => $managed || $type === 'subnet' ? $style['text_size'] : max(8, $style['text_size'] - 2),
             'text_colour' => $style['text_colour'],
             'colour_bg' => null,
-            'colour_bdr' => null,
+            // no color for a monitored device: LibreNMS colors its icon by status
+            'colour_bdr' => $managed ? null : self::UNMANAGED_COLOR,
             'x_pos' => 0,
             'y_pos' => 0,
         ];
 
         if ($type === 'subnet') {
-            return ['style' => 'box', 'colour_bg' => '#FFF6D5', 'colour_bdr' => '#C9A227'] + $row;
-        }
-        $image = self::IMAGES[$role] ?? null;
-        if ($image !== null && in_array($image, $images, true)) {
-            $row['image'] = $image;
-        } else {
-            $row['style'] = 'icon';
-            $row['icon'] = self::ICONS[$role] ?? self::ICONS[DeviceRole::UNKNOWN];
-            // no color for a monitored device: LibreNMS colors its icon by status (blue up, red down)
-            $row['colour_bdr'] = $managed ? null : '#8B9CAD';
+            return ['style' => 'box', 'icon' => null, 'colour_bg' => '#FFF6D5', 'colour_bdr' => '#C9A227'] + $row;
         }
 
         return $row;
@@ -215,17 +223,40 @@ class CustomMapLayout
     }
 
     /**
-     * The port LibreNMS takes the utilization of a link from, and whether it is on the far side
-     * (reverse): the near end's port (the aggregate of a collapsed port-channel), else the far end's.
+     * The port LibreNMS takes a link's status and utilization from, and whether it is on the far side
+     * (reverse). On the L2 map: a port-channel only when it is wholly this link (L2Builder's a_whole /
+     * b_whole: not one split over two switches, an MLAG), else the port of the cable when the link is
+     * one cable, else none: the port of one of several cables would show that cable only. On the L3
+     * map: the port of the near end's address, else the far end's.
      *
      * @return array{0: int|null, 1: bool}
      */
     private static function port(array $edge): array
     {
+        $id = fn (mixed $port): ?int => is_numeric($port) && (int) $port > 0 ? (int) $port : null;
+
+        if (! array_key_exists('members', $edge)) {
+            foreach (['a' => false, 'b' => true] as $side => $reverse) {
+                if (($port = $id($edge[$side]['port_id'] ?? null)) !== null) {
+                    return [$port, $reverse];
+                }
+            }
+
+            return [null, false];
+        }
+
+        $lag = $edge['lag'] ?? null;
         foreach (['a' => false, 'b' => true] as $side => $reverse) {
-            $portId = $edge[$side]['port_id'] ?? null;
-            if (is_numeric($portId) && (int) $portId > 0) {
-                return [(int) $portId, $reverse];
+            if (! empty($lag[$side . '_whole']) && ($port = $id($edge[$side]['port_id'] ?? null)) !== null) {
+                return [$port, $reverse];
+            }
+        }
+        $members = $edge['members'] ?? [];
+        if (count($members) === 1) {
+            foreach (['a' => false, 'b' => true] as $side => $reverse) {
+                if (($port = $id($members[0][$side . '_port_id'] ?? null)) !== null) {
+                    return [$port, $reverse];
+                }
             }
         }
 

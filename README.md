@@ -64,7 +64,8 @@ scope, filters, device positions and display options (layout, *Color links by*, 
 personal or shared with everyone who can open the maps, and opens with a link (`l2?view=12`). Each user sees a shared
 view with their own permissions: the map is built for them, and only the positions of the nodes on their map are used
 (and sent to their browser); a node the view does not place, such as a device they see as an unmanaged neighbor, goes
-next to the nodes it is linked to. The map leaves the view when its scope changes (device, hops, group, location, VRF);
+next to the nodes it is linked to; the view's scope names no device, group, location or VRF they may not see, but its
+name is shown as it was typed. The map leaves the view when its scope changes (device, hops, group, location, VRF);
 *Update* saves the map as it is now into the open view. Users change and delete their own views, LibreNMS admins also
 any shared view. *Saved Views* lists them (rename, share, delete) and the layouts saved in this browser with the save
 button, each of which becomes a view in one click.
@@ -76,7 +77,7 @@ button, each of which becomes a view in one click.
 | Format | |
 |---|---|
 | draw.io diagram (`.drawio`) | opens in [draw.io / diagrams.net](https://www.drawio.com) (web or desktop) with the positions of the map: devices as draw.io's Cisco shapes colored by status (red down, grey unmanaged), links with their color, width and dashes, the link label in the middle and the interface names at both ends. Each device keeps its name, hostname, hardware, OS and location as data (*Edit Data*) and links to its LibreNMS page. **Visio:** open the file in draw.io and use *File → Export as → VSDX* |
-| GraphML for yEd (`.graphml`) | opens in yEd Graph Editor with the same positions and labels, without a new layout; the properties are in each node's and link's description |
+| GraphML for yEd (`.graphml`) | opens in yEd Graph Editor with the same positions and labels, without a new layout; the properties are in each node's and link's description. A name that starts with `<html>` gets a zero-width space in front, so that yEd shows it as text |
 | PNG image, links as CSV | the picture of the map and one row per link |
 
 The files hold what the map shows: its scope and filters, port-channels collapsed or not, the L3 overlays that are on,
@@ -86,17 +87,23 @@ simulation is left out: the files show the network as it is.
 ![Export menu](docs/images/export-menu.png)
 
 **LibreNMS Custom Map** (Export → *LibreNMS Custom Map…*, LibreNMS admins) turns the map into a native LibreNMS Custom
-Map (*Maps → Custom Maps*): LibreNMS draws it with the live status of the devices and the utilization of every link, it
-can be changed in LibreNMS' map editor and put on a dashboard with the Custom Map widget. The dialog previews what will
+Map (*Maps → Custom Maps*): LibreNMS draws it with the status of the devices and the status and utilization of the links,
+it can be changed in LibreNMS' map editor and put on a dashboard with the Custom Map widget. The dialog previews what will
 be written (nodes, links, size) before anything is saved:
 
-* devices keep their positions; switches, routers and firewalls get LibreNMS' icons of their role, other devices and
-  unmanaged neighbors a role icon, subnets of the L3 map a box;
-* each link takes its utilization from the port of the first device (the port-channel of a collapsed LAG); OSPF/BGP
-  adjacencies and the other L3 overlays have no port and are drawn without utilization;
+* devices keep their positions and are drawn as the icon of their role, which LibreNMS colors by status (blue up, red
+  down); unmanaged neighbors are grey icons, subnets of the L3 map boxes. A new map takes LibreNMS' defaults for new
+  custom maps (the `custom_map` settings: fonts, legend colours, background);
+* each link takes its status and utilization from a port that is that link only: the port-channel of either end when all
+  its cables are this link, else the port of a link that is one cable. A port-channel split over two switches (MLAG) is
+  used for neither of its links, which then take the other end's port-channel; a link of several cables without one has
+  no port. OSPF/BGP adjacencies and the other L3 overlays have no port either and are drawn without utilization;
+* names are written with look-alikes for the characters HTML uses (`<` `>` `"` `'` `&` `` ` `` become ‹ › ″ ’ ＆ ˋ):
+  LibreNMS' map editor puts labels into HTML, and LLDP/CDP neighbors name themselves;
 * *Map* can replace a custom map this plugin made before: its nodes and links are written again (also changes made in
-  the editor), its id, settings, legend and background stay, so dashboards keep showing it. Maps made in LibreNMS are
-  never changed. The export is noted in the eventlog.
+  the editor), its id, menu group, settings, legend and background stay, so dashboards keep showing it. If it changed in
+  the editor after the preview, the export stops and shows a new preview. Maps made in LibreNMS are never changed. The
+  export is noted in the eventlog.
 
 ![Custom map export](docs/images/custom-map-export.png)
 
@@ -394,7 +401,8 @@ dependencies; other users see the page read only. The syslog evidence of the spa
 whose LibreNMS role may view syslog. Only LibreNMS admins who may create custom maps can export a map to a LibreNMS Custom
 Map; the map is built with their permissions. Everyone who can open the maps may save views and share their own; they
 change and delete their own views, LibreNMS admins any shared view. A shared view is built with the permissions of whoever
-opens it, and its positions are only sent for the nodes of their map.
+opens it: its positions are only sent for the nodes of their map, and it names no device, group, location or VRF they may
+not see.
 
 ## How it works
 
