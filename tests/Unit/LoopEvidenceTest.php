@@ -448,6 +448,10 @@ class LoopEvidenceTest extends TestCase
             'loop-protect: port 5 disabled - loop detected. Auto-recovery in 300 seconds' => 'loop_detected',
             '%CDP-4-NATIVE_VLAN_MISMATCH Native VLAN mismatch discovered on GigabitEthernet1/0/1 (10), with dr-recovery-core1 GigabitEthernet1/0/2 (20).' => 'syslog_native_vlan',
             '%CDP-4-DUPLEX_MISMATCH duplex mismatch discovered on FastEthernet0/1 (not half duplex), with udld-lab-sw FastEthernet0/3 (half duplex).' => 'syslog_duplex_mismatch',
+            // only CDP messages name a neighbor after ", with": elsewhere the cause can follow it
+            'Port 1/1/5 disabled, with reason: BPDU guard' => 'bpdu_guard',
+            // the etherchannel guard puts the words the other way round
+            '%SPANTREE-2-CHNL_MISCFG Detected loop due to etherchannel misconfiguration of Gi1/0/1' => 'loop_detected',
         ];
         foreach ($cases as $text => $code) {
             $this->assertSame($code, $patterns->classify($text), $text);
@@ -603,6 +607,13 @@ class LoopEvidenceTest extends TestCase
             '100,000 syslog messages of the last 24 hours were searched, which did not reach back to the start of the window for 1,000 '
                 . 'devices; shorten the syslog window in the settings to search all of it.',
         ], $unsearched['evidence']['notices']);
+
+        // the notice names the limit that stopped the read
+        $cap = $net->evidence([], ['syslog_unsearched' => 40000, 'syslog_stopped' => 'matches', 'syslog_truncated' => true, 'syslog_devices' => 45000]);
+        $this->assertStringStartsWith('The syslog of 40,000 of 45,000 devices that sent messages in the last 24 hours was not searched: a page view keeps up '
+            . 'to 5,000 matching messages, the most recently active devices first.', $cap['evidence']['notices'][0]);
+        $reads = $net->evidence([], ['syslog_unsearched' => 10, 'syslog_stopped' => 'reads', 'syslog_devices' => 20]);
+        $this->assertStringContainsString('was not searched: a page view reads the syslog at most 200 times,', $reads['evidence']['notices'][0]);
 
         $truncated = $net->evidence([], ['syslog_truncated' => true, 'syslog_limited' => 3, 'syslog_scanned' => 20000]);
         $this->assertSame(['More syslog messages of the last 24 hours match the checks than are analyzed at once: only the newest 23, '

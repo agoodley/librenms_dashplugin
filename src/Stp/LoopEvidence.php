@@ -158,10 +158,10 @@ class LoopEvidence
     /**
      * Run the storm and syslog checks.
      *
-     * @param  array{syslog_hidden?: bool, syslog_truncated?: bool, syslog_limited?: int, syslog_unsearched?: int, syslog_scanned?: int, syslog_devices?: int, syslog_scope?: int}  $context
+     * @param  array{syslog_hidden?: bool, syslog_truncated?: bool, syslog_limited?: int, syslog_unsearched?: int, syslog_stopped?: ?string, syslog_scanned?: int, syslog_devices?: int, syslog_scope?: int}  $context
      *     what the caller could read (SyslogTurns): syslog hidden from this user, more matching messages than were kept,
-     *     devices whose older messages of the window were not searched, devices not searched at all, the messages
-     *     searched, devices that sent syslog in the window and devices asked for
+     *     devices whose older messages of the window were not searched, devices not searched at all, the limit that
+     *     stopped the reading, the messages searched, devices that sent syslog in the window and devices asked for
      * @return array{findings: array, device_names: array<int, string>, evidence: array}
      */
     public function analyze(array $context = []): array
@@ -179,9 +179,13 @@ class LoopEvidence
         $limited = (int) ($context['syslog_limited'] ?? 0);
         $unsearched = (int) ($context['syslog_unsearched'] ?? 0);
         if ($unsearched) {
+            $limit = match ($context['syslog_stopped'] ?? null) {
+                'matches' => 'keeps up to ' . number_format(SyslogTurns::MATCHES) . ' matching messages',
+                'reads' => 'reads the syslog at most ' . SyslogTurns::READS . ' times',
+                default => 'searches up to ' . number_format(SyslogTurns::SCAN) . ' messages',
+            };
             $this->notices[] = 'The syslog of ' . number_format($unsearched) . ' of ' . number_format((int) ($context['syslog_devices'] ?? 0)) . " devices that sent messages in the last $hours hours "
-                . 'was not searched: a page view searches up to ' . number_format(SyslogTurns::SCAN) . ' messages, the most recently active '
-                . 'devices first. Filter by device group or location to see the others.';
+                . "was not searched: a page view $limit, the most recently active devices first. Filter by device group or location to see the others.";
         }
         if (! empty($context['syslog_truncated'])) {
             $this->notices[] = "More syslog messages of the last $hours hours match the checks than are analyzed at once: only the newest "

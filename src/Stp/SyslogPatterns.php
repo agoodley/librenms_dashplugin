@@ -9,8 +9,8 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
  * plugin settings, and the messages to ignore: configuration commands echoed to syslog and
  * recoveries. A message counts for the first check whose pattern matches it; a disabled check
  * keeps its messages, so with BPDU guard switched off the err-disable it caused is not reported as
- * err-disable either. Only the part of a message before ", with" is matched: CDP names the neighbor
- * and its port there. Each pattern is matched on its own, so groups and backreferences work as
+ * err-disable either. Of a CDP message only the part before ", with" is matched: CDP names the
+ * neighbor and its port there. Each pattern is matched on its own, so groups and backreferences work as
  * written. Bare patterns are case-insensitive; a pattern with delimiters and flags, as in
  * LibreNMS' syslog hooks (/udld/i), is used as it is.
  */
@@ -165,11 +165,12 @@ class SyslogPatterns
     }
 
     /**
-     * A message without the neighbor CDP names after ", with" (its host and port are not this device's).
+     * A CDP message without the neighbor it names after ", with" (its host and port are not this
+     * device's); other messages stay whole, as their cause can follow a comma.
      */
     public static function local(string $text): string
     {
-        return (string) preg_replace('~,\s*with\s.*$~is', '', $text);
+        return preg_match('~CDP-\d-|discovered on~i', $text) === 1 ? (string) preg_replace('~,\s*with\s.*$~is', '', $text) : $text;
     }
 
     /**

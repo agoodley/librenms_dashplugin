@@ -25,7 +25,7 @@ class PluginSettings
         'stp_storm_pps' => '1000',
         'stp_storm_percent' => '20',
         'stp_syslog_hours' => '24',
-        'stp_syslog_loop_detected' => 'loop[ _-]?back[ _-]?detected|loopback error|loops?[ _-]?detect',
+        'stp_syslog_loop_detected' => 'loop[ _-]?back[ _-]?detected|loopback error|loops?[ _-]?detect|detected loop',
         'stp_syslog_udld' => 'udld|unidirectional link',
         'stp_syslog_bpdu_guard' => 'bpdu[ _-]?guard|bpdu[ _-]?block|bpdu[ _-]?protection',
         'stp_syslog_loop_guard' => 'loop[ _-]?guard|loop[ _-]protect[ _]in[ _]effect',
