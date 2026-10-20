@@ -1,7 +1,7 @@
-{{-- L2 / L3 map page (PageController::l2/l3): filters and view options; resources/assets/topology.js draws the map from the JSON API. --}}
+{{-- L2 / L3 / site map page (PageController::l2/l3, SiteController::show): filters and view options; resources/assets/topology.js draws the map from the JSON API. --}}
 @extends('layouts.librenmsv1')
 
-@section('title', $mode === 'l2' ? 'Layer 2 Topology' : 'Layer 3 Topology')
+@section('title', ['l2' => 'Layer 2 Topology', 'l3' => 'Layer 3 Topology', 'sites' => 'Site / WAN Map'][$mode] ?? 'Topology')
 
 @push('styles')
     <link href="{{ route('topology.asset', 'topology.css') }}?v={{ $assetVersion }}" rel="stylesheet">
@@ -12,6 +12,17 @@
     @include('topology::partials.nav', ['active' => $mode])
 
     <form id="topo-filters" class="topo-toolbar" autocomplete="off">
+        @if($mode === 'sites')
+            {{-- the site map centers on a location (and the sites within the hops) instead of a device --}}
+            <label><span class="topo-group-label">Center on site</span>
+                <select id="topo-site" name="location" class="form-control" style="max-width: 220px">
+                    <option value="">All sites</option>
+                    @foreach($filters['locations'] as $location)
+                        <option value="{{ $location['id'] }}" @selected($params['location'] == $location['id'])>{{ $location['name'] }}</option>
+                    @endforeach
+                </select>
+            </label>
+        @else
         <label><span class="topo-group-label">Center on</span>
             <select id="topo-device" name="device" class="form-control">
                 <option value=""></option>
@@ -20,6 +31,7 @@
                 @endif
             </select>
         </label>
+        @endif
         <label><span class="topo-group-label">Hops</span>
             <select name="depth" class="form-control">
                 @foreach(range(1, 10) as $depth)
@@ -35,6 +47,7 @@
                 @endforeach
             </select>
         </label>
+        @if($mode !== 'sites')
         <label><span class="topo-group-label">Location</span>
             <select name="location" class="form-control" style="max-width: 220px">
                 <option value="">All</option>
@@ -43,8 +56,17 @@
                 @endforeach
             </select>
         </label>
+        @endif
 
-        @if($mode === 'l2')
+        @if($mode === 'sites')
+            <label title="Join sites through their OSPF adjacencies"><input type="checkbox" name="ospf" value="1" @checked($params['ospf'])> OSPF</label>
+            <label title="Join sites through their BGP sessions; sessions to peers LibreNMS does not monitor lead to one cloud per remote AS">
+                <input type="checkbox" name="bgp" value="1" @checked($params['bgp'])> BGP
+            </label>
+            <label title="Include sites without any link to another site">
+                <input type="checkbox" name="isolated" value="1" @checked($params['isolated'])> Unlinked sites
+            </label>
+        @elseif($mode === 'l2')
             <label><span class="topo-group-label">VLAN</span>
                 <select id="topo-vlan" name="vlan" class="form-control" data-selected="{{ $params['vlan'] }}">
                     <option value="">All VLANs</option>
@@ -85,8 +107,18 @@
             <select class="form-control" data-view="layout">
                 <option value="hierarchical">Hierarchical (top-down)</option>
                 <option value="organic">Organic</option>
+                @if($mode === 'sites')<option value="geographic">Geographic (latitude / longitude)</option>@endif
             </select>
         </label>
+        @if($mode === 'sites')
+            <label><span class="topo-group-label">Color links by</span>
+                <select class="form-control" data-view="colorBy">
+                    <option value="speed">Capacity</option>
+                    <option value="util">Utilization</option>
+                    <option value="status">Status</option>
+                </select>
+            </label>
+        @endif
         @if($mode === 'l2')
             <label><span class="topo-group-label">Color links by</span>
                 <select class="form-control" data-view="colorBy">
@@ -98,10 +130,12 @@
             <label><input type="checkbox" data-view="stp"> STP overlay</label>
             <label title="Mark the top-most down device of each outage with the number of down devices behind it"><input type="checkbox" data-view="outages"> Outages</label>
         @endif
+        @if($mode !== 'sites')
         <label><input type="checkbox" data-view="interfaceLabels"> Interface labels</label>
+        @endif
         <label><input type="checkbox" data-view="linkLabels"> Link labels</label>
         <span class="topo-spacer"></span>
-        <input id="topo-search" class="form-control" type="search" list="topo-search-list" placeholder="Find device&hellip;" style="width: 170px">
+        <input id="topo-search" class="form-control" type="search" list="topo-search-list" placeholder="{{ $mode === 'sites' ? 'Find site' : 'Find device' }}&hellip;" style="width: 170px">
         <datalist id="topo-search-list"></datalist>
         <div class="btn-group">
             <button id="topo-fit" type="button" class="btn btn-default" title="Fit to screen"><i class="fa fa-expand"></i></button>
@@ -136,6 +170,8 @@
             'stpPage' => route('topology.stp'),
             'redundancyPage' => route('topology.redundancy'),
             'simulate' => route('topology.api.simulate'),
+            'sitesPage' => route('topology.sites'),
+            'devicesPage' => url('devices'),
         ],
     ];
 @endphp
