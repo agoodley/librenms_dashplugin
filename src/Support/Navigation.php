@@ -30,6 +30,10 @@ class Navigation
             'route' => 'topology.l3', 'group' => 'maps', 'tab' => 'Layer 3', 'title' => 'Layer 3 Map', 'icon' => 'fa-project-diagram',
             'description' => 'Routers, L3 switches and firewalls joined through their IP subnets, with point-to-point links, LAN segments, VRFs and OSPF / BGP adjacencies.',
         ],
+        'views' => [
+            'route' => 'topology.views', 'group' => 'maps', 'tab' => 'Saved Views', 'title' => 'Saved Views', 'icon' => 'fa-bookmark', 'scoped' => false,
+            'description' => 'Named views of the maps with their scope, filters and device positions, personal or shared with the team; open, rename, share or delete them.',
+        ],
         'stp' => [
             'route' => 'topology.stp', 'group' => 'diagnostics', 'tab' => 'Spanning Tree', 'title' => 'Spanning Tree Diagnostics', 'icon' => 'fa-stethoscope',
             'description' => 'Root bridge consistency, rogue roots, topology change storms, flapping and blocked ports, bridging loops, timer and protocol mismatches.',

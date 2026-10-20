@@ -111,12 +111,44 @@
         <label><input type="checkbox" data-view="interfaceLabels"> Interface labels</label>
         <label><input type="checkbox" data-view="linkLabels"> Link labels</label>
         <span class="topo-spacer"></span>
+        @if($savedView)
+            <span id="topo-view-badge" class="topo-view-badge" title="Saved view of {{ $savedView['owner'] }}{{ $savedView['shared'] ? ', shared' : '' }}: {{ $savedView['scope'] }}">
+                <i class="fa fa-bookmark"></i> {{ $savedView['name'] }}
+            </span>
+        @endif
         <input id="topo-search" class="form-control" type="search" list="topo-search-list" placeholder="Find device&hellip;" style="width: 170px">
         <datalist id="topo-search-list"></datalist>
         <div class="btn-group">
             <button id="topo-fit" type="button" class="btn btn-default" title="Fit to screen"><i class="fa fa-expand"></i></button>
             <button id="topo-save-layout" type="button" class="btn btn-default" title="Save device positions (this browser)"><i class="fa fa-save"></i></button>
             <button id="topo-reset-layout" type="button" class="btn btn-default" title="Reset layout"><i class="fa fa-undo"></i></button>
+            <div class="btn-group" id="topo-views">
+                <button type="button" class="btn btn-default dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" title="Saved views">
+                    <i class="fa fa-bookmark"></i> <span class="caret"></span>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-right topo-views-menu">
+                    <li class="dropdown-header">Saved views of this map</li>
+                    @forelse(array_slice($views, 0, 30) as $view)
+                        <li class="{{ $savedView && $savedView['id'] === $view['id'] ? 'active' : '' }}">
+                            <a href="{{ $view['url'] }}" title="{{ $view['scope'] }}" data-view-id="{{ $view['id'] }}">
+                                <i class="fa {{ $view['shared'] ? 'fa-users' : 'fa-user' }} fa-fw"></i> {{ $view['name'] }}
+                                <small class="text-muted">{{ $view['mine'] ? ($view['shared'] ? 'shared' : 'personal') : $view['owner'] }}</small>
+                            </a>
+                        </li>
+                    @empty
+                        <li class="disabled"><a href="#">None yet</a></li>
+                    @endforelse
+                    @if(count($views) > 30)
+                        <li class="disabled"><a href="#">{{ count($views) - 30 }} more on the Saved Views page</a></li>
+                    @endif
+                    <li role="separator" class="divider"></li>
+                    <li><a href="#" id="topo-view-save"><i class="fa fa-plus fa-fw"></i> Save this map as a view&hellip;</a></li>
+                    @if($savedView && $savedView['can_edit'])
+                        <li><a href="#" id="topo-view-update" title="The scope, filters, positions and display options of the map as it is now"><i class="fa fa-floppy-disk fa-fw"></i> Update &ldquo;{{ $savedView['name'] }}&rdquo;</a></li>
+                    @endif
+                    <li><a href="{{ route('topology.views') }}"><i class="fa fa-list fa-fw"></i> Manage saved views</a></li>
+                </ul>
+            </div>
             <div class="btn-group" id="topo-export">
                 <button type="button" class="btn btn-default dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" title="Export">
                     <i class="fa fa-download"></i> <span class="caret"></span>
@@ -137,6 +169,10 @@
         </div>
     </div>
 
+    @if($viewError)
+        <div class="alert alert-warning topo-view-error"><i class="fa fa-exclamation-triangle"></i> {{ $viewError }}</div>
+    @endif
+
     <div class="topo-body">
         <div class="topo-canvas-wrap">
             <div id="topo-canvas"></div>
@@ -146,6 +182,35 @@
         <aside id="topo-details" class="topo-panel"></aside>
     </div>
     <div id="topo-status" class="topo-status-bar"></div>
+</div>
+
+{{-- Save the map as a view (ViewController). Like the dialog below, outside #topo-app, whose full screen mode would put it
+     under its backdrop. --}}
+<div class="modal fade" id="topo-view-modal" tabindex="-1" role="dialog" aria-labelledby="topo-view-title">
+    <div class="modal-dialog modal-sm" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+                <h4 class="modal-title" id="topo-view-title"><i class="fa fa-bookmark"></i> Save as a view</h4>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted">Keeps the scope, filters, device positions and display options of this map.</p>
+                <div class="form-group">
+                    <label for="topo-view-name">Name</label>
+                    <input id="topo-view-name" class="form-control" maxlength="100" autocomplete="off">
+                </div>
+                <div class="checkbox">
+                    <label><input type="checkbox" id="topo-view-shared"> Share with everyone who can open the maps</label>
+                </div>
+                <p class="text-muted small">Each user sees a shared view with their own permissions: only the devices they may see.</p>
+                <div id="topo-view-message"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="topo-view-create"><i class="fa fa-check"></i> Save view</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 @if($canExportCustomMap)
@@ -196,10 +261,14 @@
             'stpPage' => route('topology.stp'),
             'redundancyPage' => route('topology.redundancy'),
             'simulate' => route('topology.api.simulate'),
+            'views' => route('topology.api.views.store'),
+            'view' => $savedView ? route('topology.api.views.save', ['id' => $savedView['id']]) : null,
         ] + ($canExportCustomMap ? [
             'customMapPreview' => route('topology.api.custom-map.preview'),
             'customMap' => route('topology.api.custom-map'),
         ] : []),
+        // the saved view this page opened (?view=)
+        'view' => $savedView ? array_intersect_key($savedView, array_flip(['id', 'name', 'owner', 'mine', 'shared', 'can_edit', 'options'])) : null,
     ];
 @endphp
 

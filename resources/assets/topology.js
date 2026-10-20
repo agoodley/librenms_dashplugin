@@ -365,6 +365,7 @@
             self.exportCsv();
         });
         this.bindExports();
+        this.bindViews();
         this.on('topo-fullscreen', function () {
             var wrapper = document.getElementById('topo-app');
             wrapper.classList.toggle('topo-fullscreen');
@@ -416,6 +417,9 @@
                 params.set(element.name, element.value);
             }
         });
+        if (this.savedView && !this.savedView.left) {
+            params.set('view', this.savedView.id); // the saved view stays open while its scope is shown
+        }
         return params;
     };
 
@@ -452,6 +456,7 @@
      */
     TopologyMap.prototype.load = function (fromHistory) {
         var self = this;
+        this.checkView();
         var params = this.query();
         if (!fromHistory) {
             window.history.replaceState(null, '', window.location.pathname + '?' + params.toString());
@@ -560,6 +565,9 @@
      * Device positions saved for this map scope, or null.
      */
     TopologyMap.prototype.savedPositions = function () {
+        if (this.savedView && !this.savedView.left && this.data && this.data.view_layout && Object.keys(this.data.view_layout).length) {
+            return this.completeLayout(this.data.view_layout); // positions of the saved view, for the nodes of this map
+        }
         try {
             return JSON.parse(window.localStorage.getItem(this.layoutKey()) || 'null');
         } catch (e) {
@@ -2090,7 +2098,7 @@
      */
     TopologyMap.prototype.flash = function (message) {
         if (window.toastr) {
-            window.toastr.info(message);
+            window.toastr.info(esc(message)); // toastr shows HTML; messages can hold names users typed
         } else {
             this.status.innerHTML = esc(message);
         }
@@ -2572,6 +2580,187 @@
             '<key attr.name="description" attr.type="string" for="node" id="d2"/><key for="edge" id="d3" yfiles.type="edgegraphics"/>' +
             '<key attr.name="description" attr.type="string" for="edge" id="d4"/><key attr.name="node" attr.type="string" for="node" id="d5"/>' +
             '<graph edgedefault="undirected" id="G">' + out.join('') + '</graph></graphml>\n';
+    };
+
+    // ------------------------------------------------------------------ saved views
+
+    /**
+     * The saved view this page opened (?view=): its display options, and the Views menu's actions
+     * (save the map as a new view, update the open one).
+     */
+    TopologyMap.prototype.bindViews = function () {
+        var self = this;
+        var view = this.config.view;
+        if (view) {
+            this.savedView = Object.assign({}, view, {scope: this.scopeKey(), left: false});
+            var options = view.options || {};
+            Object.keys(options).forEach(function (key) {
+                if (Object.prototype.hasOwnProperty.call(self.view, key)) {
+                    self.view[key] = options[key];
+                }
+            });
+            document.querySelectorAll('#topo-viewbar [data-view]').forEach(function (input) {
+                var key = input.getAttribute('data-view');
+                if (input.type === 'checkbox') {
+                    input.checked = !!self.view[key];
+                } else {
+                    input.value = self.view[key];
+                }
+            });
+        }
+        this.on('topo-view-save', function () {
+            self.openSaveView();
+        });
+        this.on('topo-view-create', function () {
+            self.createView();
+        });
+        this.on('topo-view-update', function () {
+            self.updateView();
+        });
+    };
+
+    /**
+     * Leave the open saved view once the map shows another scope (device, hops, group, location, VRF):
+     * its positions are for its own scope.
+     */
+    TopologyMap.prototype.checkView = function () {
+        if (this.savedView && !this.savedView.left && this.scopeKey() !== this.savedView.scope) {
+            this.savedView.left = true;
+            var badge = document.getElementById('topo-view-badge');
+            if (badge) {
+                badge.classList.add('topo-view-left');
+                badge.title = 'Saved view left: the map shows another scope now';
+            }
+        }
+    };
+
+    /**
+     * Positions for every node of the map from a saved view's: a node the view does not have (new, or
+     * shown to this user only, like the neighbor of a device the view's owner sees as a device) goes
+     * next to the nodes it is linked to, else in a row below the map.
+     */
+    TopologyMap.prototype.completeLayout = function (positions) {
+        var layout = {};
+        Object.keys(positions).forEach(function (id) {
+            layout[id] = {x: positions[id].x, y: positions[id].y};
+        });
+        var missing = this.data.nodes.filter(function (node) {
+            return !layout[node.id];
+        });
+        if (!missing.length) {
+            return layout;
+        }
+        var around = {};
+        this.data.edges.forEach(function (edge) {
+            (around[edge.from] = around[edge.from] || []).push(edge.to);
+            (around[edge.to] = around[edge.to] || []).push(edge.from);
+        });
+        var taken = {};
+        for (var pass = 0; pass < 3; pass++) {
+            missing.forEach(function (node) {
+                if (layout[node.id]) {
+                    return;
+                }
+                var anchors = (around[node.id] || []).filter(function (id) {
+                    return layout[id];
+                });
+                if (!anchors.length) {
+                    return;
+                }
+                var x = 0, y = 0;
+                anchors.forEach(function (id) {
+                    x += layout[id].x / anchors.length;
+                    y += layout[id].y / anchors.length;
+                });
+                var count = taken[anchors[0]] = (taken[anchors[0]] || 0) + 1;
+                layout[node.id] = {x: x + (count % 2 ? 1 : -1) * Math.floor(count / 2) * 90, y: y + 120};
+            });
+        }
+        var ys = Object.keys(layout).map(function (id) {
+            return layout[id].y;
+        });
+        var xs = Object.keys(layout).map(function (id) {
+            return layout[id].x;
+        });
+        var bottom = Math.max.apply(null, ys) + 160;
+        var left = Math.min.apply(null, xs);
+        var row = 0;
+        missing.forEach(function (node) {
+            if (!layout[node.id]) {
+                layout[node.id] = {x: left + (row % 10) * 140, y: bottom + Math.floor(row / 10) * 110};
+                row++;
+            }
+        });
+        return layout;
+    };
+
+    /**
+     * Name of a new view: the map and its scope, as for a custom map.
+     */
+    TopologyMap.prototype.openSaveView = function () {
+        if (!this.network || !this.data || !window.jQuery) {
+            return;
+        }
+        document.getElementById('topo-view-name').value = this.customMapName();
+        document.getElementById('topo-view-message').innerHTML = '';
+        window.jQuery('#topo-view-modal').modal('show');
+    };
+
+    /**
+     * What a view keeps: the map's parameters, positions and display options.
+     */
+    TopologyMap.prototype.viewRequest = function () {
+        var params = this.query();
+        params.delete('view');
+        return {page: this.mode, query: params.toString(), positions: this.network.getPositions(), options: this.view};
+    };
+
+    /**
+     * Save the map as a new view, then open it.
+     */
+    TopologyMap.prototype.createView = function () {
+        var message = document.getElementById('topo-view-message');
+        var button = document.getElementById('topo-view-create');
+        var body = Object.assign(this.viewRequest(), {
+            name: document.getElementById('topo-view-name').value,
+            shared: document.getElementById('topo-view-shared').checked
+        });
+        button.disabled = true;
+        this.postJson(this.config.urls.views, body).then(function (result) {
+            if (result.status === 200 && result.body.url) {
+                window.location.href = result.body.url;
+                return;
+            }
+            message.innerHTML = '<div class="alert alert-danger">' + esc(result.body.error || 'HTTP ' + result.status) + '</div>';
+            button.disabled = false;
+        }).catch(function (error) {
+            message.innerHTML = '<div class="alert alert-danger">' + esc(error.message) + '</div>';
+            button.disabled = false;
+        });
+    };
+
+    /**
+     * Overwrite the open view with the map as it is now (scope, filters, positions, options).
+     */
+    TopologyMap.prototype.updateView = function () {
+        var self = this;
+        var view = this.savedView;
+        if (!view || !this.network || !window.confirm('Replace the scope, filters and positions of "' + view.name + '" with this map?')) {
+            return;
+        }
+        this.postJson(this.config.urls.view, this.viewRequest()).then(function (result) {
+            if (result.status === 200) {
+                view.scope = self.scopeKey();
+                view.left = false;
+                var badge = document.getElementById('topo-view-badge');
+                if (badge) {
+                    badge.classList.remove('topo-view-left');
+                }
+                self.flash('Saved view "' + view.name + '" updated.');
+            } else {
+                self.flash('Unable to update the view: ' + (result.body.error || 'HTTP ' + result.status));
+            }
+        });
     };
 
     // ------------------------------------------------------------------ export to a LibreNMS Custom Map (admins)

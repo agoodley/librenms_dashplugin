@@ -3,9 +3,12 @@
 namespace Agoodley\LibrenmsTopology\Http\Controllers;
 
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
+use Agoodley\LibrenmsTopology\Data\ViewRepository;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
+use Agoodley\LibrenmsTopology\Sharing\SavedView;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Illuminate\Contracts\View\View;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 
@@ -20,7 +23,7 @@ class PageController extends Controller
     /**
      * plugin/topology/l2: Layer 2 map.
      */
-    public function l2(Request $request): View
+    public function l2(Request $request): View|RedirectResponse
     {
         return $this->map($request, 'l2');
     }
@@ -28,7 +31,7 @@ class PageController extends Controller
     /**
      * plugin/topology/l3: Layer 3 map.
      */
-    public function l3(Request $request): View
+    public function l3(Request $request): View|RedirectResponse
     {
         return $this->map($request, 'l3');
     }
@@ -67,16 +70,39 @@ class PageController extends Controller
     }
 
     /**
-     * Map page shell with the filter choices (device groups, locations) and current parameters.
+     * Map page shell with the filter choices (device groups, locations) and current parameters. With
+     * ?view=, a saved view the user may open gives the parameters (the URL's own ones win), and the map
+     * of its page is opened.
      */
-    private function map(Request $request, string $mode): View
+    private function map(Request $request, string $mode): View|RedirectResponse
     {
         $settings = $this->settings();
-        $params = MapParams::parse($request->query(), $settings);
+        $query = $request->query();
+        $views = new ViewRepository($request->user());
+        $savedView = null;
+        $viewError = null;
+        if (isset($query['view'])) {
+            $view = is_scalar($query['view']) && ctype_digit((string) $query['view']) ? $views->find((int) $query['view']) : null;
+            unset($query['view']);
+            if ($view !== null && $view['page'] !== $mode) {
+                return redirect()->route('topology.' . $view['page'], ['view' => $view['id']] + $query);
+            }
+            if ($view !== null) {
+                unset($view['positions']);
+                $savedView = $view;
+                $query += SavedView::query($mode, $view['params']);
+            } else {
+                $viewError = 'This saved view does not exist or is not shared with you.';
+            }
+        }
+        $params = MapParams::parse($query, $settings);
         $repo = new TopologyRepository($request->user());
 
         return view('topology::map', [
             'mode' => $mode,
+            'savedView' => $savedView,
+            'viewError' => $viewError,
+            'views' => $views->visible($mode),
             'params' => $params,
             'filters' => $repo->filterOptions(),
             'deviceName' => $params['device'] ? $repo->deviceName($params['device']) : null,

@@ -24,13 +24,13 @@ The plugin's conventions apply to all of them:
 | 7 | [Automatic device dependencies](README.md#device-dependencies) | **done** | – |
 | 9 | [More L3 map layers](README.md#layer-3-map-overlays) | **done** | – |
 | 10 | [Loop evidence on the STP page](README.md#spanning-tree-diagnostics) | **done** | – |
+| 11 | [Sharing & export](README.md#sharing--export) | **done** | – |
 | 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
 | 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
 | 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
 | 4 | [Routing & IP diagnostics](#4-routing--ip-diagnostics) | planned | M |
 | 12 | [Coverage report](#12-coverage-report) | planned | S |
 | 8 | [Site / WAN view](#8-site--wan-view) | later | M |
-| 11 | [Sharing & export](#11-sharing--export) | later | M each |
 | 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
 
 Effort: S = new checks or an overlay on data the plugin already loads; M = new queries plus a page or tab;
@@ -45,7 +45,8 @@ turn every check into something that runs without anyone opening a page. The res
   There is no hook for dashboard widgets or device tabs.
 * A plugin package can ship routes, views and **database migrations**, and register **scheduled commands**
   (LibreNMS runs Laravel's scheduler).
-* The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (see 6) and the Custom Map widget (see 11).
+* The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (see 6) and the Custom Map widget (a map
+  exported as a [Custom Map](README.md#sharing--export)).
 
 ## Next up
 
@@ -123,15 +124,6 @@ The L3 counterpart of the spanning tree page.
 * One node per location with the links between sites added up (count, capacity, utilization, status), optionally
   placed geographically from `locations.lat` / `lng`; click a site to open its L2/L3 map.
 * Keeps large networks readable, since a device map is capped at *Maximum devices* (400 by default).
-
-### 11. Sharing & export
-
-* **Shared views:** named views (scope, filters, layout) stored on the server and shared by the team, replacing the
-  layouts saved in each browser.
-* **draw.io / Visio export** with icons and positions for documentation (GraphML for yEd).
-* **Export to a LibreNMS Custom Map** (`custom_maps`, `custom_map_nodes`, `custom_map_edges`): a native, editable map
-  with live utilization that can go on a dashboard through the Custom Map widget. The schema changes between LibreNMS
-  versions, so guard it by version.
 
 ### 13. A→B path trace
 
