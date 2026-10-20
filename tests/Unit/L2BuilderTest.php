@@ -58,6 +58,64 @@ class L2BuilderTest extends TestCase
         $this->assertSame('phone', $phone[0]['role']);
     }
 
+    public function testAggregatesThatAreWhollyTheLinkAreFlagged(): void
+    {
+        [$po] = $this->edgeBetween($this->build(), 'd:1', 'd:2');
+        $this->assertTrue($po['lag']['a_whole']);
+        $this->assertTrue($po['lag']['b_whole']);
+
+        // core1's Po1 also takes the uplink to acc1 (an MLAG member): it is not only the link to core2
+        $lagParent = CampusFixture::lagParent() + [13 => 10];
+        $builder = new L2Builder(CampusFixture::devices(), CampusFixture::links(), CampusFixture::ports(), CampusFixture::portVlans(), $lagParent,
+            new StpIndex(CampusFixture::stpInstances(), CampusFixture::stpPorts(), $lagParent));
+        [$po] = $this->edgeBetween($builder->build(), 'd:1', 'd:2');
+        $this->assertFalse($po['lag']['a_whole']);
+        $this->assertTrue($po['lag']['b_whole']);
+    }
+
+    /**
+     * acc10 (device 10) bundles Te1/1/1-4 (101-104) in Po1 (100). Its links rows only show Te1/1/1-2 to core-a (device
+     * 30): Te1/1/3-4 go to core-b, which speaks CDP while acc10 speaks LLDP. Whether Po1 is only the link to core-a
+     * follows the port stack and the status of the members, not the links rows.
+     */
+    public function testAWholeAggregateCountsTheMembersThatAreUpInThePortStack(): void
+    {
+        $whole = function (array $oper, array $lagParent = [101 => 100, 102 => 100, 103 => 100, 104 => 100], array $missing = []): bool {
+            $devices = [];
+            foreach ([10 => 'acc10', 30 => 'core-a'] as $id => $name) {
+                $devices[$id] = ['device_id' => $id, 'hostname' => $name, 'display' => $name, 'status' => 1, 'disabled' => 0, 'role' => 'switch'];
+            }
+            $ports = [];
+            foreach ([100 => 'Port-channel1', 101 => 'Te1/1/1', 102 => 'Te1/1/2', 103 => 'Te1/1/3', 104 => 'Te1/1/4', 301 => 'Te1/0/1', 302 => 'Te1/0/2'] as $id => $name) {
+                if (! in_array($id, $missing, true)) {
+                    $ports[$id] = ['port_id' => $id, 'device_id' => $id < 300 ? 10 : 30, 'ifIndex' => $id, 'ifName' => $name, 'ifDescr' => $name,
+                        'ifSpeed' => 10000000000, 'ifOperStatus' => $oper[$id] ?? 'up', 'ifAdminStatus' => 'up', 'ifType' => 'ethernetCsmacd'];
+                }
+            }
+            $links = [];
+            foreach ([[101, 301], [102, 302]] as [$local, $remote]) {
+                $links[] = ['local_device_id' => 10, 'local_port_id' => $local, 'remote_device_id' => 30, 'remote_port_id' => $remote,
+                    'remote_hostname' => 'core-a', 'remote_port' => $ports[$remote]['ifName'] ?? '', 'remote_platform' => '', 'remote_version' => '', 'protocol' => 'lldp'];
+            }
+            $map = (new L2Builder($devices, $links, $ports, [], $lagParent, new StpIndex([], [], $lagParent)))->build(['collapseLag' => true]);
+            [$edge] = $this->edgeBetween($map, 'd:10', 'd:30');
+            $this->assertSame('d:10', $edge['from']);
+
+            return $edge['lag']['a_whole'];
+        };
+
+        // the cables to core-a are down, those to core-b up: Po1 is up and carries core-b's traffic
+        $this->assertFalse($whole([101 => 'down', 102 => 'down', 301 => 'down', 302 => 'down']));
+        $this->assertFalse($whole([]), 'Te1/1/3-4 are up: Po1 also goes elsewhere');
+        // members that are down do not count, with or without a links row
+        $this->assertTrue($whole([103 => 'down', 104 => 'lowerLayerDown']));
+        $this->assertTrue($whole([102 => 'down', 103 => 'notPresent', 104 => 'down'], [101 => 100, 102 => 100, 103 => 100, 104 => 100]));
+        // a member without its port row may carry traffic
+        $this->assertFalse($whole([103 => 'down'], [101 => 100, 102 => 100, 103 => 100, 104 => 100], [104]));
+        // only the members of this port-channel count
+        $this->assertTrue($whole([], [101 => 100, 102 => 100, 103 => 105, 104 => 105]));
+    }
+
     public function testWithoutLagCollapseMembersAreParallelEdges(): void
     {
         $result = $this->build(['collapseLag' => false, 'unmanaged' => false]);

@@ -93,9 +93,10 @@ class DeviceRole
     }
 
     /**
-     * Guess the role of an unmanaged LLDP/CDP neighbour from its platform/description string.
+     * Guess the role of an unmanaged LLDP/CDP neighbour from its platform/description string (callers
+     * use fromNeighbor(), which also reads an LLDP neighbor's system description).
      */
-    public static function fromPlatform(?string $platform, ?string $hostname = null): string
+    private static function fromPlatform(?string $platform, ?string $hostname = null): string
     {
         $text = strtolower(trim(($platform ?? '') . ' ' . ($hostname ?? '')));
 

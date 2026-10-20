@@ -15,12 +15,13 @@ VLANs, port-channels, BRIDGE-MIB STP, IP addresses, OSPF, BGP, transceiver senso
 | VLAN filter dims switches/links that do not carry the VLAN and switches the STP overlay to that VLAN's instance | OSPF adjacencies and BGP sessions (iBGP/eBGP, external AS clouds), red when not full/established |
 | Unmanaged LLDP/CDP neighbors (APs, phones, servers, unknown switches); an unmanaged neighbor behind a root port is flagged `ROOT?` | OSPFv3, IS-IS, IPsec, MPLS LSP and pseudowire [overlays](#layer-3-map-overlays), with an MTU check of the pseudowires' attachment circuits |
 
-Both maps: center on any device with N hops, filter by device group or location, search, hierarchical or
-organic layout, drag-and-save layout (per browser), color links by speed / utilization / status,
-details panel for every device and link (speed, duplex, VLANs, traffic, STP state, LAG members), export to
-PNG and CSV, full screen, and shareable URLs. On the L2 map, **Simulate failure** in the details of a device or link
-shows which devices would lose their path to the core (failures add up, so "what if both go down" works too), and
-the top-most down device of an outage is marked with the number of down devices behind it.
+Both maps: center on any device with N hops, filter by device group or location, search, hierarchical or organic layout,
+drag-and-save layout (per browser, or as [saved views](#sharing--export) shared with the team), color links by speed /
+utilization / status, details panel for every device and link (speed, duplex, VLANs, traffic, STP state, LAG members),
+[export](#sharing--export) to draw.io (and from there Visio), yEd, PNG and CSV, full screen, and shareable URLs. On the
+L2 map, **Simulate failure** in the details of a device or link shows which devices would lose their path to the core
+(failures add up, so "what if both go down" works too), and the top-most down device of an outage is marked with the
+number of down devices behind it.
 
 ### Layer 3 map overlays
 
@@ -86,6 +87,60 @@ cloud VPN gateway) or on a tunnel subnet they join with addresses of their own (
 * Center on a site to see it with its neighbors within N hops, or filter by device group; double-click a site, or use
   the buttons in its details, to open its L2 or L3 map, redundancy page or device list.
 
+### Sharing & export
+
+**Saved views** (the bookmark button of the L2 and L3 maps, and **Maps → Saved Views**) keep a map under a name on the
+server: its scope, filters, device positions and display options (layout, *Color links by*, labels, STP overlay,
+outages). A view is personal or shared with everyone who can open the maps, and opens with a link (`l2?view=12`). Each
+user sees a shared view with their own permissions: the map is built for them, and only the positions of the nodes on
+their map are used (and sent to their browser); a node the view does not place, such as a device they see as an
+unmanaged neighbor, goes next to the nodes it is linked to; the view's scope names no device, group, location or VRF
+they may not see, but its name is shown as it was typed. The map leaves the view when its scope changes (device, hops,
+group, location, VRF); *Update* saves the map as it is now into the open view. Users change and delete their own views,
+LibreNMS admins also any shared view. *Saved Views* lists them (rename, share, delete) and the layouts saved in this
+browser with the save button, each of which becomes a view in one click.
+
+![Saved views](docs/images/saved-views.png)
+
+**Export** (the download button of a map) saves the map as it is drawn:
+
+| Format | |
+|---|---|
+| draw.io diagram (`.drawio`) | opens in [draw.io / diagrams.net](https://www.drawio.com) (web or desktop) with the positions of the map: devices as draw.io's Cisco shapes colored by status (red down, grey unmanaged), the sites of the site map as buildings, links with their color, width and dashes, the link label in the middle and the interface names at both ends. Each device keeps its name, hostname, hardware, OS and location as data (*Edit Data*) and links to its LibreNMS page. **Visio:** open the file in draw.io and use *File → Export as → VSDX* |
+| GraphML for yEd (`.graphml`) | opens in yEd Graph Editor with the same positions and labels, without a new layout; the properties are in each node's and link's description. A name that starts with `<html>` gets a zero-width space in front, so that yEd shows it as text |
+| PNG image, links as CSV | the picture of the map and one row per link |
+
+The files hold what the map shows: its scope and filters, port-channels collapsed or not, the L3 overlays that are on,
+*Color links by*, the STP overlay, VLAN dimming, the *Interface labels* / *Link labels* switches and a host the
+[host locator](#host-locator-and-port-tab) placed on the map (`host=`). A failure simulation is left out: the files
+show the network as it is.
+
+![Export menu](docs/images/export-menu.png)
+
+**LibreNMS Custom Map** (Export → *LibreNMS Custom Map…* of the L2 and L3 maps, LibreNMS admins) turns the map into a
+native LibreNMS Custom Map (*Maps → Custom Maps*): LibreNMS draws it with the status of the devices and the status and
+utilization of the links, it can be changed in LibreNMS' map editor and put on a dashboard with the Custom Map widget.
+The dialog previews what will be written (nodes, links, size) before anything is saved:
+
+* devices keep their positions and are drawn as the icon of their role, which LibreNMS colors by status (blue up, red
+  down); unmanaged neighbors are grey icons, subnets of the L3 map boxes. A new map takes LibreNMS' defaults for new
+  custom maps (the `custom_map` settings: fonts, legend colours, background);
+* each link takes its status and utilization from a port that is that link only: the port-channel of either end when all
+  of its members that are up (by the port stack, whether LLDP/CDP reports their cables or not) are this link's cables,
+  else the port of a link that is one cable. A port-channel split over two switches (MLAG) is used for neither of its
+  links, which then take the other end's port-channel; a link of several cables without one has no port. OSPF/BGP
+  adjacencies and the other L3 overlays have no port either and are drawn without utilization;
+* names are written with look-alikes for the characters HTML uses (`<` `>` `"` `'` `&` `` ` `` become ‹ › ″ ’ ＆ ˋ):
+  LibreNMS' map editor puts labels into HTML, and LLDP/CDP neighbors name themselves. The editor puts the map's name
+  into its script, so line breaks in the name and menu group become spaces and a backslash becomes ＼. The icons are
+  among those of the editor's node dialog, so a node edited there keeps its icon;
+* *Map* can replace a custom map this plugin made before: its nodes and links are written again (also changes made in
+  the editor), its id, menu group, settings, legend and background stay, so dashboards keep showing it. If it changed in
+  the editor after the preview, the export stops and shows a new preview. Maps made in LibreNMS are never changed. The
+  export is noted in the eventlog.
+
+![Custom map export](docs/images/custom-map-export.png)
+
 ### Spanning tree diagnostics
 
 One page (plus a JSON API) that analyzes every STP instance (802.1D/RSTP/MST CIST and Cisco PVST+/Rapid-PVST+ per VLAN):
@@ -121,7 +176,8 @@ blocked ports with their neighbor across the link, every bridge instance and rec
 report it): the broadcast and multicast rates of the inter-switch links at the last poll, storms first, compared with
 the unicast traffic and the link speed; and the loop related messages the switches sent to LibreNMS' syslog in the last
 24 hours, grouped by device and check, with the ports, MAC addresses and VLANs they name and a link to those messages.
-Links to phones, access points and servers are not inter-switch links. The syslog checks recognize the messages of
+Links to phones, access points and servers are not inter-switch links (an unmanaged neighbor is typed as on the L2 map,
+from its CDP platform or LLDP system description). The syslog checks recognize the messages of
 Cisco IOS / IOS-XE / NX-OS, Arista EOS, Junos and ProCurve / ArubaOS-Switch; each pattern is a setting, so other vendors
 can be added. A message counts for the first check that matches it, so a port err-disabled by BPDU guard is a BPDU guard
 finding (and with `bpdu_guard` in the disabled checks, those messages are left out rather than reported as err-disable).
@@ -444,9 +500,9 @@ old and new root bridge with the VLANs of all their switches ("VLANs 10-29: root
 switches"; when the switches differ, with the switches of each VLAN: "VLAN 31 on 1,242 switches, VLAN 33 on 1 switch").
 **Accept** takes one missing item out of the baseline when it is gone on purpose, or makes a root bridge change the
 expected one on all its switches, each for its own VLANs (two admins accepting overlapping changes at once take turns).
-The redundancy page uses it too: a baseline link that LLDP/CDP no longer reports counts as a down link, so a lost uplink
-is still reported after LibreNMS deleted its neighbor at the next discovery (a port that now has another cable is a
-moved cable, not a lost path).
+The redundancy page, the rollout planner and the device dependencies use it too: a baseline link that LLDP/CDP no longer
+reports counts as a down link, so a lost uplink is still reported after LibreNMS deleted its neighbor at the next
+discovery (a port that now has another cable is a moved cable, not a lost path).
 
 After each snapshot the **background checks** run the spanning tree (one VLAN at a time, with the loop evidence of
 storms and syslog messages), link, redundancy and routing & IP checks over all devices, one after the other and each in
@@ -485,8 +541,9 @@ by device, group or location lists them.
   `ipv6-nd` (host locator), `nac` (802.1X sessions, off by default), `transceivers` and `sensors` (optical levels),
   `entity-physical` (stack members and line cards). The maps and checks work with whatever subset is available; the
   MAC vendors need LibreNMS' OUI table (`mac_oui.enabled`), DNS lookups of the host locator `getent` (glibc or musl).
-* The topology history adds four tables (`topology_*`) with a database migration of the plugin and runs through the
-  LibreNMS scheduler. `./validate.php` warns about that migration; read [Installation](#installation) before acting on it.
+* The plugin keeps its data in tables of its own (`topology_*`), created by database migrations of the plugin: the
+  topology history (four tables, recorded through the LibreNMS scheduler), the saved views and the list of the custom
+  maps it made. `./validate.php` warns about those migrations; read [Installation](#installation) before acting on them.
 
 ## Installation
 
@@ -518,19 +575,25 @@ The plugin is enabled automatically. Its maps and diagnostics pages are listed u
 `/plugin/topology` shows them all with a short description. It can be disabled or configured in
 **Overview → Plugins → Plugin Admin → topology → Settings**.
 
-The topology history keeps its data in tables of the plugin: create them once with `./lnms migrate` (LibreNMS updates run
-it too, so later versions of the plugin update them). The history is recorded by the LibreNMS scheduler, which LibreNMS
-needs anyway (`librenms-scheduler` timer or cron, see `./validate.php`): `topology:snapshot` every *History interval*,
-which records the snapshot and then runs `topology:checks stp|links|redundancy|routing` one after the other, each in a
-process of its own; the output goes to `logs/topology-snapshot.log`, a failure to the eventlog. `./lnms topology:snapshot` does the
-same now.
+The plugin keeps its data in tables of its own: the topology history and the baseline (`topology_facts`,
+`topology_baseline`, `topology_runs`, `topology_findings`), the saved views (`topology_views`) and the custom maps it
+made (`topology_custom_maps`). Create them once with `./lnms migrate` (LibreNMS updates run it too, so later versions of
+the plugin update them). The history is recorded by the LibreNMS scheduler, which LibreNMS needs anyway
+(`librenms-scheduler` timer or cron, see `./validate.php`): `topology:snapshot` every *History interval*, which records
+the snapshot and then runs `topology:checks stp|links|redundancy|routing` one after the other, each in a process of its
+own; the output goes to `logs/topology-snapshot.log`, a failure to the eventlog. `./lnms topology:snapshot` does the
+same now. With several pollers (distributed polling) it runs on one of them at a time: the snapshot and each check
+take a lock in LibreNMS' cache (the database, unless `CACHE_STORE` or `CACHE_DRIVER` in `.env` names a store all
+pollers share, as distributed polling needs), so a run, scheduled or manual, skips while another one holds it.
 
 `./validate.php` then warns that the database schema "has extra migrations
-(2026_10_20_000000_create_topology_history_tables, 2026_10_21_000000_add_finding_subjects_to_topology_history)" and is
-"between releases": those are the plugin's migrations, and the warning stays while the plugin is installed. While it warns, validate.php skips its checks of LibreNMS' own schema
-(structure and collation). **Do not delete the plugin's row from the `migrations` table** to silence it: validate.php then
-lists the `topology_*` tables as extra tables and offers to drop them. **Never apply that fix**: it deletes the history and
-the baseline.
+(2026_10_20_000000_create_topology_history_tables, 2026_10_20_100000_create_topology_custom_maps_table,
+2026_10_20_100100_create_topology_views_table, 2026_10_21_000000_add_finding_subjects_to_topology_history,
+2026_10_22_000000_widen_topology_finding_devices)" (in the order they were applied) and is "between releases": those
+are the plugin's migrations, and the warning stays while the plugin is installed. While it warns, validate.php skips its
+checks of LibreNMS' own schema (structure and collation). **Do not delete the plugin's rows from the `migrations` table**
+to silence it: validate.php then lists the `topology_*` tables as extra tables and offers to drop them. **Never apply
+that fix**: it deletes the history, the baseline and the saved views.
 
 To remove the plugin and its tables:
 
@@ -541,7 +604,8 @@ To remove the plugin and its tables:
 ./lnms plugin:remove agoodley/librenms-topology-plugin
 ```
 
-`./lnms plugin:remove` alone keeps the tables, so a reinstall keeps the history.
+`./lnms plugin:remove` alone keeps the tables, so a reinstall keeps the history, the baseline and the saved views.
+Custom maps the plugin made are LibreNMS' own: they stay either way.
 
 ## Usage tips
 
@@ -549,7 +613,8 @@ To remove the plugin and its tables:
   default 400). Double-click any device to re-center on it.
 * Pick a **VLAN** on the L2 map to see which switches/trunks carry it and that VLAN's spanning tree
   (root bridge, port roles, blocked ports). Domain rows and findings on the STP page link straight to that view.
-* Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope).
+* Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope), or save the map as a
+  **view** to keep it on the server and share it with a link.
 * On the L3 map, click a router and pick an overlay under *Connections* to list its LSPs, tunnels or pseudowires;
   `l3?isis=0&mpls=1` (and `api/l3`) switches IS-IS off and the MPLS LSPs on. A faded device is outside the map:
   double-click it to follow the tunnel or LSP there.
@@ -590,10 +655,10 @@ To remove the plugin and its tables:
   `api/coverage`, `api/rollout`, `api/dependencies` and `api/changes` return the same data as JSON (same query
   parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`, `api/routing?vrf=PROD`,
   `api/changes?window=7d` or `api/changes?from=2026-10-01&to=2026-10-07`) for automation, `api/hosts?q=...` the host
-  locator's answer and `api/path?a=...&b=...` the path trace. `api/coverage` cuts each list at the same 500 rows as the
-  page and returns the full counts as `findings_total`, `neighbors_total`, `devices_total` and `ports_total`: narrow it
-  with `device`, `group` or `location` for the rest. Phones and servers among the neighbors are only counted, in
-  `summary.other_neighbors`.
+  locator's answer, `api/path?a=...&b=...` the path trace and `api/views` the saved views (`api/l2?view=12` adds a
+  view's positions). `api/coverage` cuts each list at the same 500 rows as the page and returns the full counts as
+  `findings_total`, `neighbors_total`, `devices_total` and `ports_total`: narrow it with `device`, `group` or `location`
+  for the rest. Phones and servers among the neighbors are only counted, in `summary.other_neighbors`.
 
 ## Settings
 
@@ -643,17 +708,21 @@ To remove the plugin and its tables:
 
 ## Permissions
 
-Every map and diagnostic only uses devices the logged-in user may see (LibreNMS device permissions).
-Neighbors on devices the user cannot see are shown as unmanaged neighbors (their LLDP/CDP name only), and a
-root bridge on such a device is not reported as a rogue switch. The coverage report lists a neighbor LibreNMS linked to
-such a device as monitored without naming the device (LibreNMS shows the neighbor's name on the device's neighbors tab
-too), and compares the names of neighbors LibreNMS did not link only with the devices the user may see (also disabled
-ones), so it tells nothing else about the others. The topology history is recorded for all devices; the Changes page
-shows a user the changes of their devices, names other devices by their LLDP/CDP name or as "another device", and only
-lists background findings about their devices alone. Only LibreNMS admins can apply derived device dependencies and
-save, clear or accept items of the baseline; other users see those pages read only. The syslog evidence of the spanning
-tree page, and the findings of its syslog based checks on the Changes page, are only shown to users whose LibreNMS role
-may view syslog (the eventlog entries of the spanning tree check name those checks to everyone who may see the device).
+Every map and diagnostic only uses devices the logged-in user may see (LibreNMS device permissions). Neighbors on
+devices the user cannot see are shown as unmanaged neighbors (their LLDP/CDP name only), and a root bridge on such a
+device is not reported as a rogue switch. The coverage report lists a neighbor LibreNMS linked to such a device as
+monitored without naming the device (LibreNMS shows the neighbor's name on the device's neighbors tab too), and compares
+the names of neighbors LibreNMS did not link only with the devices the user may see (also disabled ones), so it tells
+nothing else about the others. The topology history is recorded for all devices; the Changes page shows a user the
+changes of their devices, names other devices by their LLDP/CDP name or as "another device", and only lists background
+findings about their devices alone. Only LibreNMS admins can apply derived device dependencies and save, clear or accept
+items of the baseline; other users see those pages read only. The syslog evidence of the spanning tree page, and the
+findings of its syslog based checks on the Changes page, are only shown to users whose LibreNMS role may view syslog
+(the eventlog entries of the spanning tree check name those checks to everyone who may see the device). Only LibreNMS
+admins who may create custom maps can export a map to a LibreNMS Custom Map; the map is built with their permissions.
+Everyone who can open the maps may save views and share their own; they change and delete their own views, LibreNMS
+admins any shared view. A shared view is built with the permissions of whoever opens it: its positions are only sent for
+the nodes of their map, and it names no device, group, location or VRF they may not see.
 A path trace only resolves ends the user may see and shows devices out of their sight on the path without name, ports
 or addresses; only admins see the size of the whole route table.
 
@@ -700,8 +769,14 @@ or addresses; only admins see the size of the whole route table.
   member, root bridge a switch sees and blocked port, the last two with their VLANs), `FactDiff` (what it writes),
   `ChangeReport` (moved cables, root bridge moves, lost adjacencies), `Baseline`, `FindingHistory` (findings confirmed
   by two runs, eventlog entries); `HistoryService` runs them, `Console/` holds the scheduled `topology:snapshot` and
-  `topology:checks` and `database/migrations` creates the tables.
-* `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
+  `topology:checks`.
+* `src/Sharing/SavedView.php` – what a saved view keeps and which of its positions a viewer gets (`Data\ViewRepository`
+  stores the views and checks who may open and change them).
+* `src/Sharing/CustomMapLayout.php` – the custom map of an L2 or L3 map (nodes, icons, positions, the port of each
+  link); `Data\CustomMapRepository` checks LibreNMS' custom map schema and writes it.
+* `database/migrations` – the plugin's tables: the topology history, the saved views and the custom maps it made.
+* `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS. It also
+  writes the draw.io and GraphML files, in the browser, from the map as drawn.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
 
@@ -739,7 +814,17 @@ vendor/bin/phpunit
   can be intended (video, IPTV): disable `multicast_storm` there.
 * Stacks / virtual chassis that are not modelled as one device, and MLAG pairs without a detected
   port-channel, can produce a "possible bridging loop" warning – the finding says so.
-* Saved layouts live in the browser's local storage, they are not shared between users.
+* Saved views and the Custom Map export cover the L2 and L3 maps; the site map has the file exports only.
+* Layouts saved with the save button live in the browser's local storage; save them as views to share them. A view
+  keeps the positions of its nodes by their map id: a device that is renamed keeps its place, an unmanaged neighbor that
+  gets a new name moves next to its links.
+* The custom map export is verified against LibreNMS 26.10, whose custom map tables have not changed since November 2024.
+  On other versions it writes only the columns that exist, and refuses with a message when a column it needs is missing
+  or one it does not know must be filled. The custom map shows the map as the admin who exported it sees it; LibreNMS
+  shows a custom map to the users who may see all of its devices.
+* The draw.io file uses draw.io's Cisco shapes, which draw.io loads from its own shape library (built into draw.io
+  desktop). yEd has no Cisco icons: the GraphML file draws the roles as basic shapes (rectangle for a switch, ellipse for
+  a router, octagon for a firewall, triangle for an access point), colored like the map.
 * L3 overlays: a far end found on several devices (a duplicated address or router ID) is not guessed: it is an
   external node, like an unknown peer or one on a device you may not see, which shows only the address. Pseudowires
   whose peers LibreNMS lost on several PEs with the same VC ID stay unpaired, and their state is unknown; the MTU check
@@ -812,14 +897,17 @@ vendor/bin/phpunit
   next hop out of an unnumbered interface is the device LLDP/CDP sees on it. VRFs are followed by name. After a
   recursive next hop (iBGP, an MPLS VPN) a router with a route to B is taken to route B itself, and one without goes
   toward that next hop: right for plain IP and for a label switched path through a BGP-free core, but with MPLS a router
-  that also has a route to B still label-switches, and the real path can differ. Gateway redundancy (HSRP / VRRP) is not resolved: the path leaves A's subnet through
-  the router with A's ARP entry. A device you may not see is crossed as "a device you may not see" when the visible
-  devices on both sides report it as their LLDP/CDP neighbor; its ports and name are not shown, and it is assumed to
-  pass frames on. A bridge with a single spanning tree instance in LibreNMS (RSTP, or MSTP, whose other instances
-  LibreNMS does not read) has its states taken for every VLAN, which the page notes.
-* The rollout planner and the device dependencies follow the same LLDP/CDP links: devices without neighbor data get no
-  parents and are left out of rollout plans. Whether devices back each other up is decided strictly (a part without
-  its core devices counts as cut off as a whole), so the core devices of a part never share a batch.
+  that also has a route to B still label-switches, and the real path can differ. Gateway redundancy (HSRP / VRRP) is
+  not resolved: the path leaves A's subnet through the router with A's ARP entry. A device you may not see is crossed as
+  "a device you may not see" when the visible devices on both sides report it as their LLDP/CDP neighbor; its ports and
+  name are not shown, and it is assumed to pass frames on. A bridge with a single spanning tree instance in LibreNMS
+  (RSTP, or MSTP, whose other instances LibreNMS does not read) has its states taken for every VLAN, which the page
+  notes. Gateways and next hops are found through LibreNMS' networks tables (ipv4_networks, ipv6_networks), which it
+  fills for every address with a subnet.
+* The rollout planner and the device dependencies follow the same LLDP/CDP links, and the baseline links LLDP/CDP no
+  longer reports: devices without neighbor data get no parents and are left out of rollout plans. Whether devices back
+  each other up is decided strictly (a part without its core devices counts as cut off as a whole), so the core devices
+  of a part never share a batch.
 * Derived parents never form a loop, so of two switches at the same distance from the core only one can depend on the
   other, and in a mesh a device can keep a path through switches farther from the core while all its parents are down:
   LibreNMS then suppresses its alerts although it may still be reachable. LibreNMS parents must be monitored devices,
@@ -827,14 +915,21 @@ vendor/bin/phpunit
 * The topology history sees what LibreNMS saw at each snapshot: LLDP/CDP neighbors are refreshed at discovery (every 6
   hours by default), spanning tree, OSPF and BGP at polling. A change shows up at the first snapshot after LibreNMS
   noticed it, and a change undone in between is not seen. Phones are left out (they move all day), and devices disabled
-  in LibreNMS keep their last state.
+  in LibreNMS keep their last state. Unmanaged neighbors are typed as on the L2 map, from their CDP platform or LLDP
+  system description: a link recorded while its neighbor was not known as a phone (before it sent its description, or
+  before this plugin version) is dropped from the history and the baseline at the snapshot that types it as one, as if
+  it had never been recorded, without a "Link gone".
 * The snapshot and each background check run over the whole network, one after the other, each in its own process with
   LibreNMS' `php_memory_limit` (512 MB when it is not set). For 1,242 switches with 23,000 phones and 50 PVST VLANs:
   snapshot 1 s and 115 MB, spanning tree check with loop evidence 5 s and 250 MB (one VLAN at a time), link check 1 s and
   160 MB, redundancy check 1 s and 125 MB, the Changes page 0.4 s and 72 MB. For 2,000 routers with 50,000 addresses,
   8,000 OSPF adjacencies and 8,000 BGP sessions: snapshot 1.3 s and 80 MB, routing & IP check 1.3 s and 107 MB (with 1,800
   findings). A check that fails or takes more than an hour is logged in `topology-snapshot.log` and the eventlog, and the
-  others still run.
+  others still run. A lock lasts as long as the longest run could (5 hours 10 minutes: the snapshot and four checks of
+  up to an hour) unless its run releases it, which it does when it ends, also on a fatal error such as running out of
+  memory; `topology:snapshot` releases the lock of a check it stopped or that was killed. A run killed outright
+  otherwise (`kill -9` of `topology:snapshot` or of a manual run) keeps its lock until it expires, as the scheduler's
+  own overlap lock does.
 * A finding that gets milder stays open at the highest severity it reached until it is gone (a duplicate address the
   routing check takes for two separate networks while an OSPF adjacency between them is down stays a warning). A new
   finding goes on for a gone one only when it is about all the devices of the gone one or about a part of them (the
@@ -844,9 +939,11 @@ vendor/bin/phpunit
   on several devices names none of them.
 * The routing & IP check of the background reads its tables strictly: a table that cannot be read, or only in part,
   fails the run (logged, and nothing of the findings history changes), where the routing page shows what could be read.
+  A background check that cannot store its findings history fails the same way: it writes it in one transaction, and
+  its eventlog entries after it. The device list of a finding holds up to 16 MB (an outage of 2 million devices).
 * The redundancy analysis compares the baseline with the last snapshot, and only while that is less than a day old.
-* `./validate.php` warns about the plugin's migration while the plugin is installed and then skips its checks of LibreNMS'
-  own schema (see [Installation](#installation)).
+* `./validate.php` warns about the plugin's migrations while the plugin is installed and then skips its checks of
+  LibreNMS' own schema (see [Installation](#installation)).
 
 ## Roadmap
 

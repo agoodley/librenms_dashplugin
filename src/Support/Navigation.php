@@ -34,6 +34,10 @@ class Navigation
             'route' => 'topology.sites', 'group' => 'maps', 'tab' => 'Sites', 'title' => 'Site / WAN Map', 'icon' => 'fa-globe',
             'description' => 'One node per location with its devices and outages, joined by the links, point-to-point subnets and OSPF / BGP sessions between sites, optionally placed by latitude and longitude.',
         ],
+        'views' => [
+            'route' => 'topology.views', 'group' => 'maps', 'tab' => 'Saved Views', 'title' => 'Saved Views', 'icon' => 'fa-bookmark', 'scoped' => false,
+            'description' => 'Named views of the L2 and L3 maps with their scope, filters and device positions, personal or shared with the team; open, rename, share or delete them.',
+        ],
         'stp' => [
             'route' => 'topology.stp', 'group' => 'diagnostics', 'tab' => 'Spanning Tree', 'title' => 'Spanning Tree Diagnostics', 'icon' => 'fa-stethoscope',
             'description' => 'Root bridge consistency, rogue roots, topology change storms, flapping and blocked ports, bridging loops, timer and protocol mismatches.',

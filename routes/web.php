@@ -3,6 +3,7 @@
 use Agoodley\LibrenmsTopology\Http\Controllers\ApiController;
 use Agoodley\LibrenmsTopology\Http\Controllers\AssetController;
 use Agoodley\LibrenmsTopology\Http\Controllers\CoverageController;
+use Agoodley\LibrenmsTopology\Http\Controllers\ExportController;
 use Agoodley\LibrenmsTopology\Http\Controllers\HistoryController;
 use Agoodley\LibrenmsTopology\Http\Controllers\HostController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PageController;
@@ -10,6 +11,7 @@ use Agoodley\LibrenmsTopology\Http\Controllers\PathController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PlanningController;
 use Agoodley\LibrenmsTopology\Http\Controllers\RoutingController;
 use Agoodley\LibrenmsTopology\Http\Controllers\SiteController;
+use Agoodley\LibrenmsTopology\Http\Controllers\ViewController;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use Illuminate\Support\Facades\Route;
 
@@ -53,6 +55,16 @@ Route::middleware(['web', 'auth'])
         Route::get('dependencies', [PlanningController::class, 'dependencies'])->name('dependencies');
         Route::post('dependencies', [PlanningController::class, 'applyDependencies'])->name('dependencies.apply');
         Route::get('api/dependencies', [PlanningController::class, 'dependenciesApi'])->name('api.dependencies');
+
+        // sharing & export
+        Route::get('views', [ViewController::class, 'index'])->name('views');
+        Route::post('views', [ViewController::class, 'act'])->name('views.act');
+        Route::get('api/views', [ViewController::class, 'list'])->name('api.views');
+        Route::post('api/views', [ViewController::class, 'store'])->name('api.views.store');
+        Route::post('api/views/{id}', [ViewController::class, 'save'])->where('id', '[0-9]+')->name('api.views.save');
+        Route::post('api/views/{id}/delete', [ViewController::class, 'destroy'])->where('id', '[0-9]+')->name('api.views.delete');
+        Route::post('api/custom-map/preview', [ExportController::class, 'preview'])->name('api.custom-map.preview');
+        Route::post('api/custom-map', [ExportController::class, 'create'])->name('api.custom-map');
 
         Route::get('assets/{file}', AssetController::class)
             ->where('file', '[A-Za-z0-9_-]+\.(js|css)')
