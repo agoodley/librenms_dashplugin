@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\History\HistoryService;
 use Agoodley\LibrenmsTopology\History\Jobs;
+use Agoodley\LibrenmsTopology\Support\MemoryLimit;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use Illuminate\Console\Command;
@@ -41,7 +42,7 @@ abstract class HistoryCommand extends Command
 
             return null;
         }
-        self::raiseMemoryLimit();
+        MemoryLimit::raise(self::MEMORY_MB);
 
         return new HistoryService($history, TopologyRepository::system(), new PluginSettings($plugins->getSettings($name)));
     }
@@ -115,42 +116,5 @@ abstract class HistoryCommand extends Command
         }
 
         return $ok;
-    }
-
-    /**
-     * LibreNMS' php_memory_limit (MB) if it is set, else MEMORY_MB, unless PHP already allows more.
-     */
-    private static function raiseMemoryLimit(): void
-    {
-        $configured = null;
-        try {
-            $configured = class_exists(\App\Facades\LibrenmsConfig::class) ? \App\Facades\LibrenmsConfig::get('php_memory_limit') : null;
-        } catch (\Throwable) {
-            // older LibreNMS: the default below
-        }
-        $wanted = (is_numeric($configured) && $configured > 0 ? (int) $configured : self::MEMORY_MB) * 1048576;
-        $current = self::bytes((string) ini_get('memory_limit'));
-        if ($current !== -1 && $current < $wanted) {
-            ini_set('memory_limit', (string) $wanted);
-        }
-    }
-
-    /**
-     * A php.ini size ("128M", "1G", "-1") in bytes, -1 for no limit.
-     */
-    private static function bytes(string $value): int
-    {
-        $value = trim($value);
-        if ($value === '' || $value === '-1') {
-            return -1;
-        }
-        $number = (int) $value;
-
-        return match (strtoupper(substr($value, -1))) {
-            'G' => $number * 1073741824,
-            'M' => $number * 1048576,
-            'K' => $number * 1024,
-            default => $number,
-        };
     }
 }
