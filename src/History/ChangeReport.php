@@ -234,7 +234,7 @@ class ChangeReport
             $b = $rows[0]['data']['b'];
             $where = array_map(fn ($row) => $this->text->linkEnd($row['data']['a']), $rows);
             $role = self::role($b['role'] ?? null);
-            $this->add(min(array_column($rows, 'first_seen')), $role === 'neighbor' ? 'neighbor_new' : 'unmanaged_new', "New unmanaged $role " . ($b['name'] ?? 'neighbor')
+            $this->add(min(array_column($rows, 'first_seen')), $role === 'neighbor' ? 'neighbor_new' : 'unmanaged_new', "New $role not monitored: " . ($b['name'] ?? 'neighbor')
                 . (isset($b['platform']) ? ' (' . $b['platform'] . ')' : '') . ' on ' . implode(', ', $where), array_values(array_unique(array_merge(...array_map(fn ($row) => self::devices($row), $rows)))));
         }
 

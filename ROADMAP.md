@@ -19,19 +19,19 @@ The plugin's conventions apply to all of them:
 | # | Tool | Status | Effort |
 |---|---|---|---|
 | 1 | [Link & VLAN diagnostics](README.md#link--vlan-diagnostics) | **done** | – |
+| 2 | [Host locator and port tab](README.md#host-locator-and-port-tab) | **done** | – |
 | 3 | [Redundancy & failure impact](README.md#redundancy--failure-impact) | **done** | – |
 | 4 | [Routing & IP diagnostics](README.md#routing--ip-diagnostics) | **done** | – |
 | 5 | [Topology history, diff and baseline](README.md#topology-history-baseline-and-background-checks) | **done** | – |
 | 6 | [Background diagnostics → eventlog](README.md#topology-history-baseline-and-background-checks) | **done** | – |
-| 2 | [Host locator and port tab](README.md#host-locator-and-port-tab) | **done** | – |
-| 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
 | 7 | [Automatic device dependencies](README.md#device-dependencies) | **done** | – |
+| 8 | [Site / WAN map](README.md#site--wan-map) | **done** | – |
 | 9 | [More L3 map layers](README.md#layer-3-map-overlays) | **done** | – |
 | 10 | [Loop evidence on the STP page](README.md#spanning-tree-diagnostics) | **done** | – |
-| 12 | [Coverage report](README.md#coverage-report) | **done** | – |
-| 8 | [Site / WAN map](README.md#site--wan-map) | **done** | – |
 | 11 | [Sharing & export](README.md#sharing--export) | **done** | – |
+| 12 | [Monitoring coverage](README.md#monitoring-coverage) | **done** | – |
 | 13 | [A→B path trace](README.md#path-trace) | **done** | – |
+| 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
 | 15 | [Maps at a point in time](#15-maps-at-a-point-in-time) | later | M |
 
 Effort: S = new checks or an overlay on data the plugin already loads; M = new queries plus a page or tab;
@@ -46,14 +46,13 @@ L = several new parts (tables, jobs, UI).
 * The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (the background checks write their
   findings there) and the Custom Map widget (a map exported as a [Custom Map](README.md#sharing--export)).
 
-
 ## Later
 
 ### 15. Maps at a point in time
 
 * Draw the L2/L3 maps as they were at a given time, or mark on today's map what changed since then, from the facts
-  the topology history keeps (`topology_facts`: links, port-channel members, root bridges, adjacencies with their
-  first seen and removed times).
+  the topology history keeps (`topology_facts`: links, port-channel members, root bridges, blocked ports, OSPF
+  adjacencies and BGP sessions, with their first seen and removed times).
 * Ports, VLANs and device details are not in the history: the past map shows them as they are now.
 
 ## Ideas for separate plugins

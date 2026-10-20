@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Data;
 
+use Agoodley\LibrenmsTopology\Support\Text;
 use App\Models\Device;
 use App\Models\Eventlog;
 use Illuminate\Support\Facades\DB;
@@ -67,7 +68,7 @@ class DependencyRepository extends ScopedRepository
     public function outages(array $ids, int $since): array
     {
         $ids = array_values(array_filter($ids, fn ($id) => $this->canSee((int) $id)));
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('device_outages')) {
             return [];
         }
 
@@ -107,12 +108,17 @@ class DependencyRepository extends ScopedRepository
 
         $username = $this->user->username ?? 'unknown';
         $list = fn (array $ids) => $ids ? implode(', ', array_map(fn ($id) => $names[$id] ?? "#$id", $ids)) : 'none';
-        DB::transaction(function () use ($parents, $before, $list, $username): void {
+        // the eventlog of a device is read by everyone who may see it, the parents maybe not: it gets the counts, the
+        // LibreNMS log (admins) the names
+        $count = fn (array $ids) => $ids ? Text::count(count($ids), 'parent') : 'none';
+        DB::transaction(function () use ($parents, $before, $list, $count, $username): void {
             foreach (Device::whereIntegerInRaw('device_id', array_keys($parents))->get() as $device) {
                 $ids = array_values(array_map('intval', $parents[(int) $device->device_id]));
+                $old = $before[(int) $device->device_id] ?? [];
                 $device->parents()->sync($ids);
-                Eventlog::log("Device dependencies set from the topology by $username: parents " . $list($ids)
-                    . ' (before: ' . $list($before[(int) $device->device_id] ?? []) . ')', $device, 'system', Severity::Info);
+                Eventlog::log("Device dependencies set from the topology by $username: " . $count($ids) . ' (before: ' . $count($old) . ')',
+                    $device, 'system', Severity::Info);
+                Log::info("topology plugin: $username set the parents of device {$device->device_id}: " . $list($ids) . ' (before: ' . $list($old) . ')');
             }
         });
 

@@ -67,15 +67,11 @@
 
         @php($summary = $result['summary'])
         <div class="topo-cards">
-            <div class="topo-card topo-{{ $summary['status'] }}">
-                <h4>Health</h4>
-                <div class="topo-card-value"><span class="topo-sev topo-sev-{{ $summary['status'] }}" style="font-size: 16px">{{ $summary['status'] }}</span></div>
-                <p>{{ $summary['findings']['critical'] }} critical, {{ $summary['findings']['warning'] }} warnings, {{ $summary['findings']['info'] }} info</p>
-            </div>
+            @include('topology::partials.health-card', ['summary' => $summary])
             <div class="topo-card topo-info">
                 <h4>Bridges</h4>
                 <div class="topo-card-value">{{ $summary['bridges'] }}</div>
-                <p>{{ $summary['instances'] }} STP instances in {{ $summary['domains'] }} L2 domain(s)</p>
+                <p>{{ \Agoodley\LibrenmsTopology\Support\Text::count($summary['instances'], 'STP instance') }} in {{ \Agoodley\LibrenmsTopology\Support\Text::count($summary['domains'], 'L2 domain') }}</p>
             </div>
             <div class="topo-card topo-info">
                 <h4>Root bridges</h4>

@@ -327,6 +327,10 @@ class HostLocatorTest extends TestCase
         $this->assertSame('access', $result['edge']['via']);
         $this->assertSame([40], $result['edge']['vlans']);
         $this->assertStringContainsString('7 MACs are learned on this port and it has no LLDP/CDP neighbor', self::texts($result));
+
+        // the shared setting at 0 switches the note off (as it does the coverage report's hub check)
+        $off = new HostLocator(self::ports([]), self::neighbors([]), self::LAGS, [], self::DEVICES, 0);
+        $this->assertStringNotContainsString('MACs are learned on this port', self::texts($off->locate('00408c000001', [self::row(6, 603, 40)])));
     }
 
     public function testUplinkWithoutLldpCarriesManyMacs(): void

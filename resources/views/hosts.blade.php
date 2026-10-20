@@ -130,6 +130,7 @@
 
                     @if($host['addresses'])
                         <h5>Addresses</h5>
+                        <div class="table-responsive">
                         <table class="table table-condensed table-hover topo-stp-table">
                             <thead><tr><th>Address</th><th>Learned on</th><th>VRF / context</th></tr></thead>
                             <tbody>
@@ -142,10 +143,12 @@
                             @endforeach
                             </tbody>
                         </table>
+                        </div>
                     @endif
 
                     @if($host['nac'])
                         <h5>802.1X / MAB sessions</h5>
+                        <div class="table-responsive">
                         <table class="table table-condensed table-hover topo-stp-table">
                             <thead><tr><th>User</th><th>Status</th><th>Method</th><th>Switch port</th><th>VLAN</th><th>Updated</th></tr></thead>
                             <tbody>
@@ -162,6 +165,7 @@
                             @endforeach
                             </tbody>
                         </table>
+                        </div>
                     @endif
 
                     @if($host['seen'])
@@ -170,6 +174,7 @@
                         @else
                             <h5>Also learned on <small class="text-muted">(and why the host is not there)</small></h5>
                         @endif
+                        <div class="table-responsive">
                         <table class="table table-condensed table-hover topo-stp-table">
                             <thead><tr><th>Switch</th><th>Port</th><th>VLAN</th><th>Last seen</th><th>{{ $answer ? 'Leads to' : 'Why not here' }}</th></tr></thead>
                             <tbody>
@@ -184,6 +189,7 @@
                             @endforeach
                             </tbody>
                         </table>
+                        </div>
                     @endif
                 </div>
             </div>

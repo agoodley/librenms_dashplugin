@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsTopology\Data;
 
 use App\Models\Device;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -13,8 +14,42 @@ use Illuminate\Support\Facades\Log;
  */
 abstract class ScopedRepository
 {
+    /**
+     * LibreNMS tables the plugin reads whose model has a role permission (a LibreNMS policy) besides the
+     * devices a user may see, with what they hold for the page notices. See allowsTable().
+     */
+    public const TABLE_MODELS = [
+        'links' => [\App\Models\Link::class, 'LLDP/CDP links'],
+        'ports' => [\App\Models\Port::class, 'ports'],
+        'ports_fdb' => [\App\Models\PortsFdb::class, 'forwarding tables'],
+        'ipv4_mac' => [\App\Models\Ipv4Mac::class, 'ARP tables'],
+        'ipv6_nd' => [\App\Models\Ipv6Nd::class, 'IPv6 neighbor tables'],
+        'ports_nac' => [\App\Models\PortsNac::class, '802.1X sessions'],
+        'bgpPeers' => [\App\Models\BgpPeer::class, 'BGP sessions'],
+        'bgpPeers_cbgp' => [\App\Models\BgpPeer::class, 'BGP sessions'],
+        'ospf_nbrs' => [\App\Models\OspfNbr::class, 'OSPF neighbors'],
+        'ospf_instances' => [\App\Models\OspfInstance::class, 'OSPF instances'],
+        'ospf_areas' => [\App\Models\OspfArea::class, 'OSPF areas'],
+        'ospf_ports' => [\App\Models\OspfPort::class, 'OSPF interfaces'],
+        'ospfv3_nbrs' => [\App\Models\Ospfv3Nbr::class, 'OSPFv3 neighbors'],
+        'ospfv3_instances' => [\App\Models\Ospfv3Instance::class, 'OSPFv3 instances'],
+        'isis_adjacencies' => [\App\Models\IsisAdjacency::class, 'IS-IS adjacencies'],
+        'ipsec_tunnels' => [\App\Models\IpsecTunnel::class, 'IPsec tunnels'],
+        'mpls_lsps' => [\App\Models\MplsLsp::class, 'MPLS LSPs'],
+        'mpls_lsp_paths' => [\App\Models\MplsLspPath::class, 'MPLS LSPs'],
+        'pseudowires' => [\App\Models\Pseudowire::class, 'pseudowires'],
+        'eventlog' => [\App\Models\Eventlog::class, 'the eventlog'],
+        'device_outages' => [\App\Models\DeviceOutage::class, 'outages'],
+        'syslog' => [\App\Models\Syslog::class, 'syslog'],
+        'stp' => [\App\Models\Stp::class, 'spanning tree'],
+        'ports_stp' => [\App\Models\PortStp::class, 'spanning tree ports'],
+    ];
+
     /** @var array<int, true>|null */
     private ?array $accessible = null;
+
+    /** @var array<string, bool> role permission per model class, checked once (see allows()) */
+    private array $allowed = [];
 
     /** Every device, for the scheduled jobs (see system()). */
     private bool $system = false;
@@ -77,8 +112,73 @@ abstract class ScopedRepository
         $sibling->accessible = $this->accessible();
         $sibling->system = $this->system;
         $sibling->withDisabled = $this->withDisabled;
+        $sibling->allowed = $this->allowed;
 
         return $sibling;
+    }
+
+    /**
+     * May the user read this kind of LibreNMS data? Besides the devices a user may see, LibreNMS checks a
+     * role permission per kind (port.view, link.view, bgp-peer.view ... through its policies), and admins
+     * can create roles without some of them; the plugin then leaves that data out, as LibreNMS' own pages
+     * do. A LibreNMS version without a policy for the model shows it to anyone who may see the device, and
+     * the system scope of the scheduled jobs reads everything. Checked once per model.
+     *
+     * @param  class-string  $modelClass  e.g. \App\Models\Port::class
+     */
+    public function allows(string $modelClass): bool
+    {
+        if ($this->system) {
+            return true;
+        }
+
+        return $this->allowed[$modelClass] ??= $this->policyAllows($modelClass);
+    }
+
+    /**
+     * allows() for the model of a LibreNMS table (TABLE_MODELS); other tables are readable.
+     */
+    public function allowsTable(string $table): bool
+    {
+        $model = self::TABLE_MODELS[$table][0] ?? null;
+
+        return $model === null || $this->allows($model);
+    }
+
+    /**
+     * What a role permission hides among these tables, for the page notices ("BGP sessions", ...).
+     *
+     * @param  string[]  $tables
+     * @return string[]
+     */
+    public function hiddenKinds(array $tables): array
+    {
+        $hidden = [];
+        foreach ($tables as $table) {
+            if (! $this->allowsTable($table)) {
+                $hidden[self::TABLE_MODELS[$table][1]] = true;
+            }
+        }
+
+        return array_keys($hidden);
+    }
+
+    /**
+     * The LibreNMS policy's viewAny for the user (true without such a model or policy).
+     */
+    protected function policyAllows(string $modelClass): bool
+    {
+        try {
+            if (! class_exists($modelClass) || Gate::getPolicyFor($modelClass) === null) {
+                return true;
+            }
+
+            return Gate::forUser($this->user)->allows('viewAny', $modelClass);
+        } catch (\Throwable $e) {
+            Log::debug("topology plugin: cannot check the permission for $modelClass: " . $e->getMessage());
+
+            return false;
+        }
     }
 
     /**
@@ -131,6 +231,31 @@ abstract class ScopedRepository
         }
 
         return [$scope, $root];
+    }
+
+    /**
+     * scope() for a request that writes: a device, group or location that was given but is not one the
+     * user may see (or no longer exists) is refused instead of falling back to every device.
+     *
+     * @param  array{device: ?int, group: ?int, location: ?int}  $p  see MapParams::parse()
+     * @return array{0: int[], 1: int|null}
+     *
+     * @throws \InvalidArgumentException
+     */
+    public function strictScope(array $p): array
+    {
+        $device = ($p['device'] ?? null) ?: null;
+        if ($device && ! $this->canSee($device)) {
+            throw new \InvalidArgumentException('The device of this request is not one you may see (disabled, deleted or not permitted).');
+        }
+        if (($p['group'] ?? null) && ! in_array((int) $p['group'], array_column($this->filterOptions()['groups'], 'id'), true)) {
+            throw new \InvalidArgumentException('The device group of this request is not one you may see.');
+        }
+        if (($p['location'] ?? null) && ! in_array((int) $p['location'], array_column($this->filterOptions()['locations'], 'id'), true)) {
+            throw new \InvalidArgumentException('The location of this request is not one you may see.');
+        }
+
+        return $this->scope($p);
     }
 
     /**
@@ -212,7 +337,7 @@ abstract class ScopedRepository
 
     /**
      * All rows of a per-device table for the given devices, or none when the table does not exist on
-     * this LibreNMS version.
+     * this LibreNMS version or the user's role may not read it.
      *
      * @param  int[]  $ids
      * @param  string[]  $columns
@@ -220,7 +345,7 @@ abstract class ScopedRepository
      */
     protected function rows(string $table, array $ids, array $columns): array
     {
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable($table)) {
             return [];
         }
 
@@ -241,6 +366,9 @@ abstract class ScopedRepository
      */
     protected function distinctDevices(string $table, array $ids): array
     {
+        if (! $this->allowsTable($table)) {
+            return [];
+        }
         try {
             return array_map('intval', DB::table($table)->whereIntegerInRaw('device_id', $ids)->distinct()->pluck('device_id')->all());
         } catch (\Throwable $e) {

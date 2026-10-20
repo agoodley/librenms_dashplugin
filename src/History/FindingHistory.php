@@ -235,8 +235,8 @@ class FindingHistory
      * entry when that reaches $minimum and one when it no longer does, so when its findings at that
      * severity are gone; 'none' writes nothing. A skipped check writes no entries, nor does a check at
      * a skipped severity (code:severity): its state at that severity counts as below $minimum. At
-     * most EVENTLOG_DEVICES devices per check and run get the entry; it says on how many more devices
-     * it also happened.
+     * most EVENTLOG_DEVICES devices per check and run get the entry; it says that more devices have it,
+     * not how many (a reader of one device's eventlog may not see the others).
      *
      * @param  array<int, array{code: string, severity: string, devices: int[]}>  $before  confirmed findings before the run
      * @param  array<int, array{code: string, severity: string, devices: int[]}>  $after  confirmed findings after the run
@@ -271,7 +271,7 @@ class FindingHistory
                         'message' => ($change === 'new'
                             ? 'Topology ' . $severity . ': ' . self::label($code) . " ($name check), details: plugin/topology/$analysis?device=$device"
                             : 'Topology resolved: ' . self::label($code) . " ($name check)")
-                            . ($more > 0 ? " (also on $more more devices)" : ''),
+                            . ($more > 0 ? ' (and on other devices)' : ''),
                         'severity' => $change === 'new' ? $severity : 'ok',
                         'reference' => mb_substr("topology:$analysis:$code", 0, 64),
                     ];

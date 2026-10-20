@@ -474,9 +474,9 @@ class CoverageAnalyzerTest extends TestCase
         $this->assertStringContainsString('acc1 Gi1/0/11 (room 12) has 7 MAC addresses in VLANs 10, 20 and no LLDP/CDP neighbor:', $finding['detail']);
         $this->assertSame(2, $result['summary']['ports']);
 
-        $this->assertSame([], $net->analyzer(['coverage_mac_threshold' => '8'])->analyze()['ports']);
-        $this->assertSame([$hub], array_column($net->analyzer(['coverage_mac_threshold' => '6'])->analyze()['ports'], 'port_id'));
-        $this->assertSame([], $net->analyzer(['coverage_mac_threshold' => '0'])->analyze()['ports']);
+        $this->assertSame([], $net->analyzer(['shared_port_macs' => '8'])->analyze()['ports']);
+        $this->assertSame([$hub], array_column($net->analyzer(['shared_port_macs' => '6'])->analyze()['ports'], 'port_id'));
+        $this->assertSame([], $net->analyzer(['shared_port_macs' => '0'])->analyze()['ports']);
     }
 
     public function testPhonesAndSeveralNeighborsOnOnePort(): void

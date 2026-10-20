@@ -10,7 +10,7 @@
 
 @section('content')
 <div class="container-fluid topo-page">
-    @include('topology::partials.nav', ['active' => 'views'])
+    @include('topology::partials.nav', ['active' => 'views', 'roleNote' => 'the maps of these views leave them out'])
 
     @if($done)
         <div class="alert alert-{{ $done['ok'] ? 'success' : 'danger' }} topo-views-done">
@@ -26,49 +26,56 @@
         A view keeps the scope, filters, device positions and display options of the map. A shared view is listed for everyone who can
         open the maps; each of them sees it with their own permissions, only the devices they may see.</p>
 
-    <table class="table table-condensed table-hover topo-views-table">
-        <thead>
-            <tr><th>Name</th><th>Map</th><th>Scope</th><th>Owner</th><th>Shared</th><th>Updated</th><th></th></tr>
-        </thead>
-        <tbody>
-            @forelse($views as $view)
-                <tr data-view-id="{{ $view['id'] }}">
-                    <td><a href="{{ $view['url'] }}"><i class="fa fa-bookmark fa-fw"></i> {{ $view['name'] }}</a></td>
-                    <td>{{ $pages[$view['page']] ?? $view['page'] }}</td>
-                    <td>{{ $view['scope'] }}</td>
-                    <td>{{ $view['owner'] }}</td>
-                    <td>@if($view['shared'])<i class="fa fa-users"></i> shared @else personal @endif</td>
-                    <td class="text-nowrap">{{ $view['updated_at'] ? \Illuminate\Support\Carbon::parse($view['updated_at'])->diffForHumans() : '' }}</td>
-                    <td class="topo-view-actions">
-                        @if($view['can_edit'])
-                            <form method="post" action="{{ route('topology.views.act') }}" class="topo-inline-form">
-                                @csrf
-                                <input type="hidden" name="id" value="{{ $view['id'] }}">
-                                <input type="hidden" name="action" value="rename">
-                                <input name="name" class="form-control input-sm" value="{{ $view['name'] }}" maxlength="100" required aria-label="New name">
-                                <button type="submit" class="btn btn-xs btn-default">Rename</button>
-                            </form>
-                            <form method="post" action="{{ route('topology.views.act') }}" class="topo-inline-form">
-                                @csrf
-                                <input type="hidden" name="id" value="{{ $view['id'] }}">
-                                <input type="hidden" name="action" value="{{ $view['shared'] ? 'unshare' : 'share' }}">
-                                <button type="submit" class="btn btn-xs btn-default">{{ $view['shared'] ? 'Stop sharing' : 'Share' }}</button>
-                            </form>
-                            <form method="post" action="{{ route('topology.views.act') }}" class="topo-inline-form" data-confirm="Delete the view &quot;{{ $view['name'] }}&quot;?"
-                                  onsubmit="return window.confirm(this.getAttribute('data-confirm'))">
-                                @csrf
-                                <input type="hidden" name="id" value="{{ $view['id'] }}">
-                                <input type="hidden" name="action" value="delete">
-                                <button type="submit" class="btn btn-xs btn-danger">Delete</button>
-                            </form>
-                        @endif
-                    </td>
-                </tr>
-            @empty
-                <tr><td colspan="7" class="text-muted">No saved views yet.</td></tr>
-            @endforelse
-        </tbody>
-    </table>
+    <div class="table-responsive">
+        <table class="table table-condensed table-hover topo-views-table">
+            <thead>
+                <tr><th>Name</th><th>Map</th><th>Scope</th><th>Owner</th><th>Shared</th><th>Updated</th><th style="position: relative"><span class="sr-only">Actions</span></th></tr>
+            </thead>
+            <tbody>
+                @forelse($views as $view)
+                    <tr data-view-id="{{ $view['id'] }}">
+                        <td><a href="{{ $view['url'] }}"><i class="fa fa-bookmark fa-fw"></i> {{ $view['name'] }}</a></td>
+                        <td>{{ $pages[$view['page']] ?? $view['page'] }}
+                            @if(! empty($roleHidden[$view['page']]))
+                                <i class="fa fa-lock text-muted" title="Your LibreNMS role may not view {{ implode(', ', $roleHidden[$view['page']]) }}: this map leaves them out"
+                                   aria-label="Your LibreNMS role may not view {{ implode(', ', $roleHidden[$view['page']]) }}"></i>
+                            @endif
+                        </td>
+                        <td>{{ $view['scope'] }}</td>
+                        <td>{{ $view['owner'] }}</td>
+                        <td>@if($view['shared'])<i class="fa fa-users"></i> shared @else personal @endif</td>
+                        <td class="text-nowrap">{{ $view['updated_at'] ? \Illuminate\Support\Carbon::parse($view['updated_at'])->diffForHumans() : '' }}</td>
+                        <td class="topo-view-actions">
+                            @if($view['can_edit'])
+                                <form method="post" action="{{ route('topology.views.act') }}" class="topo-inline-form">
+                                    @csrf
+                                    <input type="hidden" name="id" value="{{ $view['id'] }}">
+                                    <input type="hidden" name="action" value="rename">
+                                    <input name="name" class="form-control input-sm" value="{{ $view['name'] }}" maxlength="100" required aria-label="New name">
+                                    <button type="submit" class="btn btn-xs btn-default">Rename</button>
+                                </form>
+                                <form method="post" action="{{ route('topology.views.act') }}" class="topo-inline-form">
+                                    @csrf
+                                    <input type="hidden" name="id" value="{{ $view['id'] }}">
+                                    <input type="hidden" name="action" value="{{ $view['shared'] ? 'unshare' : 'share' }}">
+                                    <button type="submit" class="btn btn-xs btn-default">{{ $view['shared'] ? 'Stop sharing' : 'Share' }}</button>
+                                </form>
+                                <form method="post" action="{{ route('topology.views.act') }}" class="topo-inline-form" data-confirm="Delete the view &quot;{{ $view['name'] }}&quot;?"
+                                      onsubmit="return window.confirm(this.getAttribute('data-confirm'))">
+                                    @csrf
+                                    <input type="hidden" name="id" value="{{ $view['id'] }}">
+                                    <input type="hidden" name="action" value="delete">
+                                    <button type="submit" class="btn btn-xs btn-danger">Delete</button>
+                                </form>
+                            @endif
+                        </td>
+                    </tr>
+                @empty
+                    <tr><td colspan="7" class="text-muted">No saved views yet.</td></tr>
+                @endforelse
+            </tbody>
+        </table>
+    </div>
 
     <h4 class="topo-landing-group"><i class="fa fa-save fa-fw"></i> Layouts saved in this browser</h4>
     <p class="text-muted">Device positions saved with <i class="fa fa-save"></i> on a map stay in this browser. Save one as a view to keep it
@@ -117,13 +124,14 @@
             if (params.get('vrf')) parts.push('VRF ' + params.get('vrf'));
             return parts.length ? parts.join(' · ') : 'whole network';
         };
-        var html = '<table class="table table-condensed topo-views-table"><thead><tr><th>Map</th><th>Scope</th><th>Devices</th><th></th></tr></thead><tbody>';
+        var html = '<div class="table-responsive"><table class="table table-condensed topo-views-table"><thead><tr><th>Map</th><th>Scope</th><th>Devices</th>' +
+            '<th style="position: relative"><span class="sr-only">Actions</span></th></tr></thead><tbody>';
         layouts.forEach(function (layout, index) {
             html += '<tr><td>' + esc(names[layout.page]) + '</td><td>' + esc(describe(layout.scope)) + '</td><td>' + Object.keys(layout.positions).length +
                 '</td><td><button type="button" class="btn btn-xs btn-primary" data-save="' + index + '"><i class="fa fa-bookmark"></i> Save as a view</button> ' +
                 '<button type="button" class="btn btn-xs btn-default" data-forget="' + index + '">Remove from this browser</button></td></tr>';
         });
-        box.innerHTML = html + '</tbody></table>';
+        box.innerHTML = html + '</tbody></table></div>';
 
         box.querySelectorAll('[data-save]').forEach(function (button) {
             button.addEventListener('click', function () {

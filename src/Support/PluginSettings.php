@@ -50,9 +50,8 @@ class PluginSettings
         'routing_prefix_warn_percent' => '80',
         'routing_ignore_addresses' => '',
         'routing_disabled_checks' => '',
-        'hosts_shared_port_macs' => '5',
         'hosts_dns' => '1',
-        'coverage_mac_threshold' => '4',
+        'shared_port_macs' => '4',
         'coverage_disabled_checks' => '',
         'history_enabled' => '1',
         'history_interval' => '60',
@@ -85,7 +84,10 @@ class PluginSettings
         $values = self::DEFAULTS;
         foreach (self::DEFAULTS as $key => $default) {
             if (array_key_exists($key, $stored) && $stored[$key] !== null) {
-                $values[$key] = trim((string) $stored[$key]);
+                // a group of checkboxes (settings[key][]) is stored as a list
+                $values[$key] = is_array($stored[$key])
+                    ? implode(' ', array_filter(array_map(fn ($v) => trim((string) $v), $stored[$key]), fn ($v) => $v !== ''))
+                    : trim((string) $stored[$key]);
             }
         }
 
@@ -109,6 +111,17 @@ class PluginSettings
         $int = is_numeric($value) ? (int) $value : (int) (self::DEFAULTS[$key] ?? 0);
 
         return max($min, min($max, $int));
+    }
+
+    /**
+     * MAC addresses on an access port without LLDP/CDP neighbor from which the coverage report and the
+     * host locator call it a probable hub or unmanaged switch; 0 switches that off, 1 counts as 2.
+     */
+    public function sharedPortMacs(): int
+    {
+        $value = $this->int('shared_port_macs', 0, 1000000);
+
+        return $value === 0 ? 0 : max(2, $value);
     }
 
     /**

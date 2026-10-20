@@ -33,7 +33,7 @@
 .topo-panel h5 { margin: 12px 0 4px; font-weight: 600; }
 .topo-kv { margin-bottom: 6px; }
 .topo-kv th { width: 34%; color: #666; font-weight: 600; }
-.topo-kv td, .topo-kv th { padding: 2px 4px !important; vertical-align: top; word-break: break-word; }
+.topo-kv td, .topo-kv th { padding: 2px 4px !important; vertical-align: top; overflow-wrap: break-word; }
 .topo-kv .topo-section { background: rgba(31, 111, 178, 0.08); color: #1f6fb2; padding-top: 4px !important; }
 .topo-neighbors tr { cursor: pointer; }
 .topo-neighbors tr:hover td { background: rgba(243, 156, 18, 0.12); }
@@ -50,11 +50,11 @@
 .topo-subnet { display: inline-block; padding: 0 4px; border: 1.5px solid #c9a227; background: #fff6d5; font-family: monospace; font-size: 10px; border-radius: 3px; }
 .topo-hint { margin-top: 10px; font-size: 11px; }
 .topo-status-bar { padding: 6px 2px; font-size: 12px; color: #555; }
-.topo-status-up { color: #2e9e44; font-weight: 600; }
+.topo-status-up { color: #23803a; font-weight: 600; }
 .topo-status-down, .topo-status-lowerLayerDown { color: #c0392b; font-weight: 600; }
-.topo-status-degraded { color: #e67e22; font-weight: 600; }
+.topo-status-degraded { color: #b85c00; font-weight: 600; }
 .topo-status-disabled, .topo-status-unknown, .topo-status-notPresent { color: #8a949e; }
-.topo-text-warning { color: #d35400; }
+.topo-text-warning { color: #b85c00; }
 .topo-tooltip { font-size: 12px; line-height: 1.4; max-width: 320px; }
 
 .topo-sim {
@@ -65,7 +65,7 @@
 .topo-sim-title { font-weight: 600; color: #c0392b; margin-bottom: 4px; }
 .topo-sim ul { margin: 2px 0 6px; padding-left: 16px; }
 .topo-sim a[data-sim-focus] { cursor: pointer; }
-.topo-sim .topo-sim-ok { color: #2e9e44; font-weight: 600; }
+.topo-sim .topo-sim-ok { color: #23803a; font-weight: 600; }
 .topo-sim-remove { cursor: pointer; color: #999; margin-left: 3px; }
 .topo-sim-remove:hover { color: #c0392b; }
 
@@ -81,7 +81,7 @@
 a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 178, 0.2); }
 .topo-card h4 { margin: 0 0 6px; font-size: 16px; }
 .topo-card .topo-card-value { font-size: 26px; font-weight: 600; }
-.topo-card p { margin: 0; color: #777; font-size: 12px; }
+.topo-card p { margin: 0; color: #666; font-size: 12px; }
 .topo-card.topo-critical { border-left: 5px solid #c0392b; }
 .topo-card.topo-warning { border-left: 5px solid #e67e22; }
 .topo-card.topo-ok { border-left: 5px solid #2e9e44; }
@@ -89,12 +89,12 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 
 .topo-sev { display: inline-block; min-width: 64px; padding: 1px 6px; border-radius: 3px; color: #fff; font-size: 11px; font-weight: 600; text-align: center; text-transform: uppercase; }
 .topo-sev-critical { background: #c0392b; }
-.topo-sev-warning { background: #e67e22; }
+.topo-sev-warning { background: #b85c00; }
 .topo-sev-info { background: #1f6fb2; }
-.topo-sev-ok { background: #2e9e44; }
-.topo-sev-muted { background: #95a5a6; }
+.topo-sev-ok { background: #23803a; }
+.topo-sev-muted { background: #666f70; }
 .topo-rollout-hosts { margin-top: 3px; font-size: 12px; }
-.topo-rollout-hosts summary { cursor: pointer; color: #777; }
+.topo-rollout-hosts summary { cursor: pointer; color: #666; }
 .topo-rollout-hosts textarea { margin-top: 3px; font-family: monospace; font-size: 11px; }
 .topo-finding-detail { color: #555; }
 .topo-finding-rec { color: #2c6e49; font-size: 12px; margin-top: 3px; }
@@ -109,7 +109,7 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-stp-table td.topo-mismatch { background: rgba(230, 126, 34, 0.18); font-weight: 600; }
 .topo-issue { display: inline-block; margin: 1px 2px 1px 0; padding: 0 5px; border-radius: 3px; font-size: 11px; color: #fff; white-space: nowrap; }
 .topo-issue-critical { background: #c0392b; }
-.topo-issue-warning { background: #e67e22; }
+.topo-issue-warning { background: #b85c00; }
 .topo-issue-info { background: #1f6fb2; }
 .topo-filterbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 10px; }
 .topo-filterbar .form-control { display: inline-block; width: auto; height: 30px; }
@@ -165,6 +165,16 @@ html.dark .topo-stp-table td.topo-mismatch { background: rgba(230, 126, 34, 0.28
 html.dark .topo-host-ip { background: rgba(110, 168, 222, 0.18); }
 html.dark .topo-host-note-info { color: #6ea8de; }
 html.dark .topo-host-note-warning { color: #f0a35e; }
+html.dark .topo-status-down, html.dark .topo-status-lowerLayerDown { color: #f08a80; }
+html.dark .topo-status-degraded, html.dark .topo-text-warning { color: #f0a35e; }
+html.dark .topo-status-up, html.dark .topo-sim .topo-sim-ok { color: #5cc26f; }
+html.dark .topo-nav-pages > li.active > a, html.dark .topo-nav-pages > li.active > a:hover, html.dark .topo-nav-pages > li.active > a:focus { color: #fff; }
+html.dark .topo-page .text-muted, html.dark .topo-modal .text-muted, html.dark .topo-port-tab .text-muted, html.dark .topo-device-panel .text-muted,
+html.dark .topo-page .dropdown-header { color: #b0b8be; }
+html.dark .topo-rollout-hosts summary { color: #b0b8be; }
+html.dark .topo-page .alert-warning { color: #2b1a00; }
+html.dark .topo-page .alert-warning a { color: #2b1a00; text-decoration: underline; }
+.topo-page .text-muted, .topo-modal .text-muted, .topo-port-tab .text-muted, .topo-device-panel .text-muted, .topo-page .dropdown-header { color: #666; }
 html.dark .topo-evidence-heading { border-color: #3a3f45; }
 html.dark .topo-evidence-note { color: #bbb; }
 html.dark .topo-custommap-notices { color: #e0b562; }

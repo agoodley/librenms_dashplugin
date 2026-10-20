@@ -5,7 +5,6 @@ namespace Agoodley\LibrenmsTopology\Data;
 use Agoodley\LibrenmsTopology\Stp\SyslogTurns;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -116,20 +115,8 @@ class LoopEvidenceRepository extends ScopedRepository
      */
     public function canViewSyslog(): bool
     {
-        if ($this->isSystem()) {
-            return true; // the background checks: their eventlog entries name only the check
-        }
-        try {
-            if (! class_exists(\App\Models\Syslog::class) || Gate::getPolicyFor(\App\Models\Syslog::class) === null) {
-                return true;
-            }
-
-            return Gate::forUser($this->user)->allows('viewAny', \App\Models\Syslog::class);
-        } catch (\Throwable $e) {
-            Log::debug('topology plugin: cannot check the syslog permission: ' . $e->getMessage());
-
-            return false;
-        }
+        // the system scope of the background checks reads it: their eventlog entries name only the check
+        return $this->allowsTable('syslog');
     }
 
     /**
