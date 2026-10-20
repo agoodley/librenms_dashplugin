@@ -116,24 +116,30 @@ class HistoryBaselineTest extends TestCase
     }
 
     /**
-     * Runs of one analysis over the findings history, like HistoryService::checks() with the database.
+     * Runs of one analysis over the findings history, like HistoryService::checks() with the database
+     * (HistoryRepository::applyFindings()).
      *
      * @param  array<int, array<int, array>>  $runs  findings of each run; the first run is the initial one
-     * @param  array<int, string>  $names  device id => name, as the titles name the devices
+     * @param  array<int, string>|\Closure  $names  device id => name, as the titles name the devices (a Closure: of a run)
+     * @param  array<int, array>|null  $history  the rows of the findings history after the runs
      * @return array<int, array<int, array>> eventlog entries of each run
      */
-    private static function simulate(array $runs, string $minimum = 'warning', array $skip = [], array $names = []): array
+    private static function simulate(array $runs, string $minimum = 'warning', array $skip = [], array|\Closure $names = [], ?array &$history = null): array
     {
         $rows = [];
         $entries = [];
         foreach ($runs as $index => $findings) {
             $time = sprintf('2026-10-20 %02d:07:00', $index);
             $open = array_values(array_filter($rows, fn ($row) => $row['resolved_at'] === null));
-            $run = FindingHistory::run('links', $open, $findings, $time, $index === 0, $names);
+            $run = FindingHistory::run('links', $open, $findings, $time, $index === 0, $names instanceof \Closure ? $names($index) : $names);
             foreach ($run['insert'] as $hash => $finding) {
                 $id = count($rows) + 1;
                 $rows[$id] = ['id' => $id, 'hash' => $hash, 'code' => $finding['code'], 'severity' => $finding['severity'], 'title' => FindingHistory::title($finding),
-                    'devices' => $finding['devices'], 'confirmed' => in_array($hash, $run['confirmed'], true), 'missed_at' => null, 'first_seen' => $time, 'resolved_at' => null];
+                    'devices' => $finding['devices'], 'vlan' => $finding['vlan'] ?? null, 'subjects' => $finding['subjects'],
+                    'confirmed' => in_array($hash, $run['confirmed'], true), 'missed_at' => null, 'first_seen' => $time, 'resolved_at' => null];
+            }
+            foreach ($run['update'] as $id => $finding) {
+                $rows[$id] = ['severity' => $finding['severity'], 'title' => FindingHistory::title($finding), 'subjects' => $finding['subjects']] + $rows[$id];
             }
             foreach ($run['resolve'] as $id => $at) {
                 $rows[$id]['resolved_at'] = $at;
@@ -149,6 +155,7 @@ class HistoryBaselineTest extends TestCase
             }
             $entries[] = $index === 0 ? [] : FindingHistory::eventlog('links', $run['before'], $run['after'], $minimum, $skip);
         }
+        $history = $rows;
 
         return $entries;
     }
@@ -213,10 +220,14 @@ class HistoryBaselineTest extends TestCase
 
         $entries = self::simulate([[], [$before], [$before], [$after], [$after], [$after]]);
 
-        $this->assertSame([[4, 'warning']], array_map(fn ($e) => [$e['device_id'], $e['severity']], $entries[3]),
-            'the check goes on on devices 1 and 3: the new extent is confirmed at once, the old one is missed once');
-        $this->assertSame([[2, 'ok']], array_map(fn ($e) => [$e['device_id'], $e['severity']], $entries[4]), 'the old extent is resolved');
+        $this->assertSame([], $entries[3], 'neither extent is about all the devices of the other: the new one waits for a second run, the old one is missed once');
+        $this->assertSame([[4, 'warning'], [2, 'ok']], array_map(fn ($e) => [$e['device_id'], $e['severity']], $entries[4]),
+            'the new extent is confirmed and the old one resolved: devices 1 and 3 keep the check');
         $this->assertSame([], $entries[5]);
+
+        // with one more device, the extent is about all the devices of the one before: it goes on at once
+        $grown = self::finding('stp_disabled_port', [1, 2, 3, 4], [10, 20, 30, 40]);
+        $this->assertSame([[4, 'warning']], array_map(fn ($e) => [$e['device_id'], $e['severity']], self::simulate([[], [$before], [$before], [$grown]])[3]));
 
         $many = self::finding('no_stp_data', range(1, 14));
         $capped = self::simulate([[], [$many], [$many]])[2];
@@ -292,6 +303,89 @@ class HistoryBaselineTest extends TestCase
         $this->assertSame([[1, 'warning']], array_map(fn ($e) => [$e['device_id'], $e['severity']],
             FindingHistory::eventlog('routing', [], [$state('ip_duplicate', 'info', 1), $state('ip_duplicate', 'warning', 1)], 'info', $skip)),
             'a device with both: the warning counts');
+    }
+
+    public function testAFindingThatGetsMilderStaysOpenForTheEventlog(): void
+    {
+        // a duplicate address of two routers is taken for separate networks (info) while an OSPF split flaps
+        $names = [7 => 'rtr7', 8 => 'rtr8'];
+        $duplicate = fn (?string $severity) => $severity ? [self::finding('ip_duplicate', [7, 8], [70, 80], $severity, 'duplicate IP address 10.20.40.5 on rtr7 Vl30, rtr8 Vl40')] : [];
+        $runs = array_map($duplicate, ['warning', 'warning', 'info', 'warning', 'info', 'warning']);
+
+        $this->assertSame([], self::flatten(self::simulate($runs, 'warning', ['ip_duplicate:info'], $names, $history)), 'no "resolved" while it is open');
+        $this->assertSame('warning', $history[1]['severity'], 'the history keeps the highest severity of the period');
+        $this->assertSame([], self::flatten(self::simulate($runs, 'warning', [], $names)), 'the same without the code:severity entry');
+        $this->assertSame(['r8 7 ok', 'r8 8 ok'], self::flatten(self::simulate(array_merge($runs, [$duplicate('info'), [], []]), 'warning', ['ip_duplicate:info'], $names)),
+            'resolved once it is gone, at its first severity');
+    }
+
+    public function testRisingToTheEventlogSeverityIsLogged(): void
+    {
+        // more devices end up behind a single point of failure: info, then warning
+        $spof = fn (?string $severity) => $severity ? [self::finding('spof_device', [7], [], $severity, 'single point of failure: rtr7')] : [];
+        $runs = array_map($spof, [null, 'info', 'info', 'warning', 'warning', 'info', null, null]);
+
+        $this->assertSame(['r3 7 warning', 'r7 7 ok'], self::flatten(self::simulate($runs, 'warning', [], [7 => 'rtr7'])),
+            'logged when it reaches the eventlog severity, not when it gets milder again, resolved when gone');
+
+        // at the info severity a skipped info finding is no entry, its rise to a warning is
+        $duplicate = fn (?string $severity) => $severity ? [self::finding('ip_duplicate', [7, 8], [70, 80], $severity, 'duplicate IP address on rtr7, rtr8')] : [];
+        $this->assertSame(['r3 7 warning', 'r3 8 warning'], self::flatten(self::simulate(array_map($duplicate, [null, 'info', 'info', 'warning', 'info']), 'info',
+            FindingHistory::skipList('ip_duplicate : info'), [7 => 'rtr7', 8 => 'rtr8'])));
+    }
+
+    public function testFindingsWithoutNamesInTheirTitleGoOnOnlyAboutTheSameDevicesAndVlan(): void
+    {
+        // two unrelated one-run findings of the spanning tree check that share the core switch (2)
+        $isl = fn (array $devices, array $ports, ?int $vlan = null) => ['vlan' => $vlan]
+            + self::finding('stp_disabled_port', $devices, $ports, 'warning', 'Inter-switch ports without spanning tree');
+        $this->assertSame([], self::flatten(self::simulate([[], [], [$isl([10, 2], [101])], [$isl([12, 2], [121])], [], [], []])), 'a shared hub links nothing');
+        $this->assertSame(['r3 2 warning', 'r3 10 warning', 'r5 2 ok', 'r5 10 ok'],
+            self::flatten(self::simulate([[], [], [$isl([10, 2], [101])], [$isl([10, 2], [102])], [], [], []])), 'the same devices go on');
+
+        // per VLAN: the same devices in another VLAN are another finding
+        $this->assertSame([], self::flatten(self::simulate([[], [], [$isl([3, 4], [31], 10)], [$isl([3, 4], [31], 20)], [], [], []])));
+        $this->assertSame(['r3 3 warning', 'r3 4 warning', 'r5 3 ok', 'r5 4 ok'],
+            self::flatten(self::simulate([[], [], [$isl([3, 4], [31], 10)], [$isl([3, 4], [32], 10)], [], [], []])));
+    }
+
+    public function testARenamedDeviceIsMatchedByItsId(): void
+    {
+        // acc-sw7 (10) is renamed acc-sw7b in the run its lost uplink comes back, and core2 (2) blips once
+        $names = fn (int $run) => [1 => 'core1', 2 => 'core2', 3 => 'core3', 10 => $run < 2 ? 'acc-sw7' : 'acc-sw7b'];
+        $acc7 = self::finding('redundancy_lost', [10, 2], [101, 21], 'warning', 'redundancy lost: acc-sw7');
+        $core2 = self::finding('redundancy_lost', [2, 1], [21, 11], 'warning', 'redundancy lost: core2');
+
+        $this->assertSame(['r3 2 ok', 'r3 10 ok'], self::flatten(self::simulate([[$acc7], [$acc7], [$core2], [], [], []], 'warning', [], $names)),
+            'the old row is still about acc-sw7 (10), not about every device it has: core2 does not go on in its place');
+
+        // its own finding under the new name goes on at once
+        $renamed = self::finding('redundancy_lost', [10, 3], [101, 31], 'warning', 'redundancy lost: acc-sw7b');
+        $this->assertSame(['r2 3 warning', 'r3 2 ok'], self::flatten(self::simulate([[$acc7], [$acc7], [$renamed], [$renamed]], 'warning', [], $names)));
+    }
+
+    public function testSkipListOfTheSettings(): void
+    {
+        $this->assertSame(['link_errors', 'ip_duplicate:info', 'bgp_recent_reset', 'ip_duplicate:info'],
+            FindingHistory::skipList(' Link_Errors ip_duplicate : info,  bgp_recent_reset;ip_duplicate: INFO '), 'spaces around the colon, any case');
+        $this->assertSame(['bogus', 'ip_duplicate:fatal', 'ip_duplicate:'],
+            FindingHistory::unknownSkips('link_errors bogus ip_duplicate:fatal tc_rate:info ip_duplicate:', HistoryService::checkCodes()));
+        $this->assertSame([], FindingHistory::unknownSkips(PluginSettings::DEFAULTS['history_eventlog_skip'], HistoryService::checkCodes()),
+            'the defaults are check codes');
+        $this->assertContains('mac_flapping', HistoryService::checkCodes());
+        $this->assertContains('ospf_duplicate_router_id', HistoryService::checkCodes());
+    }
+
+    public function testRootBridgeChangeNamesTheSwitchesOfEachVlan(): void
+    {
+        $change = ['from' => ['root' => '00ab01000001'], 'to' => ['root' => '00ab02000001'], 'vlans' => [31, 33], 'devices' => [3, 4, 5],
+            'device_vlans' => [3 => [31, 33], 4 => [31], 5 => [31]]];
+        $this->assertSame('VLAN 31 on 3 switches, VLAN 33 on 1 switch', FactText::changeVlans($change), 'acc3 alone moved VLAN 33 too');
+        $this->assertSame('VLAN 31', FactText::changeVlans(['vlans' => [31], 'device_vlans' => [3 => [31], 4 => [31], 5 => [31]]] + $change));
+
+        $many = ['vlans' => range(10, 17), 'devices' => range(1, 8), 'device_vlans' => array_combine(range(1, 8), array_map(fn ($d) => range(10, 9 + $d), range(1, 8)))];
+        $this->assertSame('VLAN 10 on 8 switches, VLAN 11 on 7 switches, VLAN 12 on 6 switches, VLAN 13 on 5 switches, VLAN 14 on 4 switches, VLAN 15 on 3 switches '
+            . 'and 2 more VLANs', FactText::changeVlans($many + $change));
     }
 
     public function testTheSameRoutingFindingInTwoVrfsIsTwoFindings(): void
@@ -536,8 +630,9 @@ class HistoryBaselineTest extends TestCase
         $this->assertSame([10, 11, 12, 13, 14], $changes[0]['vlans']);
         $this->assertSame([1, 2, 3, 4, 5], $changes[0]['devices']);
         $this->assertSame([3 => [10, 11, 12], 4 => [11, 13], 5 => [12, 14]], array_intersect_key($changes[0]['device_vlans'], [3 => 1, 4 => 1, 5 => 1]));
-        $this->assertSame('VLANs 10-14: root bridge core1 (00:ab:01:00:00:01) → core2 (00:ab:02:00:00:01) on acc3, acc4, acc5, core1, core2',
-            (new FactText($names))->rootChange($changes[0]), 'the text has the VLANs of all its switches');
+        $this->assertSame('VLAN 10, VLAN 13, VLAN 14 on 3 switches each, VLAN 11, VLAN 12 on 4 switches each: root bridge core1 (00:ab:01:00:00:01) → '
+            . 'core2 (00:ab:02:00:00:01) on acc3, acc4, acc5, core1, core2', (new FactText($names))->rootChange($changes[0]),
+            'the text has the VLANs of all its switches, with the switches of each');
 
         // one Accept moves the VLANs of each switch, and only those
         $ops = Baseline::acceptRootChange($baseline, $now, $changes[0]);

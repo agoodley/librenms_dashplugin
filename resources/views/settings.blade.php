@@ -64,13 +64,16 @@
             ['history_retention_days', 'number', 'Keep changes for (days)', 'facts and findings that ended earlier are deleted'],
             ['history_checks', 'text', 'Background checks', 'analyses run with every snapshot, one after the other: stp, links, redundancy, routing; empty disables them'],
             ['history_eventlog_severity', 'text', 'Eventlog from severity', 'a device gets an eventlog entry when it gets or loses a background finding from this severity, confirmed by two runs in a row: critical, warning, info or none'],
-            ['history_eventlog_skip', 'text', 'Checks kept out of the eventlog', 'check codes whose findings follow the counters of the last poll or a time window, e.g. link_errors lag_imbalance multicast_storm (the multicast rate of the last poll: routing protocols and video streams send multicast too) bgp_recent_reset; code:severity keeps one severity of a check out, e.g. ip_duplicate:info (addresses that are probably shared on purpose or in separate networks); they stay on the pages'],
+            ['history_eventlog_skip', 'text', 'Checks kept out of the eventlog', 'check codes whose findings follow the counters of the last poll or a time window, e.g. link_errors lag_imbalance multicast_storm (the multicast rate of the last poll: routing protocols and video streams send multicast too) bgp_recent_reset; code:severity keeps one severity of a check out, e.g. ip_duplicate:info (addresses that are probably shared on purpose or in separate networks). They stay on the pages and still count for the eventlog entries of the other severities'],
         ],
         'Rollout planner & device dependencies' => [
             ['rollout_batch_size', 'number', 'Default number of devices per rollout batch', '0: no limit; the planner page can change it per plan'],
             ['dependencies_outage_days', 'number', 'Days of outage history to check the derived dependencies against', 'outages of devices and their parents in this window (1-3650)'],
         ],
     ];
+    // entries of the eventlog skip list that name no check (they keep nothing out)
+    $warnings = ['history_eventlog_skip' => \Agoodley\LibrenmsTopology\History\FindingHistory::unknownSkips((string) ($settings['history_eventlog_skip'] ?? ''),
+        \Agoodley\LibrenmsTopology\History\HistoryService::checkCodes())];
 @endphp
 
 <div style="margin: 15px; max-width: 900px;">
@@ -97,6 +100,10 @@
                                 <input id="topo-setting-{{ $name }}" type="text" class="form-control input-sm" name="settings[{{ $name }}]" value="{{ $settings[$name] ?? '' }}">
                             @endif
                             @if($help)<span class="help-block" style="margin: 2px 0 0; font-size: 12px">{{ $help }}</span>@endif
+                            @if(! empty($warnings[$name]))
+                                <span class="help-block text-warning topo-setting-warning" style="margin: 2px 0 0; font-size: 12px"><i class="fa fa-exclamation-triangle"></i>
+                                    Not a check code or code:severity (critical, warning or info), so it keeps nothing out: {{ implode(' ', $warnings[$name]) }}</span>
+                            @endif
                         </div>
                     </div>
                 @endforeach

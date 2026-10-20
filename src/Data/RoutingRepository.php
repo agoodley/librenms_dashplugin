@@ -11,7 +11,9 @@ use Illuminate\Support\Facades\Schema;
  * LLDP/CDP links of the devices the user may see. The large tables are returned as generators that
  * read one row at a time (a network with thousands of routers has tens of thousands of addresses),
  * and columns that older LibreNMS versions lack are left out of the query instead of failing the
- * whole table.
+ * whole table. A read that fails is logged and the page goes on with what could be read; strict()
+ * throws it instead (the background check fails then rather than recording findings of rows that
+ * were not read).
  */
 class RoutingRepository extends ScopedRepository
 {
@@ -55,6 +57,21 @@ class RoutingRepository extends ScopedRepository
 
     /** @var array<int, true> devices whose VRF names are read */
     private array $vrfsRead = [];
+
+    /** Throw read errors instead of going on with what could be read (strict()). */
+    private bool $strict = false;
+
+    /**
+     * The same repository, throwing read errors: for the background check, where rows that could not
+     * be read would become findings (a session configured "on one side only") or resolve them.
+     */
+    public function strict(): static
+    {
+        $repository = clone $this;
+        $repository->strict = true;
+
+        return $repository;
+    }
 
     /**
      * @param  int[]  $ids
@@ -127,7 +144,7 @@ class RoutingRepository extends ScopedRepository
                     yield $row;
                 }
             } catch (\Throwable $e) {
-                Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
+                $this->readFailed($table, $e);
             }
         }
     }
@@ -155,7 +172,7 @@ class RoutingRepository extends ScopedRepository
                         $devices[(int) $deviceId] = true;
                     }
                 } catch (\Throwable $e) {
-                    Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
+                    $this->readFailed($table, $e);
                 }
             }
         }
@@ -200,7 +217,7 @@ class RoutingRepository extends ScopedRepository
                 yield (array) $link;
             }
         } catch (\Throwable $e) {
-            Log::debug('topology plugin: cannot read links: ' . $e->getMessage());
+            $this->readFailed('links', $e);
         }
     }
 
@@ -229,12 +246,34 @@ class RoutingRepository extends ScopedRepository
         }
 
         try {
-            foreach (DB::table($table)->whereIntegerInRaw('device_id', $ids)->select($columns)->cursor() as $row) {
+            foreach ($this->select($table, $ids, $columns) as $row) {
                 yield (array) $row;
             }
         } catch (\Throwable $e) {
-            Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
+            $this->readFailed($table, $e);
         }
+    }
+
+    /**
+     * Rows of a per-device table as the database returns them, one at a time.
+     *
+     * @param  int[]  $ids
+     * @param  string[]  $columns
+     */
+    protected function select(string $table, array $ids, array $columns): iterable
+    {
+        return DB::table($table)->whereIntegerInRaw('device_id', $ids)->select($columns)->cursor();
+    }
+
+    /**
+     * A read that failed: logged (the page shows what could be read), or thrown in strict mode.
+     */
+    private function readFailed(string $what, \Throwable $e): void
+    {
+        if ($this->strict) {
+            throw new \RuntimeException("cannot read $what: " . $e->getMessage(), 0, $e);
+        }
+        Log::debug("topology plugin: cannot read $what: " . $e->getMessage());
     }
 
     /**
@@ -262,13 +301,13 @@ class RoutingRepository extends ScopedRepository
      * @param  string[]  $wanted
      * @return string[]
      */
-    private function existing(string $table, array $wanted): array
+    protected function existing(string $table, array $wanted): array
     {
         if (! isset($this->columns[$table])) {
             try {
                 $this->columns[$table] = array_flip(Schema::getColumnListing($table));
             } catch (\Throwable $e) {
-                Log::debug("topology plugin: cannot list the columns of $table: " . $e->getMessage());
+                $this->readFailed("the columns of $table", $e);
                 $this->columns[$table] = [];
             }
         }
@@ -285,6 +324,6 @@ class RoutingRepository extends ScopedRepository
      */
     protected function rows(string $table, array $ids, array $columns): array
     {
-        return $columns ? parent::rows($table, $ids, $columns) : [];
+        return iterator_to_array($this->stream($table, $ids, $columns), false);
     }
 }
