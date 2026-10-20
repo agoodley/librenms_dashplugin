@@ -479,7 +479,9 @@ it too, so later versions of the plugin update them). The history is recorded by
 needs anyway (`librenms-scheduler` timer or cron, see `./validate.php`): `topology:snapshot` every *History interval*,
 which records the snapshot and then runs `topology:checks stp|links|redundancy|routing` one after the other, each in a
 process of its own; the output goes to `logs/topology-snapshot.log`, a failure to the eventlog. `./lnms topology:snapshot` does the
-same now.
+same now. With several pollers (distributed polling) it runs on one of them at a time: the snapshot and each check
+take a lock in LibreNMS' cache (the database, unless `CACHE_STORE` or `CACHE_DRIVER` in `.env` names a store all
+pollers share, as distributed polling needs), so a run, scheduled or manual, skips while another one holds it.
 
 `./validate.php` then warns that the database schema "has extra migrations
 (2026_10_20_000000_create_topology_history_tables, 2026_10_21_000000_add_finding_subjects_to_topology_history,
@@ -761,7 +763,11 @@ vendor/bin/phpunit
   160 MB, redundancy check 1 s and 125 MB, the Changes page 0.4 s and 72 MB. For 2,000 routers with 50,000 addresses,
   8,000 OSPF adjacencies and 8,000 BGP sessions: snapshot 1.3 s and 80 MB, routing & IP check 1.3 s and 107 MB (with 1,800
   findings). A check that fails or takes more than an hour is logged in `topology-snapshot.log` and the eventlog, and the
-  others still run.
+  others still run. A lock lasts as long as the longest run could (5 hours 10 minutes: the snapshot and four checks of
+  up to an hour) unless its run releases it, which it does when it ends, also on a fatal error such as running out of
+  memory; `topology:snapshot` releases the lock of a check it stopped or that was killed. A run killed outright
+  otherwise (`kill -9` of `topology:snapshot` or of a manual run) keeps its lock until it expires, as the scheduler's
+  own overlap lock does.
 * A finding that gets milder stays open at the highest severity it reached until it is gone (a duplicate address the
   routing check takes for two separate networks while an OSPF adjacency between them is down stays a warning). A new
   finding goes on for a gone one only when it is about all the devices of the gone one or about a part of them (the

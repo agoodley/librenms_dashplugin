@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
+use Agoodley\LibrenmsTopology\History\HistoryService;
 use Agoodley\LibrenmsTopology\History\Jobs;
 use PHPUnit\Framework\TestCase;
 
@@ -35,6 +36,15 @@ class HistoryJobsTest extends TestCase
                 $this->addToAssertionCount(1);
             }
         }
+    }
+
+    public function testLocksOutlastTheLongestRun(): void
+    {
+        // a scheduled run: the snapshot (given the time of a check) and every check one after the other, each up to its timeout
+        $longest = (1 + count(HistoryService::ANALYSES)) * Jobs::CHECK_TIMEOUT;
+
+        $this->assertGreaterThan($longest, Jobs::LOCK_SECONDS);
+        $this->assertSame(0, Jobs::LOCK_SECONDS % 60, 'the scheduler takes the expiry of its overlap lock in minutes');
     }
 
     public function testAKindThatCannotBeReadIsSkipped(): void
