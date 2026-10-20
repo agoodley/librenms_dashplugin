@@ -158,10 +158,10 @@ class LoopEvidence
     /**
      * Run the storm and syslog checks.
      *
-     * @param  array{syslog_hidden?: bool, syslog_truncated?: bool, syslog_limited?: int, syslog_scanned?: int, syslog_devices?: int, syslog_scope?: int}  $context
-     *     what the caller could read: syslog hidden from this user, more matching messages than were kept, devices
-     *     whose older messages of the window were not searched and the messages searched, devices that sent syslog
-     *     in the window and devices asked for
+     * @param  array{syslog_hidden?: bool, syslog_truncated?: bool, syslog_limited?: int, syslog_unsearched?: int, syslog_scanned?: int, syslog_devices?: int, syslog_scope?: int}  $context
+     *     what the caller could read (SyslogTurns): syslog hidden from this user, more matching messages than were kept,
+     *     devices whose older messages of the window were not searched, devices not searched at all, the messages
+     *     searched, devices that sent syslog in the window and devices asked for
      * @return array{findings: array, device_names: array<int, string>, evidence: array}
      */
     public function analyze(array $context = []): array
@@ -177,12 +177,18 @@ class LoopEvidence
             $this->notices = array_merge($this->notices, $this->patterns->notices());
         }
         $limited = (int) ($context['syslog_limited'] ?? 0);
+        $unsearched = (int) ($context['syslog_unsearched'] ?? 0);
+        if ($unsearched) {
+            $this->notices[] = 'The syslog of ' . number_format($unsearched) . ' of ' . number_format((int) ($context['syslog_devices'] ?? 0)) . " devices that sent messages in the last $hours hours "
+                . 'was not searched: a page view searches up to ' . number_format(SyslogTurns::SCAN) . ' messages, the most recently active '
+                . 'devices first. Filter by device group or location to see the others.';
+        }
         if (! empty($context['syslog_truncated'])) {
             $this->notices[] = "More syslog messages of the last $hours hours match the checks than are analyzed at once: only the newest "
                 . number_format(count($this->syslog)) . ', taken in turns from each device, were.';
         } elseif ($limited) {
             $this->notices[] = number_format((int) ($context['syslog_scanned'] ?? 0)) . " syslog messages of the last $hours hours were searched, "
-                . 'which did not reach back to the start of the window on ' . $limited . ($limited === 1 ? ' busy device' : ' busy devices')
+                . 'which did not reach back to the start of the window for ' . number_format($limited) . ($limited === 1 ? ' device' : ' devices')
                 . '; shorten the syslog window in the settings to search all of it.';
         }
 
@@ -625,7 +631,7 @@ class LoopEvidence
         if (! $index) {
             return [];
         }
-        $text = (string) preg_replace('~,\s*with\s.*$~is', '', $text);
+        $text = SyslogPatterns::local($text);
 
         preg_match_all('~(?<![\w/.:-])([A-Za-z][A-Za-z-]*?\d+(?:[/:]\d+)*(?:\.\d+)?)~', $text, $typed);
         preg_match_all('~\b(?:ports?|interface)\s+([A-Za-z]?\d+(?:/[A-Za-z]?\d+)*)~i', $text, $bare);

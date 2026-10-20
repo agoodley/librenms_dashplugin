@@ -23,7 +23,7 @@
             ['stp_disabled_checks', 'text', 'Checks to skip', 'check codes (the code of each finding in the STP JSON) or categories (root, config, changes, ports, loops, storms, syslog), e.g. timers_non_default multicast_storm'],
         ],
         'Loop evidence: syslog patterns' => [
-            ['stp_syslog_ignore', 'pattern', 'Messages to ignore', 'configuration commands echoed to syslog and recoveries (unblocking, err-disable recovery); checked first. Patterns are regular expressions matched against the program and text of each message, case-insensitive (or written as /pattern/flags); empty fields use the default shown in them'],
+            ['stp_syslog_ignore', 'pattern', 'Messages to ignore', 'configuration commands echoed to syslog and recoveries named by their message (ROOTGUARD_UNBLOCK, ERR_RECOVER); checked first, (?!) ignores nothing. Patterns are regular expressions matched against the program and text of each message up to a CDP neighbor (", with ..."), case-insensitive (or written as /pattern/flags); empty fields use the default shown in them'],
             ['stp_syslog_loop_detected', 'pattern', 'Loop detected', 'checked in this order, the first match counts; to switch a check off, add its check code to Checks to skip above. Check code: loop_detected'],
             ['stp_syslog_udld', 'pattern', 'Unidirectional link (UDLD)', 'check code: udld'],
             ['stp_syslog_bpdu_guard', 'pattern', 'BPDU guard', 'check code: bpdu_guard'],

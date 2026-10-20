@@ -2,6 +2,8 @@
 
 namespace Agoodley\LibrenmsTopology\Data;
 
+use Agoodley\LibrenmsTopology\Stp\SyslogTurns;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
@@ -13,12 +15,6 @@ use Illuminate\Support\Facades\Log;
  */
 class LoopEvidenceRepository extends ScopedRepository
 {
-    /** Syslog messages searched at most per page view, shared by the devices in turns. */
-    public const SYSLOG_SCAN = 100000;
-
-    /** Matching syslog messages kept at most. */
-    public const SYSLOG_MATCHES = 5000;
-
     /** The index a device's messages are read on, newest first. */
     private const SYSLOG_INDEX = 'syslog_device_id_timestamp_index';
 
@@ -60,63 +56,33 @@ class LoopEvidenceRepository extends ScopedRepository
 
     /**
      * The syslog messages of these devices since $since that $classify assigns to a check, with its
-     * code. The devices that sent syslog in the window are read newest first and in turns, each turn
-     * a page of messages or a share of the matches, so a busy or looping device cannot use up what the
-     * others get; reading stops after SYSLOG_SCAN messages or SYSLOG_MATCHES matches. Matching here
-     * rather than with the database's REGEXP is several times faster on large syslog tables and the
-     * same on MySQL and MariaDB.
+     * code, read in turns (SyslogTurns: the most recently active devices first, a budget of messages
+     * and matches shared by the devices). Matching here rather than with the database's REGEXP is
+     * several times faster on large syslog tables and the same on MySQL and MariaDB.
      *
      * @param  int[]  $deviceIds
      * @param  callable(string): ?string  $classify  check code of a message (program and text), null when it is no evidence
-     * @return array{rows: array<int, array>, senders: int, scanned: int, truncated: bool, limited: int}
-     *     senders: devices that sent syslog in the window; scanned: messages searched; truncated: matching messages
-     *     were left out; limited: devices whose older messages in the window were not searched
+     * @return array{rows: array<int, array>, senders: int, scanned: int, reads: int, truncated: bool, limited: int, unsearched: int}
+     *     senders: devices that sent syslog in the window; the rest as SyslogTurns::read()
      */
     public function syslog(array $deviceIds, int $since, callable $classify): array
     {
-        $result = ['rows' => [], 'senders' => 0, 'scanned' => 0, 'truncated' => false, 'limited' => 0];
+        $none = ['rows' => [], 'senders' => 0, 'scanned' => 0, 'reads' => 0, 'truncated' => false, 'limited' => 0, 'unsearched' => 0];
         $deviceIds = array_values(array_filter(array_unique(array_map('intval', $deviceIds)), fn ($id) => $this->canSee($id)));
         if (! $deviceIds || ! $this->canViewSyslog()) {
-            return $result;
+            return $none;
         }
 
         try {
             $from = date('Y-m-d H:i:s', $since);
-            $turns = array_fill_keys($this->syslogSenders($deviceIds, $from), null); // device_id => where its next turn starts
-            $result['senders'] = count($turns);
-            $page = max(100, min(5000, intdiv(self::SYSLOG_SCAN, max(1, count($turns)))));
-            $share = max(50, intdiv(self::SYSLOG_MATCHES, max(1, count($turns))));
-            while ($turns && $result['scanned'] < self::SYSLOG_SCAN && count($result['rows']) < self::SYSLOG_MATCHES) {
-                $deviceId = (int) array_key_first($turns);
-                $rows = $this->syslogPage($deviceId, $from, $turns[$deviceId], $page + 1);
-                unset($turns[$deviceId]);
-                $more = count($rows) > $page;
-                $rows = array_slice($rows, 0, $page);
-                $kept = 0;
-                foreach ($rows as $i => $row) {
-                    $last = $row;
-                    $result['scanned']++;
-                    $code = $classify(trim($row->program . ' ' . $row->msg));
-                    if ($code !== null) {
-                        $result['rows'][] = ['code' => $code] + (array) $row;
-                        if (++$kept >= $share) {
-                            $more = $more || $i < count($rows) - 1;
-                            break;
-                        }
-                    }
-                }
-                if ($more) {
-                    $turns[$deviceId] = [(string) $last->timestamp, (int) $last->seq]; // more in the window: another turn
-                }
-            }
-            $result['truncated'] = $turns && count($result['rows']) >= self::SYSLOG_MATCHES;
-            $result['limited'] = count($turns);
+            $senders = $this->syslogSenders($deviceIds, $from);
+
+            return ['senders' => count($senders)] + (new SyslogTurns)->read($senders, fn (array $turns) => $this->syslogPages($turns, $from), $classify);
         } catch (\Throwable $e) {
             Log::debug('topology plugin: cannot read syslog: ' . $e->getMessage());
-            $result['rows'] = [];
-        }
 
-        return $result;
+            return $none;
+        }
     }
 
     /**
@@ -164,51 +130,85 @@ class LoopEvidenceRepository extends ScopedRepository
     }
 
     /**
-     * Devices among $deviceIds that sent syslog since $from, from the newest message of each (one index
-     * lookup per device rather than a scan of the window).
+     * Devices among $deviceIds that sent syslog since $from, the most recently active first, from the
+     * newest message of each (one index lookup per device rather than a scan of the window).
      *
      * @param  int[]  $deviceIds
      * @return int[]
      */
     private function syslogSenders(array $deviceIds, string $from): array
     {
-        $senders = [];
+        $newest = [];
         foreach (array_chunk($deviceIds, 1000) as $chunk) {
-            foreach (DB::table('syslog')->whereIntegerInRaw('device_id', $chunk)->groupBy('device_id')
-                ->havingRaw('MAX(timestamp) >= ?', [$from])->pluck('device_id') as $deviceId) {
-                $senders[] = (int) $deviceId;
+            foreach (DB::table('syslog')->whereIntegerInRaw('device_id', $chunk)->groupBy('device_id')->havingRaw('MAX(timestamp) >= ?', [$from])
+                ->select(['device_id', DB::raw('MAX(timestamp) AS newest')])->get() as $row) {
+                $newest[(int) $row->device_id] = (string) $row->newest;
             }
         }
-        sort($senders);
+        uksort($newest, fn ($a, $b) => [$newest[$b], $a] <=> [$newest[$a], $b]);
 
-        return $senders;
+        return array_keys($newest);
     }
 
     /**
-     * Up to $limit messages of a device since $from, newest first, older than the last message of the
-     * previous page.
+     * The next messages of several devices since $from, newest first: one query, a part per device.
      *
-     * @param  array{0: string, 1: int}|null  $after  timestamp and seq of the last message read
-     * @return object[]
+     * @param  array<int, array{after: array{0: string, 1: int}|null, limit: int}>  $turns  device_id => the last message
+     *     read before (timestamp and seq) and how many to read
+     * @return array<int, object[]> device_id => messages
      */
-    private function syslogPage(int $deviceId, string $from, ?array $after, int $limit): array
+    private function syslogPages(array $turns, string $from): array
     {
-        $query = DB::table('syslog')->where('device_id', $deviceId)->where('timestamp', '>=', $from);
-        if ($after) {
-            $query->where(fn ($q) => $q->where('timestamp', '<', $after[0])
-                ->orWhere(fn ($q) => $q->where('timestamp', $after[0])->where('seq', '<', $after[1])));
-        }
-        $query->orderByDesc('timestamp')->orderByDesc('seq')->limit($limit)->select(['seq', 'device_id', 'timestamp', 'program', 'msg']);
-
         if ($this->indexHint) {
             try {
-                return (clone $query)->forceIndex(self::SYSLOG_INDEX)->get()->all();
+                return $this->pages($this->pagesQuery($turns, $from, true)->get());
             } catch (\Throwable $e) {
                 Log::debug('topology plugin: reading syslog without the index hint: ' . $e->getMessage());
                 $this->indexHint = false;
             }
         }
 
-        return $query->get()->all();
+        return $this->pages($this->pagesQuery($turns, $from, false)->get());
+    }
+
+    /**
+     * The union of one part per device: its messages since $from older than the last one read, newest first.
+     */
+    private function pagesQuery(array $turns, string $from, bool $hint): Builder
+    {
+        $query = null;
+        foreach ($turns as $deviceId => $turn) {
+            $part = DB::table('syslog')->where('device_id', $deviceId)->where('timestamp', '>=', $from);
+            if ($turn['after']) {
+                [$time, $seq] = $turn['after'];
+                $part->where(fn ($q) => $q->where('timestamp', '<', $time)->orWhere(fn ($q) => $q->where('timestamp', $time)->where('seq', '<', $seq)));
+            }
+            $part->orderByDesc('timestamp')->orderByDesc('seq')->limit($turn['limit'])->select(['seq', 'device_id', 'timestamp', 'program', 'msg']);
+            if ($hint) {
+                $part->forceIndex(self::SYSLOG_INDEX);
+            }
+            $query = $query ? $query->unionAll($part) : $part;
+        }
+
+        return $query;
+    }
+
+    /**
+     * Rows of a union by device, newest first (the parts of a union keep their order in practice, not by definition).
+     *
+     * @return array<int, object[]>
+     */
+    private function pages(iterable $rows): array
+    {
+        $pages = [];
+        foreach ($rows as $row) {
+            $pages[(int) $row->device_id][] = $row;
+        }
+        foreach ($pages as $deviceId => $messages) {
+            usort($messages, fn ($a, $b) => [(string) $b->timestamp, (int) $b->seq] <=> [(string) $a->timestamp, (int) $a->seq]);
+            $pages[$deviceId] = $messages;
+        }
+
+        return $pages;
     }
 }

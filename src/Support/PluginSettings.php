@@ -36,7 +36,7 @@ class PluginSettings
         'stp_syslog_duplex' => 'duplex[ _-]?mismatch',
         'stp_syslog_err_disabled' => 'err[ _-]?disable|error[ _-]?disabled|disabled due to',
         'stp_syslog_ignore' => 'logged command|CFGLOG_LOGGEDCMD|CONFIG_I\b|configured from|\bUI_(CMDLINE|COMMIT|CFG_AUDIT|LOAD|NETCONF)|\bcommand\s*[:=\']|\bcmd='
-            . '|unblock|(?<!un)recover|cleared|below[ _-]?threshold|fallen below|\bre-?enabled',
+            . '|_UNBLOCK|UNBLOCK_|ERR_?RECOVER|ERRDIS(ABLE)?_RECOVER|_CLEARED\b|BELOW_THRESHOLD|RE_ENABLE',
         'links_error_threshold' => '10',
         'links_discard_percent' => '1',
         'links_lag_imbalance' => '40',

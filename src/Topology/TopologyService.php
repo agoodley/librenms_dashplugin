@@ -225,7 +225,7 @@ class TopologyService
         }
         $patterns = new SyslogPatterns($this->settings);
         $hidden = ! $repo->canViewSyslog();
-        $syslog = ['rows' => [], 'senders' => 0, 'scanned' => 0, 'truncated' => false, 'limited' => 0];
+        $syslog = ['rows' => [], 'senders' => 0, 'scanned' => 0, 'truncated' => false, 'limited' => 0, 'unsearched' => 0];
         if (! $hidden && $patterns->usable()) {
             $since = time() - $this->settings->int('stp_syslog_hours', 1, 720) * 3600;
             $syslog = $repo->syslog($senders, $since, fn (string $text) => $patterns->classify($text));
@@ -236,6 +236,7 @@ class TopologyService
                 'syslog_hidden' => $hidden,
                 'syslog_truncated' => $syslog['truncated'],
                 'syslog_limited' => $syslog['limited'],
+                'syslog_unsearched' => $syslog['unsearched'],
                 'syslog_scanned' => $syslog['scanned'],
                 'syslog_devices' => $syslog['senders'],
                 'syslog_scope' => count($senders),

@@ -431,6 +431,55 @@ class LoopEvidenceTest extends TestCase
             $ignore->notices());
     }
 
+    public function testRecoveriesAndNeighborsDoNotHideEvents(): void
+    {
+        $patterns = new SyslogPatterns(new PluginSettings);
+        $cases = [
+            // recoveries, named by their message
+            '%SPANTREE-2-ROOTGUARD_UNBLOCK Root guard unblocking port GigabitEthernet1/0/51 on VLAN0010.' => null,
+            '%SPANTREE-2-UNBLOCK_CONSIST_PORT Unblocking GigabitEthernet1/0/51 on VLAN0010. Port consistency restored.' => null,
+            '%PM-4-ERR_RECOVER Attempting to recover from bpduguard err-disable state on Gi1/0/21' => null,
+            '%ETHPORT-5-STORM_CONTROL_BELOW_THRESHOLD: Traffic in port Ethernet1/49 has fallen below the configured threshold' => null,
+            'ESWD ESWD_STP_LOOP_PROTECT_CLEARED: ge-0/2/0.0: loop protect cleared for instance 0' => null,
+            '%L2FM-2-L2FM_MAC_FLAP_RE_ENABLE_LEARN_N3K: Re-enabling dynamic learning on all interfaces' => null,
+            // events that mention their own recovery, or a neighbor whose name looks like one
+            'BPDU guard: received BPDU on edge port 1/1/5, port disabled, will be re-enabled after 300 seconds' => 'bpdu_guard',
+            'Loop detected on port 5 (VLAN 10), port blocked and MAC address table cleared' => 'loop_detected',
+            'loop-protect: port 5 disabled - loop detected. Auto-recovery in 300 seconds' => 'loop_detected',
+            '%CDP-4-NATIVE_VLAN_MISMATCH Native VLAN mismatch discovered on GigabitEthernet1/0/1 (10), with dr-recovery-core1 GigabitEthernet1/0/2 (20).' => 'syslog_native_vlan',
+            '%CDP-4-DUPLEX_MISMATCH duplex mismatch discovered on FastEthernet0/1 (not half duplex), with udld-lab-sw FastEthernet0/3 (half duplex).' => 'syslog_duplex_mismatch',
+        ];
+        foreach ($cases as $text => $code) {
+            $this->assertSame($code, $patterns->classify($text), $text);
+        }
+
+        // the list of messages to ignore can be switched off with a pattern that never matches
+        $this->assertSame('root_guard', (new SyslogPatterns(new PluginSettings(['stp_syslog_ignore' => '(?!)'])))
+            ->classify('%SPANTREE-2-ROOTGUARD_UNBLOCK Root guard unblocking port GigabitEthernet1/0/51 on VLAN0010.'));
+    }
+
+    public function testPatternsThatCouldMisbehave(): void
+    {
+        $never = array_fill_keys(array_column(LoopEvidence::SYSLOG, 'setting'), '(?!)');
+
+        // % starts many Cisco patterns and is no delimiter
+        $this->assertSame('~%LINK|%LINEPROTO~i', SyslogPatterns::compile('%LINK|%LINEPROTO'));
+
+        // backtracking verbs act on the whole expression: such a pattern is not joined with the others
+        $verbs = new SyslogPatterns(new PluginSettings(['stp_syslog_udld' => 'udld(*SKIP)(*FAIL)|unidirectional', 'stp_syslog_bpdu_guard' => 'dldx'] + $never));
+        $this->assertSame('bpdu_guard', $verbs->classify('udldx'));
+
+        // a pattern that keeps failing (catastrophic backtracking) is not used after a few messages
+        $slow = new SyslogPatterns(new PluginSettings(['stp_syslog_udld' => '(\w+\s?)+$', 'stp_syslog_bpdu_guard' => 'bpdu'] + $never));
+        $message = str_repeat('word ', 12) . 'Gi1/0/1 (!)';
+        for ($i = 0; $i < 50; $i++) {
+            $this->assertNull($slow->classify($message));
+        }
+        $this->assertSame('bpdu_guard', $slow->classify('bpdu guard'), 'the other patterns still work');
+        $this->assertSame(['The syslog pattern for unidirectional links (UDLD) (stp_syslog_udld) failed on 10 messages '
+            . '(Backtrack limit exhausted) and was not used for the other messages.'], $slow->notices());
+    }
+
     public function testDelimitedPatternsAndNoticesOnThePage(): void
     {
         $net = (new LoopFixture)->device(2, 'sw-a');
@@ -542,10 +591,18 @@ class LoopEvidenceTest extends TestCase
         $this->assertTrue($hidden['evidence']['syslog_hidden']);
 
         $limited = $net->evidence([], ['syslog_limited' => 2, 'syslog_scanned' => 100000, 'syslog_devices' => 4, 'syslog_scope' => 5]);
-        $this->assertSame(['100,000 syslog messages of the last 24 hours were searched, which did not reach back to the start of the window on '
-            . '2 busy devices; shorten the syslog window in the settings to search all of it.'], $limited['evidence']['notices']);
+        $this->assertSame(['100,000 syslog messages of the last 24 hours were searched, which did not reach back to the start of the window for '
+            . '2 devices; shorten the syslog window in the settings to search all of it.'], $limited['evidence']['notices']);
         $this->assertSame(4, $limited['evidence']['syslog_devices']);
         $this->assertSame(5, $limited['evidence']['syslog_scope']);
+
+        $unsearched = $net->evidence([], ['syslog_unsearched' => 500, 'syslog_limited' => 1000, 'syslog_scanned' => 100000, 'syslog_devices' => 1500]);
+        $this->assertSame([
+            'The syslog of 500 of 1,500 devices that sent messages in the last 24 hours was not searched: a page view searches up to '
+                . '100,000 messages, the most recently active devices first. Filter by device group or location to see the others.',
+            '100,000 syslog messages of the last 24 hours were searched, which did not reach back to the start of the window for 1,000 '
+                . 'devices; shorten the syslog window in the settings to search all of it.',
+        ], $unsearched['evidence']['notices']);
 
         $truncated = $net->evidence([], ['syslog_truncated' => true, 'syslog_limited' => 3, 'syslog_scanned' => 20000]);
         $this->assertSame(['More syslog messages of the last 24 hours match the checks than are analyzed at once: only the newest 23, '

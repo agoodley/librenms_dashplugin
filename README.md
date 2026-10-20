@@ -62,7 +62,8 @@ Cisco IOS / IOS-XE / NX-OS, Arista EOS, Junos and ProCurve / ArubaOS-Switch; eac
 can be added. A message counts for the first check that matches it, so a port err-disabled by BPDU guard is a BPDU guard
 finding (and with `bpdu_guard` in the disabled checks, those messages are left out rather than reported as err-disable).
 Configuration commands echoed to syslog (`logged command:storm-control ...`, Junos `UI_CMDLINE_READ_LINE`) and
-recoveries (unblocking, err-disable recovery) are ignored, also by a setting.
+recoveries named by their message (`ROOTGUARD_UNBLOCK`, `ERR_RECOVER`, `STORM_CONTROL_BELOW_THRESHOLD`) are ignored, also
+by a setting; the CDP neighbor named after ", with" is not matched.
 
 ![Loop evidence](docs/images/stp-loop-evidence.png)
 
@@ -209,7 +210,7 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Event history | 7 days | STP eventlog entries analyzed |
 | Storm threshold / share | 1,000 packets/s / 20 % | broadcast or multicast rate on an inter-switch port that is a storm when it is also this share of the port's packets or 1 % of the link (0 disables; check codes `broadcast_storm`, `multicast_storm`) |
 | Syslog window | 24 hours | loop related syslog messages this recent are analyzed |
-| Syslog patterns | Cisco, Arista, Junos, ProCurve messages | one regular expression per check, matched against the program and the message (case-insensitive, or written with delimiters and flags such as `/udld/i`), tried in this order: `loop_detected`, `udld`, `bpdu_guard`, `loop_guard`, `root_guard`, `storm_control`, `mac_flapping`, `syslog_native_vlan`, `syslog_duplex_mismatch`, `err_disabled`; messages matching *Messages to ignore* are skipped first. An empty field uses the default, so improved defaults apply after an upgrade |
+| Syslog patterns | Cisco, Arista, Junos, ProCurve messages | one regular expression per check, matched against the program and the message (case-insensitive, or written with delimiters and flags such as `/udld/i`), tried in this order: `loop_detected`, `udld`, `bpdu_guard`, `loop_guard`, `root_guard`, `storm_control`, `mac_flapping`, `syslog_native_vlan`, `syslog_duplex_mismatch`, `err_disabled`; messages matching *Messages to ignore* are skipped first (`(?!)` ignores nothing). An empty field uses the default, so improved defaults apply after an upgrade; a pattern that keeps failing (backtracking limit) is reported and set aside |
 | Disabled STP checks | – | check codes (the `code` of each finding in `api/stp`) or categories (`root`, `config`, `changes`, `ports`, `loops`, `storms`, `syslog`), e.g. `timers_non_default multicast_storm` |
 | Interface error threshold | 10 | errors per poll on an inter-switch port (0 disables) |
 | Discard threshold | 1 % | share of the packets discarded (0 disables) |
@@ -258,8 +259,8 @@ vendor/bin/phpunit
   available, and findings reflect the last poll (a check can fire during re-convergence).
 * Loop evidence from syslog only covers devices that send their syslog to LibreNMS (the page says how many do) and users
   whose LibreNMS role may view syslog. Up to 100,000 messages are searched per page view, newest first, the devices
-  taking turns, so a busy device (ACL logging) does not crowd out the others; the page says when older messages were not
-  reached. Storm rates come from the broadcast and multicast counters the ports poller reads (IF-MIB ifXTable); LibreNMS
+  taking turns (the most recently active first), so a busy device (ACL logging) does not crowd out the others; the page
+  says how many devices were not searched, or not back to the start of the window. Storm rates come from the broadcast and multicast counters the ports poller reads (IF-MIB ifXTable); LibreNMS
   stores 0 for counters a device does not report, so a port whose counters all stay at 0 counts as not reporting them.
   Ports not polled for a day are left out, and counters older than a few polls are shown with their age. Heavy multicast
   can be intended (video, IPTV): disable `multicast_storm` there.
