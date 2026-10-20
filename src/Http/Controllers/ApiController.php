@@ -3,12 +3,14 @@
 namespace Agoodley\LibrenmsTopology\Http\Controllers;
 
 use Agoodley\LibrenmsTopology\Data\HistoryRepository;
+use Agoodley\LibrenmsTopology\Data\ViewRepository;
 use Agoodley\LibrenmsTopology\History\FindingBadges;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\Log;
 
 /**
  * JSON API behind the map pages, also usable for automation:
@@ -72,14 +74,36 @@ class ApiController extends Controller
     }
 
     /**
-     * Build one of the data sets; errors become a JSON {error} with HTTP 500.
+     * Build one of the data sets; errors become a JSON {error} with HTTP 500. Findings carry their history
+     * from the background checks (FindingBadges); a map with ?view= also gets the saved view (view) and
+     * its positions for this map's nodes (view_layout).
      */
     private function respond(Request $request, string $map): JsonResponse
     {
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json("$map view", fn () => FindingBadges::annotate($map, $this->service($request, $settings)->$map($params), new HistoryRepository($request->user()),
-            120 * $settings->int('history_interval', 5, 1440)));
+        return $this->json("$map view", function () use ($request, $settings, $map, $params) {
+            $result = FindingBadges::annotate($map, $this->service($request, $settings)->$map($params), new HistoryRepository($request->user()),
+                120 * $settings->int('history_interval', 5, 1440));
+            $view = $request->query('view');
+            if (in_array($map, ['l2', 'l3'], true) && $view !== null) {
+                try {
+                    $saved = is_scalar($view) && ctype_digit((string) $view)
+                        ? (new ViewRepository($request->user()))->layoutFor((int) $view, $map, $result['nodes'] ?? []) : null;
+                } catch (\Throwable $e) {
+                    // the map works without its saved view (table missing or broken)
+                    Log::warning('topology plugin: cannot read saved view ' . $view . ': ' . $e->getMessage());
+                    $saved = null;
+                }
+                $result['view'] = $saved['view'] ?? null;
+                $result['view_layout'] = $saved !== null ? (object) $saved['layout'] : null;
+                if ($saved === null) {
+                    $result['view_error'] = 'This saved view does not exist or is not shared with you.';
+                }
+            }
+
+            return $result;
+        });
     }
 }

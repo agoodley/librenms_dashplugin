@@ -30,7 +30,7 @@ The plugin's conventions apply to all of them:
 | 10 | [Loop evidence on the STP page](README.md#spanning-tree-diagnostics) | **done** | – |
 | 12 | [Coverage report](README.md#coverage-report) | **done** | – |
 | 8 | [Site / WAN map](README.md#site--wan-map) | **done** | – |
-| 11 | [Sharing & export](#11-sharing--export) | later | M each |
+| 11 | [Sharing & export](README.md#sharing--export) | **done** | – |
 | 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
 | 15 | [Maps at a point in time](#15-maps-at-a-point-in-time) | later | M |
 
@@ -46,19 +46,10 @@ L = several new parts (tables, jobs, UI).
 * A plugin package can ship routes, views and **database migrations**, and register **scheduled commands**
   (LibreNMS runs Laravel's scheduler).
 * The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (the background checks write their
-  findings there) and the Custom Map widget (see 11).
+  findings there) and the Custom Map widget (a map exported as a [Custom Map](README.md#sharing--export)).
 
 
 ## Later
-
-### 11. Sharing & export
-
-* **Shared views:** named views (scope, filters, layout) stored on the server and shared by the team, replacing the
-  layouts saved in each browser.
-* **draw.io / Visio export** with icons and positions for documentation (GraphML for yEd).
-* **Export to a LibreNMS Custom Map** (`custom_maps`, `custom_map_nodes`, `custom_map_edges`): a native, editable map
-  with live utilization that can go on a dashboard through the Custom Map widget. The schema changes between LibreNMS
-  versions, so guard it by version.
 
 ### 13. A→B path trace
 
