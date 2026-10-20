@@ -457,6 +457,62 @@ class HostRepository extends ScopedRepository
     }
 
     /**
+     * Monitored devices linked to the given ones by LLDP/CDP (either end reporting the link), visible ones only.
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, int[]> device_id => linked device ids
+     */
+    public function linkedDevices(array $deviceIds): array
+    {
+        $deviceIds = $this->visible($deviceIds);
+        if (! $deviceIds) {
+            return [];
+        }
+
+        $linked = [];
+        foreach (DB::table('links')->where('active', 1)
+            ->where(fn ($query) => $query->whereIntegerInRaw('local_device_id', $deviceIds)->orWhereIntegerInRaw('remote_device_id', $deviceIds))
+            ->get(['local_device_id', 'remote_device_id']) as $row) {
+            $a = (int) $row->local_device_id;
+            $b = (int) $row->remote_device_id;
+            if ($a > 0 && $b > 0 && $a !== $b && $this->canSee($a) && $this->canSee($b)) {
+                $linked[$a][$b] = true;
+                $linked[$b][$a] = true;
+            }
+        }
+
+        return array_map(fn ($ids) => array_keys($ids), array_intersect_key($linked, array_flip($deviceIds)));
+    }
+
+    /**
+     * IPv4 and IPv6 addresses of the given (visible) devices with their prefix length and interface.
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, array<int, array{port: string, ip: string, prefix: int}>> device_id => addresses
+     */
+    public function layer3Addresses(array $deviceIds): array
+    {
+        $deviceIds = $this->visible($deviceIds);
+        if (! $deviceIds) {
+            return [];
+        }
+
+        $addresses = [];
+        foreach ([['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen'], ['ipv6_addresses', 'ipv6_address', 'ipv6_prefixlen']] as [$table, $column, $prefix]) {
+            try {
+                foreach (DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')->whereIntegerInRaw('p.device_id', $deviceIds)
+                    ->limit(5000)->get(['p.device_id', 'p.ifName', 'p.ifDescr', 'a.' . $column . ' as ip', 'a.' . $prefix . ' as prefix']) as $row) {
+                    $addresses[(int) $row->device_id][] = ['port' => (string) ($row->ifName ?: $row->ifDescr), 'ip' => (string) $row->ip, 'prefix' => (int) $row->prefix];
+                }
+            } catch (\Throwable $e) {
+                Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
+            }
+        }
+
+        return $addresses;
+    }
+
+    /**
      * Monitored devices named like the query (hostname, sysName or display name, also without
      * the domain), with their role and the addresses LibreNMS polls them on.
      *
@@ -569,10 +625,10 @@ class HostRepository extends ScopedRepository
     }
 
     /**
-     * Visible devices with display name, role (from the device type) and URL.
+     * Visible devices with display name, role (from the device type), URL and time of the last poll.
      *
      * @param  int[]  $deviceIds
-     * @return array<int, array{name: string, role: string, url: string, status: bool}>
+     * @return array<int, array{name: string, role: string, url: string, status: bool, last_polled: ?int}>
      */
     public function deviceRows(array $deviceIds): array
     {
@@ -583,7 +639,7 @@ class HostRepository extends ScopedRepository
 
         $devices = [];
         foreach (DB::table('devices')->whereIntegerInRaw('device_id', $deviceIds)
-            ->get(['device_id', 'hostname', 'sysName', 'display', 'type', 'os', 'hardware', 'status']) as $row) {
+            ->get(['device_id', 'hostname', 'sysName', 'display', 'type', 'os', 'hardware', 'status', 'last_polled']) as $row) {
             $row = (array) $row;
             $deviceId = (int) $row['device_id'];
             $devices[$deviceId] = [
@@ -591,6 +647,7 @@ class HostRepository extends ScopedRepository
                 'role' => DeviceRole::classify($row),
                 'url' => url('device/' . $deviceId),
                 'status' => (bool) $row['status'],
+                'last_polled' => self::time($row['last_polled']) ?: null,
             ];
         }
 
@@ -716,6 +773,7 @@ class HostRepository extends ScopedRepository
                     'vlan' => isset($row['vlan']) && $row['vlan'] !== null ? (int) $row['vlan'] : null,
                     'historical' => (bool) ($row['historical'] ?? false),
                     'first_seen' => self::time($row['created_at'] ?? null),
+                    'started' => self::sessionStart($row),
                     'last_seen' => self::time($row['updated_at'] ?? null),
                 ];
             }
@@ -725,6 +783,23 @@ class HostRepository extends ScopedRepository
         usort($rows, fn ($a, $b) => [$a['historical'], -$a['last_seen']] <=> [$b['historical'], -$b['last_seen']]);
 
         return $rows;
+    }
+
+    /**
+     * When a session started: its update time minus the session time the switch reports (time_elapsed: Huawei, ProCurve,
+     * PowerConnect), else when LibreNMS created the row. Cisco reports only the time to the next reauthentication and
+     * refreshes the update time with it at every poll, so neither tells the start; the row is created at the first
+     * poll of a session (but kept when the MAC comes back on the same switch with something in common).
+     */
+    private static function sessionStart(array $row): int
+    {
+        $elapsed = $row['time_elapsed'] ?? null;
+        $updated = self::time($row['updated_at'] ?? null);
+        if (is_numeric($elapsed) && (float) $elapsed >= 0 && $updated > 0) {
+            return $updated - (int) $elapsed;
+        }
+
+        return self::time($row['created_at'] ?? null) ?: $updated;
     }
 
     /**

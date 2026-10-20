@@ -24,8 +24,9 @@ class HostLocatorTest extends TestCase
         1 => ['name' => 'core1', 'role' => 'l3switch'], 2 => ['name' => 'core2', 'role' => 'l3switch'], 3 => ['name' => 'acc-sw1', 'role' => 'switch'],
         4 => ['name' => 'acc-sw2', 'role' => 'switch'], 5 => ['name' => 'acc-sw3', 'role' => 'switch'], 6 => ['name' => 'acc-sw4', 'role' => 'switch'],
         7 => ['name' => 'acc-sw5', 'role' => 'switch'], 8 => ['name' => 'acc-sw6', 'role' => 'switch'], 10 => ['name' => 'acc-sw7', 'role' => 'switch'],
-        11 => ['name' => 'acc-sw8', 'role' => 'switch'], 13 => ['name' => 'esx-1', 'role' => 'server'], 14 => ['name' => 'rtr1', 'role' => 'router'],
-        100 => ['name' => 'lab-sw1', 'role' => 'switch'],
+        11 => ['name' => 'acc-sw8', 'role' => 'switch'], 12 => ['name' => 'acc-sw9', 'role' => 'switch'], 13 => ['name' => 'esx-1', 'role' => 'server'],
+        14 => ['name' => 'rtr1', 'role' => 'router'], 15 => ['name' => 'rtr2', 'role' => 'router'], 20 => ['name' => 'dist-sw1', 'role' => 'router'],
+        30 => ['name' => 'fw-transparent', 'role' => 'firewall'], 100 => ['name' => 'lab-sw1', 'role' => 'switch'],
     ];
 
     /** Port-channel members => port-channel. */
@@ -47,6 +48,7 @@ class HostLocatorTest extends TestCase
             404 => [4, 'Gi1/0/48', 12], 405 => [4, 'Gi1/0/5', 2], 406 => [4, 'Gi1/0/47', 300], 412 => [4, 'Gi1/0/12', 30], 420 => [4, 'Po10', 3, true], 421 => [4, 'Gi1/0/20', 0],
             503 => [5, 'Gi1/0/1', 1], 505 => [5, 'Gi1/0/24', 6], 506 => [5, 'Gi1/0/48', 3],
             603 => [6, 'ge-0/0/1', 7], 701 => [7, 'Gi1/1/1', 200], 703 => [7, 'Gi2/0/1', 2], 803 => [8, 'Gi1/0/2', 12], 1005 => [10, 'Gi1/0/5', 1],
+            1201 => [12, 'Gi1/0/1', 1], 223 => [2, 'Te1/0/9', 12], 224 => [2, 'Te1/0/10', 30], 225 => [2, 'Te1/0/11', 2],
             10011 => [100, 'Gi1/0/5', 1], 10012 => [100, 'Gi1/0/6', 29],
         ] as $portId => $port) {
             $ports[$portId] = ['device_id' => $port[0], 'name' => $port[1], 'macs' => $macs[$portId] ?? $port[2], 'aggregate' => $port[3] ?? false];
@@ -86,6 +88,7 @@ class HostLocatorTest extends TestCase
             107 => [self::monitored(4)], 108 => [self::monitored(5)], 120 => [self::monitored(7)],
             202 => [self::monitored(1, 'Te1/1/1')], 203 => [self::monitored(1, 'Te1/1/2')],
             204 => [self::monitored(3)], 205 => [self::monitored(4)], 220 => [self::monitored(7)], 221 => [self::monitored(10)], 222 => [self::monitored(14)],
+            223 => [self::monitored(20, 'xe-0/1/0')], 224 => [self::monitored(30, 'ethernet1/1')], 225 => [self::monitored(15)],
             302 => [self::monitored(1, 'Te1/0/1')],
             307 => [self::lldp('AP-2F-07', 'Cisco AP Software, ap3g2-k9w8 Version: 8.10.185.0', 'eth0')],
             321 => [self::lldp('srv-db-1.example.net', $server, 'eno1')],
@@ -102,12 +105,13 @@ class HostLocatorTest extends TestCase
 
     /**
      * @param  array<int, int>  $since  device_id => start of its last forwarding table read (default: 15 minutes before NOW)
+     * @param  array<string, \Closure>  $lookups  see HostLocator
      */
-    private static function locator(array $since = [], array $extraNeighbors = [], array $switchMacs = [], ?\Closure $counter = null, array $macs = []): HostLocator
+    private static function locator(array $since = [], array $extraNeighbors = [], array $switchMacs = [], array $lookups = [], array $macs = []): HostLocator
     {
         $since += array_fill_keys([1, 2, 3, 4, 5, 6, 7, 8, 11, 100], self::NOW - HostLocator::STALE_AFTER);
 
-        return new HostLocator(self::ports($macs), self::neighbors($extraNeighbors), self::LAGS, $since, self::DEVICES, 5, $switchMacs, $counter);
+        return new HostLocator(self::ports($macs), self::neighbors($extraNeighbors), self::LAGS, $since, self::DEVICES, 5, $switchMacs, $lookups);
     }
 
     private static function row(int $deviceId, int $portId, ?int $vlan = 10, int $lastSeen = self::NOW): array
@@ -235,12 +239,25 @@ class HostLocatorTest extends TestCase
         $this->assertStringNotContainsString('acc-sw7 sends from it', self::texts($result));
     }
 
-    public function testAGatewayTrailEndingAtARouterIsTheRouter(): void
+    public function testAGatewayTrailEndsAtADeviceWithoutForwardingTableOnlyWithLayer3Evidence(): void
     {
-        // a router has no forwarding table to read: the trail ending at it means it answers the address
-        $result = self::locator()->locate('00005e00010a', [self::row(2, 222)]);
+        // routes: rtr1 has 10.10.10.2/24, rtr2 10.10.10.3/24; dist-sw1 (an EX switch that LibreNMS classifies as a router
+        // by its OS) and the transparent firewall have no interface in the VLAN or subnet
+        $routes = fn (int $deviceId, array $vlans, array $ips) => in_array($deviceId, [14, 15], true) && in_array('10.10.10.1', $ips, true);
+        $locator = self::locator([], [], [], ['routes' => $routes]);
 
-        $this->assertSame(['gateway', 'rtr1'], [$result['status'], $result['device']['name']]);
+        $pair = $locator->locate('00005e00010a', [self::row(2, 222)], [], [], ['10.10.10.1']);
+        $this->assertSame(['gateway', 'rtr1'], [$pair['status'], $pair['device']['name']], 'a real router pair: the master is named');
+        $this->assertSame(['gateway', 'rtr2'], [$locator->locate('00005e00010a', [self::row(2, 225)], [], [], ['10.10.10.1'])['status'], 'rtr2']);
+
+        $ex = $locator->locate('00005e000114', [self::row(2, 223)], [], [], ['10.10.10.1']);
+        $this->assertSame(['behind', 'dist-sw1'], [$ex['status'], $ex['device']['name']], 'WAN routers hang off a switch without forwarding table');
+        $this->assertStringNotContainsString('dist-sw1 sends from it', self::texts($ex));
+
+        $firewall = $locator->locate('00005e000115', [self::row(2, 224)], [], [], ['10.10.10.1']);
+        $this->assertSame(['behind', 'fw-transparent'], [$firewall['status'], $firewall['device']['name']], 'routers behind a transparent firewall');
+
+        $this->assertSame('behind', self::locator()->locate('00005e00010a', [self::row(2, 222)], [], [], ['10.10.10.1'])['status'], 'no evidence without the lookup');
     }
 
     public function testRouterMacThatIsNoInterfaceMacEndsBehindTheRouter(): void
@@ -332,13 +349,13 @@ class HostLocatorTest extends TestCase
         $this->assertSame('link toward lab-sw1 (its own MAC address is learned here), which also learned it', $result['seen'][0]['detail']);
 
         // acc-sw2 was read while lab PCs were silent (20 MACs on the uplink); the host is on a hub with 29 MACs
-        $hub = self::locator([100 => self::NOW - 600 - HostLocator::STALE_AFTER], [], $toLab, null, [406 => 20])
+        $hub = self::locator([100 => self::NOW - 600 - HostLocator::STALE_AFTER], [], $toLab, [], [406 => 20])
             ->locate('7cd30a000002', [self::row(4, 406, 20), self::row(100, 10012, 20, self::NOW - 600)]);
         $this->assertSame([100, 10012], [$hub['edge']['device_id'], $hub['edge']['port_id']]);
         $this->assertSame(['toward-switch'], self::reasons($hub));
 
         // a small lab switch: the uplink holds 3 MACs (two hosts and lab-sw1), the host is alone on its port
-        $small = self::locator([], [], $toLab, null, [406 => 3])->locate('7cd30a000003', [self::row(4, 406, 20), self::row(100, 10011, 20)]);
+        $small = self::locator([], [], $toLab, [], [406 => 3])->locate('7cd30a000003', [self::row(4, 406, 20), self::row(100, 10011, 20)]);
         $this->assertSame(10011, $small['edge']['port_id']);
         $this->assertStringNotContainsString('Also learned on another access port', self::texts($small));
     }
@@ -406,9 +423,13 @@ class HostLocatorTest extends TestCase
         $this->assertStringContainsString('Not seen at the last forwarding table discovery', self::texts($result));
     }
 
-    private static function session(int $deviceId, int $portId, int $lastSeen = self::NOW, bool $historical = false): array
+    /**
+     * An 802.1X / MAB session; current: not historical and updated at its switch's last polls (HostService decides).
+     */
+    private static function session(int $deviceId, int $portId, int $lastSeen = self::NOW, bool $historical = false, ?int $started = null, ?bool $current = null): array
     {
-        return ['device_id' => $deviceId, 'port_id' => $portId, 'vlan' => 10, 'first_seen' => $lastSeen - 3600, 'last_seen' => $lastSeen, 'historical' => $historical];
+        return ['device_id' => $deviceId, 'port_id' => $portId, 'vlan' => 10, 'started' => $started ?? $lastSeen - 3600, 'last_seen' => $lastSeen,
+            'historical' => $historical, 'current' => $current ?? ! $historical];
     }
 
     public function testAHostSeenOnlyByItsAuthenticationSession(): void
@@ -437,30 +458,74 @@ class HostLocatorTest extends TestCase
         $this->assertStringContainsString('the forwarding tables lead to acc-sw7, which has no forwarding table data.', self::texts($result));
         $this->assertSame([], array_filter($result['notes'], fn ($note) => $note['level'] === 'warning'));
 
-        // only links between switches learned it
+        // only links between switches learned it: a session on one of those switches
         $uplinks = self::locator()->locate('0019aa000012', [self::row(1, 105), self::row(3, 302)], [], [self::session(3, 305)]);
         $this->assertSame(['located', 305], [$uplinks['status'], $uplinks['edge']['port_id']]);
         $this->assertStringContainsString('the forwarding tables only list it on links between switches', self::texts($uplinks));
+        $elsewhere = self::locator()->locate('0019aa000013', [self::row(1, 105), self::row(3, 302)], [], [self::session(5, 503)]);
+        $this->assertSame('uplinks', $elsewhere['status'], 'a session on a switch the trail does not lead to');
+
+        // behind acc-sw7: a session on acc-sw9 behind it (the behind lookup) is the location, one on acc-sw1 is not
+        $behind = ['behind' => fn (int $deviceId, array $exclude) => $deviceId === 10 && ! in_array(12, $exclude, true) ? [12] : []];
+        $chain = self::locator([], [], [], $behind)->locate('0019aa000014', [self::row(2, 221)], [], [self::session(12, 1201)]);
+        $this->assertSame(['located', 12, 1201], [$chain['status'], $chain['edge']['device_id'], $chain['edge']['port_id']]);
+        $other = self::locator([], [], [], $behind)->locate('0019aa000015', [self::row(2, 221)], [], [self::session(3, 305, self::NOW - 2 * 86400, false, self::NOW - 3 * 86400)]);
+        $this->assertSame(['behind', 'acc-sw7'], [$other['status'], $other['device']['name']], 'an old session on acc-sw1 is not where the trail leads');
+        $this->assertStringContainsString('An 802.1X / MAB session of this MAC is on acc-sw1 Gi1/0/1, where the forwarding tables do not lead', self::texts($other));
     }
 
     public function testAnAuthenticationSessionAndTheForwardingTables(): void
     {
-        // on the port of an old entry: the session shows the host is still there
+        // on the port of an old entry: a session updated since shows the host is still there; an older one does not
         $there = self::locator()->locate('f0def1000003', [self::row(3, 305, 10, self::NOW - 86400)], [], [self::session(3, 305)]);
         $this->assertSame(['located', 'access', false], [$there['status'], $there['edge']['via'], $there['stale']]);
         $this->assertStringNotContainsString('Not seen at the last forwarding table discovery', self::texts($there));
+        $old = self::locator()->locate('f0def1000006', [self::row(3, 305, 10, self::NOW - 86400)], [], [self::session(3, 305, self::NOW - 2 * 86400)]);
+        $this->assertTrue($old['stale'], 'a session older than the entry does not clear "not seen recently"');
 
-        // acc-sw1 was read 3 hours ago with the laptop on Gi1/0/1; its session is on acc-sw3 Gi1/0/1 now: it moved
+        // acc-sw1 was read 3 hours ago with the laptop on Gi1/0/1; its session on acc-sw3 Gi1/0/1 started 2 minutes ago: it moved
         $moved = self::locator([3 => self::NOW - 3 * 3600 - HostLocator::STALE_AFTER])
-            ->locate('f0def1000004', [self::row(3, 305, 10, self::NOW - 3 * 3600)], [], [self::session(5, 503, self::NOW - 120)]);
+            ->locate('f0def1000004', [self::row(3, 305, 10, self::NOW - 3 * 3600)], [], [self::session(5, 503, self::NOW - 60, false, self::NOW - 120)]);
         $this->assertSame([5, 503, 'nac'], [$moved['edge']['device_id'], $moved['edge']['port_id'], $moved['edge']['via']]);
         $this->assertSame('earlier', $moved['seen'][0]['reason']);
-        $this->assertStringContainsString('newer than the forwarding tables: the host moved since they were read', self::texts($moved));
+        $this->assertStringContainsString('which started after the forwarding tables last saw the host on acc-sw1 Gi1/0/1: the host moved since', self::texts($moved));
+    }
 
-        // both at about the same time on different ports: the forwarding table answer stays, with a warning
-        $both = self::locator()->locate('f0def1000005', [self::row(3, 305)], [], [self::session(5, 503, self::NOW - 60)]);
-        $this->assertSame([3, 305], [$both['edge']['device_id'], $both['edge']['port_id']]);
-        $this->assertStringContainsString('Its current 802.1X / MAB session is on another port (acc-sw3 Gi1/0/1)', self::texts($both));
+    public function testAnOldSessionThatAPhoneKeepsUpDoesNotMoveTheHost(): void
+    {
+        // the PC left the phone on acc-sw5 Gi2/0/1 yesterday: the phone keeps the link up, so the switch still reports the
+        // session (started 2 days ago, its update time refreshed at every poll); the forwarding tables saw the PC 3 hours ago
+        $read = self::NOW - 3 * 3600;
+        $locator = self::locator(array_fill_keys([1, 5], $read - HostLocator::STALE_AFTER));
+        $result = $locator->locate('d4bed9010210', [self::row(1, 108, 10, $read), self::row(5, 503, 10, $read)], [],
+            [self::session(7, 703, self::NOW - 120, false, self::NOW - 2 * 86400)]);
+
+        $this->assertSame(['located', 5, 503, 'access'], [$result['status'], $result['edge']['device_id'], $result['edge']['port_id'], $result['edge']['via']]);
+        $this->assertStringContainsString('An 802.1X / MAB session of this MAC is on acc-sw5 Gi2/0/1, but it started before the forwarding tables saw the host here', self::texts($result));
+        $this->assertStringNotContainsString('moved since', self::texts($result));
+
+        // an hour ago the PC authenticated on acc-sw1 Gi1/0/1: that session started last, although acc-sw5 refreshed the
+        // old one more recently
+        $result = $locator->locate('d4bed9010210', [self::row(1, 108, 10, $read), self::row(5, 503, 10, $read)], [],
+            [self::session(7, 703, self::NOW - 30, false, self::NOW - 2 * 86400), self::session(3, 305, self::NOW - 200, false, self::NOW - 3600)]);
+
+        $this->assertSame(['located', 3, 305, 'nac', false], [$result['status'], $result['edge']['device_id'], $result['edge']['port_id'], $result['edge']['via'], $result['stale']]);
+        $this->assertStringContainsString('Located by its current 802.1X / MAB session on acc-sw1 Gi1/0/1, which started after the forwarding tables last saw the host on acc-sw3 Gi1/0/1: the host moved since.', self::texts($result));
+    }
+
+    public function testAnOlderSessionDoesNotRefreshAHostThatWasNotSeenRecently(): void
+    {
+        // last seen yesterday (entries stale); a session elsewhere that started 3 days ago and was last updated 2 days ago
+        $result = self::locator()->locate('d4bed9010211', [self::row(5, 503, 10, self::NOW - 86400)], [],
+            [self::session(3, 305, self::NOW - 2 * 86400, false, self::NOW - 3 * 86400)]);
+
+        $this->assertSame(['located', 5, 503, true], [$result['status'], $result['edge']['device_id'], $result['edge']['port_id'], $result['stale']]);
+        $this->assertStringNotContainsString('newer than', self::texts($result));
+        $this->assertStringNotContainsString('Located by its current 802.1X', self::texts($result));
+        $this->assertStringContainsString('Not seen at the last forwarding table discovery', self::texts($result));
+
+        // a session the service did not find current (not updated at its switch's last polls) is no location at all
+        $this->assertSame('none', self::locator()->locate('d4bed9010212', [], [], [self::session(3, 305, self::NOW - 2 * 86400, false, null, false)])['status']);
     }
 
     public function testMacsAreCountedOnTrailEndsOnly(): void
@@ -471,7 +536,7 @@ class HostLocatorTest extends TestCase
 
             return array_fill_keys($ids, 3);
         };
-        $locator = self::locator([], [], [], $counter);
+        $locator = self::locator([], [], [], ['macs' => $counter]);
         $result = $locator->locate('d4bed9010203', [self::row(1, 120), self::row(2, 220), self::row(7, 703)]);
         $locator->locate('d4bed9010204', [self::row(1, 120), self::row(7, 703)]);
 

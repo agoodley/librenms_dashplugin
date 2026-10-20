@@ -220,9 +220,14 @@ search ends on the switch the host is plugged into, including:
   after a few minutes) or has no forwarding table data, the answer is *behind* that switch, and the L2 map draws the host
   next to it;
 * the address of a **switch, router or firewall** itself, an interface MAC or a **VRRP / HSRP / GLBP** virtual router MAC:
-  the answer is the device (for a gateway, the router that is master / active now), not a port on the way to it;
+  the answer is the device (for a gateway, the router that is master / active now), not a port on the way to it. A
+  device without forwarding table data may be a switch on the way (or a bridging firewall): it is named as the gateway
+  only with an address in the subnet of the searched address or a router interface in its VLAN, else the answer is
+  *behind* it;
 * a host the forwarding tables do not show yet (LibreNMS reads them every 6 hours), that sits behind a switch without
-  one, or that moved since: its current **802.1X / MAB session** (polled every 5 minutes) gives the port.
+  one, or that moved since: its current **802.1X / MAB session** (polled every 5 minutes) gives the port. Behind a
+  switch it counts on that switch or one behind it; instead of a port the forwarding tables found, only when it started
+  after they last saw the host there (a phone keeps the link, and an old session, up after the computer behind it left).
 
 The HSRP and VRRP MACs are the same in every VLAN that uses the group number, so a gateway is located in the VLAN of
 the router interface with the ARP entry (Vlan10, irb.10, ve 10, the unit of a subinterface such as Gi0/0.10); when that
@@ -497,6 +502,12 @@ vendor/bin/phpunit
   (`ports_fdb_purge`); the locator lists entries from before a switch's last discovery as old (the start of the
   device's last discovery, confirmed by one entry from it) and counts MACs on a port from that discovery only.
   Switches whose forwarding table LibreNMS does not read end the trail.
+* An 802.1X / MAB session counts while its switch updates it (within 11 minutes of the switch's last poll). LibreNMS
+  updates a session only when one of its values changes: the session time or the time to reauthentication does at every
+  poll (Huawei, ProCurve / ArubaOS-Switch, PowerConnect, Cisco with reauthentication), so on ArubaOS-CX and on Cisco
+  without reauthentication a session counts only in the 11 minutes after it starts or changes. A session starts at its
+  update time minus its session time, else when LibreNMS first saw it (Cisco reports no session time, and a host that
+  moves to another port of the same switch keeps its session's start).
 * Query cost: LibreNMS has no index on the address in the ARP table or on anything but port and device in the IPv6
   neighbor table, so an IPv4 search reads the whole ARP table once and every search the whole IPv6 neighbor table (twice
   for an IPv6 address); the port tab (on every port page) shows IPv4 addresses only and uses indexed lookups. 802.1X
