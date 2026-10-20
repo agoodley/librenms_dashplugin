@@ -36,7 +36,7 @@ class CoverageService
 
         // MAC addresses are only counted on access ports without a neighbour that explains them (the analyzer
         // knows those after reading the LLDP/CDP rows once), of the centered device alone when there is one
-        $threshold = $this->settings->int('coverage_mac_threshold', 0, 1000000);
+        $threshold = $this->settings->sharedPortMacs();
         $busyPorts = fn (array $explained): array => $threshold && $scope
             ? $this->repo->busyPorts(array_diff_key(
                 $this->repo->accessPorts($device !== null ? [$device] : $scope), $explained, $lagParent, array_flip($lagParent),
