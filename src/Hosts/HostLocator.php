@@ -60,9 +60,6 @@ class HostLocator
     /** @var array<int, int> port_id => current MACs */
     private array $counts = [];
 
-    /** @var (\Closure(int[]): array<int, int>)|null */
-    private ?\Closure $macCounter;
-
     /**
      * @param  array<int, array>  $ports  port_id => device_id, name, aggregate (bool), macs (current MACs, when known up front)
      * @param  array<int, array<int, array>>  $neighbors  port_id => LLDP/CDP neighbors on the port: name, port,
@@ -73,7 +70,12 @@ class HostLocator
      * @param  array<int, array{name: string, role?: string}>  $devices  monitored devices
      * @param  int  $sharedPortMacs  MACs on an access port without a neighbor from which it is flagged as shared
      * @param  array<int, int[]>  $switchMacs  port_id => monitored devices whose own MAC the port learned at the last read
-     * @param  (\Closure(int[]): array<int, int>)|null  $macCounter  port_ids => current MACs, asked for trail ends only
+     * @param  array<string, \Closure>  $lookups  data asked for only when an answer needs it:
+     *         macs (int[] port_ids => array<int, int> current MACs per port): of trail ends;
+     *         behind (int device_id, int[] devices not to pass => int[] devices): reachable from the device over LLDP/CDP links,
+     *         where an 802.1X session can be when the trail ends at it;
+     *         routes (int device_id, int[] VLANs, string[] addresses => bool): the device has a layer 3 interface in one of
+     *         the VLANs or an address in the subnet of one of the addresses (it can answer a virtual router address)
      */
     public function __construct(
         private readonly array $ports,
@@ -83,9 +85,8 @@ class HostLocator
         private readonly array $devices,
         private readonly int $sharedPortMacs = 5,
         private readonly array $switchMacs = [],
-        ?\Closure $macCounter = null,
+        private readonly array $lookups = [],
     ) {
-        $this->macCounter = $macCounter;
         foreach ($lagParent as $member => $aggregate) {
             $this->members[$aggregate][] = $member;
         }
@@ -96,13 +97,13 @@ class HostLocator
      *
      * @param  array<int, array>  $rows  forwarding table entries of the MAC: device_id, port_id, vlan, first_seen, last_seen
      * @param  array<int, array>  $owners  interfaces of monitored devices with this MAC: device_id, port
-     * @param  array<int, array>  $sessions  802.1X / MAB sessions of the MAC: device_id, port_id, vlan, first_seen, last_seen,
-     *                                       historical. A current one (polled every few minutes) is where the host is when
-     *                                       the forwarding tables (read every 6 hours) give no port or are from before it moved.
+     * @param  array<int, array>  $sessions  802.1X / MAB sessions of the MAC: device_id, port_id, vlan, started, last_seen,
+     *                                       current (not historical, on a switch that polls sessions and was polled recently)
+     * @param  string[]  $ips  addresses of the MAC (ARP / IPv6 neighbor entries) in the answer's VLAN
      * @return array{status: string, stale: bool, edge: array|null, device: array|null, gateway: array|null,
      *               seen: array<int, array>, notes: array<int, array{level: string, text: string}>}
      */
-    public function locate(string $mac, array $rows, array $owners = [], array $sessions = []): array
+    public function locate(string $mac, array $rows, array $owners = [], array $sessions = [], array $ips = []): array
     {
         $gateway = Mac::gateway($mac);
         $ownerPorts = [];
@@ -183,8 +184,9 @@ class HostLocator
                     $edge = null;
                 }
             } elseif ($gateway && $at !== null && ($edge['via'] === 'owner' || $edge['via'] === 'not-listed'
-                // a switch without forwarding table data may be on the way; a router or firewall has no table to read
-                || ($edge['via'] === 'monitored' && in_array($edge['neighbor']['role'] ?? '', [DeviceRole::ROUTER, DeviceRole::FIREWALL], true)))) {
+                // a device without forwarding table data may be a switch on the way: it answers the address only with an
+                // interface in its VLAN or an address in its subnet
+                || ($edge['via'] === 'monitored' && $this->routes($at, $edge['vlans'], $ips)))) {
                 $status = 'gateway';
                 $device = $at;
                 $gatewayNote = 'Virtual router address (' . $gateway['label'] . '): ' . $this->deviceName($at) . ' sends from it as the master / active router of the group.';
@@ -199,34 +201,46 @@ class HostLocator
             array_splice($notes, count($ownerPorts), 0, [self::note('info', $gatewayNote)]);
         }
 
-        // a current 802.1X / MAB session is where the host is when the trail ends without a port, or when the forwarding
-        // tables are from before the host moved
+        // a current 802.1X / MAB session (its switch polls sessions and was polled recently) gives the port when the trail ends without one:
+        // on the switch the trail leads to or behind it, or among the switches of a trail that only finds uplinks; and it
+        // replaces a forwarding table answer on another port when it started after that sighting (the host moved since)
         if ($session !== null && in_array($status, ['located', 'behind', 'uplinks'], true)) {
+            $lastSighting = $edge['last_seen'] ?? max(array_column($working, 'last_seen'));
+            $newer = (int) $session['last_seen'] > $lastSighting;
             $same = $edge !== null && $edge['port_id'] === (int) $session['port_id'];
-            if ($status !== 'located' || (! $same && ($stale || $session['last_seen'] > $edge['last_seen'] + self::EARLIER_AFTER))) {
-                $why = match (true) {
-                    $status === 'behind' => ': the forwarding tables lead to ' . $this->deviceName((int) $device) . ', which '
+            $use = match (true) {
+                $status === 'behind' => $this->sessionBehind($session, (int) $device, $learned),
+                $status === 'uplinks' => isset($learned[(int) $session['device_id']]),
+                $same => false,
+                default => self::sessionStart($session) > $edge['last_seen'],
+            };
+            if ($use) {
+                $why = match ($status) {
+                    'behind' => ': the forwarding tables lead to ' . $this->deviceName((int) $device) . ', which '
                         . ($edge['via'] === 'monitored' ? 'has no forwarding table data.' : 'does not list it.'),
-                    $status === 'uplinks' => ': the forwarding tables only list it on links between switches.',
-                    default => ', newer than the forwarding tables: the host moved since they were read.',
+                    'uplinks' => ': the forwarding tables only list it on links between switches.',
+                    default => ', which started after the forwarding tables last saw the host on ' . $this->deviceName($edge['device_id']) . ' '
+                        . $this->portName($edge['port_id']) . ': the host moved since.',
                 };
                 if ($edge !== null) {
                     $seen[] = $edge + ($status === 'behind'
                         ? ['reason' => 'behind-monitored', 'detail' => 'toward ' . $edge['neighbor']['name'] . ', '
                             . ($edge['via'] === 'monitored' ? 'which has no forwarding table data' : 'whose forwarding table does not list it')]
-                        : ['reason' => 'earlier', 'detail' => 'seen here ' . StpAnalyzer::duration(max(0, (int) $session['last_seen'] - $edge['last_seen']))
-                            . ' before its 802.1X / MAB session elsewhere: the host moved since']);
+                        : ['reason' => 'earlier', 'detail' => 'seen here ' . StpAnalyzer::duration(max(0, self::sessionStart($session) - $edge['last_seen']))
+                            . ' before its 802.1X / MAB session elsewhere started: the host moved since']);
                 }
                 $notes[] = self::note('info', 'Located by its current 802.1X / MAB session on ' . $this->sessionPort($session) . $why);
                 $edge = $this->sessionEdge($session, $ownerPorts);
                 $status = 'located';
                 $device = null;
-                $stale = false;
+                $stale = $stale && ! $newer;
             } elseif ($same) {
-                $stale = false; // the session shows the host is there
+                // a session updated after the forwarding table entry shows the host is still there
+                $stale = $stale && ! $newer;
             } else {
-                $notes[] = self::note('warning', 'Its current 802.1X / MAB session is on another port (' . $this->sessionPort($session)
-                    . '): the host moved between the two readings, or the session is outdated.');
+                $notes[] = self::note('info', 'An 802.1X / MAB session of this MAC is on ' . $this->sessionPort($session) . ($status === 'located'
+                    ? ', but it started before the forwarding tables saw the host here: the switch keeps an old session (a phone or hub keeps the port up).'
+                    : ', where the forwarding tables do not lead: it is not used as the location.'));
             }
         }
 
@@ -387,7 +401,7 @@ class HostLocator
             return;
         }
 
-        $counts = $this->macCounter ? ($this->macCounter)($missing) : [];
+        $counts = isset($this->lookups['macs']) ? ($this->lookups['macs'])($missing) : [];
         foreach ($missing as $portId) {
             $this->counts[$portId] = (int) ($counts[$portId] ?? $this->ports[$portId]['macs'] ?? 0);
         }
@@ -524,14 +538,53 @@ class HostLocator
     }
 
     /**
-     * The newest 802.1X / MAB session that is not historical.
+     * The current 802.1X / MAB session that started last (a switch keeps an old session that a phone keeps up next to
+     * the one where the host is now, and a session's update time only tells when one of its values last changed).
      */
     private static function currentSession(array $sessions): ?array
     {
-        $current = array_values(array_filter($sessions, fn ($session) => empty($session['historical']) && (int) $session['port_id'] > 0));
-        usort($current, fn ($a, $b) => $b['last_seen'] <=> $a['last_seen']);
+        $current = array_values(array_filter($sessions, fn ($session) => ! empty($session['current']) && empty($session['historical']) && (int) $session['port_id'] > 0));
+        usort($current, fn ($a, $b) => [self::sessionStart($b), $b['last_seen']] <=> [self::sessionStart($a), $a['last_seen']]);
 
         return $current[0] ?? null;
+    }
+
+    /**
+     * When a session started (a switch refreshes a session's update time at every poll while its reauthentication timer
+     * runs, so only the start tells whether it is newer than a forwarding table entry).
+     */
+    private static function sessionStart(array $session): int
+    {
+        return (int) ($session['started'] ?? $session['first_seen'] ?? $session['last_seen']);
+    }
+
+    /**
+     * Is the session on the device the trail ends at, or on a device behind it (not through the switches of the trail)?
+     *
+     * @param  array<int, true>  $learned  switches with an entry for the MAC
+     */
+    private function sessionBehind(array $session, int $deviceId, array $learned): bool
+    {
+        $at = (int) $session['device_id'];
+        if ($at === $deviceId) {
+            return true;
+        }
+        $behind = $this->lookups['behind'] ?? null;
+
+        return $behind !== null && in_array($at, $behind($deviceId, array_keys($learned)), true);
+    }
+
+    /**
+     * Layer 3 evidence that a device answers a virtual router address (see the routes lookup).
+     *
+     * @param  int[]  $vlans
+     * @param  string[]  $ips
+     */
+    private function routes(int $deviceId, array $vlans, array $ips): bool
+    {
+        $routes = $this->lookups['routes'] ?? null;
+
+        return $routes !== null && (bool) $routes($deviceId, $vlans, $ips);
     }
 
     /**
@@ -544,7 +597,7 @@ class HostLocator
         $portId = (int) $session['port_id'];
         $lastSeen = (int) $session['last_seen'];
         $entry = ['device_id' => (int) $session['device_id'], 'port_id' => $portId, 'vlans' => isset($session['vlan']) ? [(int) $session['vlan']] : [],
-            'first_seen' => (int) ($session['first_seen'] ?? 0) ?: $lastSeen, 'last_seen' => $lastSeen, 'stale' => false];
+            'first_seen' => self::sessionStart($session) ?: $lastSeen, 'last_seen' => $lastSeen, 'stale' => false];
         $trail = $this->trail($entry, [], $ownerPorts);
         $this->countMacs([$portId]);
 

@@ -23,7 +23,8 @@ class NavigationTest extends TestCase
         $groups = Navigation::groups();
 
         $this->assertSame(array_values(array_intersect(array_keys(Navigation::GROUPS), array_column(Navigation::PAGES, 'group'))), array_keys($groups));
-        $this->assertSame(['l2', 'l3'], array_keys($groups['maps']['pages']));
+        $this->assertSame(['l2', 'l3', 'sites'], array_keys($groups['maps']['pages']));
+        $this->assertSame(['hosts', 'rollout', 'dependencies'], array_keys($groups['tools']['pages']), 'the host locator first');
         $this->assertSame('Maps', $groups['maps']['label']);
     }
 

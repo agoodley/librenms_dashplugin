@@ -73,7 +73,7 @@ class HostServiceTest extends TestCase
         }
 
         return [
-            'devices' => array_map(fn ($device) => ['name' => $device[0], 'role' => $device[1]], $devices),
+            'devices' => array_map(fn ($device) => ['name' => $device[0], 'role' => $device[1], 'last_polled' => self::NOW - 60], $devices),
             'ports' => array_map(fn ($port) => ['device_id' => $port[0], 'ifName' => $port[1], 'ifDescr' => $port[1], 'ifAlias' => '', 'ifType' => $port[2] ?? 'ethernetCsmacd',
                 'ifOperStatus' => 'up', 'ifPhysAddress' => $port[3] ?? null, 'ifVlan' => '', 'ifTrunk' => null], $ports),
             'neighbors' => $neighbors,
@@ -120,7 +120,7 @@ class HostServiceTest extends TestCase
     {
         return ['id' => $id, 'mac' => $mac, 'device_id' => $deviceId, 'port_id' => $portId, 'username' => $user, 'domain' => 'data', 'ip' => '',
             'status' => 'authorized', 'auth_status' => 'authcSuccess', 'method' => 'dot1x', 'host_mode' => 'multiDomain', 'vlan' => 10,
-            'historical' => $historical, 'first_seen' => self::NOW - 3600, 'last_seen' => $historical ? self::NOW - 86400 : self::NOW - 120];
+            'historical' => $historical, 'first_seen' => self::NOW - 3600, 'started' => self::NOW - 3600, 'last_seen' => $historical ? self::NOW - 86400 : self::NOW - 120];
     }
 
     /**
@@ -133,7 +133,7 @@ class HostServiceTest extends TestCase
         $repo = new FakeHostRepository($data);
 
         return new $class($repo, new FakeTopologyRepository($data['lag']), new PluginSettings($settings), $resolver,
-            fn (string $name, array $parameters = []) => $name . '?' . http_build_query($parameters));
+            fn (string $name, array $parameters = []) => $name . '?' . http_build_query($parameters), fn (): int => self::NOW);
     }
 
     /**
@@ -309,6 +309,148 @@ class HostServiceTest extends TestCase
         $this->assertCount(1, $repo->calls['nacByMacs']);
     }
 
+    public function testASessionIsCurrentWhileItsSwitchPollsSessions(): void
+    {
+        // a Cisco switch without reauthentication timer reports nothing that changes: LibreNMS has not updated the session
+        // since it started 2 hours ago, but it would have marked it historical at the last poll had it gone
+        $quiet = function (array $data): array {
+            $data['nac'][0]['started'] = $data['nac'][0]['first_seen'] = $data['nac'][0]['last_seen'] = self::NOW - 7200;
+
+            return $data;
+        };
+        $host = self::service(change: $quiet)->search('d4:be:d9:00:40:01')['hosts'][0];
+        $this->assertSame(['located', 4, 405, 'nac'], [$host['status'], $host['edge']['device_id'] ?? null, $host['edge']['port_id'] ?? null, $host['edge']['via'] ?? null]);
+        $this->assertSame([true], array_column($host['nac'], 'current'));
+
+        // acc-sw2's nac poller module is off: its sessions are what LibreNMS saw before it was switched off
+        $off = function (array $data) use ($quiet): array {
+            $data = $quiet($data);
+            $data['devices'][4]['nac'] = false;
+
+            return $data;
+        };
+        $host = self::service(change: $off)->search('d4:be:d9:00:40:01')['hosts'][0];
+        $this->assertSame(['none', [false]], [$host['status'], array_column($host['nac'], 'current')]);
+
+        // acc-sw2 was last polled an hour ago (down, or its poller stopped): more than 3 poll intervals of 5 minutes
+        $unpolled = function (array $data) use ($quiet): array {
+            $data = $quiet($data);
+            $data['devices'][4]['last_polled'] = self::NOW - 3600;
+
+            return $data;
+        };
+        $host = self::service(change: $unpolled)->search('d4:be:d9:00:40:01')['hosts'][0];
+        $this->assertSame(['none', [false]], [$host['status'], array_column($host['nac'], 'current')]);
+
+        // polled every 30 minutes, it was polled within 3 intervals
+        $slow = fn (array $data): array => ['interval' => 1800] + $unpolled($data);
+        $this->assertSame('located', self::service(change: $slow)->search('d4:be:d9:00:40:01')['hosts'][0]['status']);
+    }
+
+    public function testTheNacModuleIsOnLikeLibreNMSDecides(): void
+    {
+        // global, OS and device setting (null: not set); the device's setting wins, then the OS setting
+        $this->assertFalse(HostRepository::moduleOn(false, null, null), 'off by default');
+        $this->assertTrue(HostRepository::moduleOn(true, null, null));
+        $this->assertTrue(HostRepository::moduleOn(false, true, null));
+        $this->assertFalse(HostRepository::moduleOn(true, false, null));
+        $this->assertTrue(HostRepository::moduleOn(false, false, '1'), 'devices_attribs poll_nac');
+        $this->assertFalse(HostRepository::moduleOn(true, true, '0'));
+        $this->assertFalse(HostRepository::moduleOn(null, true, '1'), 'no such module');
+    }
+
+    public function testAStoppedSessionOnTheLearnedPortDoesNotHideACurrentOneElsewhere(): void
+    {
+        // the forwarding tables saw the PC on acc-sw1 Gi1/0/1 3 hours ago, where its session stays: acc-sw1's nac poller
+        // module was switched off two days ago, so the session was never marked historical. 10 minutes ago the PC
+        // authenticated on acc-sw2 Gi1/0/5
+        $moved = function (array $data): array {
+            $data['since'][1] = $data['since'][3] = self::NOW - 4 * 3600;
+            $data['devices'][3]['nac'] = false;
+            $data['fdb'][] = self::fdb('d4bed9004003', 3, 305, 10, self::NOW - 3 * 3600);
+            $data['fdb'][] = self::fdb('d4bed9004003', 1, 104, 10, self::NOW - 3 * 3600);
+            $data['nac'][] = ['started' => self::NOW - 3 * 86400, 'last_seen' => self::NOW - 2 * 86400] + self::session(5, 'd4bed9004003', 3, 305, 'lmoreau');
+            $data['nac'][] = ['started' => self::NOW - 600] + self::session(6, 'd4bed9004003', 4, 405, 'lmoreau');
+
+            return $data;
+        };
+        $host = self::service($repo, change: $moved)->search('d4:be:d9:00:40:03')['hosts'][0];
+
+        $this->assertSame([[['d4bed9004003'], [305, 104]], [['d4bed9004003'], null]], $repo->calls['nacByMacs'], 'the session on the learned port is not current');
+        $this->assertSame([[3], [4]], $repo->calls['nacPolled'], 'the switches of the sessions, each once');
+        $this->assertSame(['located', 4, 405, 'nac'], [$host['status'], $host['edge']['device_id'], $host['edge']['port_id'], $host['edge']['via']]);
+        $this->assertStringContainsString('which started after the forwarding tables last saw the host on acc-sw1 Gi1/0/1: the host moved since.', implode(' ', array_column($host['notes'], 'text')));
+    }
+
+    public function testASessionOnASwitchBehindTheOneTheTrailEndsAt(): void
+    {
+        // the trail ends at acc-sw2, the session is on acc-sw9, which hangs off acc-sw2
+        $chain = function (array $data): array {
+            $data['devices'][9] = ['name' => 'acc-sw9', 'role' => 'switch', 'last_polled' => self::NOW - 60];
+            $data['ports'][901] = $data['ports'][405] + ['port_id' => 901];
+            $data['ports'][901]['device_id'] = 9;
+            $data['links'] = [4 => [1, 9], 9 => [4], 1 => [2, 3, 4]];
+            $data['nac'][1]['device_id'] = 9;
+            $data['nac'][1]['port_id'] = 901;
+
+            return $data;
+        };
+        $host = self::service($repo, change: $chain)->search('d4:be:d9:00:40:02')['hosts'][0];
+
+        $this->assertSame(['located', 9, 901], [$host['status'], $host['edge']['device_id'], $host['edge']['port_id']]);
+        $this->assertSame([[4], [9]], $repo->calls['linkedDevices'], 'from acc-sw2 (core1 is the trail) to acc-sw9, whose links end there');
+
+        // dual-homed acc-sw2: core2 did not learn the MAC, but it links to core1 (the trail): it is in front, so is what hangs off it
+        $dual = function (array $data) use ($chain): array {
+            $data = $chain($data);
+            $data['links'] = [4 => [1, 2, 9], 9 => [4], 2 => [1, 4, 20], 20 => [2], 1 => [2, 3, 4]];
+            $data['devices'][20] = ['name' => 'acc-20', 'role' => 'switch', 'last_polled' => self::NOW - 60];
+            $data['nac'][1]['device_id'] = 20;
+            $data['nac'][1]['port_id'] = 2020;
+
+            return $data;
+        };
+        $this->assertSame('behind', self::service(change: $dual)->search('d4:be:d9:00:40:02')['hosts'][0]['status'], 'a session behind the other core is not behind acc-sw2');
+    }
+
+    public function testOnlyLayer3EvidenceMakesADeviceWithoutForwardingTableTheGateway(): void
+    {
+        // core1 learned two virtual router MACs, toward rtr1 and toward dist-sw1 (an EX switch LibreNMS classifies as a
+        // router by its OS); neither has forwarding table data
+        $wan = function (array $data): array {
+            $data['devices'][90] = ['name' => 'rtr1', 'role' => 'router', 'last_polled' => self::NOW - 60];
+            $data['devices'][91] = ['name' => 'dist-sw1', 'role' => 'router', 'last_polled' => self::NOW - 60];
+            foreach ([106 => [1, 'Te1/0/3'], 107 => [1, 'Te1/0/4'], 113 => [1, 'Vl40']] as $portId => [$deviceId, $name]) {
+                $data['ports'][$portId] = ['device_id' => $deviceId, 'ifName' => $name, 'ifDescr' => $name, 'ifAlias' => '', 'ifType' => 'ethernetCsmacd',
+                    'ifOperStatus' => 'up', 'ifPhysAddress' => null, 'ifVlan' => '', 'ifTrunk' => null];
+            }
+            $data['neighbors'][106] = [self::neighbor(90, 'rtr1', 'router', 'Gi0/1')];
+            $data['neighbors'][107] = [self::neighbor(91, 'dist-sw1', 'router', 'xe-0/1/0')];
+            $data['fdb'][] = self::fdb('00005e000114', 1, 106, 20);
+            $data['fdb'][] = self::fdb('00005e000115', 1, 107, 40);
+            $data['addresses'][] = self::address('10.10.20.5', '00005e000114', 1, 111);
+            $data['addresses'][] = self::address('10.10.40.1', '00005e000115', 1, 113);
+            $data['layer3'] = [90 => [['port' => 'Gi0/2', 'ip' => '10.10.20.2', 'prefix' => 24]], 91 => [['port' => 'vlan.99', 'ip' => '192.168.99.5', 'prefix' => 24]]];
+
+            return $data;
+        };
+        $this->assertSame(['gateway', 'rtr1'], self::answer(self::service(change: $wan)->search('10.10.20.5')), 'an address in the subnet of the virtual address');
+        $this->assertSame(['behind', 'dist-sw1'], self::answer(self::service(change: $wan)->search('10.10.40.1')), 'a switch with only its management address');
+
+        $irb = function (array $data) use ($wan): array {
+            $data = $wan($data);
+            $data['layer3'][91][] = ['port' => 'irb.40', 'ip' => 'fd00:40::1', 'prefix' => 64];
+
+            return $data;
+        };
+        $this->assertSame(['gateway', 'dist-sw1'], self::answer(self::service(change: $irb)->search('10.10.40.1')), 'a router interface in the VLAN');
+    }
+
+    private static function answer(array $result): array
+    {
+        return [$result['hosts'][0]['status'], $result['hosts'][0]['device']['name'] ?? null];
+    }
+
     public function testRouterInterfacesThatDoNotNameTheVlan(): void
     {
         // the gateway's ARP entries are on subinterfaces: their unit is the VLAN
@@ -448,6 +590,18 @@ final class FakeHostRepository extends HostRepository
         return array_intersect_key($this->data['neighbors'], array_flip($portIds));
     }
 
+    public function linkedDevices(array $deviceIds): array
+    {
+        $this->calls['linkedDevices'][] = array_values($deviceIds);
+
+        return array_intersect_key($this->data['links'] ?? [], array_flip($deviceIds));
+    }
+
+    public function layer3Addresses(array $deviceIds): array
+    {
+        return array_intersect_key($this->data['layer3'] ?? [], array_flip($deviceIds));
+    }
+
     public function devicesByName(string $name): array
     {
         return $this->data['named'][$name] ?? [];
@@ -477,10 +631,25 @@ final class FakeHostRepository extends HostRepository
     {
         $devices = [];
         foreach (array_intersect_key($this->data['devices'], array_flip($deviceIds)) as $deviceId => $device) {
-            $devices[$deviceId] = $device + ['url' => 'device/' . $deviceId, 'status' => true];
+            $devices[$deviceId] = $device + ['os' => 'ios', 'url' => 'device/' . $deviceId, 'status' => true, 'last_polled' => null];
         }
 
         return $devices;
+    }
+
+    /**
+     * The nac poller module is on unless the device's test data says 'nac' => false.
+     */
+    public function nacPolled(array $devices): array
+    {
+        $this->calls['nacPolled'][] = array_keys($devices);
+
+        return array_map(fn ($device) => $device['nac'] ?? true, $devices);
+    }
+
+    public function pollInterval(): int
+    {
+        return $this->data['interval'] ?? 300;
     }
 }
 
