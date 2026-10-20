@@ -434,9 +434,13 @@ class RedundancyAnalyzerTest extends TestCase
         // the server itself keeps a path through acc2 when dist1 fails
         $this->assertNotContains(8, self::find($result, 'spof_device', 'dist1')['devices']);
 
-        // the same for a server LibreNMS only knows from LLDP
+        // the same for a server LibreNMS only knows from CDP (platform) or LLDP (system description only)
         $net = RedundancyFixture::campus()->unlink(self::A1, self::D2);
         $net->neighbor(self::A1, 'Gi1/0/30', 'esx01', 'VMware ESXi 8.0.2')->neighbor(self::A2, 'Gi1/0/30', 'esx01', 'VMware ESXi 8.0.2');
+        $this->assertSame(['spof_device', 'spof_link'], self::codes($net->analyzer()->analyze()));
+        $net = RedundancyFixture::campus()->unlink(self::A1, self::D2);
+        $esx = 'VMware ESXi 8.0.2 build-22380479 VMware, Inc. VMware7,1';
+        $net->neighbor(self::A1, 'Gi1/0/30', 'esx01', '', $esx)->neighbor(self::A2, 'Gi1/0/30', 'esx01', '', $esx);
         $this->assertSame(['spof_device', 'spof_link'], self::codes($net->analyzer()->analyze()));
     }
 

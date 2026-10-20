@@ -530,7 +530,7 @@ class RedundancyAnalyzer
                 $this->nodes[$to] ??= [
                     'device_id' => null,
                     'name' => $link['b_host'] !== '' ? $link['b_host'] : 'unknown neighbor of ' . $this->nodes[$from]['name'] . ' ' . $this->portName((int) $link['a_port']),
-                    'role' => DeviceRole::fromPlatform($link['b_platform'], $link['b_host']),
+                    'role' => DeviceRole::fromNeighbor($link['b_platform'], $link['b_version'], $link['b_host']),
                     'managed' => false,
                     'network' => false,
                     'up' => true,
