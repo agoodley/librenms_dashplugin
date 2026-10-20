@@ -482,9 +482,10 @@ process of its own; the output goes to `logs/topology-snapshot.log`, a failure t
 same now.
 
 `./validate.php` then warns that the database schema "has extra migrations
-(2026_10_20_000000_create_topology_history_tables, 2026_10_21_000000_add_finding_subjects_to_topology_history)" and is
-"between releases": those are the plugin's migrations, and the warning stays while the plugin is installed. While it warns, validate.php skips its checks of LibreNMS' own schema
-(structure and collation). **Do not delete the plugin's row from the `migrations` table** to silence it: validate.php then
+(2026_10_20_000000_create_topology_history_tables, 2026_10_21_000000_add_finding_subjects_to_topology_history,
+2026_10_22_000000_widen_topology_finding_devices)" and is "between releases": those are the plugin's migrations, and
+the warning stays while the plugin is installed. While it warns, validate.php skips its checks of LibreNMS' own schema
+(structure and collation). **Do not delete the plugin's rows from the `migrations` table** to silence it: validate.php then
 lists the `topology_*` tables as extra tables and offers to drop them. **Never apply that fix**: it deletes the history and
 the baseline.
 
@@ -770,6 +771,8 @@ vendor/bin/phpunit
   on several devices names none of them.
 * The routing & IP check of the background reads its tables strictly: a table that cannot be read, or only in part,
   fails the run (logged, and nothing of the findings history changes), where the routing page shows what could be read.
+  A background check that cannot store its findings history fails the same way: it writes it in one transaction, and
+  its eventlog entries after it. The device list of a finding holds up to 16 MB (an outage of 2 million devices).
 * The redundancy analysis compares the baseline with the last snapshot, and only while that is less than a day old.
 * `./validate.php` warns about the plugin's migration while the plugin is installed and then skips its checks of LibreNMS'
   own schema (see [Installation](#installation)).

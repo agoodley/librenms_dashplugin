@@ -110,7 +110,9 @@ class HistoryService
      * Run one background check and record its findings history; a device gets an eventlog entry
      * when it gets its first confirmed finding of the check or loses its last one (see
      * FindingHistory), from the eventlog severity setting on and except the skipped checks. Each
-     * analysis keeps its own runs (type = analysis).
+     * analysis keeps its own runs (type = analysis). A run that cannot read the network or store
+     * its findings history (one transaction) leaves the history and the eventlog as they were, and
+     * one whose eventlog entries cannot be written stops there: both are recorded as errors.
      *
      * @param  callable(string, int|null, string, string): void|null  $eventlog  writer (message, device_id, severity,
      *                                                                           reference); default: LibreNMS eventlog
@@ -124,32 +126,32 @@ class HistoryService
         $params = MapParams::parse([], $this->settings);
         try {
             $findings = $this->findings($analysis, $params);
+
+            // the first successful run records what is there already: only later changes are news
+            $initial = Runs::initial($previous['stats'] ?? null, $analysis);
+            $open = $this->history->openFindings($analysis);
+            $devices = [];
+            foreach ([$open, $findings] as $list) {
+                foreach ($list as $finding) {
+                    foreach ($finding['devices'] ?? [] as $device) {
+                        $devices[(int) $device] = true;
+                    }
+                }
+            }
+            // the names their titles use tell which devices a finding is about
+            $changes = FindingHistory::run($analysis, $open, $findings, $started->toDateTimeString(), $initial, $this->history->names(array_keys($devices)));
+            $this->history->transaction(fn () => $this->history->applyFindings($analysis, $changes, $started, $initial));
+            $entries = $initial ? [] : FindingHistory::eventlog($analysis, $changes['before'], $changes['after'],
+                strtolower($this->settings->all()['history_eventlog_severity'] ?? 'warning'), FindingHistory::skipList($this->settings->all()['history_eventlog_skip'] ?? ''));
+            $eventlog ??= self::eventlog(...);
+            foreach ($entries as $entry) {
+                $eventlog($entry['message'], $entry['device_id'], $entry['severity'], $entry['reference']);
+            }
         } catch (\Throwable $e) {
             Log::error("topology plugin: background $analysis check failed: " . $e->getMessage());
             $this->history->finishRun($run, ['error' => 1, 'recorded' => Runs::record($previous['stats'] ?? null, [])], Carbon::now());
 
             return ['error' => 1];
-        }
-
-        // the first successful run records what is there already: only later changes are news
-        $initial = Runs::initial($previous['stats'] ?? null, $analysis);
-        $open = $this->history->openFindings($analysis);
-        $devices = [];
-        foreach ([$open, $findings] as $list) {
-            foreach ($list as $finding) {
-                foreach ($finding['devices'] ?? [] as $device) {
-                    $devices[(int) $device] = true;
-                }
-            }
-        }
-        // the names their titles use tell which devices a finding is about
-        $changes = FindingHistory::run($analysis, $open, $findings, $started->toDateTimeString(), $initial, $this->history->names(array_keys($devices)));
-        $this->history->applyFindings($analysis, $changes, $started, $initial);
-        $entries = $initial ? [] : FindingHistory::eventlog($analysis, $changes['before'], $changes['after'],
-            strtolower($this->settings->all()['history_eventlog_severity'] ?? 'warning'), FindingHistory::skipList($this->settings->all()['history_eventlog_skip'] ?? ''));
-        $eventlog ??= self::eventlog(...);
-        foreach ($entries as $entry) {
-            $eventlog($entry['message'], $entry['device_id'], $entry['severity'], $entry['reference']);
         }
 
         $stats = ['findings' => count($findings), 'new' => count($changes['insert']), 'confirmed' => count($changes['confirm']),
