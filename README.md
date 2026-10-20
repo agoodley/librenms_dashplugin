@@ -399,9 +399,9 @@ old and new root bridge with the VLANs of all their switches ("VLANs 10-29: root
 switches"; when the switches differ, with the switches of each VLAN: "VLAN 31 on 1,242 switches, VLAN 33 on 1 switch").
 **Accept** takes one missing item out of the baseline when it is gone on purpose, or makes a root bridge change the
 expected one on all its switches, each for its own VLANs (two admins accepting overlapping changes at once take turns).
-The redundancy page uses it too: a baseline link that LLDP/CDP no longer reports counts as a down link, so a lost uplink
-is still reported after LibreNMS deleted its neighbor at the next discovery (a port that now has another cable is a
-moved cable, not a lost path).
+The redundancy page, the rollout planner and the device dependencies use it too: a baseline link that LLDP/CDP no longer
+reports counts as a down link, so a lost uplink is still reported after LibreNMS deleted its neighbor at the next
+discovery (a port that now has another cable is a moved cable, not a lost path).
 
 After each snapshot the **background checks** run the spanning tree (one VLAN at a time, with the loop evidence of
 storms and syslog messages), link, redundancy and routing & IP checks over all devices, one after the other and each in
@@ -738,9 +738,10 @@ vendor/bin/phpunit
   when none of them has a current one. Whether a session is on a switch behind the one a trail ends at follows the
   LLDP/CDP links of each device once per search, by indexed lookups (the links a device reports, and those reported to
   its ports: a link without a known far port is missed).
-* The rollout planner and the device dependencies follow the same LLDP/CDP links: devices without neighbor data get no
-  parents and are left out of rollout plans. Whether devices back each other up is decided strictly (a part without
-  its core devices counts as cut off as a whole), so the core devices of a part never share a batch.
+* The rollout planner and the device dependencies follow the same LLDP/CDP links, and the baseline links LLDP/CDP no
+  longer reports: devices without neighbor data get no parents and are left out of rollout plans. Whether devices back
+  each other up is decided strictly (a part without its core devices counts as cut off as a whole), so the core devices
+  of a part never share a batch.
 * Derived parents never form a loop, so of two switches at the same distance from the core only one can depend on the
   other, and in a mesh a device can keep a path through switches farther from the core while all its parents are down:
   LibreNMS then suppresses its alerts although it may still be reachable. LibreNMS parents must be monitored devices,
