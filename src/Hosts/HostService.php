@@ -8,6 +8,7 @@ use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\Cidr;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
+use Agoodley\LibrenmsTopology\Support\PortStack;
 
 /**
  * Host locator searches and the port tab, on the data the user may see: turns an address or name
@@ -252,14 +253,7 @@ class HostService
      */
     public static function interfaceVlan(string $name): ?int
     {
-        $name = trim($name);
-        if (! preg_match('/^(?:vl|vlan|vlanif|vlan-interface|ve|irb\.|vlan\.)\s*(\d{1,4})$/i', $name, $match)
-            && ! preg_match('#^[a-z][\w/:-]*\.(\d{1,4})$#i', $name, $match)) {
-            return null;
-        }
-        $vlan = (int) $match[1];
-
-        return $vlan >= 1 && $vlan <= 4094 ? $vlan : null;
+        return InterfaceName::vlanInterface($name) ?? InterfaceName::subInterfaceUnit($name);
     }
 
     /**
@@ -416,7 +410,7 @@ class HostService
             $locatorPorts[$portId] = [
                 'device_id' => (int) $port['device_id'],
                 'name' => self::portLabel($port, $portId),
-                'aggregate' => isset($aggregates[$portId]) || InterfaceName::isLagName($port['ifName'] ?? '') || ($port['ifType'] ?? '') === 'ieee8023adLag',
+                'aggregate' => isset($aggregates[$portId]) || PortStack::isAggregate($port),
             ];
         }
         foreach ($nac as $mac => $sessions) {

@@ -1059,7 +1059,7 @@ class L3Builder
             return $mtu;
         }
 
-        return $mtu - $header - (preg_match('/\.\d+$/', $port) ? self::VLAN_TAG : 0);
+        return $mtu - $header - (InterfaceName::isSubInterface($port) ? self::VLAN_TAG : 0);
     }
 
     /**

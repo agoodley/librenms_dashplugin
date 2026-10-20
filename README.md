@@ -154,12 +154,12 @@ every VLAN is followed across the trunks:
 | Optical receive power below the transceiver's alarm threshold (the DOM thresholds the device reports) | critical |
 | Speed, duplex and MTU mismatches between the two ends, half-duplex links (MTU differences up to 22 bytes are header accounting) | warning |
 | Trunk facing an access port, native VLAN mismatch, access ports in different VLANs | warning |
-| **Split VLAN**: a VLAN in use (hosts or a VLAN interface) on switches of one L2 domain that no trunk path connects, naming the trunks that allow it on one end only | warning / info |
+| **Split VLAN**: a VLAN in use (hosts or a VLAN interface such as Vlan30, irb.30 or ve 30) on switches of one L2 domain that no trunk path connects, naming the trunks that allow it on one end only | warning / info |
 | Allowed VLANs differ on a trunk although both switches use the VLAN (a redundant path that silently does not carry it) | warning |
 | Port-channel on one end only, members landing in different port-channels, degraded port-channel (members down), uneven load across members | warning |
 | Interface errors and packet discards in the last poll | warning |
 | Optical receive power below the warning threshold, or within a margin of the alarm threshold | warning / info |
-| Port descriptions naming the wrong neighbor (also ports that now face an unmanaged AP or phone), inter-switch ports without description – with the configuration lines that fix them (Cisco-style, Junos, ProCurve, RouterOS) | warning / info |
+| Port descriptions of inter-switch ports naming the wrong neighbor (also ports that now face an unmanaged switch), inter-switch ports without description – with the configuration lines that fix them (Cisco-style, Junos, ProCurve, RouterOS). Ports toward phones, servers and access points are left out | warning / info |
 | Neighbors listed by one end only (LLDP/CDP off on one side, or a unidirectional link), devices without neighbor data | info |
 
 The page also lists every link with both ends side by side (speed, duplex, MTU, mode and native VLAN, VLANs, errors,

@@ -40,6 +40,19 @@ class PortStackTest extends TestCase
         $this->assertSame([], PortStack::lagMembers($pairs, self::ports()));
     }
 
+    public function testAggregatesButNotTheirSubInterfaces(): void
+    {
+        $port = fn (string $name, string $type) => ['ifName' => $name, 'ifDescr' => $name, 'ifType' => $type];
+
+        $this->assertTrue(PortStack::isAggregate($port('Port-channel1', 'propVirtual')));
+        $this->assertTrue(PortStack::isAggregate($port('Trk1', 'IEEE8023ADLAG')), 'the LAG type in any case');
+        $this->assertTrue(PortStack::isAggregate(['ifName' => '', 'ifDescr' => 'Bundle-Ether100', 'ifType' => 'other']), 'named by ifDescr');
+        foreach (['Po1.100', 'ae0.0', 'Bundle-Ether100.200'] as $name) {
+            $this->assertFalse(PortStack::isAggregate($port($name, 'l2vlan')), $name);
+        }
+        $this->assertFalse(PortStack::isAggregate($port('GigabitEthernet1/0/1', 'ethernetCsmacd')));
+    }
+
     public function testFirstAggregateWinsAndUnknownPortsAreSkipped(): void
     {
         $this->assertSame([2 => 1], PortStack::lagMembers([[2, 1], [2, 10], [2, 2], [99, 1], [3, 99]], self::ports()));

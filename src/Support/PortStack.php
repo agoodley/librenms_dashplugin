@@ -44,8 +44,8 @@ class PortStack
     {
         $name = self::name($port);
 
-        return ! self::isSubInterface($name)
-            && (($port['ifType'] ?? '') === 'ieee8023adLag' || InterfaceName::isLagName($name));
+        return ! InterfaceName::isSubInterface($name)
+            && (strcasecmp((string) ($port['ifType'] ?? ''), 'ieee8023adLag') === 0 || InterfaceName::isLagName($name));
     }
 
     /**
@@ -53,14 +53,8 @@ class PortStack
      */
     private static function isMember(array $port): bool
     {
-        $name = self::name($port);
-
-        return ! self::isAggregate($port) && ! self::isSubInterface($name) && ! in_array($port['ifType'] ?? '', self::NOT_MEMBERS, true);
-    }
-
-    private static function isSubInterface(string $name): bool
-    {
-        return (bool) preg_match('/\.\d+$/', $name);
+        return ! self::isAggregate($port) && ! InterfaceName::isSubInterface(self::name($port))
+            && ! in_array($port['ifType'] ?? '', self::NOT_MEMBERS, true);
     }
 
     private static function name(array $port): string

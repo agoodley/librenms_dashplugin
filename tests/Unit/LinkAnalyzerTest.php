@@ -289,7 +289,9 @@ class LinkAnalyzerTest extends TestCase
     public function testPortDescriptions(): void
     {
         $links = LinkFixture::links();
-        $links[] = LinkFixture::link(3, 33, 0, null, 'ap-12.example.net', 'eth0', 'Cisco AIR-AP2802I');
+        $links[] = LinkFixture::link(3, 33, 0, null, 'lab-sw.example.net', 'Gi0/1', 'cisco WS-C2960X-24TS');
+        // an access point is no inter-switch neighbor: its port's description is not checked
+        $links[] = LinkFixture::link(3, 34, 0, null, 'ap-12.example.net', 'eth0', 'Cisco AIR-AP2802I');
         $codes = $this->codes($this->analyze(
             ports: [
                 31 => ['ifAlias' => 'uplink to core2'],   // the neighbor is core1
@@ -299,14 +301,17 @@ class LinkAnalyzerTest extends TestCase
                 42 => ['ifAlias' => 'to core20'],         // no such device
             ],
             links: $links,
-            extraPorts: [33 => LinkFixture::port(33, 3, 'GigabitEthernet1/0/33', ['ifAlias' => 'to acc2'])],
+            extraPorts: [
+                33 => LinkFixture::port(33, 3, 'GigabitEthernet1/0/33', ['ifAlias' => 'to acc2']),
+                34 => LinkFixture::port(34, 3, 'GigabitEthernet1/0/34', ['ifAlias' => 'to acc2']),
+            ],
         ));
 
         $this->assertCount(1, $codes['description_wrong']);
         $wrong = $codes['description_wrong'][0];
         $this->assertSame('port descriptions name the wrong neighbor: acc1', $wrong['title']);
-        $this->assertSame('Te1/1/1 "uplink to core2" connects to core1 Te1/0/3; Gi1/0/33 "to acc2" connects to ap-12 eth0.', $wrong['detail']);
-        $this->assertSame("interface TenGigabitEthernet1/1/1\n description core1 Te1/0/3\ninterface GigabitEthernet1/0/33\n description ap-12 eth0", $wrong['config']);
+        $this->assertSame('Te1/1/1 "uplink to core2" connects to core1 Te1/0/3; Gi1/0/33 "to acc2" connects to lab-sw Gi0/1.', $wrong['detail']);
+        $this->assertSame("interface TenGigabitEthernet1/1/1\n description core1 Te1/0/3\ninterface GigabitEthernet1/0/33\n description lab-sw Gi0/1", $wrong['config']);
 
         $this->assertCount(1, $codes['description_missing']);
         $this->assertSame('1 port(s): Te1/1/2 (core2 Te1/0/3).', $codes['description_missing'][0]['detail']);
@@ -388,17 +393,30 @@ class LinkAnalyzerTest extends TestCase
         }
     }
 
+    public function testPortsTowardMonitoredEndDevicesNeedNoDescription(): void
+    {
+        // acc2 is a monitored ESXi host here: its vmnic and the switch port toward it are no inter-switch ports
+        $devices = LinkFixture::devices();
+        $devices[4]['role'] = 'server';
+        $codes = $this->codes($this->analyze(ports: [32 => ['ifAlias' => ''], 41 => ['ifAlias' => ''], 42 => ['ifAlias' => '']], devices: $devices));
+
+        foreach ($codes['description_missing'] ?? [] as $finding) {
+            $this->assertStringNotContainsString('acc2', $finding['title'] . ' ' . $finding['detail']);
+        }
+        $this->assertSame(['inter-switch ports without description: acc1'], array_column($codes['description_missing'], 'title'));
+    }
+
     public function testSuggestedConfigurationCannotCarryCommandsFromAnLldpName(): void
     {
         $links = LinkFixture::links();
-        $links[] = LinkFixture::link(3, 33, 0, null, "phone\nusername backdoor privilege 15 secret 0 pw", "port 1\r\nend");
+        $links[] = LinkFixture::link(3, 33, 0, null, "switch\nusername backdoor privilege 15 secret 0 pw", "port 1\r\nend");
         $codes = $this->codes($this->analyze(
             links: $links,
             extraPorts: [33 => LinkFixture::port(33, 3, 'GigabitEthernet1/0/33', ['ifAlias' => 'to acc2'])],
         ));
 
         $config = $codes['description_wrong'][0]['config'];
-        $this->assertSame(['interface GigabitEthernet1/0/33', ' description phone_username backdoor privilege 15 secret 0 pw port 1_end'], explode("\n", $config));
+        $this->assertSame(['interface GigabitEthernet1/0/33', ' description switch_username backdoor privilege 15 secret 0 pw port 1_end'], explode("\n", $config));
     }
 
     public function testPortWithTwoMonitoredNeighborsMayNameEither(): void

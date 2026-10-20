@@ -252,7 +252,7 @@ class LoopEvidence
     public static function interSwitchPorts(array $devices, array $links): array
     {
         $bridging = [DeviceRole::SWITCH, DeviceRole::L3SWITCH];
-        $ends = [DeviceRole::PHONE, DeviceRole::WIRELESS, DeviceRole::SERVER, DeviceRole::OTHER];
+        $ends = DeviceRole::END_DEVICES;
         $ports = [];
         foreach ($links as $link) {
             $deviceId = (int) $link['local_device_id'];
@@ -643,7 +643,7 @@ class LoopEvidence
         $found = [];
         foreach (array_merge($typed[1], $bare[1]) as $candidate) {
             $name = InterfaceName::normalize($candidate);
-            $portId = $index[$name] ?? $index[(string) preg_replace('~\.\d+$~', '', $name)] ?? null;
+            $portId = $index[$name] ?? $index[InterfaceName::parentName($name) ?? $name] ?? null;
             if ($portId !== null) {
                 $found[$portId] = InterfaceName::short(InterfaceName::label($this->syslogPorts[$portId] ?? $this->ports[$portId] ?? []));
             }

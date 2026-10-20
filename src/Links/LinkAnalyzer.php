@@ -958,8 +958,9 @@ class LinkAnalyzer
     }
 
     /**
-     * Port descriptions of inter-switch ports: missing, or naming a monitored device that is not
-     * the neighbour. Both come with configuration lines built from the LLDP/CDP neighbour.
+     * Port descriptions of inter-switch ports (DeviceRole::interSwitch(): ports toward phones, servers
+     * and access points are left out): missing, or naming a monitored device that is not the neighbour.
+     * Both come with configuration lines built from the LLDP/CDP neighbour.
      */
     private function checkDescriptions(): void
     {
@@ -969,7 +970,8 @@ class LinkAnalyzer
 
         // expected neighbour of every inter-switch port and aggregate
         $expect = [];
-        foreach ($this->physical as $link) {
+        $interSwitch = fn (array $link): bool => DeviceRole::interSwitch($this->devices[$link['a_dev']]['role'] ?? null, $this->devices[$link['b_dev']]['role'] ?? null);
+        foreach (array_filter($this->physical, $interSwitch) as $link) {
             foreach ([['a', 'b'], ['b', 'a']] as [$x, $y]) {
                 // a port can see several neighbours (through an unmanaged switch passing LLDP/CDP)
                 $expect[$link[$x . '_port']]['device_id'] = $link[$x . '_dev'];
@@ -977,7 +979,7 @@ class LinkAnalyzer
                 $expect[$link[$x . '_port']]['host'] = null;
             }
         }
-        foreach ($this->logical as $link) {
+        foreach (array_filter($this->logical, $interSwitch) as $link) {
             foreach ([['a', 'b'], ['b', 'a']] as [$x, $y]) {
                 if (! empty($this->lagMembers[$link[$x . '_port']])) {
                     $expect[$link[$x . '_port']]['device_id'] = $link[$x . '_dev'];
@@ -988,7 +990,8 @@ class LinkAnalyzer
         }
         // ports now facing an unmanaged neighbour can still carry a stale description of a monitored device
         foreach ($this->partial as $partial) {
-            if (! $partial['remote_device_id'] && $partial['host'] !== '' && ! isset($expect[$partial['port_id']])) {
+            if (! $partial['remote_device_id'] && $partial['host'] !== '' && ! isset($expect[$partial['port_id']])
+                && ! DeviceRole::isEndDevice(DeviceRole::fromNeighbor($partial['platform'], $partial['version'], $partial['host']))) {
                 $expect[$partial['port_id']] = ['device_id' => $partial['device_id'], 'far' => [], 'host' => $partial];
             }
         }

@@ -34,10 +34,7 @@ class HostLocator
     public const EARLIER_AFTER = 1800;
 
     /** Roles of monitored devices that forward between their links. */
-    public const NETWORK_ROLES = [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER, DeviceRole::FIREWALL];
-
-    /** Roles of unmanaged neighbors that do not forward (an unknown platform counts as a switch). */
-    private const END_ROLES = [DeviceRole::SERVER, DeviceRole::PHONE, DeviceRole::WIRELESS, DeviceRole::OTHER];
+    public const NETWORK_ROLES = DeviceRole::NETWORK;
 
     /**
      * Where a trail ends, best explained first. monitored: a monitored switch, router or firewall without
@@ -377,7 +374,7 @@ class HostLocator
             return isset($this->since[$neighbor['device_id']]) ? 'not-listed' : 'monitored';
         }
 
-        return in_array($role, self::END_ROLES, true) ? 'end-device' : 'unmanaged';
+        return DeviceRole::isEndDevice($role) ? 'end-device' : 'unmanaged';  // an unknown platform counts as a switch
     }
 
     /**

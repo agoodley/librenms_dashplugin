@@ -18,7 +18,30 @@ class DeviceRole
     public const OTHER = 'other';
     public const UNKNOWN = 'unknown';
 
+    /** Roles of the network itself: devices that forward traffic between their links. */
+    public const NETWORK = [self::SWITCH, self::L3SWITCH, self::ROUTER, self::FIREWALL];
+
+    /**
+     * Roles of end devices: phones, servers, access points (they bridge their own clients only) and
+     * other appliances do not forward between their links. An unknown device may be a switch.
+     */
+    public const END_DEVICES = [self::PHONE, self::SERVER, self::WIRELESS, self::OTHER];
+
     private const ROUTER_OS = ['iosxr', 'junos', 'vrp', 'routeros', 'vyos', 'edgeos', 'timos', 'ironware', 'xos-router', 'iosxe-router'];
+
+    public static function isEndDevice(?string $role): bool
+    {
+        return in_array($role, self::END_DEVICES, true);
+    }
+
+    /**
+     * A link between two devices of these roles connects two parts of the network (an inter-switch
+     * link in the wide sense): neither end is an end device.
+     */
+    public static function interSwitch(?string $role, ?string $otherRole): bool
+    {
+        return ! self::isEndDevice($role) && ! self::isEndDevice($otherRole);
+    }
 
     /**
      * @param  array  $device  devices row (type, os, hardware)

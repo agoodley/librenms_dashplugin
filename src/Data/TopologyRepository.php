@@ -18,6 +18,9 @@ use Illuminate\Support\Facades\Log;
  */
 class TopologyRepository extends ScopedRepository
 {
+    /** @var array<string, array<int, array{0: int, 1: int}>> stackPairs() of each set of devices read in this request */
+    private array $stackPairs = [];
+
     private const PORT_COLUMNS = [
         'port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifAlias', 'ifSpeed', 'ifOperStatus',
         'ifAdminStatus', 'ifType', 'ifVlan', 'ifTrunk', 'ifDuplex', 'ifMtu', 'ifPhysAddress',
@@ -169,44 +172,7 @@ class TopologyRepository extends ScopedRepository
             return [];
         }
 
-        // stack pairs in either orientation (see Support\PortStack): the current schema has both port
-        // ids (resolved from the ifIndexes when LibreNMS could not), the one before 24.8 only ifIndexes
-        $pairs = [];
-        $byIndex = [];
-        try {
-            $rows = DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)
-                ->get(['device_id', 'high_ifIndex', 'low_ifIndex', 'high_port_id', 'low_port_id']);
-            foreach ($rows as $row) {
-                if ($row->high_port_id && $row->low_port_id) {
-                    $pairs[] = [(int) $row->high_port_id, (int) $row->low_port_id];
-                } else {
-                    $byIndex[] = [(int) $row->device_id, (int) $row->high_ifIndex, (int) $row->low_ifIndex];
-                }
-            }
-        } catch (\Throwable $e) {
-            try {
-                foreach (DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)->get(['device_id', 'port_id_high', 'port_id_low']) as $row) {
-                    $byIndex[] = [(int) $row->device_id, (int) $row->port_id_high, (int) $row->port_id_low];
-                }
-            } catch (\Throwable $e) {
-                if ($strict) {
-                    throw $e;
-                }
-                Log::debug('topology plugin: cannot read ports_stack: ' . $e->getMessage());
-            }
-        }
-        if ($byIndex) {
-            $portIds = [];
-            foreach (DB::table('ports')->whereIntegerInRaw('device_id', array_values(array_unique(array_column($byIndex, 0))))
-                ->get(['port_id', 'device_id', 'ifIndex']) as $port) {
-                $portIds[$port->device_id . ':' . $port->ifIndex] = (int) $port->port_id;
-            }
-            foreach ($byIndex as [$deviceId, $high, $low]) {
-                if (isset($portIds["$deviceId:$high"], $portIds["$deviceId:$low"])) {
-                    $pairs[] = [$portIds["$deviceId:$high"], $portIds["$deviceId:$low"]];
-                }
-            }
-        }
+        $pairs = $this->stackPairs($ids, $strict);
 
         // Cisco PAgP / LACP group membership
         try {
@@ -239,6 +205,71 @@ class TopologyRepository extends ScopedRepository
         }
 
         return PortStack::lagMembers($pairs, $ports);
+    }
+
+    /**
+     * Interface stack pairs of the devices (IF-MIB ifStackTable) as port id pairs, in no particular
+     * order: since LibreNMS 24.8 ports_stack keeps the higher layer (a sub-interface, a port-channel)
+     * in low_port_id, before it kept it as the ifIndex in port_id_high (Support\PortStack and
+     * SiteConnections::stack() tell the upper port from the lower one by the ports themselves). Rows
+     * without port ids are resolved from their ifIndexes. Read once per set of devices and request.
+     *
+     * @param  int[]  $ids
+     * @param  bool  $strict  throw read errors instead of returning what could be read (see lagParents())
+     * @return array<int, array{0: int, 1: int}>
+     */
+    public function stackPairs(array $ids, bool $strict = false): array
+    {
+        $ids = array_values(array_unique(array_map('intval', $ids)));
+        sort($ids);
+        $key = md5(implode(',', $ids));
+        if (isset($this->stackPairs[$key])) {
+            return $this->stackPairs[$key];
+        }
+        if (! $ids) {
+            return [];
+        }
+
+        $pairs = [];
+        $byIndex = [];
+        try {
+            $rows = DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)
+                ->get(['device_id', 'high_ifIndex', 'low_ifIndex', 'high_port_id', 'low_port_id']);
+            foreach ($rows as $row) {
+                if ($row->high_port_id && $row->low_port_id) {
+                    $pairs[] = [(int) $row->high_port_id, (int) $row->low_port_id];
+                } else {
+                    $byIndex[] = [(int) $row->device_id, (int) $row->high_ifIndex, (int) $row->low_ifIndex];
+                }
+            }
+        } catch (\Throwable $e) {
+            try {
+                foreach (DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)->get(['device_id', 'port_id_high', 'port_id_low']) as $row) {
+                    $byIndex[] = [(int) $row->device_id, (int) $row->port_id_high, (int) $row->port_id_low];
+                }
+            } catch (\Throwable $e) {
+                if ($strict) {
+                    throw $e;
+                }
+                Log::debug('topology plugin: cannot read ports_stack: ' . $e->getMessage());
+
+                return [];   // not remembered: a strict read of the same devices must see the error
+            }
+        }
+        if ($byIndex) {
+            $portIds = [];
+            foreach (DB::table('ports')->whereIntegerInRaw('device_id', array_values(array_unique(array_column($byIndex, 0))))
+                ->get(['port_id', 'device_id', 'ifIndex']) as $port) {
+                $portIds[$port->device_id . ':' . $port->ifIndex] = (int) $port->port_id;
+            }
+            foreach ($byIndex as [$deviceId, $high, $low]) {
+                if (isset($portIds["$deviceId:$high"], $portIds["$deviceId:$low"])) {
+                    $pairs[] = [$portIds["$deviceId:$high"], $portIds["$deviceId:$low"]];
+                }
+            }
+        }
+
+        return $this->stackPairs[$key] = array_values(array_filter($pairs, fn (array $pair) => $pair[0] > 0 && $pair[1] > 0 && $pair[0] !== $pair[1]));
     }
 
     /**
@@ -317,13 +348,14 @@ class TopologyRepository extends ScopedRepository
             }
         }
 
-        // VLAN interfaces: Vlan30, vlan30, Vlanif30 (Huawei), Vlan-interface30 (Comware)
+        // VLAN interfaces (InterfaceName::vlanInterface()): Vlan30, Vlanif30, Vlan-interface30, ve 30, irb.30
+        $prefixes = fn (Builder $q, string $column) => $q->orWhere($column, 'like', 'vl%')->orWhere($column, 'like', 've%')->orWhere($column, 'like', 'irb.%');
         foreach (DB::table('ports')->whereIntegerInRaw('device_id', $ids)->where('ifOperStatus', 'up')->where('deleted', 0)
-            ->where(fn (Builder $q) => $q->where('ifType', 'l3ipvlan')->orWhere('ifName', 'like', 'vlan%')->orWhere('ifDescr', 'like', 'vlan%'))
+            ->where(fn (Builder $q) => $prefixes($prefixes($q->where('ifType', 'l3ipvlan'), 'ifName'), 'ifDescr'))
             ->get(['device_id', 'ifName', 'ifDescr']) as $row) {
             foreach ([$row->ifName, $row->ifDescr] as $name) {
-                if (preg_match('/^vlan(?:-interface|if)?\s*(\d{1,4})$/i', trim((string) $name), $matches) && (int) $matches[1] > 0) {
-                    $result[(int) $row->device_id][(int) $matches[1]] = true;
+                if (($vlan = InterfaceName::vlanInterface($name)) !== null) {
+                    $result[(int) $row->device_id][$vlan] = true;
                     break;
                 }
             }
