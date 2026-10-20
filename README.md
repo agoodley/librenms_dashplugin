@@ -751,6 +751,7 @@ vendor/bin/phpunit
   can be intended (video, IPTV): disable `multicast_storm` there.
 * Stacks / virtual chassis that are not modelled as one device, and MLAG pairs without a detected
   port-channel, can produce a "possible bridging loop" warning – the finding says so.
+* Saved views and the Custom Map export cover the L2 and L3 maps; the site map has the file exports only.
 * Layouts saved with the save button live in the browser's local storage; save them as views to share them. A view
   keeps the positions of its nodes by their map id: a device that is renamed keeps its place, an unmanaged neighbor that
   gets a new name moves next to its links.
