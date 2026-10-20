@@ -52,6 +52,8 @@ class PluginSettings
         'coverage_disabled_checks' => '',
         'rollout_batch_size' => '0',
         'dependencies_outage_days' => '30',
+        'path_util_percent' => '80',
+        'path_route_rows' => '2000000',
     ];
 
     /** @var array<string, string> */
