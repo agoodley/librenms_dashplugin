@@ -16,6 +16,9 @@ class ViewRepository extends ScopedRepository
     /** @var array{groups: array<int, string>, locations: array<int, string>}|null */
     private ?array $filterNames = null;
 
+    /** @var array<int, ?string> names of the views' centered devices, null for those the user may not see */
+    private array $devices = [];
+
     /**
      * Does the table exist (the plugin's migration ran)?
      */
@@ -45,6 +48,17 @@ class ViewRepository extends ScopedRepository
             ->when($page !== null, fn ($q) => $q->where('v.page', $page))
             ->orderBy('v.page')->orderBy('v.name')->orderBy('v.id')
             ->get(['v.id', 'v.user_id', 'v.name', 'v.page', 'v.query', 'v.options', 'v.shared', 'v.updated_at', 'u.username']);
+
+        // the names of all centered devices in one query
+        $ids = [];
+        foreach ($rows as $row) {
+            $params = json_decode((string) $row->query, true);
+            if (is_array($params) && is_numeric($params['device'] ?? null)) {
+                $ids[] = (int) $params['device'];
+            }
+        }
+        $visible = array_values(array_filter(array_unique($ids), fn (int $id) => $this->canSee($id)));
+        $this->devices += $this->deviceNames($visible) + array_fill_keys($ids, null);
 
         return array_map(fn ($row) => $this->meta((array) $row), $rows->all());
     }
@@ -214,8 +228,13 @@ class ViewRepository extends ScopedRepository
         }
         $id = fn (string $key) => isset($params[$key]) && is_numeric($params[$key]) ? (int) $params[$key] : 0;
 
+        $device = $id('device');
+        if ($device && ! array_key_exists($device, $this->devices)) {
+            $this->devices[$device] = $this->deviceName($device);
+        }
+
         return [
-            'device' => $id('device') ? $this->deviceName($id('device')) : null,
+            'device' => $device ? $this->devices[$device] : null,
             'group' => $this->filterNames['groups'][$id('group')] ?? null,
             'location' => $this->filterNames['locations'][$id('location')] ?? null,
         ];
