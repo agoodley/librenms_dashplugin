@@ -1,7 +1,8 @@
 # LibreNMS Topology & Spanning Tree plugin
 
 NetBrain-style **Layer 2** and **Layer 3** network diagrams plus **spanning tree**, **link & VLAN** and
-**redundancy & failure impact** diagnostics for [LibreNMS](https://www.librenms.org), built entirely from data LibreNMS
+**redundancy & failure impact** diagnostics and a **topology history** with a baseline for
+[LibreNMS](https://www.librenms.org), built entirely from data LibreNMS
 already collects (LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, IP addresses, OSPF, BGP,
 transceiver sensors and the hardware inventory).
 
@@ -111,6 +112,36 @@ opens the L2 map with that failure applied.
 
 *(Screenshots use a simulated demo network.)*
 
+### Topology history, baseline and background checks
+
+The plugin records the topology every *History interval* (an hour by default) through the LibreNMS scheduler: LLDP/CDP
+links (unmanaged neighbors included, phones left out), port-channel members, the root bridge each switch sees, blocked
+ports, OSPF adjacencies and BGP sessions. Only changes are written. The **Topology Changes** page (*History*) shows what
+changed in the last day, week or month, or between two dates:
+
+| Change | |
+|---|---|
+| **Cable moved**: a port whose neighbor changed ("acc-sw2 Gi1/0/49 now connects to core2 Te1/0/5 (was core1 Te1/0/5)"), or a link that came back | links |
+| **Link gone**, **new link**, port-channel members that joined or left | links |
+| **New unmanaged switch or access point**, and other unknown LLDP/CDP neighbors | links |
+| **Root bridge moved** (one line per spanning tree instance, with the switches that saw it), ports that started or stopped blocking | spanning tree |
+| **OSPF adjacency lost / up**, **BGP session down / established** (one line when both routers report it) | routing |
+| **New device**: a device LibreNMS started to monitor, with what it brought | devices |
+
+An admin can **save the baseline**: the topology as it should be (links, port-channel members, root bridges, OSPF
+adjacencies, BGP sessions), for everything or for the devices of the current filter. The page then lists what is missing
+compared to the baseline, with since when, and what is new. The redundancy page uses it too: a baseline link
+that LLDP/CDP no longer reports counts as a down link, so a lost uplink is still reported after LibreNMS deleted its
+neighbor at the next discovery (a port that now has another cable is a moved cable, not a lost path).
+
+With every snapshot the **background checks** run the spanning tree, link and redundancy checks over all devices and keep
+a findings history. New and resolved findings from *Eventlog from severity* (warning by default) go to the eventlog of
+their devices (type `topology`), so they show on the device pages and in the eventlog widget and alert rules can match
+them. The diagnostics pages mark findings that are **new** since the previous run, and the Changes page lists the findings
+that came or went.
+
+![Topology changes](docs/images/topology-changes.png)
+
 ## Requirements
 
 * LibreNMS 26.x (developed and tested against 26.9 / master of October 2026), PHP 8.2+
@@ -147,8 +178,12 @@ composer config --global repositories.librenms-topology '{"type": "path", "url":
 ```
 
 The plugin is enabled automatically. Open **Overview → Plugins → L2 Topology Map / L3 Topology Map / STP
-Diagnostics / Link & VLAN Diagnostics / Redundancy & Failure Impact**, or go to `/plugin/topology`. It can be disabled or configured in
-**Overview → Plugins → Plugin Admin → topology → Settings**.
+Diagnostics / Link & VLAN Diagnostics / Redundancy & Failure Impact / Topology Changes**, or go to `/plugin/topology`. It
+can be disabled or configured in **Overview → Plugins → Plugin Admin → topology → Settings**.
+
+The topology history keeps its data in tables of the plugin: create them once with `./lnms migrate` (LibreNMS updates run
+it too, so later versions of the plugin update them). The history is recorded by the LibreNMS scheduler, which LibreNMS
+needs anyway (`librenms-scheduler` timer or cron, see `./validate.php`); `./lnms topology:snapshot` records one now.
 
 To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 
@@ -166,10 +201,14 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   including devices that are not on the map. Add more failures to check a pair, *Reset* to start over.
   `l2?fail=d:12,p:345` opens the map with device 12 and the link of port 345 failed (`api/simulate?fail=...` returns the
   same as JSON).
+* After a planned change, save the **baseline** again (for the affected location or group only, by filtering first) so
+  the Changes page and the redundancy analysis expect the new topology. `./lnms topology:snapshot --baseline` records the
+  topology and saves it as the baseline of every device; `--no-checks` skips the background checks.
 * If the automatic core is not your core, set **Core devices** in the settings; the switches next to the LibreNMS
   poller are a good choice when you want "what can the poller still reach".
-* `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links` and `api/redundancy` return the same data as JSON (same
-  query parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`) for automation.
+* `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links`, `api/redundancy` and `api/changes` return the same data as
+  JSON (same query parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`,
+  `api/changes?window=7d` or `api/changes?from=2026-10-01&to=2026-10-07`) for automation.
 
 ## Settings
 
@@ -194,12 +233,20 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Core devices | – | hostnames/sysNames/ids every device should keep a path to; empty: designated root bridges, else automatic |
 | Warn from | 2 | switches, routers or firewalls cut off by one failure before a single point of failure is a warning |
 | Disabled redundancy checks | – | check codes or categories (`outages`, `lost`, `fake`, `spof`), e.g. `spof_link uplinks_same_device` |
+| Record the topology history | on | every *History interval* through the LibreNMS scheduler |
+| History interval | 60 min | 15, 30, 60, 120, 240, 360, 720 or 1440 |
+| Keep changes for | 90 days | facts and findings that ended earlier are deleted |
+| Background checks | `stp links redundancy` | analyses run with every snapshot; empty disables them |
+| Eventlog from severity | warning | new and resolved background findings from this severity go to the device eventlogs (`critical`, `warning`, `info` or `none`) |
 
 ## Permissions
 
 Every map and diagnostic only uses devices the logged-in user may see (LibreNMS device permissions).
 Neighbors on devices the user cannot see are shown as unmanaged neighbors (their LLDP/CDP name only), and a
-root bridge on such a device is not reported as a rogue switch.
+root bridge on such a device is not reported as a rogue switch. The topology history is recorded for all devices; the
+Changes page shows a user the changes of their devices, names other devices by their LLDP/CDP name or as "another
+device", and only lists background findings about their devices alone. Only LibreNMS admins can save or clear the
+baseline.
 
 ## How it works
 
@@ -215,6 +262,10 @@ root bridge on such a device is not reported as a rogue switch.
 * `src/Redundancy/RedundancyAnalyzer.php` – single points of failure (cut vertices and bridges toward the core,
   `Support\Graph::cuts()`), fake and lost redundancy and outages; `CoreFinder` picks the core, `PortUnits` reads stack
   members and line cards from the hardware inventory.
+* `src/History/` – the topology history: `FactCollector` (what a snapshot records), `FactDiff` (what it writes),
+  `ChangeReport` (moved cables, root bridge moves, lost adjacencies), `Baseline`, `FindingHistory` (background checks
+  and eventlog entries); `HistoryService` runs them, `Console/SnapshotCommand` is the scheduled `topology:snapshot` and
+  `database/migrations` creates the tables.
 * `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
@@ -236,15 +287,21 @@ vendor/bin/phpunit
   LLDP/CDP reports; a VLAN that crosses a link without LLDP/CDP can be reported as split.
 * The redundancy analysis only knows links that LLDP/CDP reports. LibreNMS removes a link that LLDP/CDP no longer sees
   at the next discovery, so "redundancy lost" covers failures since the last discovery run; a link that has been down
-  for longer is simply missing (roadmap item 5 keeps a baseline). It looks at device and link failures, not at VLANs:
-  a backup trunk that does not carry a VLAN is a link & VLAN finding.
+  for longer is simply missing, unless a baseline is saved on the Topology Changes page. It looks at device and link
+  failures, not at VLANs: a backup trunk that does not carry a VLAN is a link & VLAN finding.
 * Servers, access points and phones are recognized by their LibreNMS device type, unmanaged neighbors by their LLDP/CDP
   platform; an unmanaged neighbor without a platform counts as a switch. Down devices without any LLDP/CDP neighbor are
   not listed as outages: nothing tells what they depend on.
+* The topology history sees what LibreNMS saw at each snapshot: LLDP/CDP neighbors are refreshed at discovery (every 6
+  hours by default), spanning tree, OSPF and BGP at polling. A change shows up at the first snapshot after LibreNMS
+  noticed it, and a change undone in between is not seen. Phones are left out (they move all day), and devices disabled
+  in LibreNMS keep their last state.
+* The background checks analyze the whole network in one process: about 4 s and 250 MB of memory for 1,200 switches with
+  23,000 phones, on top of a 1 s snapshot. On much larger networks raise the *History interval*.
 
 ## Roadmap
 
-Planned tools (host locator, topology history, routing diagnostics, automatic device dependencies and more) are
+Planned tools (host locator, routing diagnostics, automatic device dependencies and more) are
 listed in [ROADMAP.md](ROADMAP.md).
 
 ## License
