@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Data;
 
+use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
@@ -182,9 +183,10 @@ class TopologyRepository
 
     /**
      * @param  int[]  $portIds
+     * @param  string[]|null  $columns  only these columns and no url (large analyses)
      * @return array<int, array> port_id => row (with url)
      */
-    public function ports(array $portIds): array
+    public function ports(array $portIds, ?array $columns = null): array
     {
         $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
         if (! $portIds) {
@@ -193,9 +195,11 @@ class TopologyRepository
 
         $ports = [];
         foreach (array_chunk($portIds, 5000) as $chunk) {
-            foreach (DB::table('ports')->whereIntegerInRaw('port_id', $chunk)->get(self::PORT_COLUMNS) as $row) {
+            foreach (DB::table('ports')->whereIntegerInRaw('port_id', $chunk)->get($columns ?? self::PORT_COLUMNS) as $row) {
                 $row = (array) $row;
-                $row['url'] = url('device/device=' . $row['device_id'] . '/tab=port/port=' . $row['port_id'] . '/');
+                if ($columns === null) {
+                    $row['url'] = url('device/device=' . $row['device_id'] . '/tab=port/port=' . $row['port_id'] . '/');
+                }
                 $ports[(int) $row['port_id']] = $row;
             }
         }
@@ -808,6 +812,124 @@ class TopologyRepository
         }
 
         return $ports;
+    }
+
+    /**
+     * Inventory rows (entPhysical) of the given ports and of their ancestors, for
+     * Redundancy\PortUnits: the port entities found by ifIndex, then whatever contains them
+     * (containers, modules, chassis, stack...), one level per query.
+     *
+     * @param  array<int, array>  $ports  port rows (device_id, ifIndex)
+     * @return array<int, array<int, array>> device_id => entPhysicalIndex => row; devices whose inventory maps none
+     *                                       of the ports are missing
+     */
+    public function portEntities(array $ports): array
+    {
+        $wanted = [];
+        foreach ($ports as $port) {
+            if ((int) ($port['ifIndex'] ?? 0) > 0) {
+                $wanted[(int) $port['device_id']][(int) $port['ifIndex']] = true;
+            }
+        }
+
+        $columns = ['device_id', 'entPhysicalIndex', 'entPhysicalContainedIn', 'entPhysicalClass', 'entPhysicalIsFRU', 'entPhysicalName', 'entPhysicalDescr', 'ifIndex'];
+        $rows = [];
+        $pending = [];
+        try {
+            foreach (array_chunk($wanted, 200, true) as $chunk) {
+                $ifIndexes = array_keys(array_replace(...array_values($chunk)));
+                foreach (DB::table('entPhysical')->whereIntegerInRaw('device_id', array_keys($chunk))->whereIntegerInRaw('ifIndex', $ifIndexes)
+                    ->whereIn('entPhysicalClass', PortUnits::PORT_CLASSES)->get($columns) as $row) {
+                    $row = (array) $row;
+                    $deviceId = (int) $row['device_id'];
+                    if (isset($chunk[$deviceId][(int) $row['ifIndex']])) {
+                        $rows[$deviceId][(int) $row['entPhysicalIndex']] = $row;
+                    }
+                }
+            }
+            foreach ($rows as $deviceId => $entities) {
+                foreach ($entities as $row) {
+                    if ((int) $row['entPhysicalContainedIn'] > 0 && ! isset($entities[(int) $row['entPhysicalContainedIn']])) {
+                        $pending[$deviceId][(int) $row['entPhysicalContainedIn']] = true;
+                    }
+                }
+            }
+
+            // ancestors, one level per query (inventories are rarely more than six levels deep)
+            for ($level = 0; $level < 12 && $pending; $level++) {
+                $next = [];
+                foreach (array_chunk($pending, 200, true) as $chunk) {
+                    $indexes = array_keys(array_replace(...array_values($chunk)));
+                    foreach (DB::table('entPhysical')->whereIntegerInRaw('device_id', array_keys($chunk))->whereIntegerInRaw('entPhysicalIndex', $indexes)
+                        ->get($columns) as $row) {
+                        $row = (array) $row;
+                        $deviceId = (int) $row['device_id'];
+                        $index = (int) $row['entPhysicalIndex'];
+                        if (! isset($chunk[$deviceId][$index]) || isset($rows[$deviceId][$index])) {
+                            continue;
+                        }
+                        $rows[$deviceId][$index] = $row;
+                        $parent = (int) $row['entPhysicalContainedIn'];
+                        if ($parent > 0 && ! isset($rows[$deviceId][$parent])) {
+                            $next[$deviceId][$parent] = true;
+                        }
+                    }
+                }
+                $pending = $next;
+            }
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot read entPhysical: ' . $e->getMessage());
+
+            return [];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Start of the current outage of down devices.
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, int> device_id => unix time
+     */
+    public function outageStarts(array $deviceIds): array
+    {
+        if (! $deviceIds) {
+            return [];
+        }
+
+        try {
+            return DB::table('device_outages')->whereIntegerInRaw('device_id', $deviceIds)->whereNull('up_again')
+                ->groupBy('device_id')->selectRaw('device_id, MAX(going_down) as since')->pluck('since', 'device_id')
+                ->map(fn ($since) => (int) $since)->all();
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot read device_outages: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
+    /**
+     * Bridge priority of each device's default spanning tree instance (CST / MST 0, else the
+     * lowest VLAN), which tells the root bridges placed on purpose.
+     *
+     * @param  int[]  $ids
+     * @return array<int, int> device_id => priority
+     */
+    public function stpPriorities(array $ids): array
+    {
+        $best = [];
+        foreach (array_chunk($ids, 5000) as $chunk) {
+            foreach (DB::table('stp')->whereIntegerInRaw('device_id', $chunk)->get(['device_id', 'vlan', 'priority']) as $row) {
+                $deviceId = (int) $row->device_id;
+                $key = StpIndex::vlanKey($row->vlan);
+                if (! isset($best[$deviceId]) || $key < $best[$deviceId][0]) {
+                    $best[$deviceId] = [$key, (int) $row->priority];
+                }
+            }
+        }
+
+        return array_map(fn ($entry) => $entry[1], $best);
     }
 
     /**

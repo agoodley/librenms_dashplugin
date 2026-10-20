@@ -26,6 +26,11 @@
             ['links_ignore_vlans', 'text', 'VLANs ignored by the VLAN checks', 'e.g. 999 1002-1005; VLANs that are local to each switch by design'],
             ['links_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (mismatch, vlans, lags, counters, optics, neighbors, descriptions), e.g. mtu_mismatch description_missing'],
         ],
+        'Redundancy & failure impact' => [
+            ['redundancy_core', 'text', 'Core devices', 'hostnames, sysNames or device ids that every device should keep a path to (e.g. the core switches next to the servers and the LibreNMS poller); empty: the designated root bridges above, else the spanning tree root or the most central switches'],
+            ['redundancy_warn_devices', 'number', 'Warn when one failure cuts off at least this many switches, routers or firewalls', 'smaller single points of failure are info'],
+            ['redundancy_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (outages, lost, fake, spof), e.g. uplinks_same_device spof_link'],
+        ],
     ];
 @endphp
 

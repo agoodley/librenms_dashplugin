@@ -27,6 +27,9 @@ class PluginSettings
         'links_rx_margin' => '2',
         'links_ignore_vlans' => '',
         'links_disabled_checks' => '',
+        'redundancy_core' => '',
+        'redundancy_warn_devices' => '2',
+        'redundancy_disabled_checks' => '',
     ];
 
     /** @var array<string, string> */

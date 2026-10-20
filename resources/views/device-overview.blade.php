@@ -22,6 +22,7 @@
             <a class="btn btn-xs btn-default" href="{{ route('topology.l3', ['device' => $deviceId]) }}">L3 map</a>
             @if($stp)<a class="btn btn-xs btn-default" href="{{ route('topology.stp', ['device' => $deviceId]) }}">STP diagnostics</a>@endif
             @if($summary['neighbors'])<a class="btn btn-xs btn-default" href="{{ route('topology.links', ['device' => $deviceId]) }}">Link checks</a>@endif
+            @if($summary['neighbors'])<a class="btn btn-xs btn-default" href="{{ route('topology.redundancy', ['device' => $deviceId]) }}">Redundancy</a>@endif
         </span>
     </div>
     <table class="table table-condensed table-hover" style="margin-bottom: 0">

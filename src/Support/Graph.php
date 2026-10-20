@@ -3,7 +3,7 @@
 namespace Agoodley\LibrenmsTopology\Support;
 
 /**
- * Small undirected multigraph used for scoping maps and for STP analysis.
+ * Small undirected multigraph used for scoping maps and for the STP and redundancy analysis.
  * Node ids are strings or ints, edges are identified by an arbitrary key.
  */
 class Graph
@@ -228,6 +228,82 @@ class Graph
         }
 
         return array_keys($onCycle);
+    }
+
+    /**
+     * What loses its connection to $root when a single node or a single edge fails: the cut
+     * vertices and bridges of the component of $root, from one iterative depth first search
+     * (Tarjan), O(nodes + edges). The nodes are returned in DFS preorder with the position of each
+     * node (tin) and the last position of its subtree (tout), so the nodes cut off by a failure
+     * are contiguous ranges of 'order':
+     *  - vertices: node => children whose subtrees lose $root when the node fails ($root itself is
+     *    never listed);
+     *  - bridges: edge key => the child whose subtree loses $root when the edge fails.
+     * A parallel edge protects against the failure of an edge, not against that of its nodes.
+     *
+     * @return array{order: array<int, int|string>, tin: array<int|string, int>, tout: array<int|string, int>,
+     *     vertices: array<int|string, array<int, int|string>>, bridges: array<int|string, int|string>}
+     */
+    public function cuts(int|string $root): array
+    {
+        $result = ['order' => [], 'tin' => [], 'tout' => [], 'vertices' => [], 'bridges' => []];
+        if (! $this->hasNode($root)) {
+            return $result;
+        }
+
+        $order = [$root];
+        $tin = [$root => 0];
+        $low = [$root => 0];
+        $tout = [];
+        $vertices = [];
+        $bridges = [];
+        // frames: node, edge used to reach it, its incident [neighbour, edge] pairs, next position
+        $stack = [[$root, null, $this->incident($root), 0]];
+        while ($stack) {
+            $top = count($stack) - 1;
+            [$node, $parentEdge, $incident, $position] = $stack[$top];
+
+            if ($position < count($incident)) {
+                $stack[$top][3]++;
+                [$next, $edgeKey] = $incident[$position];
+                if ($edgeKey === $parentEdge) {
+                    continue;
+                }
+                if (! isset($tin[$next])) {
+                    $tin[$next] = $low[$next] = count($order);
+                    $order[] = $next;
+                    $stack[] = [$next, $edgeKey, $this->incident($next), 0];
+                } else {
+                    $low[$node] = min($low[$node], $tin[$next]);
+                }
+                continue;
+            }
+
+            array_pop($stack);
+            $tout[$node] = count($order) - 1;
+            if ($stack) {
+                $parent = $stack[count($stack) - 1][0];
+                $low[$parent] = min($low[$parent], $low[$node]);
+                if ($low[$node] >= $tin[$parent] && $parent !== $root) {
+                    $vertices[$parent][] = $node;
+                }
+                if ($low[$node] > $tin[$parent]) {
+                    $bridges[$parentEdge] = $node;
+                }
+            }
+        }
+
+        return ['order' => $order, 'tin' => $tin, 'tout' => $tout, 'vertices' => $vertices, 'bridges' => $bridges];
+    }
+
+    /**
+     * Edges of a node as [neighbour, edge key] pairs.
+     *
+     * @return array<int, array{0: int|string, 1: int|string}>
+     */
+    public function edgesOf(int|string $node): array
+    {
+        return $this->incident($node);
     }
 
     /**

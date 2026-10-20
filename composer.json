@@ -1,6 +1,6 @@
 {
     "name": "agoodley/librenms-topology-plugin",
-    "description": "LibreNMS plugin: NetBrain-style Layer 2 / Layer 3 topology maps, Spanning Tree and link / VLAN diagnostics",
+    "description": "LibreNMS plugin: NetBrain-style Layer 2 / Layer 3 topology maps, Spanning Tree, link / VLAN and redundancy diagnostics",
     "keywords": [
         "librenms",
         "plugin",
@@ -9,6 +9,7 @@
         "cdp",
         "spanning-tree",
         "vlan",
+        "redundancy",
         "stp",
         "network-map"
     ],

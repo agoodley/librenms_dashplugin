@@ -96,6 +96,7 @@
                 </select>
             </label>
             <label><input type="checkbox" data-view="stp"> STP overlay</label>
+            <label title="Mark the top-most down device of each outage with the number of down devices behind it"><input type="checkbox" data-view="outages"> Outages</label>
         @endif
         <label><input type="checkbox" data-view="interfaceLabels"> Interface labels</label>
         <label><input type="checkbox" data-view="linkLabels"> Link labels</label>
@@ -115,6 +116,7 @@
     <div class="topo-body">
         <div class="topo-canvas-wrap">
             <div id="topo-canvas"></div>
+            <div id="topo-sim" class="topo-sim" style="display: none"></div>
             <div id="topo-loading" class="topo-loading"><span><i class="fa fa-spinner fa-spin"></i> Building map&hellip;</span></div>
         </div>
         <aside id="topo-details" class="topo-panel"></aside>
@@ -132,6 +134,7 @@
             'l2Page' => route('topology.l2'),
             'l3Page' => route('topology.l3'),
             'stpPage' => route('topology.stp'),
+            'redundancyPage' => route('topology.redundancy'),
         ],
     ];
 @endphp

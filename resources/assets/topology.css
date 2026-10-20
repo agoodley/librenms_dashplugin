@@ -41,6 +41,9 @@
 .topo-line { display: inline-block; width: 28px; height: 3px; border-radius: 2px; }
 .topo-line-dashed { height: 0; border-top: 3px dashed; background: none !important; }
 .topo-marker { color: #f1c40f; font-size: 16px; text-shadow: 0 0 1px #b7950b; width: 28px; text-align: center; }
+.topo-legend-badge { display: inline-block; padding: 0 5px; border-radius: 7px; background: #c0392b; color: #fff; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.topo-legend-cross { display: inline-block; width: 16px; height: 16px; line-height: 15px; border-radius: 50%; background: #c0392b; color: #fff; text-align: center; font-weight: 700; margin: 0 6px; }
+.topo-legend-ring { display: inline-block; width: 18px; height: 18px; border-radius: 50%; border: 2px dashed #c0392b; margin: 0 5px; }
 .topo-subnet { display: inline-block; padding: 0 4px; border: 1.5px solid #c9a227; background: #fff6d5; font-family: monospace; font-size: 10px; border-radius: 3px; }
 .topo-hint { margin-top: 10px; font-size: 11px; }
 .topo-status-bar { padding: 6px 2px; font-size: 12px; color: #555; }
@@ -50,6 +53,18 @@
 .topo-status-disabled, .topo-status-unknown, .topo-status-notPresent { color: #8a949e; }
 .topo-text-warning { color: #d35400; }
 .topo-tooltip { font-size: 12px; line-height: 1.4; max-width: 320px; }
+
+.topo-sim {
+    position: absolute; top: 8px; left: 8px; z-index: 4; max-width: 360px; max-height: 45%; overflow-y: auto;
+    padding: 8px 10px; border: 1px solid #c0392b; border-left: 5px solid #c0392b; border-radius: 4px;
+    background: rgba(255, 255, 255, 0.96); font-size: 12px; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
+}
+.topo-sim-title { font-weight: 600; color: #c0392b; margin-bottom: 4px; }
+.topo-sim ul { margin: 2px 0 6px; padding-left: 16px; }
+.topo-sim a[data-sim-focus] { cursor: pointer; }
+.topo-sim .topo-sim-ok { color: #2e9e44; font-weight: 600; }
+.topo-sim-remove { cursor: pointer; color: #999; margin-left: 3px; }
+.topo-sim-remove:hover { color: #c0392b; }
 
 .topo-fullscreen { position: fixed; inset: 0; z-index: 1040; background: #fff; padding: 8px; overflow: auto; }
 .topo-fullscreen .topo-body { height: calc(100vh - 150px); }
@@ -95,6 +110,8 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 html.dark .topo-toolbar, html.dark .topo-viewbar { background: #24272c; border-color: #3a3f45; }
 html.dark .topo-canvas-wrap, html.dark .topo-panel, html.dark .topo-card { border-color: #3a3f45; background: #1d2024; }
 html.dark .topo-loading { background: rgba(29, 32, 36, 0.6); color: #ccc; }
+html.dark .topo-sim { background: rgba(29, 32, 36, 0.96); color: #ddd; }
+html.dark .topo-sim-title { color: #e57368; }
 html.dark .topo-fullscreen { background: #1d2024; }
 html.dark .topo-kv th, html.dark .topo-toolbar .topo-group-label, html.dark .topo-viewbar .topo-group-label { color: #aaa; }
 html.dark .topo-status-bar, html.dark .topo-finding-detail, html.dark .topo-card p { color: #bbb; }

@@ -23,5 +23,8 @@
         <li class="{{ $active === 'links' ? 'active' : '' }}">
             <a href="{{ route('topology.links') . $navSuffix }}" data-topo-nav data-base="{{ route('topology.links') }}"><i class="fa fa-link fa-fw"></i> Link &amp; VLAN Diagnostics</a>
         </li>
+        <li class="{{ $active === 'redundancy' ? 'active' : '' }}">
+            <a href="{{ route('topology.redundancy') . $navSuffix }}" data-topo-nav data-base="{{ route('topology.redundancy') }}"><i class="fa fa-code-branch fa-fw"></i> Redundancy</a>
+        </li>
     </ul>
 </div>

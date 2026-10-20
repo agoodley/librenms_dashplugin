@@ -16,11 +16,13 @@ Route::middleware(['web', 'auth'])
         Route::get('l3', [PageController::class, 'l3'])->name('l3');
         Route::get('stp', [PageController::class, 'stp'])->name('stp');
         Route::get('links', [PageController::class, 'links'])->name('links');
+        Route::get('redundancy', [PageController::class, 'redundancy'])->name('redundancy');
 
         Route::get('api/l2', [ApiController::class, 'l2'])->name('api.l2');
         Route::get('api/l3', [ApiController::class, 'l3'])->name('api.l3');
         Route::get('api/stp', [ApiController::class, 'stp'])->name('api.stp');
         Route::get('api/links', [ApiController::class, 'links'])->name('api.links');
+        Route::get('api/redundancy', [ApiController::class, 'redundancy'])->name('api.redundancy');
 
         Route::get('assets/{file}', AssetController::class)
             ->where('file', '[A-Za-z0-9_-]+\.(js|css)')

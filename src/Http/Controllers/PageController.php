@@ -11,7 +11,7 @@ use Illuminate\Routing\Controller;
 
 /**
  * Pages of the plugin. The map pages are shells filled by resources/assets/topology.js from the
- * JSON API; the STP and link diagnostics pages are rendered on the server.
+ * JSON API; the STP, link and redundancy diagnostics pages are rendered on the server.
  */
 class PageController extends Controller
 {
@@ -47,6 +47,14 @@ class PageController extends Controller
     public function links(Request $request): View
     {
         return $this->diagnostics($request, 'links', 'link analysis');
+    }
+
+    /**
+     * plugin/topology/redundancy: single points of failure, fake and lost redundancy, outages.
+     */
+    public function redundancy(Request $request): View
+    {
+        return $this->diagnostics($request, 'redundancy', 'redundancy analysis');
     }
 
     /**

@@ -7,7 +7,7 @@ The plugin's conventions apply to all of them:
 
 * database access only in `src/Data/TopologyRepository.php`, scoped to the devices the user may see;
 * the analysis in plain PHP classes with no LibreNMS dependency, covered by unit tests
-  (like `StpAnalyzer` and `LinkAnalyzer`);
+  (like `StpAnalyzer`, `LinkAnalyzer` and `RedundancyAnalyzer`);
 * every finding says what is wrong and how to fix it, and noisy checks can be switched off in the settings.
 
 ## Status
@@ -15,7 +15,7 @@ The plugin's conventions apply to all of them:
 | # | Tool | Status | Effort |
 |---|---|---|---|
 | 1 | [Link & VLAN diagnostics](README.md#link--vlan-diagnostics) | **done** | – |
-| 3 | [Redundancy & failure impact](#3-redundancy--failure-impact) | next | S–M |
+| 3 | [Redundancy & failure impact](README.md#redundancy--failure-impact) | **done** | – |
 | 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
 | 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
 | 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
@@ -31,9 +31,9 @@ The plugin's conventions apply to all of them:
 Effort: S = new checks or an overlay on data the plugin already loads; M = new queries plus a page or tab;
 L = several new parts (tables, jobs, UI).
 
-**Why this order:** 3 is mostly graph work on data the plugin already loads. 2 answers the most frequent day-to-day
-question. 5 and 6 share the same scheduled job and tables and turn every check into something that runs without anyone
-opening a page. The rest builds on those.
+**Why this order:** 2 answers the most frequent day-to-day question. 5 and 6 share the same scheduled job and tables and
+turn every check into something that runs without anyone opening a page. 7 reuses the core and outage logic of the
+redundancy page. The rest builds on those.
 
 ## What a plugin can do in LibreNMS
 
@@ -44,22 +44,6 @@ opening a page. The rest builds on those.
 * The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (see 6) and the Custom Map widget (see 11).
 
 ## Next up
-
-### 3. Redundancy & failure impact
-
-* **Single points of failure:** devices and links whose loss splits the network (articulation points and bridges of the
-  L2 graph): single-homed access switches, single uplinks.
-* **Fake redundancy:** both uplinks of a switch ending on the same upstream device, or the members of a port-channel
-  on the same stack member or line card.
-* **Redundancy lost now:** one of two uplinks down, degraded port-channels, a backup path blocked by something other
-  than spanning tree.
-* **Simulate a failure:** click a device or link on the map to see which devices lose their path to the core (or to the
-  poller), for planning changes.
-* **Outage view:** mark the top-most down device and count what sits behind it ("acc-sw3 down, 14 devices behind it").
-* Data: `links`, `ports`, `ports_stack`, `entPhysical` (`ifIndex` and the `entPhysicalContainedIn` hierarchy give the
-  module / stack member of a port), `devices.status`.
-* Builds on: `Support\Graph` (bridge finding already used by the STP checks), the link de-duplication of
-  `L2Builder` / `LinkAnalyzer`, an overlay in `topology.js`.
 
 ### 2. Host locator ("where is this plugged in?") and port tab
 
@@ -84,7 +68,8 @@ opening a page. The rest builds on those.
 * **What changed since yesterday / last week:** links added or removed, a port whose neighbor changed (moved cable),
   a new unmanaged switch or AP, root bridge moved, adjacency lost.
 * **Baseline:** save the current topology as the expected one and report what is missing. LibreNMS deletes LLDP rows
-  that are no longer seen, so a redundant uplink that disappears leaves no trace today.
+  that are no longer seen, so a redundant uplink that disappears leaves no trace today: the redundancy page reports a
+  lost uplink only until the next discovery. With a baseline it can keep reporting it.
 * Later: show the maps as they were at a given time.
 * Needs: migrations, a scheduled command, a retention setting.
 
@@ -124,6 +109,8 @@ The L3 counterpart of the spanning tree page.
 * LibreNMS suppresses a device's alerts while **all** its parent devices are down, but parents are maintained by hand.
 * Derive the parents from the topology, toward the core or the poller (dual-homed devices get two parents), show the
   difference from the current `device_relationships`, and let an admin apply it (`Device::parents()->sync()`).
+* Builds on the redundancy analysis: its core (configurable, so it can be the switches next to the poller) and the
+  paths toward it give the parents, and its outage view shows what the dependencies would have suppressed.
 * Parents always closer to the core keep the result free of loops. `device_outages` history can confirm the
   derived dependencies.
 * This writes LibreNMS data: admin only, with a preview.

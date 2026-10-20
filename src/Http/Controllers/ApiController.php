@@ -10,7 +10,7 @@ use Illuminate\Routing\Controller;
 
 /**
  * JSON API behind the map pages, also usable for automation:
- * GET plugin/topology/api/{l2,l3,stp,links} with the same query parameters as the pages
+ * GET plugin/topology/api/{l2,l3,stp,links,redundancy} with the same query parameters as the pages
  * (device, depth, group, location, vlan, vrf and the map toggles).
  */
 class ApiController extends Controller
@@ -47,6 +47,14 @@ class ApiController extends Controller
     public function links(Request $request): JsonResponse
     {
         return $this->respond($request, 'links');
+    }
+
+    /**
+     * Redundancy and failure impact (core, findings, failure impact table, outages).
+     */
+    public function redundancy(Request $request): JsonResponse
+    {
+        return $this->respond($request, 'redundancy');
     }
 
     /**

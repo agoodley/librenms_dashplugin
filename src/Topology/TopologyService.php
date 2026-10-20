@@ -4,6 +4,8 @@ namespace Agoodley\LibrenmsTopology\Topology;
 
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
+use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
+use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
@@ -21,6 +23,9 @@ class TopologyService
     private const LINK_VLAN_LIMIT = 1000000;
 
     private const L3_ROLES = [DeviceRole::ROUTER, DeviceRole::L3SWITCH, DeviceRole::FIREWALL];
+
+    /** Port columns the redundancy analysis needs (it loads every link port of the network). */
+    private const REDUNDANCY_PORT_COLUMNS = ['port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifOperStatus', 'ifAdminStatus'];
 
     public function __construct(
         private readonly TopologyRepository $repo,
@@ -50,6 +55,7 @@ class TopologyService
 
         [$ids, $total, $truncated] = $this->limit($ids, $root, $linked);
         $idSet = array_flip($ids);
+        $scopeLinks = $links;
         $links = array_values(array_filter($links, fn ($l) => isset($idSet[(int) $l['local_device_id']])));
 
         $linkPorts = [];
@@ -83,7 +89,41 @@ class TopologyService
         ]);
         $result['scope'] = $this->scopeInfo($p, $root, $total, count($ids), $truncated);
 
+        // failure simulation: the core, and devices with links to monitored devices not on the map
+        $outside = [];
+        foreach ($scopeLinks as $link) {
+            $a = (int) $link['local_device_id'];
+            $b = (int) ($link['remote_device_id'] ?? 0);
+            if ($b && isset($idSet[$a]) !== isset($idSet[$b])) {
+                $outside[isset($idSet[$a]) ? $a : $b] = true;
+            }
+        }
+        foreach ($result['nodes'] as &$node) {
+            $node['outside'] = $node['device_id'] !== null && isset($outside[$node['device_id']]);
+        }
+        unset($node);
+        $result['core'] = $this->mapCore($scope, $scopeLinks);
+
         return $result;
+    }
+
+    /**
+     * Core devices for the failure simulation of the map, chosen as on the redundancy page from
+     * the whole network the user may see.
+     *
+     * @param  int[]  $scope  devices whose links are in $links
+     * @return array{nodes: string[], modes: string[]}
+     */
+    private function mapCore(array $scope, array $links): array
+    {
+        $all = $this->repo->deviceIds();
+        if (count($all) !== count($scope)) {
+            $links = $this->repo->links($all);
+        }
+        $core = (new RedundancyAnalyzer($this->repo->devices($all, roles: false), [], $links, [], [], $this->settings,
+            stpPriority: $this->repo->stpPriorities($all)))->coreNodes();
+
+        return ['nodes' => array_keys($core), 'modes' => array_values(array_unique($core))];
     }
 
     /**
@@ -278,6 +318,75 @@ class TopologyService
         }
         $result['notice'] = $notice;
         $result['filter'] = $p;
+
+        return $result;
+    }
+
+    /**
+     * Redundancy and failure impact. Paths are followed through the whole network the user may
+     * see; the findings are limited to the group / location filter.
+     *
+     * @param  array{device: ?int, group: ?int, location: ?int}  $p
+     */
+    public function redundancy(array $p): array
+    {
+        [$scope, $device] = $this->scope($p);
+        $all = $this->repo->deviceIds();
+        $links = $this->repo->links($all);
+
+        $linkPorts = [];
+        $perDevice = [];
+        foreach ($links as $link) {
+            $linkPorts[] = (int) $link['local_port_id'];
+            $linkPorts[] = (int) $link['remote_port_id'];
+            $perDevice[(int) $link['local_device_id']][(int) $link['local_port_id']] = true;
+        }
+        $linkPorts = array_values(array_unique(array_filter($linkPorts)));
+        $lag = $this->repo->lagParents($all);
+        $aggregates = array_values(array_unique(array_intersect_key($lag, array_flip($linkPorts))));
+        $ports = $this->repo->ports(array_merge($linkPorts, $aggregates), self::REDUNDANCY_PORT_COLUMNS);
+
+        // stack member / line card of the link ports of devices with several links
+        $several = array_filter($perDevice, fn ($ports) => count($ports) >= 2);
+        $entityUnits = [];
+        foreach ($this->repo->portEntities(array_filter($ports, fn ($port) => isset($several[(int) $port['device_id']]))) as $deviceId => $rows) {
+            $entityUnits[$deviceId] = PortUnits::fromEntities($rows);
+        }
+
+        $devices = $this->repo->devices($all, roles: false);
+        $down = array_keys(array_filter($devices, fn ($d) => empty($d['status'])));
+        $analyzer = new RedundancyAnalyzer(
+            $devices,
+            $scope,
+            $links,
+            $ports,
+            $lag,
+            $this->settings,
+            $entityUnits,
+            $this->repo->outageStarts($down),
+            $this->repo->stpPriorities($all),
+        );
+
+        $result = $analyzer->analyze();
+        if ($device) {
+            $result = self::filterRedundancyForDevice($result, $device);
+        }
+        $result['filter'] = $p;
+
+        return $result;
+    }
+
+    /**
+     * Narrow a redundancy analysis to one device: what it depends on and what depends on it.
+     */
+    public static function filterRedundancyForDevice(array $result, int $deviceId): array
+    {
+        $result['findings'] = array_values(array_filter($result['findings'], fn ($f) => in_array($deviceId, $f['devices'], true)));
+        $result['impact'] = array_values(array_filter($result['impact'],
+            fn ($row) => in_array($deviceId, $row['element_devices'], true) || in_array($deviceId, $row['devices'], true)));
+        $result['outages'] = array_values(array_filter($result['outages'],
+            fn ($o) => $o['device_id'] === $deviceId || in_array($deviceId, $o['behind'], true) || in_array($deviceId, $o['shared'], true)));
+        $result['summary'] = RedundancyAnalyzer::summarize($result['findings'], $result['impact'], $result['outages'], 1);
 
         return $result;
     }
