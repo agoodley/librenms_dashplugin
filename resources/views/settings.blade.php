@@ -3,7 +3,7 @@
     $fields = [
         'Maps' => [
             ['default_depth', 'number', 'Default hops around a centered device', '1-10'],
-            ['max_nodes', 'number', 'Maximum devices drawn on one map', '10-5000; larger maps are trimmed to the best connected devices'],
+            ['max_nodes', 'number', 'Maximum devices drawn on one map (sites on the site map)', '10-5000; larger maps are trimmed to the best connected devices or sites'],
             ['show_unmanaged', 'bool', 'Show unmanaged LLDP/CDP neighbors by default', ''],
             ['collapse_lag', 'bool', 'Draw LAG / port-channel members as one link by default', ''],
             ['l3_hide_stubs', 'bool', 'Hide stub networks (subnets with a single device) on the L3 map by default', ''],
@@ -43,10 +43,32 @@
             ['links_ignore_vlans', 'text', 'VLANs ignored by the VLAN checks', 'e.g. 999 1002-1005; VLANs that are local to each switch by design'],
             ['links_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (mismatch, vlans, lags, counters, optics, neighbors, descriptions), e.g. mtu_mismatch description_missing'],
         ],
+        'Routing & IP diagnostics' => [
+            ['routing_bgp_reset_hours', 'number', 'Report BGP sessions that came up less than this many hours ago', 'a reset in that window; 0 disables the check'],
+            ['routing_prefix_warn_percent', 'number', 'Warn when a BGP peer reaches this share of its prefix limit (%)', 'needs the maximum-prefix limits, which LibreNMS reads from Cisco devices; at 100% it is critical, 0 only reports peers at the limit'],
+            ['routing_ignore_addresses', 'text', 'Addresses ignored by the IP checks', 'CIDRs or addresses shared on purpose (anycast, VRRP / HSRP virtual addresses), e.g. 192.0.2.53 10.255.0.0/16'],
+            ['routing_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (ospf, bgp, ip), e.g. ospf_cost_asymmetric bgp_no_prefixes'],
+        ],
         'Redundancy & failure impact' => [
             ['redundancy_core', 'text', 'Core devices', 'hostnames, sysNames or device ids that every device should keep a path to (e.g. the core switches next to the servers and the LibreNMS poller); empty: the designated root bridges above, else the spanning tree root or the most central switches'],
             ['redundancy_warn_devices', 'number', 'Warn when one failure cuts off at least this many switches, routers or firewalls', 'smaller single points of failure are info'],
             ['redundancy_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (outages, lost, fake, spof), e.g. uplinks_same_device spof_link'],
+        ],
+        'Host locator' => [
+            ['hosts_shared_port_macs', 'number', 'Flag an access port without LLDP/CDP neighbor from this many MACs', 'an unmanaged switch, hub or virtualization host is probably connected to it'],
+            ['hosts_dns', 'bool', 'Look up hostnames that are not LibreNMS devices in DNS', 'with the server\'s resolver (getent), 2 seconds per name and 4 per search, cached for 5 minutes, 20 lookups per user and minute'],
+        ],
+        'Monitoring coverage' => [
+            ['coverage_mac_threshold', 'number', 'Report access ports without LLDP/CDP neighbor from this many MAC addresses', 'in the last discovery: a likely unmanaged switch or hub (a phone on the port does not count as a neighbor); 0 disables the count'],
+            ['coverage_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (unmonitored, devices, ports), e.g. not_linked hub_suspected'],
+        ],
+        'Topology history & background checks' => [
+            ['history_enabled', 'bool', 'Record the topology history', 'every interval below, through the LibreNMS scheduler; needs the plugin tables (./lnms migrate)'],
+            ['history_interval', 'number', 'History interval (minutes)', '15, 30, 60, 120, 240, 360, 720 or 1440; LibreNMS refreshes LLDP/CDP neighbors at discovery (every 6 hours by default)'],
+            ['history_retention_days', 'number', 'Keep changes for (days)', 'facts and findings that ended earlier are deleted'],
+            ['history_checks', 'text', 'Background checks', 'analyses run with every snapshot, one after the other: stp, links, redundancy, routing; empty disables them'],
+            ['history_eventlog_severity', 'text', 'Eventlog from severity', 'a device gets an eventlog entry when it gets or loses a background finding from this severity, confirmed by two runs in a row: critical, warning, info or none'],
+            ['history_eventlog_skip', 'text', 'Checks kept out of the eventlog', 'check codes whose findings follow the counters of the last poll or a time window, e.g. link_errors lag_imbalance multicast_storm (the multicast rate of the last poll: routing protocols and video streams send multicast too) bgp_recent_reset; code:severity keeps one severity of a check out, e.g. ip_duplicate:info (addresses that are probably shared on purpose or in separate networks); they stay on the pages'],
         ],
         'Rollout planner & device dependencies' => [
             ['rollout_batch_size', 'number', 'Default number of devices per rollout batch', '0: no limit; the planner page can change it per plan'],

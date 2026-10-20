@@ -367,7 +367,7 @@ class RedundancyAnalyzer
             }
             foreach ($edge['members'] as $member) {
                 if (! isset($ports[(int) $member['a_port']]) && ! isset($ports[(int) $member['b_port']])
-                    && L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port']))) {
+                    && $this->memberUp($member)) {
                     return false;
                 }
             }
@@ -684,7 +684,7 @@ class RedundancyAnalyzer
         foreach ($groups as $key => $group) {
             $up = 0;
             foreach ($group['members'] as $member) {
-                $up += L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port'])) ? 1 : 0;
+                $up += $this->memberUp($member) ? 1 : 0;
             }
             $this->edges[$key] = ['key' => $key, 'from' => $group['from'], 'to' => $group['to'], 'members' => $group['members'], 'up' => $up];
             $this->design->addEdge($group['from'], $group['to'], $key);
@@ -1193,14 +1193,18 @@ class RedundancyAnalyzer
             $named = array_values(array_filter($exposed, fn ($n) => isset($group['ends'][$n]))) ?: $exposed;
             $behind = array_values(array_diff($exposed, $named));
             $plural = count(array_filter($named, fn ($n) => $this->nodes[$n]['managed'])) > 1;
+            $namedIds = array_values(array_filter(array_map(fn ($n) => $this->nodes[$n]['device_id'] ?? null, $named)));
             $this->add(new Finding(
                 Finding::WARNING, 'redundancy_lost',
                 'redundancy lost: ' . $this->nameList($named, 3),
                 $this->nameList($named) . ($plural ? ' normally have' : ' normally has') . ' a second path to the core, but it is down: '
                 . implode('; ', array_slice($group['broken'], 0, 10)) . '. Single points of failure now: ' . implode('; ', array_unique($group['points']))
                 . ($behind ? '. Behind ' . ($plural ? 'them' : 'it') . ': ' . $this->nameList($behind) : '') . '.',
-                'Restore the link or device that is down. LibreNMS removes links that LLDP/CDP no longer sees at the next discovery, '
-                . 'so this finding disappears then even if the link stays down.',
+                empty($group['missing'])
+                    ? 'Restore the link or device that is down. LibreNMS removes links that LLDP/CDP no longer sees at the next discovery, '
+                        . 'so this finding disappears then even if the link stays down, unless a baseline is saved on the Topology Changes page.'
+                    : 'Restore the link. If it was removed on purpose, an admin accepts that on the Topology Changes page: '
+                        . 'plugin/topology/changes' . ($namedIds ? '?device=' . $namedIds[0] : '') . '.',
                 null, array_merge(array_map(fn ($n) => $this->nodes[$n]['device_id'], $exposed), $group['devices']), $group['ports'],
             ));
         }
@@ -1283,6 +1287,7 @@ class RedundancyAnalyzer
                     $group['devices'][] = $this->nodes[$down]['device_id'];
                 } else {
                     $group['broken'][] = $this->edgeLabel($edge, $x) . ' (' . $this->edgeState($edge) . ')';
+                    $group['missing'] = ($group['missing'] ?? false) || $this->missingSince($edge) !== null;
                     $group['devices'] = array_merge($group['devices'], $this->edgeDevices($edge));
                     $group['ports'] = array_merge($group['ports'], $this->edgePorts($edge));
                 }
@@ -1309,7 +1314,7 @@ class RedundancyAnalyzer
         $down = [];
         $ports = [];
         foreach ($edge['members'] as $member) {
-            if (! L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port']))) {
+            if (! $this->memberUp($member)) {
                 $down[] = $member['a_port']
                     ? $this->nodeName($edge['from']) . ' ' . $this->portName((int) $member['a_port'])
                     : $this->nodeName($edge['to']) . ' ' . $this->portName((int) $member['b_port']);
@@ -1826,6 +1831,11 @@ class RedundancyAnalyzer
      */
     private function edgeState(array $edge): string
     {
+        $since = $this->missingSince($edge);
+        if ($since !== null) {
+            return 'missing' . ($since !== '' ? ' since ' . substr($since, 0, 16) : '') . ': in the baseline, no longer reported by LLDP/CDP';
+        }
+
         foreach ([$edge['from'], $edge['to']] as $node) {
             if (! $this->nodes[$node]['up']) {
                 return $this->nodeName($node) . ' is down';
@@ -1838,6 +1848,26 @@ class RedundancyAnalyzer
         }
 
         return 'link down';
+    }
+
+    /**
+     * Since when a link of the baseline is no longer reported by LLDP/CDP ('' if unknown), null
+     * for a link LLDP/CDP reports.
+     */
+    private function missingSince(array $edge): ?string
+    {
+        $missing = array_column($edge['members'], 'missing');
+
+        return count(array_filter($missing, fn ($since) => $since !== null)) === count($edge['members']) ? max($missing) : null;
+    }
+
+    /**
+     * Is a cable of a link up? A baseline link that LLDP/CDP no longer reports is down whatever its
+     * ports say (they may be up and cabled elsewhere).
+     */
+    private function memberUp(array $member): bool
+    {
+        return ($member['missing'] ?? null) === null && L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port']));
     }
 
     /**

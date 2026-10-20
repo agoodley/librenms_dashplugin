@@ -98,6 +98,8 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-rollout-hosts textarea { margin-top: 3px; font-family: monospace; font-size: 11px; }
 .topo-finding-detail { color: #555; }
 .topo-finding-rec { color: #2c6e49; font-size: 12px; margin-top: 3px; }
+.topo-details { border-top: 1px solid #ddd; }
+.topo-details > summary { padding: 6px 10px; cursor: pointer; color: #555; }
 .topo-stp-table td, .topo-stp-table th { font-size: 12px; white-space: nowrap; }
 .topo-stp-table td.topo-wrap { white-space: normal; }
 .topo-mono { font-family: monospace; font-size: 11px; }
@@ -129,6 +131,21 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-inline-form .form-control { width: 180px; height: 24px; padding: 1px 6px; }
 .topo-custommap-notices { margin: 0; padding-left: 18px; font-size: 12px; color: #8a6d3b; }
 
+/* host locator and port tab */
+.topo-host .panel-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.topo-host-ip { display: inline-block; padding: 0 6px; border-radius: 3px; background: rgba(31, 111, 178, 0.1); font-family: monospace; font-size: 12px; }
+.topo-host-edge { font-size: 14px; margin-bottom: 8px; }
+.topo-host-behind { margin-left: 6px; }
+.topo-host-facts { width: auto; margin-bottom: 8px; }
+.topo-host-facts th { width: auto; padding-right: 10px !important; }
+.topo-host-facts td { padding-right: 28px !important; }
+.topo-host-note { margin: 3px 0; font-size: 13px; }
+.topo-host-note-warning { color: #d35400; }
+.topo-host-note-info { color: #1f6fb2; }
+.topo-host .panel-body h5, .topo-port-tab h5 { margin: 14px 0 4px; font-weight: 600; }
+.topo-port-tab .topo-kv { width: auto; }
+.topo-port-tab .topo-kv th { width: auto; padding-right: 12px !important; }
+
 /* dark mode (LibreNMS toggles html.dark) */
 html.dark .topo-toolbar, html.dark .topo-viewbar { background: #24272c; border-color: #3a3f45; }
 html.dark .topo-canvas-wrap, html.dark .topo-panel, html.dark .topo-card { border-color: #3a3f45; background: #1d2024; }
@@ -139,10 +156,15 @@ html.dark .topo-fullscreen { background: #1d2024; }
 html.dark .topo-kv th, html.dark .topo-toolbar .topo-group-label, html.dark .topo-viewbar .topo-group-label { color: #aaa; }
 html.dark .topo-status-bar, html.dark .topo-finding-detail, html.dark .topo-card p { color: #bbb; }
 html.dark .topo-finding-rec { color: #7fc79a; }
+html.dark .topo-details { border-color: #3a3f45; }
+html.dark .topo-details > summary { color: #bbb; }
 html.dark .topo-subnet { background: #3b3524; }
 html.dark .topo-config pre { background: #24272c; border-color: #3a3f45; color: #ddd; }
 html.dark .topo-config summary { color: #6ea8de; }
 html.dark .topo-stp-table td.topo-mismatch { background: rgba(230, 126, 34, 0.28); }
+html.dark .topo-host-ip { background: rgba(110, 168, 222, 0.18); }
+html.dark .topo-host-note-info { color: #6ea8de; }
+html.dark .topo-host-note-warning { color: #f0a35e; }
 html.dark .topo-evidence-heading { border-color: #3a3f45; }
 html.dark .topo-evidence-note { color: #bbb; }
 html.dark .topo-custommap-notices { color: #e0b562; }

@@ -2,7 +2,9 @@
 
 namespace Agoodley\LibrenmsTopology\Http\Controllers;
 
+use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\ViewRepository;
+use Agoodley\LibrenmsTopology\History\FindingBadges;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Illuminate\Http\JsonResponse;
@@ -72,8 +74,9 @@ class ApiController extends Controller
     }
 
     /**
-     * Build one of the data sets; errors become a JSON {error} with HTTP 500. A map with ?view= also
-     * gets the saved view (view) and its positions for this map's nodes (view_layout).
+     * Build one of the data sets; errors become a JSON {error} with HTTP 500. Findings carry their history
+     * from the background checks (FindingBadges); a map with ?view= also gets the saved view (view) and
+     * its positions for this map's nodes (view_layout).
      */
     private function respond(Request $request, string $map): JsonResponse
     {
@@ -81,7 +84,8 @@ class ApiController extends Controller
         $params = MapParams::parse($request->query(), $settings);
 
         return $this->json("$map view", function () use ($request, $settings, $map, $params) {
-            $result = $this->service($request, $settings)->$map($params);
+            $result = FindingBadges::annotate($map, $this->service($request, $settings)->$map($params), new HistoryRepository($request->user()),
+                120 * $settings->int('history_interval', 5, 1440));
             $view = $request->query('view');
             if (in_array($map, ['l2', 'l3'], true) && $view !== null) {
                 try {

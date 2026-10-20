@@ -2,8 +2,10 @@
 
 namespace Agoodley\LibrenmsTopology\Http\Controllers;
 
+use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Data\ViewRepository;
+use Agoodley\LibrenmsTopology\History\FindingBadges;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
 use Agoodley\LibrenmsTopology\Sharing\SavedView;
 use Agoodley\LibrenmsTopology\Support\MapParams;
@@ -67,7 +69,8 @@ class PageController extends Controller
      */
     private function diagnostics(Request $request, string $analysis, string $what): View
     {
-        return $this->page($request, $analysis, $what, fn (array $params, $settings) => $this->service($request, $settings)->$analysis($params));
+        return $this->page($request, $analysis, $what, fn (array $params, $settings) => FindingBadges::annotate($analysis,
+            $this->service($request, $settings)->$analysis($params), new HistoryRepository($request->user()), 120 * $settings->int('history_interval', 5, 1440)));
     }
 
     /**

@@ -30,9 +30,13 @@ class Navigation
             'route' => 'topology.l3', 'group' => 'maps', 'tab' => 'Layer 3', 'title' => 'Layer 3 Map', 'icon' => 'fa-project-diagram',
             'description' => 'Routers, L3 switches and firewalls joined through their IP subnets, with point-to-point links, LAN segments, VRFs and OSPF / BGP adjacencies.',
         ],
+        'sites' => [
+            'route' => 'topology.sites', 'group' => 'maps', 'tab' => 'Sites', 'title' => 'Site / WAN Map', 'icon' => 'fa-globe',
+            'description' => 'One node per location with its devices and outages, joined by the links, point-to-point subnets and OSPF / BGP sessions between sites, optionally placed by latitude and longitude.',
+        ],
         'views' => [
             'route' => 'topology.views', 'group' => 'maps', 'tab' => 'Saved Views', 'title' => 'Saved Views', 'icon' => 'fa-bookmark', 'scoped' => false,
-            'description' => 'Named views of the maps with their scope, filters and device positions, personal or shared with the team; open, rename, share or delete them.',
+            'description' => 'Named views of the L2 and L3 maps with their scope, filters and device positions, personal or shared with the team; open, rename, share or delete them.',
         ],
         'stp' => [
             'route' => 'topology.stp', 'group' => 'diagnostics', 'tab' => 'Spanning Tree', 'title' => 'Spanning Tree Diagnostics', 'icon' => 'fa-stethoscope',
@@ -42,9 +46,25 @@ class Navigation
             'route' => 'topology.links', 'group' => 'diagnostics', 'tab' => 'Link & VLAN', 'title' => 'Link & VLAN Diagnostics', 'icon' => 'fa-link',
             'description' => 'Both ends of every link compared: speed, duplex, MTU, trunk/native/allowed VLANs and port-channels, plus split VLANs, errors, optical levels and port descriptions.',
         ],
+        'routing' => [
+            'route' => 'topology.routing', 'group' => 'diagnostics', 'tab' => 'Routing & IP', 'title' => 'Routing & IP Diagnostics', 'icon' => 'fa-route',
+            'description' => 'OSPF router IDs, adjacencies, interface settings and area databases, BGP sessions with their last error as text and prefix limits, and IP problems: duplicate addresses, mask mismatches, subnets split between VRFs.',
+        ],
         'redundancy' => [
             'route' => 'topology.redundancy', 'group' => 'diagnostics', 'tab' => 'Redundancy', 'title' => 'Redundancy & Failure Impact', 'icon' => 'fa-code-branch',
             'description' => 'Single points of failure, uplinks that only look redundant (same switch, same stack member), redundancy lost right now, and outages with the devices behind them.',
+        ],
+        'hosts' => [
+            'route' => 'topology.hosts', 'group' => 'tools', 'tab' => 'Host Locator', 'title' => 'Host Locator', 'icon' => 'fa-map-marker', 'scoped' => false,
+            'description' => 'Where is this plugged in? An IP, MAC or hostname to its switch port, VLAN, vendor and 802.1X user, following the forwarding tables past uplinks, port-channels, phones and access points.',
+        ],
+        'coverage' => [
+            'route' => 'topology.coverage', 'group' => 'diagnostics', 'tab' => 'Coverage', 'title' => 'Monitoring Coverage', 'icon' => 'fa-binoculars',
+            'description' => 'Switches, routers, firewalls and access points seen as LLDP/CDP neighbors but not monitored, devices missing from the maps because they report no neighbors, and ports that look like unmanaged switches.',
+        ],
+        'changes' => [
+            'route' => 'topology.changes', 'group' => 'history', 'tab' => 'Changes', 'title' => 'Topology Changes', 'icon' => 'fa-history',
+            'description' => 'What changed over the last day or week (moved cables, new neighbors, root bridge moves, lost adjacencies), what is missing compared with a saved baseline, and findings that came or went.',
         ],
         'rollout' => [
             'route' => 'topology.rollout', 'group' => 'tools', 'tab' => 'Rollout Planner', 'title' => 'Rollout Planner', 'icon' => 'fa-layer-group',

@@ -40,6 +40,14 @@
     }
 
     /**
+     * 12 lowercase hex digits of a MAC address (aa:bb:cc:dd:ee:ff, aabb.ccdd.eeff, ...), null when it is not one.
+     */
+    function normalizeMac(value) {
+        var hex = String(value === null || value === undefined ? '' : value).toLowerCase().replace(/^0x/, '').replace(/[:\-. ]/g, '');
+        return /^[0-9a-f]{12}$/.test(hex) ? hex : null;
+    }
+
+    /**
      * Seconds to "95s", "12m", "3.5h" or "2.1d".
      */
     function formatDuration(seconds) {
@@ -83,7 +91,7 @@
 
     // ------------------------------------------------------------------ icons (drawn as SVG, Cisco/NetBrain-like)
 
-    var STATUS_COLORS = {up: '#1f6fb2', down: '#c0392b', disabled: '#8a949e', unknown: '#7d8a96'};
+    var STATUS_COLORS = {up: '#1f6fb2', down: '#c0392b', disabled: '#8a949e', unknown: '#7d8a96', degraded: '#e67e22'};
     var iconCache = {};
 
     /**
@@ -224,6 +232,10 @@
     /** Unmanaged neighbors that do not pass traffic between their links, by the role of their platform. */
     var END_ROLES = ['server', 'phone', 'wireless'];
 
+    // node and edge ids of the located host (host=<mac>)
+    var HOST_NODE = 'host:located';
+    var HOST_EDGE = 'host:port';
+
     /** L3 overlays beyond OSPF and BGP: edge kind => name, color and dash pattern (distinct from OSPF, BGP and subnets). */
     var L3_LAYERS = {
         ospfv3: {name: 'OSPFv3 adjacency', color: '#2e86de', dashes: [2, 4]},
@@ -256,6 +268,8 @@
         this.simMap = {nodes: {}, edges: {}};
         this.simResult = null;
         this.outages = {top: {}, behind: {}};
+        // a host found by the host locator (host=<mac> in the URL), drawn next to its switch
+        this.host = {mac: normalizeMac(new URLSearchParams(window.location.search).get('host')), data: null, warned: false};
         this.container = document.getElementById('topo-canvas');
         this.panel = document.getElementById('topo-details');
         this.status = document.getElementById('topo-status');
@@ -279,6 +293,9 @@
             // first visit of the L3 map: the organic layout suits subnets better
             if (this.mode === 'l3' && !window.localStorage.getItem('topology.view.l3')) {
                 this.view.layout = 'organic';
+            }
+            if (this.mode === 'sites' && !window.localStorage.getItem('topology.view.sites')) {
+                this.view.layout = 'geographic';
             }
         } catch (e) {
             // storage unavailable (blocked site data, private mode): keep the defaults
@@ -459,7 +476,12 @@
         this.checkView();
         var params = this.query();
         if (!fromHistory) {
-            window.history.replaceState(null, '', window.location.pathname + '?' + params.toString());
+            // the located host stays in the shareable URL
+            var url = new URLSearchParams(params.toString());
+            if (this.host.mac) {
+                url.set('host', this.host.mac);
+            }
+            window.history.replaceState(null, '', window.location.pathname + '?' + url.toString());
         }
         this.updateNavLinks(params);
         this.setLoading(true);
@@ -587,15 +609,17 @@
         }
 
         var saved = relayout ? null : this.savedPositions();
-        var hierarchical = !saved && this.view.layout === 'hierarchical';
+        var geo = !saved && this.mode === 'sites' && this.view.layout === 'geographic' ? this.geoPositions() : null;
+        var hierarchical = !saved && !geo && this.view.layout === 'hierarchical';
 
         this.nodes.clear();
         this.edges.clear();
         this.nodes.add(this.data.nodes.map(function (node) {
             var visNode = self.visNode(node);
-            if (saved && saved[node.id]) {
-                visNode.x = saved[node.id].x;
-                visNode.y = saved[node.id].y;
+            var position = (saved && saved[node.id]) || (geo && geo[node.id]);
+            if (position) {
+                visNode.x = position.x;
+                visNode.y = position.y;
             }
             return visNode;
         }));
@@ -636,7 +660,7 @@
                     parentCentralization: true
                 }
             } : {improvedLayout: this.data.nodes.length < 200, randomSeed: 7},
-            physics: (hierarchical || saved) ? {enabled: false} : {
+            physics: (hierarchical || saved || geo) ? {enabled: false} : {
                 enabled: true,
                 solver: 'forceAtlas2Based',
                 forceAtlas2Based: {gravitationalConstant: -120, centralGravity: 0.006, springLength: 200, springConstant: 0.04, avoidOverlap: 0.8},
@@ -665,6 +689,8 @@
                 var node = self.nodes.get(params.nodes[0]);
                 if (node && node.data.device_id) {
                     self.recenter(node.data.device_id, node.data.name);
+                } else if (node && node.data.type === 'site') {
+                    self.openSite(node.data, self.config.urls.l2Page);
                 }
             }
         });
@@ -673,7 +699,7 @@
             self.network.setOptions({physics: {enabled: false}});
             self.network.fit();
         });
-        if (hierarchical || saved) {
+        if (hierarchical || saved || geo) {
             this.network.fit();
         }
 
@@ -681,6 +707,7 @@
         this.showLegend();
         this.updateSearchList();
         this.updateSimBox();
+        this.drawHost();
     };
 
     /**
@@ -694,6 +721,9 @@
 
         var visNode = {id: node.id, label: node.label, title: tooltip, level: node.level, data: node};
 
+        if (node.type === 'site') {
+            return Object.assign(visNode, {shape: 'image', image: siteIconUrl(node.status), size: 22 + Math.min(16, Math.round(4 * Math.log2(1 + node.devices)))});
+        }
         if (node.type === 'subnet') {
             return Object.assign(visNode, {
                 shape: 'box',
@@ -725,6 +755,9 @@
      * (color by speed/utilization/status, STP blocked links, VLAN dimming, parallel link curves).
      */
     TopologyMap.prototype.visEdge = function (edge) {
+        if (edge.kind === 'site') {
+            return this.visSiteEdge(edge);
+        }
         var colors = theme();
         var color;
         var width = 2;
@@ -1683,6 +1716,10 @@
     // ------------------------------------------------------------------ tooltips & details
 
     TopologyMap.prototype.nodeTooltip = function (node) {
+        if (node.type === 'site') {
+            return '<b>' + esc(node.name) + '</b><br>' + esc(node.devices + ' device' + (node.devices === 1 ? '' : 's')) +
+                (node.down ? '<br><span class="text-danger">' + esc(node.down + ' down') + '</span>' : '');
+        }
         if (node.type === 'subnet') {
             return '<b>' + esc(node.network) + '</b>' + (node.vrf ? ' (' + esc(node.vrf) + ')' : '') + '<br>' + node.devices + ' device(s)';
         }
@@ -1699,6 +1736,9 @@
      * Hover text of a link: both ends, speed or network, routing protocol state.
      */
     TopologyMap.prototype.edgeTooltip = function (edge) {
+        if (edge.kind === 'site') {
+            return esc(this.nodeName(edge.from) + ' \u2194 ' + this.nodeName(edge.to)) + '<br>' + esc(this.siteLinkLabel(edge) || '') + '<br>' + esc(edge.status);
+        }
         var a = edge.a ? (this.nodeName(edge.from) + ' ' + (edge.a.short || '')) : this.nodeName(edge.from);
         var b = edge.b ? (this.nodeName(edge.to) + ' ' + (edge.b.short || '')) : this.nodeName(edge.to);
         var html = esc(a) + ' &harr; ' + esc(b);
@@ -1731,12 +1771,19 @@
      * Details panel of a device / subnet: properties, STP state, connections (clickable) and actions.
      */
     TopologyMap.prototype.showNode = function (id) {
+        if (id === HOST_NODE) {
+            return this.showHost();
+        }
         var self = this;
         var visNode = this.nodes.get(id);
         if (!visNode) {
             return;
         }
         var node = visNode.data;
+        if (this.mode === 'sites') {
+            this.showSite(id);
+            return;
+        }
         var html = '<h4 class="topo-panel-title">' + this.deviceLink(node) + '</h4><table class="table table-condensed topo-kv">';
 
         if (node.type === 'subnet') {
@@ -1871,11 +1918,18 @@
      * Details panel of a link: both ends, aggregate members, or routing session details.
      */
     TopologyMap.prototype.showEdge = function (id) {
+        if (id === HOST_EDGE) {
+            return this.showHost();
+        }
         var visEdge = this.edges.get(id);
         if (!visEdge) {
             return;
         }
         var edge = visEdge.data;
+        if (edge.kind === 'site') {
+            this.showSiteLink(id);
+            return;
+        }
         var self = this;
         var html = '<h4 class="topo-panel-title">' + esc(this.nodeName(edge.from)) + ' &harr; ' + esc(this.nodeName(edge.to)) + '</h4>';
 
@@ -1940,6 +1994,10 @@
      * Legend shown in the details panel when nothing is selected.
      */
     TopologyMap.prototype.showLegend = function () {
+        if (this.mode === 'sites') {
+            this.showSiteLegend();
+            return;
+        }
         var roles = this.mode === 'l2'
             ? [['l3switch', 'L3 switch'], ['switch', 'L2 switch'], ['router', 'Router'], ['firewall', 'Firewall'], ['wireless', 'Wireless / AP'], ['server', 'Server'], ['phone', 'Phone'], ['unknown', 'Unmanaged']]
             : [['router', 'Router'], ['l3switch', 'L3 switch'], ['firewall', 'Firewall'], ['cloud', 'External AS']];
@@ -1982,6 +2040,10 @@
      * Status line under the map: counts, centered device and truncation warning.
      */
     TopologyMap.prototype.updateStatus = function () {
+        if (this.mode === 'sites') {
+            this.updateSiteStatus();
+            return;
+        }
         var stats = this.data.stats || {};
         var scope = this.data.scope || {};
         var parts = [];
@@ -2067,6 +2129,138 @@
         }
     };
 
+    // ------------------------------------------------------------------ located host (host locator)
+
+    /**
+     * Draw the host of host=<mac> next to the switch it is plugged into, joined by its port, or next to the device it is
+     * somewhere behind, and select it; an address of a monitored device selects that device. The answer comes from the
+     * host locator API, once per page; the host is drawn again after every redraw.
+     */
+    TopologyMap.prototype.drawHost = function () {
+        var self = this;
+        if (!this.host.mac || this.mode !== 'l2' || !this.config.urls.hosts || !this.network) {
+            return;
+        }
+        if (this.host.data === null) {
+            this.host.data = false; // loading
+            fetch(this.config.urls.hosts + '?q=' + encodeURIComponent(this.host.mac), {
+                credentials: 'same-origin',
+                headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+            }).then(function (response) {
+                return response.ok ? response.json() : null;
+            }).then(function (body) {
+                self.host.data = (body && body.hosts && body.hosts[0]) || {missing: true};
+                self.drawHost();
+            }).catch(function () {
+                self.host.data = {missing: true};
+                self.drawHost();
+            });
+            return;
+        }
+        if (!this.host.data) {
+            return; // still loading
+        }
+
+        var host = this.host.data;
+        var name = host.readable || this.host.mac.match(/../g).join(':');
+        var warn = function (message) {
+            if (!self.host.warned) {
+                self.host.warned = true;
+                self.flash(message);
+            }
+        };
+
+        // an address of a monitored device: the device is the answer
+        if ((host.status === 'owner' || host.status === 'gateway') && host.device) {
+            var deviceNode = 'd:' + host.device.device_id;
+            if (this.nodes.get(deviceNode)) {
+                this.network.selectNodes([deviceNode]);
+                this.network.focus(deviceNode, {scale: Math.max(1, this.network.getScale()), animation: {duration: 500}});
+                this.showNode(deviceNode);
+            } else {
+                warn(name + ' is an address of ' + host.device.name + ', which is not on this map.');
+            }
+            return;
+        }
+
+        var edge = host.edge;
+        var behind = host.status === 'behind' && host.device ? host.device : null;
+        var anchor = behind ? 'd:' + behind.device_id : (edge ? 'd:' + edge.device_id : null);
+        var where = behind ? 'behind ' + behind.name : (edge ? edge.device + ' ' + edge.port : '');
+        if (!anchor || !this.nodes.get(anchor)) {
+            warn(anchor ? name + ' is ' + (behind ? '' : 'on ') + where + ', which is not on this map.' : name + ' is not in a forwarding table you can see.');
+            return;
+        }
+
+        var anchorNode = this.nodes.get(anchor);
+        var position = this.network.getPositions([anchor])[anchor] || {x: 0, y: 0};
+        var ips = (host.addresses || []).map(function (address) {
+            return address.display;
+        });
+        var tooltip = document.createElement('div');
+        tooltip.className = 'topo-tooltip';
+        tooltip.innerHTML = '<b>' + esc(host.readable) + '</b><br>' + esc(host.vendor || '') + (ips.length ? '<br>' + esc(ips.slice(0, 4).join(', ')) : '') +
+            '<br>' + esc(where);
+        this.nodes.update({
+            id: HOST_NODE,
+            label: [ips[0], host.vendor, host.readable].filter(Boolean).join('\n'),
+            title: tooltip,
+            shape: 'image',
+            image: iconUrl('other', 'up', false),
+            size: 16,
+            level: anchorNode.level !== undefined ? anchorNode.level + 1 : undefined,
+            x: position.x + 90,
+            y: position.y + 150,
+            data: {id: HOST_NODE, name: host.readable, type: 'host'}
+        });
+        this.edges.update({
+            id: HOST_EDGE,
+            from: anchor,
+            to: HOST_NODE,
+            dashes: behind ? [2, 6] : [5, 4],
+            width: 2,
+            color: {color: '#f39c12', highlight: '#f39c12', hover: '#f39c12'},
+            // shaped like a link so the interface label and the switch's connection list show the port
+            data: {id: HOST_EDGE, from: anchor, to: HOST_NODE, kind: 'host', a: behind ? null : {name: edge.port, short: edge.port}, b: null}
+        });
+        this.network.selectNodes([HOST_NODE]);
+        this.network.focus(HOST_NODE, {scale: Math.max(1, this.network.getScale()), animation: {duration: 500}});
+        this.showHost();
+    };
+
+    /**
+     * Details panel of the located host: where it is plugged in (or what it is behind) and what the locator says about it.
+     */
+    TopologyMap.prototype.showHost = function () {
+        var host = this.host.data;
+        if (!host || !host.edge) {
+            return;
+        }
+        var edge = host.edge;
+        var link = function (url, text) {
+            return url ? '<a href="' + esc(url) + '">' + esc(text) + '</a>' : esc(text);
+        };
+        var html = '<h4 class="topo-panel-title"><i class="fa fa-map-marker"></i> ' + esc(host.readable) + '</h4><table class="table table-condensed topo-kv">' +
+            this.row('Vendor', esc(host.vendor || '-')) +
+            this.row('Addresses', esc((host.addresses || []).map(function (address) {
+                return address.display;
+            }).join(', ') || '-')) +
+            (host.status === 'behind' && host.device ? this.row('Behind', link(host.device.url, host.device.name)) : '') +
+            this.row(host.status === 'behind' ? 'Learned on' : 'Switch', link(edge.device_url, edge.device)) +
+            this.row('Port', link(edge.port_url, edge.port)) +
+            this.row('VLAN', esc((edge.vlans || []).join(', ') || '-')) +
+            this.row('Last seen', esc(edge.last_seen ? formatDuration(Math.max(0, Math.round(Date.now() / 1000 - edge.last_seen))) + ' ago' : '-')) +
+            '</table>';
+        (host.notes || []).forEach(function (note) {
+            html += '<div class="topo-host-note topo-host-note-' + esc(note.level) + '">' + esc(note.text) + '</div>';
+        });
+        if (this.config.urls.hostsPage) {
+            html += '<div class="topo-actions"><a class="btn btn-xs btn-default" href="' + esc(this.config.urls.hostsPage + '?q=' + encodeURIComponent(host.readable)) +
+                '"><i class="fa fa-map-marker"></i> Host locator</a></div>';
+        }
+        this.panel.innerHTML = html;
+    };
+
     // ------------------------------------------------------------------ layout persistence & export
 
     TopologyMap.prototype.saveLayout = function () {
@@ -2097,8 +2291,9 @@
      * Short notification (LibreNMS toastr when available).
      */
     TopologyMap.prototype.flash = function (message) {
+        // toastr inserts HTML, and messages carry device, port and host names
         if (window.toastr) {
-            window.toastr.info(esc(message)); // toastr shows HTML; messages can hold names users typed
+            window.toastr.info(esc(message));
         } else {
             this.status.innerHTML = esc(message);
         }
@@ -2147,7 +2342,9 @@
             return '"' + value.replace(/"/g, '""') + '"';
         };
         var rows;
-        if (this.mode === 'l2') {
+        if (this.mode === 'sites') {
+            rows = this.siteCsvRows();
+        } else if (this.mode === 'l2') {
             rows = [['Device A', 'Interface A', 'Device B', 'Interface B', 'Speed', 'Status', 'Aggregate', 'Common VLANs', 'STP A', 'STP B', 'Protocols']];
             this.data.edges.forEach(function (e) {
                 rows.push([self.nodeName(e.from), e.a && e.a.name, self.nodeName(e.to), e.b && e.b.name, formatSpeed(e.speed), e.status,
@@ -2255,6 +2452,7 @@
         server: {drawio: 'mxgraph.cisco.servers.fileserver', yed: 'rectangle', w: 34, h: 50},
         phone: {drawio: 'mxgraph.cisco.modems_and_phones.ip_phone', yed: 'roundrectangle', w: 50, h: 28},
         cloud: {drawio: 'mxgraph.cisco.storage.cloud', yed: 'hexagon', w: 70, h: 40},
+        site: {drawio: 'mxgraph.cisco.buildings.generic_building', yed: 'rectangle', w: 33, h: 50},
         other: {drawio: null, yed: 'roundrectangle', w: 40, h: 30},
         unknown: {drawio: null, yed: 'ellipse', w: 32, h: 32}
     };
@@ -2334,7 +2532,7 @@
                     return;
                 }
                 var edge = drawn.data;
-                var style = self.visEdge(edge);
+                var style = drawn.id === HOST_EDGE ? drawn : self.visEdge(edge);
                 var length = Math.sqrt((to.x - from.x) * (to.x - from.x) + (to.y - from.y) * (to.y - from.y)) || 1;
                 var ends = [];
                 if (self.view.interfaceLabels) {
@@ -2385,6 +2583,9 @@
      */
     TopologyMap.prototype.diagramShape = function (node) {
         var data = node.data;
+        if (data.type === 'host') {
+            data = {role: 'other', status: 'up', managed: false}; // the located host, drawn like an unmanaged neighbor
+        }
         if (data.type === 'subnet') {
             var lines = node.label.split('\n');
             var longest = Math.max.apply(null, lines.map(function (line) {
@@ -2414,16 +2615,31 @@
         var data = item.data;
         var pairs;
         if (!isEdge) {
-            pairs = data.type === 'subnet'
-                ? [['network', data.network], ['vrf', data.vrf], ['devices', data.devices]]
-                : [['name', data.name], ['device_id', data.device_id], ['hostname', data.hostname], ['role', data.role], ['status', data.status],
+            var host = data.type === 'host' && this.host.data && this.host.data.edge ? this.host.data : null;
+            if (data.type === 'subnet') {
+                pairs = [['network', data.network], ['vrf', data.vrf], ['devices', data.devices]];
+            } else if (data.type === 'site') {
+                pairs = [['name', data.name], ['location_id', data.location_id], ['devices', data.devices], ['down', data.down], ['status', data.status],
+                    ['latitude', data.lat], ['longitude', data.lng]];
+            } else if (host) {
+                pairs = [['name', data.name], ['vendor', host.vendor], ['addresses', (host.addresses || []).map(function (address) {
+                    return address.display;
+                }).join(', ')], ['switch', host.edge.device], ['port', host.edge.port]];
+            } else {
+                pairs = [['name', data.name], ['device_id', data.device_id], ['hostname', data.hostname], ['role', data.role], ['status', data.status],
                     ['hardware', data.hardware], ['os', data.os], ['version', data.managed ? data.version : ''], ['location', data.location],
-                    ['platform', data.platform], ['peers', (data.peers || []).join(', ')]];
+                    ['platform', data.platform], ['peers', (data.peers || []).join(', ')], ['remote_as', data.remote_as]];
+            }
         } else {
             var lag = data.lag ? (data.lag.a || '-') + ' / ' + (data.lag.b || '-') + ' (' + data.lag.members + ' members)' : '';
+            var routing = data.routing ? ['ospf', 'bgp'].filter(function (kind) {
+                return data.routing[kind];
+            }).map(function (kind) {
+                return kind.toUpperCase() + ' x' + data.routing[kind];
+            }).join(', ') : '';
             pairs = [['from', this.nodeName(data.from)], ['port_a', data.a ? data.a.name : ''], ['to', this.nodeName(data.to)], ['port_b', data.b ? data.b.name : ''],
-                ['kind', data.kind], ['speed', data.speed ? formatSpeed(data.speed) + 'bps' : ''], ['aggregate', lag], ['status', data.status],
-                ['state', data.state], ['network', data.network], ['vrf', data.vrf]];
+                ['kind', data.kind], ['links', data.links], ['speed', data.speed ? formatSpeed(data.speed) + 'bps' : ''], ['aggregate', lag], ['routing', routing],
+                ['status', data.status], ['state', data.state], ['network', data.network], ['vrf', data.vrf]];
         }
         return pairs.filter(function (pair) {
             return pair[1] !== null && pair[1] !== undefined && pair[1] !== '';
@@ -2512,7 +2728,7 @@
                 '" height="' + coordinate(shape.h) + '" as="geometry"/></mxCell></object>');
         });
 
-        var name = this.mode === 'l2' ? 'Layer 2 map' : 'Layer 3 map';
+        var name = {l2: 'Layer 2 map', l3: 'Layer 3 map', sites: 'Site / WAN map'}[this.mode] || 'Topology map';
         return '<?xml version="1.0" encoding="UTF-8"?>\n' +
             '<mxfile host="LibreNMS" agent="LibreNMS topology plugin" modified="' + new Date().toISOString() + '" type="device">' +
             '<diagram id="topology-' + this.mode + '" name="' + xmlAttr(name) + '">' +
@@ -2723,7 +2939,16 @@
     TopologyMap.prototype.viewRequest = function () {
         var params = this.query();
         params.delete('view');
-        return {page: this.mode, query: params.toString(), positions: this.network.getPositions(), options: this.view};
+        return {page: this.mode, query: params.toString(), positions: this.mapPositions(), options: this.view};
+    };
+
+    /**
+     * Positions of the map's nodes, without the located host (host=) drawn next to them.
+     */
+    TopologyMap.prototype.mapPositions = function () {
+        var positions = this.network.getPositions();
+        delete positions[HOST_NODE];
+        return positions;
     };
 
     /**
@@ -2853,7 +3078,7 @@
      */
     TopologyMap.prototype.customMapRequest = function (fingerprint) {
         var positions = {};
-        var all = this.network.getPositions();
+        var all = this.mapPositions();
         Object.keys(all).forEach(function (id) {
             positions[id] = [Math.round(all[id].x * 10) / 10, Math.round(all[id].y * 10) / 10];
         });
@@ -2993,6 +3218,564 @@
         });
     };
 
+    // ------------------------------------------------------------------ site / WAN map
+
+    /**
+     * "1 site", "3 sites".
+     */
+    function plural(count, word, words) {
+        return count + ' ' + (count === 1 ? word : (words || word + 's'));
+    }
+
+    /**
+     * Data URI of the site icon (a building) colored by status: blue all up, orange some devices down, red all down.
+     */
+    function siteIconUrl(status) {
+        var color = STATUS_COLORS[status] || STATUS_COLORS.unknown;
+        var key = 'site|' + color;
+        if (!iconCache[key]) {
+            var dark = shade(color, -45);
+            var light = shade(color, 60);
+            var windows = '';
+            for (var row = 0; row < 3; row++) {
+                for (var col = 0; col < 3; col++) {
+                    windows += '<rect x="' + (18 + col * 10) + '" y="' + (20 + row * 9) + '" width="6" height="5" fill="' + light + '"/>';
+                }
+            }
+            var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">' +
+                '<polygon points="10,16 32,5 54,16" fill="' + dark + '"/>' +
+                '<rect x="12" y="16" width="40" height="42" fill="' + color + '"/>' + windows +
+                '<rect x="28" y="47" width="8" height="11" fill="' + dark + '"/></svg>';
+            iconCache[key] = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }
+        return iconCache[key];
+    }
+
+    /**
+     * Site link: width and color from the capacity (or utilization / status) of its links, dashed when it
+     * only consists of routing sessions or is not fully up, grey dotted when every session was shut down.
+     */
+    TopologyMap.prototype.visSiteEdge = function (edge) {
+        var routingOnly = !edge.links;
+        var color;
+        if (this.view.colorBy === 'util') {
+            color = utilColor(edge.util);
+        } else if (this.view.colorBy === 'status') {
+            color = edge.status === 'up' ? '#2e9e44' : (edge.status === 'degraded' ? '#e67e22' : '#c0392b');
+        } else {
+            color = routingOnly ? '#8e44ad' : speedColor(edge.speed);
+        }
+        var dashes = routingOnly ? [4, 4] : false;
+        if (edge.status === 'down') {
+            color = '#c0392b';
+            dashes = [6, 4];
+        } else if (edge.status === 'degraded' && !routingOnly) {
+            dashes = [12, 4];
+        } else if (edge.status === 'disabled') {
+            color = STATUS_COLORS.disabled;
+            dashes = [2, 4];
+        }
+
+        var tooltip = document.createElement('div');
+        tooltip.className = 'topo-tooltip';
+        tooltip.innerHTML = this.edgeTooltip(edge);
+
+        return {
+            id: edge.id,
+            from: edge.from,
+            to: edge.to,
+            width: routingOnly ? 2 : speedWidth(edge.speed, edge.links > 1),
+            dashes: dashes,
+            label: this.view.linkLabels ? this.siteLinkLabel(edge) : undefined,
+            color: {color: color, highlight: '#f39c12', hover: color, opacity: 1},
+            title: tooltip,
+            data: edge
+        };
+    };
+
+    /**
+     * "2 links 20G · BGP": the links of a site link and its routing sessions.
+     */
+    TopologyMap.prototype.siteLinkLabel = function (edge) {
+        var parts = [];
+        if (edge.links) {
+            parts.push(edge.links + (edge.links === 1 ? ' link' : ' links') + (edge.speed ? ' ' + formatSpeed(edge.speed) : ''));
+        }
+        var routing = [];
+        if (edge.routing.ospf) {
+            routing.push('OSPF');
+        }
+        if (edge.routing.bgp) {
+            routing.push('BGP');
+        }
+        if (routing.length) {
+            parts.push(routing.join(' + '));
+        }
+        if (this.view.colorBy === 'util' && edge.util !== null) {
+            parts.push(edge.util + '%');
+        }
+        return parts.join(' · ') || undefined;
+    };
+
+    /**
+     * Push apart positions closer than gap (sites in one city or at one address). A crowd in one cell of
+     * a grid of the gap's size first goes round its middle in a sunflower spiral; then each position is
+     * only compared with those in its own and the neighboring cells, and moves by the sum of its pushes
+     * (at most half the gap per round). Fixed positions do not move.
+     */
+    function spreadPositions(positions, ids, gap, fixed) {
+        fixed = fixed || {};
+        var count = ids.length;
+        var x = new Float64Array(count);
+        var y = new Float64Array(count);
+        var still = ids.map(function (id, i) {
+            x[i] = positions[id].x;
+            y[i] = positions[id].y;
+            return !!fixed[id];
+        });
+        var cellOf = function (i) {
+            return (Math.floor(x[i] / gap) + 32768) * 65536 + Math.floor(y[i] / gap) + 32768;
+        };
+        var group = function (map, key, i) {
+            var list = map.get(key);
+            if (list) {
+                list.push(i);
+            } else {
+                map.set(key, [i]);
+            }
+        };
+        var i;
+
+        var crowds = new Map();
+        for (i = 0; i < count; i++) {
+            if (!still[i]) {
+                group(crowds, cellOf(i), i);
+            }
+        }
+        crowds.forEach(function (crowd) {
+            if (crowd.length < 3) {
+                return;
+            }
+            var cx = 0;
+            var cy = 0;
+            crowd.forEach(function (p) {
+                cx += x[p] / crowd.length;
+                cy += y[p] / crowd.length;
+            });
+            crowd.sort(function (a, b) {
+                return Math.hypot(x[a] - cx, y[a] - cy) - Math.hypot(x[b] - cx, y[b] - cy) || a - b;
+            });
+            crowd.forEach(function (p, k) {
+                var radius = gap * 0.66 * Math.sqrt(k + 0.5); // one gap between neighbors
+                x[p] = cx + radius * Math.cos(k * 2.39996); // the golden angle
+                y[p] = cy + radius * Math.sin(k * 2.39996);
+            });
+        });
+
+        var moveX = new Float64Array(count);
+        var moveY = new Float64Array(count);
+        for (var round = 0; round < 100; round++) {
+            var cells = new Map();
+            for (i = 0; i < count; i++) {
+                group(cells, cellOf(i), i);
+            }
+            moveX.fill(0);
+            moveY.fill(0);
+            var overlaps = 0;
+            cells.forEach(function (list, cell) {
+                for (var dx = -1; dx <= 1; dx++) {
+                    for (var dy = -1; dy <= 1; dy++) {
+                        var near = cell + dx * 65536 + dy;
+                        var others = near >= cell ? cells.get(near) : null;
+                        for (var a = 0; others && a < list.length; a++) {
+                            for (var b = near === cell ? a + 1 : 0; b < others.length; b++) {
+                                var p = list[a];
+                                var q = others[b];
+                                var ex = x[q] - x[p];
+                                var ey = y[q] - y[p];
+                                var distance = Math.sqrt(ex * ex + ey * ey);
+                                if (distance >= gap || (still[p] && still[q])) {
+                                    continue;
+                                }
+                                overlaps++;
+                                if (distance < 0.01) {
+                                    var angle = ((p * 5 + q) % 12) * Math.PI / 6;
+                                    ex = Math.cos(angle);
+                                    ey = Math.sin(angle);
+                                    distance = 1;
+                                }
+                                var push = (gap - distance) / 2 + 0.5;
+                                var pushP = still[p] ? 0 : (still[q] ? 2 * push : push);
+                                var pushQ = still[q] ? 0 : (still[p] ? 2 * push : push);
+                                moveX[p] -= ex / distance * pushP;
+                                moveY[p] -= ey / distance * pushP;
+                                moveX[q] += ex / distance * pushQ;
+                                moveY[q] += ey / distance * pushQ;
+                            }
+                        }
+                    }
+                }
+            });
+            if (!overlaps) {
+                break;
+            }
+            for (i = 0; i < count; i++) {
+                var length = Math.sqrt(moveX[i] * moveX[i] + moveY[i] * moveY[i]);
+                var factor = length > gap / 2 ? gap / 2 / length : 1;
+                x[i] += moveX[i] * factor;
+                y[i] += moveY[i] * factor;
+            }
+        }
+
+        ids.forEach(function (id, index) {
+            positions[id].x = x[index];
+            positions[id].y = y[index];
+        });
+    }
+
+    /**
+     * Geographic layout: sites by latitude / longitude (equirectangular projection around their center,
+     * scaled to the map canvas, nudged apart where they overlap), sites without coordinates in a grid
+     * under them, clouds above the middle of their sites. Null (the organic layout) when most sites have
+     * no coordinates.
+     */
+    TopologyMap.prototype.geoPositions = function () {
+        var nodes = this.data.nodes;
+        var sites = nodes.filter(function (node) {
+            return node.type === 'site';
+        });
+        var placed = sites.filter(function (node) {
+            return node.lat !== null && node.lng !== null;
+        });
+        if (!placed.length || placed.length * 2 < sites.length) {
+            return null;
+        }
+
+        var lats = placed.map(function (node) {
+            return node.lat;
+        });
+        var lngs = placed.map(function (node) {
+            return node.lng;
+        });
+        var lat0 = (Math.min.apply(null, lats) + Math.max.apply(null, lats)) / 2;
+        var lng0 = (Math.min.apply(null, lngs) + Math.max.apply(null, lngs)) / 2;
+        var k = Math.cos(lat0 * Math.PI / 180) || 1;
+        // fill about 1100 x 600 px, the shape of the map canvas
+        var width = (Math.max.apply(null, lngs) - Math.min.apply(null, lngs)) * k;
+        var height = Math.max.apply(null, lats) - Math.min.apply(null, lats);
+        var scale = Math.min(width > 0 ? 1100 / width : Infinity, height > 0 ? 600 / height : Infinity);
+        scale = isFinite(scale) ? scale : 1;
+        // a dense network gets more room: about two gap x gap squares per site, up to 8 times the canvas
+        var gap = 120;
+        scale *= Math.min(8, Math.max(1, Math.sqrt(placed.length * 2 * gap * gap / (Math.max(width * scale, 1) * Math.max(height * scale, 1)))));
+        var positions = {};
+        placed.forEach(function (node) {
+            positions[node.id] = {x: (node.lng - lng0) * k * scale, y: -(node.lat - lat0) * scale};
+        });
+
+        // sites in one city, or at the same address, would overlap: push them apart
+        var ids = Object.keys(positions);
+        spreadPositions(positions, ids, gap);
+
+        // sites without coordinates: a grid under the map, as wide as the placed sites
+        var xs = ids.map(function (id) {
+            return positions[id].x;
+        });
+        var ys = ids.map(function (id) {
+            return positions[id].y;
+        });
+        var left = Math.min.apply(null, xs);
+        var bottom = Math.max.apply(null, ys) + 180;
+        var unplaced = sites.filter(function (node) {
+            return !positions[node.id];
+        });
+        var columns = Math.max(Math.floor((Math.max.apply(null, xs) - left) / 170) + 1, Math.ceil(Math.sqrt(unplaced.length)));
+        unplaced.forEach(function (node, index) {
+            positions[node.id] = {x: left + (index % columns) * 170, y: bottom + Math.floor(index / columns) * 120};
+        });
+        bottom += Math.ceil(unplaced.length / columns) * 120;
+
+        // clouds above the middle of their sites, moved off the sites they would cover
+        var around = {};
+        this.data.edges.forEach(function (edge) {
+            (around[edge.from] = around[edge.from] || []).push(edge.to);
+            (around[edge.to] = around[edge.to] || []).push(edge.from);
+        });
+        var fixed = {};
+        sites.forEach(function (node) {
+            fixed[node.id] = true;
+        });
+        var clouds = nodes.filter(function (node) {
+            return node.type !== 'site';
+        });
+        clouds.forEach(function (node, index) {
+            var points = (around[node.id] || []).map(function (id) {
+                return positions[id];
+            }).filter(Boolean);
+            if (!points.length) {
+                positions[node.id] = {x: left + index * 170, y: bottom + 60};
+                return;
+            }
+            positions[node.id] = {
+                x: points.reduce(function (sum, point) {
+                    return sum + point.x;
+                }, 0) / points.length + (index % 2 ? 60 : -60),
+                y: points.reduce(function (sum, point) {
+                    return sum + point.y;
+                }, 0) / points.length - 150
+            };
+        });
+        spreadPositions(positions, Object.keys(positions), gap, fixed);
+
+        return positions;
+    };
+
+    /**
+     * Open the L2 or L3 map of a site's location.
+     */
+    TopologyMap.prototype.openSite = function (site, page) {
+        if (!site.location_id) {
+            this.flash('Devices without a location cannot be filtered by location.');
+            return;
+        }
+        window.location.href = page + '?location=' + encodeURIComponent(site.location_id);
+    };
+
+    /**
+     * Reload the site map centered on a site.
+     */
+    TopologyMap.prototype.centerSite = function (locationId) {
+        var select = document.getElementById('topo-site');
+        if (select) {
+            select.value = String(locationId);
+            this.load();
+        }
+    };
+
+    /**
+     * Details panel of a site (devices, what is down, its site links, actions) or of an AS cloud.
+     */
+    TopologyMap.prototype.showSite = function (id) {
+        var self = this;
+        var node = this.nodes.get(id).data;
+        var now = Date.now() / 1000;
+        var html = '<h4 class="topo-panel-title">' + esc(node.name) + '</h4><table class="table table-condensed topo-kv">';
+
+        if (node.type === 'site') {
+            var roles = Object.keys(node.roles).map(function (role) {
+                return node.roles[role] + ' ' + role;
+            }).join(', ');
+            html += this.row('Status', '<span class="topo-status-' + esc(node.status) + '">' + esc(node.status) + '</span>') +
+                this.row('Devices', esc(node.devices + (roles ? ' (' + roles + ')' : ''))) +
+                this.row('Down', node.down_devices.slice(0, 25).map(function (device) {
+                    return (device.url ? '<a href="' + esc(device.url) + '">' + esc(device.name) + '</a>' : esc(device.name)) +
+                        (device.since ? ' <small class="text-muted">' + esc(formatDuration(Math.max(0, Math.round(now - device.since)))) + '</small>' : '');
+                }).join(', ') + (node.down_devices.length > 25 ? ' &hellip; and ' + (node.down_devices.length - 25) + ' more' : '')) +
+                this.row('Coordinates', node.lat !== null ? esc(node.lat + ', ' + node.lng) : '<span class="text-muted">not set</span>');
+        } else {
+            var about = 'BGP peers that LibreNMS does not monitor, grouped by their AS: a provider network or an internet transit.';
+            if (node.private) {
+                about = node.shared
+                    ? 'BGP peers in a private AS that LibreNMS does not monitor, shared by the sites that peer with the same address (such as a cloud VPN gateway).'
+                    : 'BGP peers in a private AS that LibreNMS does not monitor. Sites often reuse private AS numbers, so every site has a cloud of its own.';
+            }
+            html += this.row('Remote AS', esc(node.remote_as)) + '<tr><td colspan="2" class="text-muted">' + about + '</td></tr>';
+        }
+        html += '</table>';
+
+        var connected = this.network.getConnectedEdges(id).map(function (edgeId) {
+            return self.edges.get(edgeId);
+        }).filter(Boolean);
+        if (connected.length) {
+            html += '<h5>Site links (' + connected.length + ')</h5><table class="table table-condensed topo-kv topo-neighbors">';
+            connected.forEach(function (visEdge) {
+                var edge = visEdge.data;
+                html += '<tr data-edge="' + esc(visEdge.id) + '"><td>' + esc(self.nodeName(edge.from === id ? edge.to : edge.from)) + '</td><td>' +
+                    esc(self.siteLinkLabel(edge) || '') + ' <span class="topo-status-' + esc(edge.status) + '">' + esc(edge.status) + '</span></td></tr>';
+            });
+            html += '</table>';
+        }
+
+        if (node.type === 'site') {
+            var urls = this.config.urls;
+            var location = node.location_id ? '?location=' + encodeURIComponent(node.location_id) : '';
+            html += '<div class="topo-actions">' +
+                (node.location_id ? '<button class="btn btn-xs btn-primary" data-center-site="' + esc(node.location_id) + '"><i class="fa fa-crosshairs"></i> Center map here</button> ' +
+                    '<a class="btn btn-xs btn-default" href="' + esc(urls.l2Page + location) + '">L2 map</a> ' +
+                    '<a class="btn btn-xs btn-default" href="' + esc(urls.l3Page + location) + '">L3 map</a> ' +
+                    '<a class="btn btn-xs btn-default" href="' + esc(urls.redundancyPage + location) + '">Redundancy</a> ' +
+                    '<a class="btn btn-xs btn-default" href="' + esc(urls.devicesPage + '/location=' + encodeURIComponent(node.location_id)) + '">Devices</a>'
+                    : '<span class="text-muted">Set a location on these devices to see them by site.</span>') +
+                '</div>';
+        }
+
+        this.panel.innerHTML = html;
+        this.panel.querySelectorAll('[data-center-site]').forEach(function (button) {
+            button.addEventListener('click', function () {
+                self.centerSite(button.getAttribute('data-center-site'));
+            });
+        });
+        this.panel.querySelectorAll('[data-edge]').forEach(function (row) {
+            row.addEventListener('click', function () {
+                self.network.selectEdges([row.getAttribute('data-edge')]);
+                self.showSiteLink(row.getAttribute('data-edge'));
+            });
+        });
+    };
+
+    /**
+     * Details panel of a site link: totals, then every link and routing session between the two sites.
+     */
+    TopologyMap.prototype.showSiteLink = function (id) {
+        var visEdge = this.edges.get(id);
+        if (!visEdge) {
+            return;
+        }
+        var edge = visEdge.data;
+        var fromName = this.nodeName(edge.from);
+        var toName = this.nodeName(edge.to);
+        var link = function (url, text) {
+            return url ? '<a href="' + esc(url) + '">' + esc(text) + '</a>' : esc(text);
+        };
+        var routing = [];
+        if (edge.routing.ospf) {
+            routing.push(edge.routing.ospf + ' OSPF');
+        }
+        if (edge.routing.bgp) {
+            routing.push(edge.routing.bgp + ' BGP');
+        }
+        // tunnels and other logical interfaces have no capacity of their own
+        var unknown = edge.members.filter(function (member) {
+            return (member.kind === 'l2' || member.kind === 'p2p') && !member.speed;
+        }).length;
+        var capacity = (edge.speed ? esc(formatSpeed(edge.speed) + 'bps') : '') + (unknown
+            ? '<span class="text-muted">' + (edge.speed ? ' + ' : '') + esc(plural(unknown, 'link') + ' with traffic only (tunnel or logical interface)') + '</span>'
+            : '');
+
+        var html = '<h4 class="topo-panel-title">' + esc(fromName) + ' &harr; ' + esc(toName) + '</h4><table class="table table-condensed topo-kv">' +
+            this.row('Status', '<span class="topo-status-' + esc(edge.status) + '">' + esc(edge.status) + '</span>') +
+            this.row('Links', edge.links ? esc(edge.links) : '') +
+            this.row('Capacity', capacity) +
+            this.row('Busiest link', edge.util !== null ? esc(edge.util + '%') : '') +
+            this.row('Traffic', edge.links ? esc(fromName + ' → ' + toName + ': ' + formatRate(edge.from_bps)) + '<br>' +
+                esc(toName + ' → ' + fromName + ': ' + formatRate(edge.to_bps)) : '') +
+            this.row('Routing', esc(routing.join(', '))) + '</table>';
+
+        html += '<h5>Members (' + edge.members.length + ')</h5><table class="table table-condensed topo-kv topo-site-members">';
+        edge.members.forEach(function (member) {
+            var kind = {
+                l2: (member.protocols || []).join('/').toUpperCase() || 'Link',
+                p2p: 'Subnet',
+                ospf: 'OSPF',
+                bgp: member.type || 'BGP'
+            }[member.kind] || member.kind;
+            var end = function (point) {
+                if (!point) {
+                    return esc(member.peer || '');
+                }
+                return link(point.device_url, point.device) + (point.port ? ' ' + link(point.port_url, point.port) : '') +
+                    (point.aggregate ? ' <small class="text-muted">(' + esc(point.aggregate) + ')</small>' : '');
+            };
+            var detail = member.kind === 'l2' || member.kind === 'p2p'
+                ? (member.speed ? formatSpeed(member.speed) + (member.util !== null ? ' \u00b7 ' + member.util + '%' : '')
+                    : 'traffic only \u00b7 ' + formatRate(Math.max(member.in_bps, member.out_bps)))
+                : member.state || '';
+            html += '<tr><th>' + esc(kind) + '<br><span class="topo-status-' + esc(member.status) + '">' + esc(member.status) + '</span> ' +
+                '<small>' + esc(detail) + '</small></th><td>' + end(member.a) + '<br>&harr; ' + end(member.b) +
+                (member.network ? '<br><small class="text-muted">' + esc(member.network) + '</small>' : '') + '</td></tr>';
+        });
+        html += '</table>';
+        this.panel.innerHTML = html;
+    };
+
+    /**
+     * Legend of the site map.
+     */
+    TopologyMap.prototype.showSiteLegend = function () {
+        var html = '<h4 class="topo-panel-title">Legend</h4><div class="topo-legend">' +
+            '<div><img src="' + siteIconUrl('up') + '" width="22" height="22" alt=""> Site</div>' +
+            '<div><img src="' + siteIconUrl('degraded') + '" width="22" height="22" alt=""> Some devices down</div>' +
+            '<div><img src="' + siteIconUrl('down') + '" width="22" height="22" alt=""> All devices down</div>' +
+            '<div><img src="' + iconUrl('cloud', 'unknown', false) + '" width="22" height="22" alt=""> External AS (BGP peers not monitored)</div>' +
+            '</div><div class="topo-legend topo-legend-lines">';
+        var lines = this.view.colorBy === 'util'
+            ? [['#2e9e44', 'busiest link < 30%'], ['#d4ac0d', '30-60%'], ['#e67e22', '60-80%'], ['#c0392b', '> 80%'], ['#8e9aa6', 'no data']]
+            : [['#b0279e', '100G+'], ['#6f42c1', '40G'], ['#3949ab', '25G'], ['#1f6fb2', '10G'], ['#17a2b8', '2.5-5G'], ['#2e9e44', '1G'], ['#8e9aa6', '< 1G / unknown']];
+        if (this.view.colorBy !== 'status') {
+            lines.forEach(function (item) {
+                html += '<div><span class="topo-line" style="background:' + item[0] + '"></span> ' + item[1] + '</div>';
+            });
+        }
+        html += '<div><span class="topo-line topo-line-dashed" style="border-color:#8e44ad"></span> Routing sessions only (OSPF / BGP)</div>' +
+            '<div><span class="topo-line topo-line-dashed" style="border-color:#e67e22"></span> Some links or sessions down</div>' +
+            '<div><span class="topo-line topo-line-dashed" style="border-color:#c0392b"></span> All down</div>' +
+            '<div><span class="topo-line topo-line-dashed" style="border-color:' + STATUS_COLORS.disabled + '"></span> BGP sessions shut down by an administrator</div>' +
+            '</div><p class="text-muted topo-hint">A site is a LibreNMS location. Links between devices at different locations, point-to-point ' +
+            'subnets and OSPF / BGP sessions add up to one link per pair of sites; tunnels and other logical interfaces only add their traffic. ' +
+            'Click a site or link for details; double-click a site to open its L2 map. The geographic layout places sites by the latitude / ' +
+            'longitude of their location.</p>';
+        this.panel.innerHTML = html;
+    };
+
+    /**
+     * Status line of the site map.
+     */
+    TopologyMap.prototype.updateSiteStatus = function () {
+        var stats = this.data.stats || {};
+        var scope = this.data.scope || {};
+        var parts = [plural(stats.sites, 'site'), plural(stats.devices, 'device'), plural(stats.links, 'site link')];
+        if (stats.clouds) {
+            parts.push(plural(stats.clouds, 'external AS', 'external ASes'));
+        }
+        if (stats.down_devices) {
+            parts.push('<span class="text-danger">' + plural(stats.down_devices, 'device') + ' down' +
+                (stats.down_sites ? ' (' + plural(stats.down_sites, 'site') + ' entirely)' : '') + '</span>');
+        }
+        if (stats.down_links || stats.degraded_links) {
+            parts.push('<span class="topo-text-warning">' + plural(stats.down_links + stats.degraded_links, 'site link') + ' not fully up</span>');
+        }
+        var html = parts.join(' &middot; ');
+        if (scope.root_name) {
+            html = 'Centered on <b>' + esc(scope.root_name) + '</b> (' + esc(plural(Number(scope.depth), 'hop')) + ') &middot; ' + html;
+        }
+        if (scope.truncated) {
+            html += ' &middot; <span class="topo-text-warning"><i class="fa fa-exclamation-triangle"></i> Showing ' + scope.shown + ' of ' + scope.total +
+                ' sites (limit ' + scope.max_nodes + '). Center on a site or pick a group to narrow the map.</span>';
+        }
+        var sites = this.data.nodes.filter(function (node) {
+            return node.type === 'site';
+        });
+        var placed = sites.filter(function (node) {
+            return node.lat !== null && node.lat !== undefined;
+        }).length;
+        if (this.view.layout === 'geographic' && !placed) {
+            html += ' &middot; <span class="topo-text-warning">No location has a latitude / longitude, so the geographic layout is not available.</span>';
+        } else if (this.view.layout === 'geographic' && placed * 2 < sites.length) {
+            html += ' &middot; <span class="topo-text-warning">Only ' + placed + ' of ' + sites.length +
+                ' sites have a latitude / longitude, so they are laid out without them.</span>';
+        }
+        if (!this.data.nodes.length) {
+            html = '<span class="topo-text-warning">No sites with links found for this scope (tick <i>Unlinked sites</i> to show every location).</span>';
+        }
+        this.status.innerHTML = html;
+    };
+
+    /**
+     * CSV rows of the site map: one per link or routing session between two sites.
+     */
+    TopologyMap.prototype.siteCsvRows = function () {
+        var self = this;
+        var rows = [['Site A', 'Site B', 'Type', 'Device A', 'Interface A', 'Device B / peer', 'Interface B', 'Speed', 'Status', 'Utilization %', 'Network / state']];
+        this.data.edges.forEach(function (edge) {
+            edge.members.forEach(function (member) {
+                rows.push([self.nodeName(edge.from), self.nodeName(edge.to), member.kind === 'bgp' ? (member.type || 'BGP') : member.kind.toUpperCase(),
+                    member.a && member.a.device, member.a && member.a.port, member.b ? member.b.device : member.peer, member.b && member.b.port,
+                    formatSpeed(member.speed), member.status, member.util === null ? '' : member.util, member.network || member.state || '']);
+            });
+        });
+        return rows;
+    };
+
     window.TopologyMap = {
         init: function (config) {
             if (!window.vis || !window.vis.Network) {
@@ -3005,6 +3788,7 @@
         },
         // exposed for tests
         _formatSpeed: formatSpeed,
-        _iconUrl: iconUrl
+        _iconUrl: iconUrl,
+        _normalizeMac: normalizeMac
     };
 })(window, document);
