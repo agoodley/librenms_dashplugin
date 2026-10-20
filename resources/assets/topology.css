@@ -112,6 +112,8 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-filterbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 10px; }
 .topo-filterbar .form-control { display: inline-block; width: auto; height: 30px; }
 .topo-device-panel .topo-kv th { width: auto; }
+.topo-layer-list th { width: auto; }
+.topo-layer-list td:last-child, .topo-layer-list th:last-child { white-space: nowrap; }
 
 /* dark mode (LibreNMS toggles html.dark) */
 html.dark .topo-toolbar, html.dark .topo-viewbar { background: #24272c; border-color: #3a3f45; }

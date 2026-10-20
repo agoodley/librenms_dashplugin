@@ -13,7 +13,7 @@ transceiver sensors and the hardware inventory).
 | Interface names at **both ends** of every link (`Te1/0/1 [R]`), link speed, port-channels collapsed (`2x 10G`) | Point-to-point subnets (/29–/31) as direct links, LAN segments as subnet "media" nodes |
 | STP overlay: ★ root bridge, `[R]`/`[D]`/`[ALT]` port roles, ⊗ on blocked ports, dashed orange blocked links | Interface name + IP address at each end, VRF filter, loopbacks and stub networks per device |
 | VLAN filter dims switches/links that do not carry the VLAN and switches the STP overlay to that VLAN's instance | OSPF adjacencies and BGP sessions (iBGP/eBGP, external AS clouds), red when not full/established |
-| Unmanaged LLDP/CDP neighbors (APs, phones, servers, unknown switches); an unmanaged neighbor behind a root port is flagged `ROOT?` | |
+| Unmanaged LLDP/CDP neighbors (APs, phones, servers, unknown switches); an unmanaged neighbor behind a root port is flagged `ROOT?` | OSPFv3, IS-IS, IPsec, MPLS LSP and pseudowire [overlays](#layer-3-map-overlays), with an MTU check of the pseudowires' attachment circuits |
 
 Both maps: center on any device with N hops, filter by device group or location, search, hierarchical or
 organic layout, drag-and-save layout (per browser), color links by speed / utilization / status,
@@ -21,6 +21,40 @@ details panel for every device and link (speed, duplex, VLANs, traffic, STP stat
 PNG and CSV, full screen, and shareable URLs. On the L2 map, **Simulate failure** in the details of a device or link
 shows which devices would lose their path to the core (failures add up, so "what if both go down" works too), and
 the top-most down device of an outage is marked with the number of down devices behind it.
+
+### Layer 3 map overlays
+
+Besides OSPF and BGP, the L3 map draws the overlays of LibreNMS modules that are often off. Each has its own toggle,
+shown only when the devices drawn have such data:
+
+| Overlay | LibreNMS module | |
+|---|---|---|
+| OSPFv3 adjacencies | `ospfv3` (on by default) | neighbors are found by router ID within their context (VRF): their address is usually link-local |
+| IS-IS adjacencies | `isis` discovery and poller modules (off by default) | by the neighbor's address (never a link-local one), else its system ID: as learnt from the other adjacencies, or a loopback it encodes (`0100.0000.0001` = 10.0.0.1) |
+| IPsec tunnels | `cipsec-tunnels` poller module: off by default, on in the OS definitions of Cisco IOS, IOS XE, IOS XR, NX-OS, ASA and most other Cisco OSes, and of Firebrick | to the device owning the peer address |
+| MPLS LSPs | `mpls` (Nokia SR OS) | **toggle off by default**; arrow toward the tail, red when an LSP that is in service is down. Past 500 pairs of devices (an RSVP full mesh) the pairs with LSPs down and then the busiest are drawn, and the status line says so |
+| Pseudowires | `cisco-pw` discovery module: off by default, on in the OS definitions of Cisco IOS, IOS XE, IOS XR and NX-OS | orange with both MTUs when the attachment circuits disagree (see below) |
+
+Both ends of an adjacency, tunnel, LSP or pseudowire are merged into one link per pair of devices, and its details
+list them all (LSP states and paths, tunnel names, pseudowire VC IDs, ports and MTUs). A far end that is a device you
+may see but that is not on the map (beyond the hops, in another location or group, not an L3 device) is drawn faded,
+with its name: double-click it to center the map on it. OSPF and BGP do the same. Such a device beyond the hops adds
+its own side of the adjacency, session or tunnel; one in another location or group has no data on the map, so its
+edge says the state is seen from the drawn side only. At most 100 of these devices are drawn, within the map's device
+limit; the others appear as their address or AS, and the status line says so. An unmonitored peer is one external
+node per address, whatever saw it (a router can be OSPF neighbor, LSP tail and IPsec peer at once); BGP peers that no
+device owns still go to the cloud of their AS. Addresses are looked up in the global table first, so a customer VRF
+that reuses a loopback range does not hide the router.
+
+LibreNMS keeps no pseudowire state and loses most peers: it never sets `peer_device_id`, and `peer_ldp_id` is a signed
+INT that holds 2147483647 for every LDP ID from 128.0.0.0 on. When both ends lost it, a pseudowire is paired with the
+one other device that has its VC ID, unless a device you may not see has that VC ID too, and its details say "paired
+by VC ID (LDP id not stored)": PEs whose real peers are unmonitored and reuse the VC ID can still be paired wrongly.
+One that cannot be paired goes to an "unknown peers" node of its PE. The MTU check compares the MTUs the two attachment
+circuits signal, which must match for a pseudowire to come up (RFC 4447): the interface MTU, less the Ethernet header on
+IOS XR, which counts it (and the VLAN tag of a subinterface): XR 1514, or 1518 on a dot1q subinterface, is IOS XE 1500.
+
+![L3 map overlays](docs/images/l3-layers.png)
 
 ### Spanning tree diagnostics
 
@@ -209,6 +243,9 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 * Pick a **VLAN** on the L2 map to see which switches/trunks carry it and that VLAN's spanning tree
   (root bridge, port roles, blocked ports). Domain rows and findings on the STP page link straight to that view.
 * Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope).
+* On the L3 map, click a router and pick an overlay under *Connections* to list its LSPs, tunnels or pseudowires;
+  `l3?isis=0&mpls=1` (and `api/l3`) switches IS-IS off and the MPLS LSPs on. A faded device is outside the map:
+  double-click it to follow the tunnel or LSP there.
 * The suggested configuration under a description finding is ready to paste; it names each port after its current
   LLDP/CDP neighbor (`core2 Te1/1/1`).
 * Before maintenance on a switch, open it on the L2 map and use **Simulate failure**: the box lists what loses its path
@@ -265,7 +302,10 @@ dependencies; other users see the page read only.
   the diagnostics.
 * `src/Support/Navigation.php` – the pages, as listed in the navigation, the plugin menu and the landing page.
 * `src/Topology/L2Builder.php`, `src/Topology/L3Builder.php` – build the map graphs (link de-duplication,
-  LAG/MLAG handling, VLAN membership, subnet classification, routing overlays, hierarchy tiers).
+  LAG/MLAG handling, VLAN membership, subnet classification, hierarchy tiers, and the L3 overlays: OSPF, OSPFv3, IS-IS,
+  BGP, IPsec, MPLS LSPs and pseudowires, whose far ends are devices of the map, stubs of devices outside it or one
+  external node per address). `Data\L3LayerRepository` reads the newer layers and recognizes far ends among the devices
+  the user may see.
 * `src/Stp/StpIndex.php`, `src/Stp/StpAnalyzer.php` – STP role derivation (BRIDGE-MIB has no port role) and
   the diagnostics.
 * `src/Links/LinkAnalyzer.php` – the link and VLAN checks (both ends of each link, port-channels, VLAN islands per
@@ -292,6 +332,12 @@ vendor/bin/phpunit
 * Stacks / virtual chassis that are not modelled as one device, and MLAG pairs without a detected
   port-channel, can produce a "possible bridging loop" warning – the finding says so.
 * Saved layouts live in the browser's local storage, they are not shared between users.
+* L3 overlays: a far end found on several devices (a duplicated address or router ID) is not guessed: it is an
+  external node, like an unknown peer or one on a device you may not see, which shows only the address. Pseudowires
+  whose peers LibreNMS lost on several PEs with the same VC ID stay unpaired, and their state is unknown; the MTU check
+  assumes one VLAN tag on an IOS XR subinterface (a QinQ one is flagged). Far ends that are not on the map are looked
+  up in `ipv4_addresses` / `ipv6_addresses`, which have no index on the address: one table scan per map load for up to
+  5,000 addresses.
 * LibreNMS refreshes VLAN memberships at discovery (every 6 hours by default) and counters at every poll, so a
   VLAN change can take until the next discovery to show up. The split VLAN check can only follow links that
   LLDP/CDP reports; a VLAN that crosses a link without LLDP/CDP can be reported as split.

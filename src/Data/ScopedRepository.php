@@ -24,6 +24,22 @@ abstract class ScopedRepository
     }
 
     /**
+     * Another repository of the plugin for the same user, sharing the list of devices it may see.
+     *
+     * @template T of ScopedRepository
+     *
+     * @param  class-string<T>  $class
+     * @return T
+     */
+    public function sibling(string $class): self
+    {
+        $sibling = new $class($this->user);
+        $sibling->accessible = $this->accessible();
+
+        return $sibling;
+    }
+
+    /**
      * Devices the user may see, optionally limited to a device group and/or location.
      *
      * @return int[]

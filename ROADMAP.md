@@ -22,12 +22,12 @@ The plugin's conventions apply to all of them:
 | 3 | [Redundancy & failure impact](README.md#redundancy--failure-impact) | **done** | – |
 | 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
 | 7 | [Automatic device dependencies](README.md#device-dependencies) | **done** | – |
+| 9 | [More L3 map layers](README.md#layer-3-map-overlays) | **done** | – |
 | 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
 | 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
 | 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
 | 4 | [Routing & IP diagnostics](#4-routing--ip-diagnostics) | planned | M |
 | 12 | [Coverage report](#12-coverage-report) | planned | S |
-| 9 | [More L3 map layers](#9-more-l3-map-layers) | planned | S each |
 | 10 | [Loop evidence on the STP page](#10-loop-evidence-on-the-stp-page) | planned | S–M |
 | 8 | [Site / WAN view](#8-site--wan-view) | later | M |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
@@ -114,13 +114,6 @@ The L3 counterpart of the spanning tree page.
   monitored, where they are connected, with a link to add them.
 * Monitored devices without neighbor data, which leave gaps in the maps. The link diagnostics already report devices
   that other switches see but that report no neighbors themselves.
-
-### 9. More L3 map layers
-
-* OSPFv3 (`ospfv3_nbrs`), IS-IS (`isis_adjacencies`; the module is off by default), IPsec tunnels (`ipsec_tunnels`,
-  peer address → device), MPLS LSPs (`mpls_lsps`, from/to addresses) and pseudowires (`pseudowires`; local vs peer MTU
-  gives a free MTU check).
-* Each is about the size of `L3Builder::addOspf()`.
 
 ### 10. Loop evidence on the STP page
 
