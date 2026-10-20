@@ -11,7 +11,7 @@ use Illuminate\Routing\Controller;
 
 /**
  * Pages of the plugin. The map pages are shells filled by resources/assets/topology.js from the
- * JSON API; the STP diagnostics page is rendered on the server.
+ * JSON API; the STP and link diagnostics pages are rendered on the server.
  */
 class PageController extends Controller
 {
@@ -38,6 +38,23 @@ class PageController extends Controller
      */
     public function stp(Request $request): View
     {
+        return $this->diagnostics($request, 'stp', 'spanning tree analysis');
+    }
+
+    /**
+     * plugin/topology/links: link and VLAN diagnostics.
+     */
+    public function links(Request $request): View
+    {
+        return $this->diagnostics($request, 'links', 'link analysis');
+    }
+
+    /**
+     * Diagnostics page rendered on the server: TopologyService::$analysis() shown with view
+     * topology::$analysis, plus the filter choices; a failure is shown on the page.
+     */
+    private function diagnostics(Request $request, string $analysis, string $what): View
+    {
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
         $repo = new TopologyRepository($request->user());
@@ -45,12 +62,12 @@ class PageController extends Controller
         $result = null;
         $error = null;
         try {
-            $result = $this->service($request, $settings)->stp($params);
+            $result = $this->service($request, $settings)->$analysis($params);
         } catch (\Throwable $e) {
-            $error = $this->failure('spanning tree analysis', $e);
+            $error = $this->failure($what, $e);
         }
 
-        return view('topology::stp', [
+        return view("topology::$analysis", [
             'params' => $params,
             'result' => $result,
             'error' => $error,

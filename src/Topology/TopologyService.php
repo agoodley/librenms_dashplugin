@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsTopology\Topology;
 
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
+use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
@@ -15,6 +16,9 @@ class TopologyService
 {
     /** Above this many ports_stp rows the STP page analyzes one VLAN at a time. */
     private const STP_ALL_VLAN_LIMIT = 150000;
+
+    /** Above this many ports_vlans rows on inter-switch ports the link page skips the VLAN checks. */
+    private const LINK_VLAN_LIMIT = 1000000;
 
     private const L3_ROLES = [DeviceRole::ROUTER, DeviceRole::L3SWITCH, DeviceRole::FIREWALL];
 
@@ -188,6 +192,104 @@ class TopologyService
         if ($p['device']) {
             $result = self::filterStpForDevice($result, $p['device']);
         }
+
+        return $result;
+    }
+
+    /**
+     * Link and VLAN diagnostics of the devices in scope. Links to monitored neighbours outside the
+     * group/location filter are compared too; the VLAN topology is analyzed inside the scope.
+     *
+     * @param  array{device: ?int, group: ?int, location: ?int}  $p
+     */
+    public function links(array $p): array
+    {
+        [$scope, $device] = $this->scope($p);
+        $links = $this->repo->links($scope);
+
+        $remote = [];
+        $linkPorts = [];
+        $interSwitch = [];
+        foreach ($links as $link) {
+            $linkPorts[] = (int) $link['local_port_id'];
+            if ($link['remote_device_id']) {
+                $remote[] = (int) $link['remote_device_id'];
+                $linkPorts[] = (int) $link['remote_port_id'];
+                $interSwitch[] = (int) $link['local_port_id'];
+                $interSwitch[] = (int) $link['remote_port_id'];
+            }
+        }
+        $linkPorts = array_values(array_unique(array_filter($linkPorts)));
+        $deviceIds = array_values(array_unique(array_merge($scope, $remote)));
+
+        // every aggregate (tells which devices report port-channels at all) and the members of linked ones
+        $lag = $this->repo->lagParents($deviceIds);
+        $linkedAggregates = [];
+        foreach ($linkPorts as $portId) {
+            if (isset($lag[$portId])) {
+                $linkedAggregates[$lag[$portId]] = true;
+            }
+        }
+        $members = array_keys(array_filter($lag, fn ($parent) => isset($linkedAggregates[$parent])));
+
+        // ports between monitored devices, with their aggregates and all members, carry no "VLAN in use"
+        $interSwitchAggregates = [];
+        foreach ($interSwitch as $portId) {
+            if (isset($lag[$portId])) {
+                $interSwitchAggregates[$lag[$portId]] = true;
+            }
+        }
+        $interSwitch = array_merge($interSwitch, array_keys($interSwitchAggregates),
+            array_keys(array_filter($lag, fn ($parent) => isset($interSwitchAggregates[$parent]))));
+
+        $ports = $this->repo->ports(array_merge($linkPorts, array_values(array_unique($lag)), $members));
+        $withIp = $this->repo->portsWithIp(array_keys($ports));
+        foreach ($ports as $portId => &$port) {
+            $port['has_ip'] = isset($withIp[$portId]);
+        }
+        unset($port);
+
+        $notice = null;
+        $vlanPorts = array_values(array_unique(array_merge($linkPorts, array_keys($linkedAggregates), $members)));
+        if ($this->repo->portVlanCount($vlanPorts) > self::LINK_VLAN_LIMIT) {
+            $portVlans = [];
+            $notice = 'Very large VLAN data set: the VLAN checks were skipped.';
+        } else {
+            $portVlans = $this->repo->portVlans($vlanPorts);
+        }
+
+        $physicalPorts = array_values(array_unique(array_merge($linkPorts, $members)));
+        $analyzer = new LinkAnalyzer(
+            $this->repo->devices($deviceIds, roles: false),
+            $scope,
+            $links,
+            $ports,
+            $portVlans,
+            $lag,
+            $this->settings,
+            $portVlans ? $this->repo->activeVlans($scope, $interSwitch) : [],
+            $this->repo->portStatistics($physicalPorts),
+            $this->repo->opticalRx($physicalPorts),
+        );
+
+        $result = $analyzer->analyze();
+        if ($device) {
+            $result = self::filterLinksForDevice($result, $device);
+        }
+        $result['notice'] = $notice;
+        $result['filter'] = $p;
+
+        return $result;
+    }
+
+    /**
+     * Narrow a link analysis to one device (link page opened from a device page).
+     */
+    public static function filterLinksForDevice(array $result, int $deviceId): array
+    {
+        $result['findings'] = array_values(array_filter($result['findings'], fn ($f) => in_array($deviceId, $f['devices'], true)));
+        $result['links'] = array_values(array_filter($result['links'], fn ($l) => $l['a']['device_id'] === $deviceId || $l['b']['device_id'] === $deviceId));
+        $result['summary'] = LinkAnalyzer::summarize($result['links'], $result['findings']);
 
         return $result;
     }

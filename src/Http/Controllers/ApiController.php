@@ -10,7 +10,7 @@ use Illuminate\Routing\Controller;
 
 /**
  * JSON API behind the map pages, also usable for automation:
- * GET plugin/topology/api/{l2,l3,stp} with the same query parameters as the pages
+ * GET plugin/topology/api/{l2,l3,stp,links} with the same query parameters as the pages
  * (device, depth, group, location, vlan, vrf and the map toggles).
  */
 class ApiController extends Controller
@@ -39,6 +39,14 @@ class ApiController extends Controller
     public function stp(Request $request): JsonResponse
     {
         return $this->respond($request, 'stp');
+    }
+
+    /**
+     * Link and VLAN diagnostics (findings and one row per link with both ends).
+     */
+    public function links(Request $request): JsonResponse
+    {
+        return $this->respond($request, 'links');
     }
 
     /**

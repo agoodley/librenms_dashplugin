@@ -21,6 +21,12 @@ class PluginSettings
         'stp_max_diameter' => '7',
         'stp_preferred_roots' => '',
         'stp_event_days' => '7',
+        'links_error_threshold' => '10',
+        'links_discard_percent' => '1',
+        'links_lag_imbalance' => '40',
+        'links_rx_margin' => '2',
+        'links_ignore_vlans' => '',
+        'links_disabled_checks' => '',
     ];
 
     /** @var array<string, string> */
@@ -86,5 +92,27 @@ class PluginSettings
         $parts = preg_split('/[\s,;]+/', $this->values[$key] ?? '') ?: [];
 
         return array_values(array_filter(array_map('trim', $parts), fn ($part) => $part !== ''));
+    }
+
+    /**
+     * Set of integers from a list setting that may contain ranges ("1002-1005, 999"); values
+     * outside [$min, $max] are dropped.
+     *
+     * @return array<int, true>
+     */
+    public function intSet(string $key, int $min, int $max): array
+    {
+        $result = [];
+        foreach ($this->list($key) as $part) {
+            if (preg_match('/^(\d+)-(\d+)$/', $part, $range)) {
+                for ($value = max($min, (int) $range[1]); $value <= min($max, (int) $range[2]); $value++) {
+                    $result[$value] = true;
+                }
+            } elseif (ctype_digit($part) && (int) $part >= $min && (int) $part <= $max) {
+                $result[(int) $part] = true;
+            }
+        }
+
+        return $result;
     }
 }

@@ -79,6 +79,14 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-stp-table td, .topo-stp-table th { font-size: 12px; white-space: nowrap; }
 .topo-stp-table td.topo-wrap { white-space: normal; }
 .topo-mono { font-family: monospace; font-size: 11px; }
+.topo-config { margin-top: 4px; font-size: 12px; }
+.topo-config summary { cursor: pointer; color: #1f6fb2; }
+.topo-config pre { margin: 4px 0 0; padding: 6px 8px; font-size: 11px; white-space: pre; max-height: 260px; overflow: auto; }
+.topo-stp-table td.topo-mismatch { background: rgba(230, 126, 34, 0.18); font-weight: 600; }
+.topo-issue { display: inline-block; margin: 1px 2px 1px 0; padding: 0 5px; border-radius: 3px; font-size: 11px; color: #fff; white-space: nowrap; }
+.topo-issue-critical { background: #c0392b; }
+.topo-issue-warning { background: #e67e22; }
+.topo-issue-info { background: #1f6fb2; }
 .topo-filterbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 10px; }
 .topo-filterbar .form-control { display: inline-block; width: auto; height: 30px; }
 .topo-device-panel .topo-kv th { width: auto; }
@@ -92,6 +100,9 @@ html.dark .topo-kv th, html.dark .topo-toolbar .topo-group-label, html.dark .top
 html.dark .topo-status-bar, html.dark .topo-finding-detail, html.dark .topo-card p { color: #bbb; }
 html.dark .topo-finding-rec { color: #7fc79a; }
 html.dark .topo-subnet { background: #3b3524; }
+html.dark .topo-config pre { background: #24272c; border-color: #3a3f45; color: #ddd; }
+html.dark .topo-config summary { color: #6ea8de; }
+html.dark .topo-stp-table td.topo-mismatch { background: rgba(230, 126, 34, 0.28); }
 
 @media (max-width: 991px) {
     .topo-body { flex-direction: column; height: auto; }
