@@ -96,24 +96,41 @@ class HistoryFactsTest extends TestCase
         $this->assertSame('Po1', array_values($facts)[0]['data']['aggregate_name']);
     }
 
-    public function testRootBridgeEachSwitchSees(): void
+    public function testRootBridgesEachSwitchSees(): void
     {
         $facts = (new FactCollector(self::NAMES, self::ports()))->stpRoots([
             ['device_id' => 1, 'vlan' => null, 'designatedRoot' => '8000.00ab01000001', 'bridgeAddress' => '00:ab:01:00:00:01'],
             ['device_id' => 3, 'vlan' => 1, 'designatedRoot' => '00ab01000001', 'bridgeAddress' => '00ab03000001'],
+            ['device_id' => 3, 'vlan' => 20, 'designatedRoot' => '00ab01000001', 'bridgeAddress' => '00ab03000001'],
             ['device_id' => 3, 'vlan' => 30, 'designatedRoot' => '7000.00cc00000001', 'bridgeAddress' => '00ab03000001'],
             ['device_id' => 2, 'vlan' => 1, 'designatedRoot' => '', 'bridgeAddress' => '00ab02000001'],
         ]);
 
-        $this->assertSame(['d1|v0|00ab01000001', 'd3|v0|00ab01000001', 'd3|v30|00cc00000001'], array_column($facts, 'key'));
+        $this->assertSame(['d1|00ab01000001', 'd3|00ab01000001', 'd3|00cc00000001'], array_column($facts, 'key'));
         $byKey = array_column($facts, null, 'key');
-        $this->assertSame([3, 1], [$byKey['d3|v0|00ab01000001']['device_a'], $byKey['d3|v0|00ab01000001']['device_b']], 'the root device is involved too');
-        $this->assertNull($byKey['d1|v0|00ab01000001']['device_b'], 'core1 is the root itself');
-        $this->assertSame('core1', $byKey['d3|v0|00ab01000001']['data']['root_name']);
-        $this->assertNull($byKey['d3|v30|00cc00000001']['data']['root_device'], 'a root bridge LibreNMS does not monitor');
+        $this->assertSame([0, 20], $byKey['d3|00ab01000001']['data']['vlans'], 'one fact per root bridge, with its instances');
+        $this->assertSame([3, null], [$byKey['d3|00ab01000001']['device_a'], $byKey['d3|00ab01000001']['device_b']],
+            'only the observing switch is involved: who may see the root bridge does not see the switches behind it');
+        $this->assertSame('core1', $byKey['d3|00ab01000001']['data']['root_name']);
+        $this->assertNull($byKey['d3|00cc00000001']['data']['root_device'], 'a root bridge LibreNMS does not monitor');
     }
 
-    public function testOnlyBlockingPortsAreFacts(): void
+    public function testPvstIsOneFactPerSwitchAndRoot(): void
+    {
+        $stp = [];
+        foreach ([1, 2, 3] as $device) {
+            foreach (range(1, 50) as $vlan) {
+                $stp[] = ['device_id' => $device, 'vlan' => $vlan, 'designatedRoot' => $vlan % 2 ? '00ab01000001' : '00ab02000001', 'bridgeAddress' => "00ab0{$device}000001"];
+            }
+        }
+
+        $facts = (new FactCollector(self::NAMES, self::ports()))->stpRoots($stp);
+
+        $this->assertCount(6, $facts, '3 switches x 2 root bridges, not x 50 VLANs');
+        $this->assertCount(25, array_values($facts)[0]['data']['vlans']);
+    }
+
+    public function testBlockedPortIsOneFactWithItsInstances(): void
     {
         $facts = (new FactCollector(self::NAMES, self::ports()))->blockedPorts([
             ['device_id' => 3, 'port_id' => 32, 'vlan' => 1, 'state' => 'blocking'],
@@ -121,7 +138,35 @@ class HistoryFactsTest extends TestCase
             ['device_id' => 3, 'port_id' => 31, 'vlan' => 1, 'state' => 'forwarding'],
         ]);
 
-        $this->assertSame(['d3:gi1/0/50|v0', 'd3:gi1/0/50|v20'], array_column($facts, 'key'));
+        $this->assertSame(['d3:gi1/0/50'], array_column($facts, 'key'));
+        $this->assertSame([0, 20], array_values($facts)[0]['data']['vlans']);
+    }
+
+    public function testMonitoredNeighborStillReportedAsUnmanagedIsOneCable(): void
+    {
+        $ports = self::ports() + [91 => ['port_id' => 91, 'device_id' => 9, 'ifName' => 'Te1/0/1', 'ifDescr' => 'TenGigabitEthernet1/0/1']];
+        $links = [
+            // core1 has not rediscovered yet: newsw is still an unmanaged neighbor there
+            self::link(1, 11, 0, null, 'newsw.example.net', 'TenGigabitEthernet1/0/1', 'Cisco C9300'),
+            self::link(9, 91, 1, 11, 'core1', 'Te1/0/1'),
+            // a different neighbor on another port stays
+            self::link(1, 12, 0, null, 'ap-floor2', 'eth0', 'Cisco AIR-AP2802I'),
+        ];
+
+        $facts = (new FactCollector(self::NAMES + [9 => '10.1.1.9'], $ports, [9 => ['newsw', '10.1.1.9']]))->links($links);
+
+        $this->assertSame(['d1:te1/0/1|d9:te1/0/1', 'd1:te1/0/2|u:ap-floor2:eth0'], array_values(array_column($facts, 'key')),
+            'matched by its sysName, the display name being an address');
+    }
+
+    public function testBgpPeerInTwoVrfs(): void
+    {
+        $peer = fn (int $vrf) => ['device_id' => 1, 'bgpPeerIdentifier' => '10.9.9.9', 'bgpPeerRemoteAs' => 65009, 'bgpPeerState' => 'established',
+            'bgpPeerDescr' => '', 'context_name' => '', 'vrf_id' => $vrf];
+
+        $facts = (new FactCollector(self::NAMES, self::ports()))->bgp([$peer(0), $peer(3), $peer(4)], []);
+
+        $this->assertSame(['d1||10.9.9.9', 'd1||vrf3|10.9.9.9', 'd1||vrf4|10.9.9.9'], array_column($facts, 'key'));
     }
 
     public function testWorkingAdjacenciesAndSessions(): void
@@ -151,6 +196,16 @@ class HistoryFactsTest extends TestCase
 
         $this->assertSame([], $collector->links([self::link(3, 31, 1, 12)]));
         $this->assertSame([], $collector->blockedPorts([['device_id' => 1, 'port_id' => 12, 'vlan' => 1, 'state' => 'blocking']]));
+    }
+
+    public function testChangedSpanningTreeFactStartsANewPeriod(): void
+    {
+        $now = FactCollector::fact('stp_root', 'd3|00ab01000001', 3, null, ['vlans' => [0, 30]]);
+        $hash = array_key_first($now);
+        $open = [['id' => 7, 'hash' => $hash, 'data_hash' => md5('vlans 0 only')]];
+
+        $this->assertSame(['insert' => [], 'remove' => [], 'update' => [7 => $now[$hash]]], FactDiff::diff($open, $now));
+        $this->assertSame(['insert' => $now, 'remove' => [7], 'update' => []], FactDiff::diff($open, $now, true));
     }
 
     public function testSnapshotWritesOnlyChanges(): void

@@ -201,12 +201,62 @@ class ChangeReportTest extends TestCase
         $rows = array_merge(
             self::rows($collector->links([self::link(4, 31, 1, 12), self::link(4, 32, 2, 21)]), self::T1),
             self::rows($collector->blockedPorts([['device_id' => 4, 'port_id' => 32, 'vlan' => 1, 'state' => 'blocking']]), self::T1),
+            // core1 knew acc2 as an unmanaged neighbor before LibreNMS monitored it: the same cable
+            self::rows($collector->links([self::link(1, 12, 0, null, 'acc2.example.net', 'GigabitEthernet1/0/49', 'Cisco C9300')]), self::T0 - 86400, self::T1),
         );
 
         $events = self::report($rows, null, [4 => true])['events'];
 
         $this->assertCount(1, $events);
         $this->assertSame('acc2 was added to LibreNMS: 2 links, 1 blocked port', $events[0]['text']);
+    }
+
+    public function testNeighborThatLibrenmsStartsOrStopsToMonitorIsNoChange(): void
+    {
+        $unmanaged = self::collector()->links([self::link(1, 12, 0, null, 'acc2', 'Gi1/0/49', 'Cisco C9300')]);
+        $managed = self::collector()->links([self::link(4, 31, 1, 12)]);
+
+        // core1's rediscovery resolves the neighbor, or the device is deleted and core1 sees it as unmanaged again
+        $this->assertSame([], self::report(array_merge(self::rows($unmanaged, self::T0 - 86400, self::T1), self::rows($managed, self::T1)))['events']);
+        $this->assertSame([], self::report(array_merge(self::rows($managed, self::T0 - 86400, self::T1), self::rows($unmanaged, self::T2)))['events']);
+
+        // another neighbor on that port is a moved cable
+        $other = self::collector()->links([self::link(1, 12, 0, null, 'old-hub', 'port 2', 'HP ProCurve')]);
+        $events = self::report(array_merge(self::rows($managed, self::T0 - 86400, self::T1), self::rows($other, self::T1)))['events'];
+        $this->assertSame(['cable_moved'], array_column($events, 'type'));
+    }
+
+    public function testPvstRootMoves(): void
+    {
+        // core1 is the root of the odd VLANs, core2 of the even ones; then core1 fails
+        $stp = fn (callable $root) => self::collector()->stpRoots(array_merge(...array_map(fn ($device) => array_map(fn ($vlan) => [
+            'device_id' => $device, 'vlan' => $vlan, 'designatedRoot' => $root($vlan), 'bridgeAddress' => "00ab0{$device}000001"], range(1, 50)), [1, 2, 3])));
+        $before = $stp(fn ($vlan) => $vlan % 2 ? '00ab01000001' : '00ab02000001');
+        $after = $stp(fn ($vlan) => '00ab02000001');
+
+        $events = self::report(array_merge(self::rows($before, self::T0 - 86400, self::T1), self::rows($after, self::T1)))['events'];
+
+        $this->assertSame(['root_changed'], array_column($events, 'type'), 'one event for all instances and switches');
+        $this->assertStringStartsWith('VLANs 1, 3, 5, 7, 9, 11', $events[0]['text']);
+        $this->assertStringContainsString('root bridge changed from core1 (00:ab:01:00:00:01) to core2 (00:ab:02:00:00:01) (seen by acc1, core1, core2)', $events[0]['text']);
+
+        // one VLAN moves while core1 stays the root of the others
+        $partial = $stp(fn ($vlan) => $vlan === 31 ? '00ab02000001' : ($vlan % 2 ? '00ab01000001' : '00ab02000001'));
+        $events = self::report(array_merge(self::rows($before, self::T0 - 86400, self::T1), self::rows($partial, self::T1)))['events'];
+        $this->assertSame(['VLAN 31: root bridge changed from core1 (00:ab:01:00:00:01) to core2 (00:ab:02:00:00:01) (seen by acc1, core1, core2)'],
+            array_column($events, 'text'));
+    }
+
+    public function testParallelAdjacenciesStayApart(): void
+    {
+        $ospf = self::collector()->ospf([
+            ['device_id' => 1, 'port_id' => 11, 'ospfNbrIpAddr' => '10.0.0.2', 'ospfNbrRtrId' => '2.2.2.2', 'ospfNbrState' => 'full', 'context_name' => ''],
+            ['device_id' => 1, 'port_id' => 12, 'ospfNbrIpAddr' => '10.0.1.2', 'ospfNbrRtrId' => '2.2.2.2', 'ospfNbrState' => 'full', 'context_name' => ''],
+        ], ['2.2.2.2' => 2], []);
+
+        $events = self::report(self::rows($ospf, self::T0 - 86400, self::T1))['events'];
+
+        $this->assertSame(['ospf_lost', 'ospf_lost'], array_column($events, 'type'));
     }
 
     public function testDevicesTheUserMayNotSeeAreNotNamed(): void

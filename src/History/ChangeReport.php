@@ -2,7 +2,6 @@
 
 namespace Agoodley\LibrenmsTopology\History;
 
-use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
 
 /**
@@ -72,13 +71,13 @@ class ChangeReport
             }
         }
 
-        $added = $report->newDevices($added);
-        $report->links(self::ofKind($added, FactCollector::LINK), self::ofKind($removed, FactCollector::LINK));
+        [$addedLinks, $removedLinks] = $report->sameCables(self::ofKind($added, FactCollector::LINK), self::ofKind($removed, FactCollector::LINK));
+        $added = $report->newDevices(array_merge($addedLinks, self::notOfKind($added, FactCollector::LINK)));
+        $report->links(self::ofKind($added, FactCollector::LINK), $removedLinks);
         $report->lagMembers(self::ofKind($added, FactCollector::LAG), 'lag_member_added');
         $report->lagMembers(self::ofKind($removed, FactCollector::LAG), 'lag_member_removed');
         $report->roots(self::ofKind($added, FactCollector::STP_ROOT), self::ofKind($removed, FactCollector::STP_ROOT));
-        $report->blocking(self::ofKind($added, FactCollector::STP_BLOCKED), 'blocking_started');
-        $report->blocking(self::ofKind($removed, FactCollector::STP_BLOCKED), 'blocking_stopped');
+        $report->blocking(self::ofKind($added, FactCollector::STP_BLOCKED), self::ofKind($removed, FactCollector::STP_BLOCKED));
         $report->adjacencies(self::ofKind($added, FactCollector::OSPF), 'ospf_up');
         $report->adjacencies(self::ofKind($removed, FactCollector::OSPF), 'ospf_lost');
         $report->adjacencies(self::ofKind($added, FactCollector::BGP), 'bgp_up');
@@ -121,7 +120,11 @@ class ChangeReport
             FactCollector::OSPF => ['OSPF adjacency', 'OSPF adjacencies'], FactCollector::BGP => ['BGP session', 'BGP sessions'],
         ];
         foreach ($byDevice as $device => $rows) {
-            $counts = array_count_values(array_column($rows, 'kind'));
+            $counts = [];
+            foreach ($rows as $row) {
+                // a root bridge fact holds all the instances (VLANs) it is the root of
+                $counts[$row['kind']] = ($counts[$row['kind']] ?? 0) + ($row['kind'] === FactCollector::STP_ROOT ? count(FactText::vlans($row['data'])) : 1);
+            }
             $parts = [];
             foreach ($kinds as $kind => [$one, $many]) {
                 if (isset($counts[$kind])) {
@@ -133,6 +136,44 @@ class ChangeReport
         }
 
         return $rest;
+    }
+
+    /**
+     * LibreNMS starting or stopping to monitor a neighbor turns the same cable from an unmanaged
+     * neighbor into a link between two monitored devices, or back: no change of the network. Such
+     * pairs are left out; the link of a device added to LibreNMS stays for its "added" event.
+     *
+     * @return array{0: array<int, array>, 1: array<int, array>} added and removed link rows left
+     */
+    private function sameCables(array $added, array $removed): array
+    {
+        $removedByPort = [];
+        foreach ($removed as $index => $row) {
+            foreach (self::monitoredEnds($row) as $port) {
+                $removedByPort[$port][] = $index;
+            }
+        }
+
+        foreach ($added as $addedIndex => $row) {
+            foreach (self::monitoredEnds($row) as $port) {
+                foreach ($removedByPort[$port] ?? [] as $index) {
+                    if (! isset($removed[$index])) {
+                        continue;
+                    }
+                    [, $was] = self::splitAt($removed[$index], $port);
+                    [, $now] = self::splitAt($row, $port);
+                    if (FactCollector::sameNeighbor($was['end'], $now['end'])) {
+                        unset($removed[$index]);
+                        if (! isset($this->newDevices[(int) $row['device_a']]) && ! isset($this->newDevices[(int) $row['device_b']])) {
+                            unset($added[$addedIndex]);
+                        }
+                        continue 3;
+                    }
+                }
+            }
+        }
+
+        return [array_values($added), array_values($removed)];
     }
 
     /**
@@ -225,76 +266,102 @@ class ChangeReport
     }
 
     /**
-     * Root bridge changes: one event per instance, old and new root, with the switches that saw it.
+     * Root bridge changes. A switch's root bridge facts that ended and started at one snapshot give
+     * the root of each instance (VLAN) before and after; instances whose root changed, appeared or
+     * went away make one event per change and snapshot, with the switches that saw it.
      */
     private function roots(array $added, array $removed): void
     {
-        $removedBy = [];
-        foreach ($removed as $index => $row) {
-            $removedBy[$row['data']['device'] . '|' . $row['data']['vlan']][] = $index;
+        $sides = [];
+        foreach ($removed as $row) {
+            $sides[$row['data']['device'] . '|' . $row['removed_at']]['before'][] = $row['data'];
+        }
+        foreach ($added as $row) {
+            $sides[$row['data']['device'] . '|' . $row['first_seen']]['after'][] = $row['data'];
         }
 
         $changes = [];
-        $used = [];
-        foreach ($added as $row) {
-            $key = $row['data']['device'] . '|' . $row['data']['vlan'];
-            $old = null;
-            foreach ($removedBy[$key] ?? [] as $index) {
-                if (! isset($used[$index]) && $removed[$index]['removed_at'] <= $row['first_seen']) {
-                    $used[$index] = true;
-                    $old = $removed[$index];
-                    break;
+        foreach ($sides as $key => $side) {
+            [$device, $time] = array_map('intval', explode('|', $key));
+            $before = self::byVlan($side['before'] ?? []);
+            $after = self::byVlan($side['after'] ?? []);
+            foreach ($after + $before as $vlan => $ignored) {
+                $old = $before[$vlan] ?? null;
+                $new = $after[$vlan] ?? null;
+                if ($old !== null && $new !== null && $old['root'] === $new['root']) {
+                    continue; // same root bridge, other instances changed
                 }
-            }
-            $type = $old ? 'root_changed' : 'root_new';
-            $changes[$type . '|' . $row['first_seen'] . '|' . $row['data']['vlan'] . '|' . ($old['data']['root'] ?? '') . '|' . $row['data']['root']][] = [$row, $old];
-        }
-        foreach ($removed as $index => $row) {
-            if (! isset($used[$index])) {
-                $changes['root_gone|' . $row['removed_at'] . '|' . $row['data']['vlan'] . '|' . $row['data']['root'] . '|'][] = [$row, null];
+                $type = $old === null ? 'root_new' : ($new === null ? 'root_gone' : 'root_changed');
+                $group = $type . '|' . $time . '|' . ($old['root'] ?? '') . '|' . ($new['root'] ?? '');
+                $changes[$group] ??= ['type' => $type, 'time' => $time, 'old' => $old, 'new' => $new, 'vlans' => [], 'devices' => []];
+                $changes[$group]['vlans'][$vlan] = true;
+                $changes[$group]['devices'][$device] = true;
             }
         }
 
-        foreach ($changes as $group => $pairs) {
-            $type = explode('|', $group)[0];
-            [$row, $old] = $pairs[0];
-            $data = $row['data'];
-            $devices = array_values(array_unique(array_map(fn ($pair) => (int) $pair[0]['data']['device'], $pairs)));
+        foreach ($changes as $change) {
+            $devices = array_keys($change['devices']);
             $seen = $this->deviceList($devices);
-            $instance = StpIndex::vlanLabel((int) $data['vlan']);
-            $text = match ($type) {
-                'root_changed' => "$instance: root bridge changed from " . $this->text->root($old['data']) . ' to ' . $this->text->root($data) . " (seen by $seen)",
-                'root_new' => "$instance: root bridge " . $this->text->root($data) . " (new instance on $seen)",
-                default => "$instance: no longer reported by $seen (root bridge was " . $this->text->root($data) . ')',
+            $instances = FactText::vlanList(array_keys($change['vlans']));
+            $text = match ($change['type']) {
+                'root_changed' => "$instances: root bridge changed from " . $this->text->root($change['old']) . ' to ' . $this->text->root($change['new']) . " (seen by $seen)",
+                'root_new' => "$instances: root bridge " . $this->text->root($change['new']) . " (new instance on $seen)",
+                default => "$instances: no longer reported by $seen (root bridge was " . $this->text->root($change['old']) . ')',
             };
-            $this->add($type === 'root_gone' ? $row['removed_at'] : $row['first_seen'], $type, $text, $devices);
+            $this->add($change['time'], $change['type'], $text, $devices);
         }
     }
 
     /**
-     * Ports that started or stopped blocking, one event per port and snapshot with its instances.
+     * Instance (VLAN key) => root bridge fact data.
+     *
+     * @param  array<int, array>  $facts  root bridge fact data of one switch
+     * @return array<int, array>
      */
-    private function blocking(array $rows, string $type): void
+    private static function byVlan(array $facts): array
     {
-        $groups = [];
-        foreach ($rows as $row) {
-            $time = $type === 'blocking_started' ? $row['first_seen'] : $row['removed_at'];
-            $groups[$time . '|' . $row['data']['device'] . '|' . $row['data']['port_name']][] = $row;
+        $roots = [];
+        foreach ($facts as $data) {
+            foreach (FactText::vlans($data) as $vlan) {
+                $roots[$vlan] = $data;
+            }
         }
-        foreach ($groups as $group) {
-            $data = $group[0]['data'];
-            $vlans = array_map(fn ($row) => StpIndex::vlanLabel((int) $row['data']['vlan']), $group);
-            sort($vlans, SORT_NATURAL);
-            $this->add($type === 'blocking_started' ? $group[0]['first_seen'] : $group[0]['removed_at'], $type,
-                $this->text->device($data['device'], $data['device_name']) . ' ' . $data['port_name']
-                . ($type === 'blocking_started' ? ' started blocking in ' : ' stopped blocking in ') . implode(', ', $vlans),
-                [(int) $data['device']]);
+
+        return $roots;
+    }
+
+    /**
+     * Ports that started or stopped blocking: a port's facts that ended and started at one snapshot
+     * give the instances it blocked before and after; one event per port, snapshot and direction.
+     */
+    private function blocking(array $added, array $removed): void
+    {
+        $ports = [];
+        foreach ($removed as $row) {
+            $ports[$row['removed_at'] . '|' . $row['data']['device'] . '|' . $row['data']['port_name']]['before'][] = $row['data'];
+        }
+        foreach ($added as $row) {
+            $ports[$row['first_seen'] . '|' . $row['data']['device'] . '|' . $row['data']['port_name']]['after'][] = $row['data'];
+        }
+
+        foreach ($ports as $key => $side) {
+            $time = (int) explode('|', $key)[0];
+            $data = ($side['after'] ?? $side['before'])[0];
+            $before = array_merge([], ...array_map(fn ($facts) => FactText::vlans($facts), $side['before'] ?? []));
+            $after = array_merge([], ...array_map(fn ($facts) => FactText::vlans($facts), $side['after'] ?? []));
+            foreach (['blocking_started' => array_diff($after, $before), 'blocking_stopped' => array_diff($before, $after)] as $type => $vlans) {
+                if ($vlans) {
+                    $this->add($time, $type, $this->text->device($data['device'], $data['device_name']) . ' ' . $data['port_name']
+                        . ($type === 'blocking_started' ? ' started blocking in ' : ' stopped blocking in ') . FactText::vlanList($vlans),
+                        [(int) $data['device']]);
+                }
+            }
         }
     }
 
     /**
      * OSPF adjacencies and BGP sessions; when both routers are monitored their two reports of the
-     * same adjacency become one event.
+     * same adjacency become one event (parallel adjacencies between two routers stay apart).
      */
     private function adjacencies(array $rows, string $type): void
     {
@@ -313,11 +380,16 @@ class ChangeReport
             'bgp_up' => ['BGP session ', ' established'], 'bgp_lost' => ['BGP session ', ' down'],
         ];
         foreach ($groups as $group) {
-            $row = $group[0];
-            $describe = str_starts_with($type, 'ospf') ? $this->text->ospf($row['data']) : $this->text->bgp($row['data']);
-            $both = count($group) > 1 ? ' (reported by both routers)' : '';
-            $this->add(str_ends_with($type, '_up') ? $row['first_seen'] : $row['removed_at'], $type,
-                $words[$type][0] . $describe . $words[$type][1] . $both, array_values(array_unique(array_merge(...array_map(fn ($row) => self::devices($row), $group)))));
+            usort($group, fn ($a, $b) => $a['data']['device'] <=> $b['data']['device']);
+            // one report from each router is one adjacency; anything else is several of them
+            $both = count($group) === 2 && $group[0]['data']['device'] !== $group[1]['data']['device'];
+            foreach ($both ? [$group] : array_map(fn ($row) => [$row], $group) as $reports) {
+                $row = $reports[0];
+                $describe = str_starts_with($type, 'ospf') ? $this->text->ospf($row['data']) : $this->text->bgp($row['data']);
+                $this->add(str_ends_with($type, '_up') ? $row['first_seen'] : $row['removed_at'], $type,
+                    $words[$type][0] . $describe . $words[$type][1] . ($both ? ' (reported by both routers)' : ''),
+                    array_values(array_unique(array_merge(...array_map(fn ($row) => self::devices($row), $reports)))));
+            }
         }
     }
 
@@ -367,6 +439,14 @@ class ChangeReport
     private static function ofKind(array $rows, string $kind): array
     {
         return array_values(array_filter($rows, fn ($row) => $row['kind'] === $kind));
+    }
+
+    /**
+     * @return array<int, array>
+     */
+    private static function notOfKind(array $rows, string $kind): array
+    {
+        return array_values(array_filter($rows, fn ($row) => $row['kind'] !== $kind));
     }
 
     /**

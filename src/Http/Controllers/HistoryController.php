@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsTopology\Http\Controllers;
 use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\History\HistoryService;
+use Agoodley\LibrenmsTopology\History\Window;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
@@ -23,9 +24,6 @@ use Illuminate\Support\Facades\Log;
 class HistoryController extends Controller
 {
     use BuildsTopology;
-
-    /** Windows of the Changes page: key => [label, length in days]. */
-    public const WINDOWS = ['1d' => ['last 24 hours', 1], '7d' => ['last 7 days', 7], '30d' => ['last 30 days', 30]];
 
     /**
      * plugin/topology/changes: what changed in the window, the baseline, findings that came or went.
@@ -60,7 +58,8 @@ class HistoryController extends Controller
 
     /**
      * POST plugin/topology/changes/baseline (admins): action=save saves the topology of the last
-     * snapshot as the baseline of the page's scope, action=clear forgets it.
+     * snapshot as the baseline of the page's scope, action=clear forgets it, action=accept takes
+     * one missing fact (hash) out of it.
      */
     public function baseline(Request $request): RedirectResponse
     {
@@ -74,9 +73,14 @@ class HistoryController extends Controller
 
         try {
             $service = $this->history($request, $settings);
+            $hash = $request->input('hash');
             if ($request->input('action') === 'clear') {
                 $removed = $service->clearBaseline($params);
                 $message = "Baseline cleared: $removed facts removed.";
+            } elseif ($request->input('action') === 'accept') {
+                abort_unless(is_string($hash) && preg_match('/^[0-9a-f]{40}$/', $hash), 422);
+                $message = $service->acceptMissing($params, $hash) ? 'Removed from the baseline: it is no longer expected.' : 'Nothing to remove: the baseline has changed.';
+                $message .= " ($hash)";
             } else {
                 $saved = $service->saveBaseline($params, $user);
                 $message = "Baseline saved: {$saved['saved']} facts" . ($saved['removed'] ? " (replacing {$saved['removed']})" : '') . '.';
@@ -84,6 +88,8 @@ class HistoryController extends Controller
             Log::info("topology plugin: $user: $message " . json_encode($back));
 
             return redirect()->route('topology.changes', $back)->with('topology_status', $message);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
+            throw $e;
         } catch (\Throwable $e) {
             return redirect()->route('topology.changes', $back)->with('topology_error', $this->failure('baseline update', $e));
         }
@@ -95,12 +101,18 @@ class HistoryController extends Controller
     }
 
     /**
-     * Who saved the baseline is for admins only.
+     * Who saved the baseline and the counts of the runs (they cover the whole network) are for
+     * admins only.
      */
     private static function forUser(array $result, bool $admin): array
     {
-        if (! $admin && isset($result['baseline']['saved'])) {
-            $result['baseline']['saved']['saved_by'] = null;
+        if (! $admin) {
+            if (isset($result['baseline']['saved'])) {
+                $result['baseline']['saved']['saved_by'] = null;
+            }
+            foreach (array_keys($result['runs'] ?? []) as $type) {
+                unset($result['runs'][$type]['stats']);
+            }
         }
 
         return $result;
@@ -115,30 +127,14 @@ class HistoryController extends Controller
     }
 
     /**
-     * Time window of the page: `window` (1d, 7d, 30d) or `from` / `to` dates (custom, at most a year).
+     * Time window of the page (see Window::resolve()).
      *
      * @return array{0: CarbonInterface, 1: CarbonInterface, 2: string} from, to, window key ('custom' for dates)
      */
     public static function window(array $query): array
     {
-        $now = Carbon::now();
-        if (! empty($query['from'])) {
-            try {
-                $from = Carbon::parse((string) $query['from']);
-                $to = ! empty($query['to']) ? Carbon::parse((string) $query['to']) : $now->copy();
-                if (strlen(trim((string) ($query['to'] ?? ''))) <= 10 && ! empty($query['to'])) {
-                    $to = $to->endOfDay(); // a date includes that whole day
-                }
-                if ($from < $to) {
-                    return [$from->max($to->copy()->subYear()), $to->min($now), 'custom'];
-                }
-            } catch (\Throwable) {
-                // invalid dates: the default window
-            }
-        }
+        [$from, $to, $window] = Window::resolve($query, Carbon::now()->getTimestamp());
 
-        $window = is_string($query['window'] ?? null) && isset(self::WINDOWS[$query['window']]) ? $query['window'] : '1d';
-
-        return [$now->copy()->subDays(self::WINDOWS[$window][1]), $now, $window];
+        return [Carbon::createFromTimestamp($from, date_default_timezone_get()), Carbon::createFromTimestamp($to, date_default_timezone_get()), $window];
     }
 }

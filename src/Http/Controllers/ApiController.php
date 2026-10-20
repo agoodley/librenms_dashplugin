@@ -79,6 +79,7 @@ class ApiController extends Controller
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json("$map view", fn () => FindingBadges::annotate($map, $this->service($request, $settings)->$map($params), new HistoryRepository($request->user())));
+        return $this->json("$map view", fn () => FindingBadges::annotate($map, $this->service($request, $settings)->$map($params), new HistoryRepository($request->user()),
+            120 * $settings->int('history_interval', 5, 1440)));
     }
 }

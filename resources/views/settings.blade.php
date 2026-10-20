@@ -36,7 +36,8 @@
             ['history_interval', 'number', 'History interval (minutes)', '15, 30, 60, 120, 240, 360, 720 or 1440; LibreNMS refreshes LLDP/CDP neighbors at discovery (every 6 hours by default)'],
             ['history_retention_days', 'number', 'Keep changes for (days)', 'facts and findings that ended earlier are deleted'],
             ['history_checks', 'text', 'Background checks', 'analyses run with every snapshot: stp, links, redundancy; empty disables them'],
-            ['history_eventlog_severity', 'text', 'Eventlog from severity', 'new and resolved background findings from this severity go to the eventlog of their devices: critical, warning, info or none'],
+            ['history_eventlog_severity', 'text', 'Eventlog from severity', 'a device gets an eventlog entry when it gets or loses a background finding from this severity, confirmed by two runs in a row: critical, warning, info or none'],
+            ['history_eventlog_skip', 'text', 'Checks kept out of the eventlog', 'check codes whose findings follow the counters of the last poll, e.g. link_errors lag_imbalance; they stay on the pages'],
         ],
     ];
 @endphp

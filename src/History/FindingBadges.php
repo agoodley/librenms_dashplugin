@@ -14,15 +14,17 @@ class FindingBadges
     /**
      * Add `history` (first_seen, new) to the findings of an analysis result that the background
      * checks know; the result is unchanged without history.
+     *
+     * @param  int  $maxAge  seconds after which the latest run is too old for "new" marks (the checks stopped)
      */
-    public static function annotate(string $analysis, array $result, HistoryRepository $history): array
+    public static function annotate(string $analysis, array $result, HistoryRepository $history, int $maxAge): array
     {
         if (empty($result['findings']) || ! in_array($analysis, HistoryService::ANALYSES, true) || ! $history->available()) {
             return $result;
         }
 
         try {
-            $latest = $history->latestRuns()['checks']['started_at'] ?? null;
+            $latest = $history->latestRun($analysis)['started_at'] ?? null;
             $hashes = array_map(fn (array $finding) => FindingHistory::hash($analysis, $finding), $result['findings']);
             $known = $history->findingsByHash($hashes);
             foreach ($result['findings'] as $index => $finding) {
@@ -30,7 +32,7 @@ class FindingBadges
                 if ($row !== null) {
                     $result['findings'][$index]['history'] = [
                         'first_seen' => $row['first_seen'],
-                        'new' => $latest !== null && ! $row['initial'] && $row['first_seen'] >= $latest,
+                        'new' => self::isNew($row, $latest, time(), $maxAge),
                     ];
                 }
             }
@@ -39,5 +41,16 @@ class FindingBadges
         }
 
         return $result;
+    }
+
+    /**
+     * Was the finding first reported by the latest run of the checks, and is that run recent?
+     *
+     * @param  array{first_seen: string, initial: bool}  $row  its open history row
+     * @param  string|null  $latest  start of the latest finished run of the checks
+     */
+    public static function isNew(array $row, ?string $latest, int $now, int $maxAge): bool
+    {
+        return $latest !== null && ! $row['initial'] && $row['first_seen'] >= $latest && $now - (int) strtotime($latest) <= $maxAge;
     }
 }

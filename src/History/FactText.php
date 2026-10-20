@@ -58,8 +58,8 @@ class FactText
         return match ($fact['kind']) {
             FactCollector::LINK => $this->linkEnd($data['a']) . ' ↔ ' . $this->linkEnd($data['b']),
             FactCollector::LAG => $this->device($data['device'], $data['device_name']) . ' ' . $data['aggregate_name'] . ': member ' . $data['member_name'],
-            FactCollector::STP_ROOT => $this->device($data['device'], $data['device_name']) . ': root bridge ' . $this->root($data) . ' in ' . StpIndex::vlanLabel((int) $data['vlan']),
-            FactCollector::STP_BLOCKED => $this->device($data['device'], $data['device_name']) . ' ' . $data['port_name'] . ' blocking in ' . StpIndex::vlanLabel((int) $data['vlan']),
+            FactCollector::STP_ROOT => $this->device($data['device'], $data['device_name']) . ': root bridge ' . $this->root($data) . ' in ' . self::vlanList(self::vlans($data)),
+            FactCollector::STP_BLOCKED => $this->device($data['device'], $data['device_name']) . ' ' . $data['port_name'] . ' blocking in ' . self::vlanList(self::vlans($data)),
             FactCollector::OSPF => 'OSPF ' . $this->ospf($data),
             FactCollector::BGP => 'BGP ' . $this->bgp($data),
             default => $fact['key'] ?? $fact['fact_key'] ?? '',
@@ -106,6 +106,42 @@ class FactText
 
         return $this->device($data['device'], $data['device_name']) . ' → ' . $peer . ' (' . implode(', ', $details) . ')'
             . ($data['context'] !== '' ? ' [' . $data['context'] . ']' : '');
+    }
+
+    /**
+     * Spanning tree instances (VLAN keys) of a spanning tree fact.
+     *
+     * @return int[]
+     */
+    public static function vlans(array $data): array
+    {
+        return array_map('intval', $data['vlans'] ?? [$data['vlan'] ?? 0]);
+    }
+
+    /**
+     * "VLAN 1 / CST", "VLAN 10, VLAN 20" or, for more than three, "VLANs 1-29, 31-50".
+     *
+     * @param  int[]  $vlans  VLAN keys (StpIndex::vlanKey(), 0 for VLAN 1 / CST)
+     */
+    public static function vlanList(array $vlans): string
+    {
+        $vlans = array_values(array_unique($vlans));
+        sort($vlans);
+        if (count($vlans) <= 3) {
+            return implode(', ', array_map(fn ($vlan) => StpIndex::vlanLabel($vlan), $vlans));
+        }
+
+        $ranges = [];
+        foreach (array_map(fn ($vlan) => max(1, $vlan), $vlans) as $vlan) {
+            $last = count($ranges) - 1;
+            if ($last >= 0 && $ranges[$last][1] === $vlan - 1) {
+                $ranges[$last][1] = $vlan;
+            } else {
+                $ranges[] = [$vlan, $vlan];
+            }
+        }
+
+        return 'VLANs ' . implode(', ', array_map(fn ($range) => $range[0] === $range[1] ? (string) $range[0] : $range[0] . '-' . $range[1], $ranges));
     }
 
     /**

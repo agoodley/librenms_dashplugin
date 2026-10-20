@@ -11,7 +11,7 @@
     $deviceUrl = fn ($id) => url('device/' . $id);
     $names = $result['device_names'] ?? [];
     $ago = fn ($date) => $date ? \Agoodley\LibrenmsTopology\Stp\StpAnalyzer::duration(max(0, time() - strtotime($date))) . ' ago' : null;
-    $windows = \Agoodley\LibrenmsTopology\Http\Controllers\HistoryController::WINDOWS;
+    $windows = \Agoodley\LibrenmsTopology\History\Window::WINDOWS;
     $types = [
         'device_added' => 'new device', 'cable_moved' => 'cable moved', 'link_removed' => 'link gone', 'link_back' => 'link back',
         'link_added' => 'new link', 'unmanaged_new' => 'new switch', 'neighbor_new' => 'new neighbor', 'lag_member_removed' => 'member left', 'lag_member_added' => 'member joined',
@@ -123,10 +123,10 @@
                 <div class="topo-card-value">{{ $count(['ospf_lost', 'ospf_up', 'bgp_lost', 'bgp_up']) }}</div>
                 <p>OSPF adjacencies and BGP sessions: {{ $count(['ospf_lost', 'bgp_lost']) }} lost, {{ $count(['ospf_up', 'bgp_up']) }} up</p>
             </div>
-            <div class="topo-card topo-{{ ! $baseline['saved'] ? 'info' : (count($baseline['missing']) ? 'warning' : 'ok') }}">
+            <div class="topo-card topo-{{ ! $baseline['saved'] ? 'info' : (($baseline['missing_total'] ?? 0) ? 'warning' : 'ok') }}">
                 <h4>Baseline</h4>
                 @if($baseline['saved'])
-                    <div class="topo-card-value">{{ count($baseline['missing']) }}</div>
+                    <div class="topo-card-value">{{ $baseline['missing_total'] ?? count($baseline['missing']) }}</div>
                     <p>missing, {{ $baseline['new_total'] }} new since it was saved {{ $ago($baseline['saved']['saved_at']) }}</p>
                 @else
                     <div class="topo-card-value" style="font-size: 16px; line-height: 31px">not saved</div>
@@ -137,7 +137,7 @@
                 <h4>Last snapshot</h4>
                 <div class="topo-card-value" style="font-size: 16px; line-height: 31px">{{ $snapshot ? $ago($snapshot['started_at']) : 'none' }}</div>
                 <p>
-                    @if($snapshot){{ $number($snapshot['stats']['facts'] ?? 0, 'fact', 'facts') }} of {{ $number($snapshot['stats']['devices'] ?? 0, 'device', 'devices') }} @endif
+                    @if(isset($snapshot['stats']['facts'])){{ $number($snapshot['stats']['facts'], 'fact', 'facts') }} of {{ $number($snapshot['stats']['devices'] ?? 0, 'device', 'devices') }} @endif
                     @if($checks)<br>background checks {{ $ago($checks['started_at']) }} @endif
                 </p>
             </div>
@@ -173,6 +173,10 @@
                 </tbody>
             </table>
             </div>
+            @if(! empty($result['truncated']))
+                <div class="panel-footer text-warning"><i class="fa fa-exclamation-triangle"></i> Only the newest changes are shown, there were more:
+                    choose a shorter window or filter by device, group or location.</div>
+            @endif
         </div>
 
         @if(! empty($result['preview']))
@@ -223,17 +227,31 @@
             </div>
             @if($baseline['saved'])
                 <table class="table table-condensed table-hover topo-stp-table">
-                    <thead><tr><th>Missing</th><th>What</th><th>Missing since</th></tr></thead>
+                    <thead><tr><th>Missing</th><th>What</th><th>Missing since</th>@if($admin)<th></th>@endif</tr></thead>
                     <tbody>
                     @forelse($baseline['missing'] as $fact)
                         <tr>
                             <td>{{ $kinds[$fact['kind']] ?? $fact['kind'] }}</td>
                             <td class="topo-wrap">{{ $fact['text'] }}</td>
                             <td>{{ $fact['since'] ? $fact['since'] . ' (' . $ago($fact['since']) . ')' : 'unknown (before the kept history)' }}</td>
+                            @if($admin)
+                                <td>
+                                    <form method="post" action="{{ route('topology.changes.baseline') }}" style="display: inline" onsubmit="return confirm('Gone on purpose? It is removed from the baseline and no longer reported as missing.')">
+                                        @csrf
+                                        <input type="hidden" name="action" value="accept">
+                                        <input type="hidden" name="hash" value="{{ $fact['hash'] }}">
+                                        @foreach($keep as $key => $value)<input type="hidden" name="{{ $key }}" value="{{ $value }}">@endforeach
+                                        <button type="submit" class="btn btn-xs btn-default" title="Gone on purpose: remove it from the baseline"><i class="fa fa-check"></i> Accept</button>
+                                    </form>
+                                </td>
+                            @endif
                         </tr>
                     @empty
-                        <tr><td colspan="3"><span class="topo-sev topo-sev-ok">ok</span> Nothing of the baseline is missing.</td></tr>
+                        <tr><td colspan="{{ $admin ? 4 : 3 }}"><span class="topo-sev topo-sev-ok">ok</span> Nothing of the baseline is missing.</td></tr>
                     @endforelse
+                    @if(($baseline['missing_total'] ?? 0) > count($baseline['missing']))
+                        <tr><td colspan="{{ $admin ? 4 : 3 }}" class="text-muted">and {{ $baseline['missing_total'] - count($baseline['missing']) }} more</td></tr>
+                    @endif
                     </tbody>
                 </table>
                 @if($baseline['new'])
@@ -283,6 +301,9 @@
                     @empty
                         <tr><td colspan="5">No finding came or went in this window.</td></tr>
                     @endforelse
+                    @if(! empty($result['findings_truncated']))
+                        <tr><td colspan="5" class="text-warning">Only the newest findings are shown: choose a shorter window or filter.</td></tr>
+                    @endif
                     </tbody>
                 </table>
             </div>

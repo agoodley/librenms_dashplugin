@@ -23,6 +23,9 @@ class HistoryService
     /** Port columns the facts need (interface names). */
     private const PORT_COLUMNS = ['port_id', 'device_id', 'ifName', 'ifDescr'];
 
+    /** Missing and new baseline facts listed on the Changes page (the counts are complete). */
+    private const LISTED = 200;
+
     public function __construct(
         private readonly HistoryRepository $history,
         private readonly TopologyRepository $topology,
@@ -40,78 +43,87 @@ class HistoryService
     public function snapshot(): array
     {
         $started = Carbon::now();
+        $previous = $this->history->latestRun('snapshot');
         $run = $this->history->startRun('snapshot', $started);
 
         // disabled devices too: LibreNMS keeps their data as it was, and so does the history
         $topology = $this->topology->withDisabled();
         $ids = $topology->deviceIds();
-        $knownKinds = $this->history->factKinds();
         $stats = ['devices' => count($ids), 'facts' => 0, 'added' => 0, 'removed' => 0, 'updated' => 0];
+        $recorded = [];
         foreach ($this->collect($topology, $ids) as $kind => $current) {
-            $diff = FactDiff::diff($this->history->openFacts($kind), $current);
+            // spanning tree facts keep their VLANs in the data: a change of them is a new period the Changes page can compare
+            $diff = FactDiff::diff($this->history->openFacts($kind), $current, in_array($kind, [FactCollector::STP_ROOT, FactCollector::STP_BLOCKED], true));
             $stats['facts'] += count($current);
-            $stats['added'] += $this->history->insertFacts($diff['insert'], $started, $knownKinds);
+            // what the first snapshot of a kind finds existed before the history: no change
+            $stats['added'] += $this->history->insertFacts($diff['insert'], $started, Runs::initial($previous['stats'] ?? null, $kind));
             $stats['removed'] += $this->history->closeFacts($diff['remove'], $started);
             $stats['updated'] += $this->history->updateFacts($diff['update']);
+            $recorded[] = $kind;
         }
         $stats['pruned'] = $this->history->prune($started->copy()->subDays($this->settings->int('history_retention_days', 1, 3650)));
         $stats['seconds'] = round(Carbon::now()->diffInMilliseconds($started, true) / 1000, 2);
+        $stats['recorded'] = Runs::record($previous['stats'] ?? null, $recorded);
         $this->history->finishRun($run, $stats, Carbon::now());
 
         return $stats;
     }
 
     /**
-     * Run the background checks and record new and resolved findings; those at or above the
-     * eventlog severity setting are written to the eventlog of their devices.
+     * The background checks the settings enable (of $only, when given).
+     *
+     * @param  string[]|null  $only
+     * @return string[]
+     */
+    public function enabledChecks(?array $only = null): array
+    {
+        $enabled = array_values(array_intersect(self::ANALYSES, array_map('strtolower', $this->settings->list('history_checks'))));
+
+        return $only === null ? $enabled : array_values(array_intersect($enabled, array_map('strtolower', $only)));
+    }
+
+    /**
+     * Run one background check and record its findings history; a device gets an eventlog entry
+     * when it gets its first confirmed finding of the check or loses its last one (see
+     * FindingHistory), from the eventlog severity setting on and except the skipped checks. Each
+     * analysis keeps its own runs (type = analysis).
      *
      * @param  callable(string, int|null, string, string): void|null  $eventlog  writer (message, device_id, severity,
      *                                                                           reference); default: LibreNMS eventlog
-     * @return array<string, array<string, int>> analysis => counts
+     * @return array<string, int> counts, or ['error' => 1]
      */
-    public function checks(?callable $eventlog = null): array
+    public function check(string $analysis, ?callable $eventlog = null): array
     {
-        $analyses = array_values(array_intersect(self::ANALYSES, array_map('strtolower', $this->settings->list('history_checks'))));
-        if (! $analyses) {
-            return [];
-        }
-
         $started = Carbon::now();
-        $run = $this->history->startRun('checks', $started);
-        $service = new TopologyService($this->topology, $this->settings, $this->history);
+        $previous = $this->history->latestRun($analysis);
+        $run = $this->history->startRun($analysis, $started);
         $params = MapParams::parse([], $this->settings);
-        $minimum = strtolower($this->settings->all()['history_eventlog_severity'] ?? 'warning');
-        $eventlog ??= self::eventlog(...);
+        try {
+            $findings = (new TopologyService($this->topology, $this->settings, $this->history))->$analysis($params)['findings'] ?? [];
+        } catch (\Throwable $e) {
+            Log::error("topology plugin: background $analysis check failed: " . $e->getMessage());
+            $this->history->finishRun($run, ['error' => 1, 'recorded' => Runs::record($previous['stats'] ?? null, [])], Carbon::now());
 
-        $stats = ['analyses' => []];
-        foreach ($analyses as $analysis) {
-            try {
-                $findings = $service->$analysis($params)['findings'] ?? [];
-            } catch (\Throwable $e) {
-                Log::error("topology plugin: background $analysis check failed: " . $e->getMessage());
-                $stats['analyses'][$analysis] = ['error' => 1];
-                continue;
-            }
-
-            $initial = ! $this->history->hasFindings($analysis);
-            $diff = FindingHistory::diff($analysis, $this->history->openFindings($analysis), $findings);
-            $this->history->insertFindings($analysis, $diff['new'], $started, $initial);
-            $this->history->resolveFindings(array_column($diff['resolved'], 'id'), $started);
-            $this->history->updateFindings($diff['update']);
-
-            // the first run records what is there already: only later changes are news
-            $entries = $initial ? [] : FindingHistory::eventlog($analysis, $diff['new'], $diff['resolved'], $minimum);
-            foreach ($entries as $entry) {
-                $eventlog($entry['message'], $entry['device_id'], $entry['severity'], $entry['reference']);
-            }
-
-            $stats['analyses'][$analysis] = ['findings' => count($findings), 'new' => count($diff['new']), 'resolved' => count($diff['resolved']),
-                'eventlog' => count($entries), 'initial' => (int) $initial];
+            return ['error' => 1];
         }
-        $stats['seconds'] = round(Carbon::now()->diffInMilliseconds($started, true) / 1000, 2);
-        $this->history->finishRun($run, $stats, Carbon::now());
 
-        return $stats['analyses'];
+        // the first successful run records what is there already: only later changes are news
+        $initial = Runs::initial($previous['stats'] ?? null, $analysis);
+        $changes = FindingHistory::run($analysis, $this->history->openFindings($analysis), $findings, $started->toDateTimeString(), $initial);
+        $this->history->applyFindings($analysis, $changes, $started, $initial);
+        $entries = $initial ? [] : FindingHistory::eventlog($analysis, $changes['before'], $changes['after'],
+            strtolower($this->settings->all()['history_eventlog_severity'] ?? 'warning'), array_map('strtolower', $this->settings->list('history_eventlog_skip')));
+        $eventlog ??= self::eventlog(...);
+        foreach ($entries as $entry) {
+            $eventlog($entry['message'], $entry['device_id'], $entry['severity'], $entry['reference']);
+        }
+
+        $stats = ['findings' => count($findings), 'new' => count($changes['insert']), 'confirmed' => count($changes['confirm']),
+            'resolved' => count($changes['resolve']), 'eventlog' => count($entries), 'initial' => (int) $initial];
+        $this->history->finishRun($run, $stats + ['seconds' => round(Carbon::now()->diffInMilliseconds($started, true) / 1000, 2),
+            'recorded' => Runs::record($previous['stats'] ?? null, [$analysis])], Carbon::now());
+
+        return $stats;
     }
 
     /**
@@ -131,7 +143,8 @@ class HistoryService
         $visible = array_fill_keys($this->history->deviceIds(), true);
         $text = new FactText($this->history->names(array_keys($visible)), $visible);
 
-        $rows = $this->history->windowFacts($from, $to, $ids);
+        $window = $this->history->windowFacts($from, $to, $ids);
+        $rows = $window['rows'];
         $nodes = [];
         $firstFacts = []; // device => when its first new fact of the window was seen
         foreach ($rows as $row) {
@@ -150,11 +163,12 @@ class HistoryService
         $report = ChangeReport::build($rows, $from->getTimestamp(), $to->getTimestamp(), $text,
             $this->history->newToHistory(array_intersect_key($firstFacts, $added)), $this->history->priorNodes($nodes, $from));
 
+        $windowFindings = $this->history->windowFindings($from, $to, $ids);
         $findings = array_map(function (array $finding) use ($text) {
             $finding['device_names'] = array_combine($finding['devices'], array_map(fn ($id) => $text->device($id, null), $finding['devices']));
 
             return $finding;
-        }, FindingHistory::window($this->history->windowFindings($from, $to, $ids), $from->getTimestamp(), $to->getTimestamp()));
+        }, FindingHistory::window($windowFindings['rows'], $from->getTimestamp(), $to->getTimestamp()));
 
         return [
             'available' => true,
@@ -162,8 +176,10 @@ class HistoryService
             'to' => $to->toDateTimeString(),
             'events' => $report['events'],
             'counts' => $report['counts'],
+            'truncated' => $window['truncated'],
             'baseline' => $this->baselineComparison($ids, $text),
             'findings' => $findings,
+            'findings_truncated' => $windowFindings['truncated'],
             'runs' => $this->history->latestRuns(),
             'device_names' => $this->history->names(array_unique(array_merge(...array_column($report['events'], 'devices')))),
             'filter' => $p,
@@ -178,14 +194,14 @@ class HistoryService
     public function baselinePreview(array $p): array
     {
         $ids = $this->scopeIds($p);
-        $facts = array_filter($this->history->currentFacts($ids), fn ($fact) => in_array($fact['kind'], Baseline::KINDS, true));
+        $kinds = $this->history->currentKinds($ids, Baseline::KINDS);
 
         return [
             'devices' => count($ids),
-            'kinds' => array_count_values(array_column($facts, 'kind')),
-            'facts' => count($facts),
+            'kinds' => array_intersect_key(array_merge(array_fill_keys(Baseline::KINDS, 0), $kinds), $kinds),
+            'facts' => array_sum($kinds),
             'replaces' => $this->history->baselineInfo($ids)['facts'] ?? 0,
-            'snapshot' => $this->history->latestRuns()['snapshot']['started_at'] ?? null,
+            'snapshot' => $this->history->latestRun('snapshot')['started_at'] ?? null,
         ];
     }
 
@@ -197,9 +213,7 @@ class HistoryService
      */
     public function saveBaseline(array $p, ?string $user): array
     {
-        $ids = $this->scopeIds($p);
-
-        return $this->history->replaceBaseline($ids, $this->history->currentFacts($ids, Baseline::KINDS), Carbon::now(), $user);
+        return $this->history->replaceBaseline($this->scopeIds($p), Carbon::now(), $user);
     }
 
     /**
@@ -213,6 +227,16 @@ class HistoryService
     }
 
     /**
+     * Take one missing fact out of the baseline of the page's scope (gone on purpose).
+     *
+     * @param  array{device: ?int, group: ?int, location: ?int}  $p
+     */
+    public function acceptMissing(array $p, string $hash): int
+    {
+        return $this->history->forgetBaselineFact($hash, $this->scopeIds($p));
+    }
+
+    /**
      * Facts of the devices as they are now, from the LibreNMS tables, one kind at a time: a large
      * network has tens of thousands of them.
      *
@@ -222,7 +246,8 @@ class HistoryService
     private function collect(TopologyRepository $topology, array $ids): \Generator
     {
         $names = $this->history->names($ids);
-        $collector = fn (array $portIds) => new FactCollector($names, $topology->ports($portIds, self::PORT_COLUMNS));
+        $hostNames = $this->history->hostNames($ids);
+        $collector = fn (array $portIds) => new FactCollector($names, $topology->ports($portIds, self::PORT_COLUMNS), $hostNames);
 
         $links = $topology->links($ids);
         yield FactCollector::LINK => $collector(array_merge(array_column($links, 'local_port_id'), array_column($links, 'remote_port_id')))->links($links);
@@ -234,8 +259,8 @@ class HistoryService
 
         yield FactCollector::STP_ROOT => $collector([])->stpRoots($this->history->stpRoots($ids));
 
-        $blocked = $this->history->blockedPorts($ids);
-        yield FactCollector::STP_BLOCKED => $collector(array_column($blocked, 'port_id'))->blockedPorts($blocked);
+        $blocked = FactCollector::blockingPorts($this->history->blockedPorts($ids), $names);
+        yield FactCollector::STP_BLOCKED => $collector(array_merge([], ...array_map('array_keys', array_values($blocked))))->blockedPortFacts($blocked);
         unset($blocked);
 
         $ospf = $this->history->ospfNeighbors($ids);
@@ -246,7 +271,8 @@ class HistoryService
     }
 
     /**
-     * Baseline against the last snapshot: what is missing and what is new.
+     * Baseline against the last snapshot: what is missing and what is new. Compared by identity;
+     * only the facts listed are read in full.
      *
      * @param  int[]  $ids
      */
@@ -254,22 +280,27 @@ class HistoryService
     {
         $info = $this->history->baselineInfo($ids);
         if ($info === null) {
-            return ['saved' => null, 'missing' => [], 'new' => [], 'new_total' => 0];
+            return ['saved' => null, 'missing' => [], 'missing_total' => 0, 'new' => [], 'new_total' => 0];
         }
 
-        $comparison = Baseline::compare($this->history->baselineFacts($ids), $this->history->currentFacts($ids, Baseline::KINDS));
-        $since = $this->history->goneSince(array_keys($comparison['missing']));
+        $baseline = $this->history->baselineHashes($ids);
+        $current = $this->history->currentHashes($ids, Baseline::KINDS);
+        $missingHashes = array_keys(array_diff_key($baseline, $current));
+        $newHashes = array_keys(array_diff_key($current, $baseline));
+        $since = $this->history->goneSince(array_slice($missingHashes, 0, self::LISTED));
         $describe = fn (array $fact) => [
             'kind' => $fact['kind'],
+            'hash' => $fact['hash'],
             'text' => $text->describe($fact),
             'devices' => array_values(array_filter([$fact['device_a'], $fact['device_b']], fn ($id) => $text->visible($id))),
         ];
-        $missing = array_map(fn ($fact) => $describe($fact) + ['since' => $since[$fact['hash']] ?? null], array_values($comparison['missing']));
-        $new = array_map($describe, array_values($comparison['new']));
+        $missing = array_map(fn ($fact) => $describe($fact) + ['since' => $since[$fact['hash']] ?? null],
+            $this->history->baselineFactsByHash($missingHashes, self::LISTED));
+        $new = array_map($describe, $this->history->currentFactsByHash($newHashes, self::LISTED));
         usort($missing, fn ($a, $b) => [$a['kind'], $a['text']] <=> [$b['kind'], $b['text']]);
         usort($new, fn ($a, $b) => [$a['kind'], $a['text']] <=> [$b['kind'], $b['text']]);
 
-        return ['saved' => $info, 'missing' => $missing, 'new' => array_slice($new, 0, 200), 'new_total' => count($new)];
+        return ['saved' => $info, 'missing' => $missing, 'missing_total' => count($missingHashes), 'new' => $new, 'new_total' => count($newHashes)];
     }
 
     /**

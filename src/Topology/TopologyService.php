@@ -343,7 +343,7 @@ class TopologyService
         $ports = $this->repo->ports(array_merge($linkPorts, $aggregates), self::REDUNDANCY_PORT_COLUMNS);
 
         // baseline links that LLDP/CDP no longer reports are down links of the design
-        $missing = $this->history?->missingBaselineLinks($links, $ports, $all) ?? [];
+        $missing = $this->history?->missingBaselineLinks($all) ?? [];
         if ($missing) {
             $links = array_merge($links, $missing);
             $ports += $this->repo->ports(array_diff(array_merge(array_column($missing, 'local_port_id'), array_column($missing, 'remote_port_id')), array_keys($ports)), self::REDUNDANCY_PORT_COLUMNS);

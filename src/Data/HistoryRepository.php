@@ -5,6 +5,8 @@ namespace Agoodley\LibrenmsTopology\Data;
 use Agoodley\LibrenmsTopology\History\Baseline;
 use Agoodley\LibrenmsTopology\History\FactCollector;
 use Agoodley\LibrenmsTopology\History\FindingHistory;
+use Agoodley\LibrenmsTopology\History\HistoryService;
+use Agoodley\LibrenmsTopology\History\Window;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Query\Builder;
@@ -21,6 +23,15 @@ use Illuminate\Support\Facades\Schema;
 class HistoryRepository extends ScopedRepository
 {
     private const CHUNK = 500;
+
+    /** Facts that started, and facts that ended, read for one window of the Changes page (newest first). */
+    public const WINDOW_LIMIT = 5000;
+
+    /** Findings that came or went shown for one window of the Changes page (newest first). */
+    public const WINDOW_FINDINGS = 1000;
+
+    /** A baseline is compared with the last snapshot only while that is this recent (seconds). */
+    private const SNAPSHOT_MAX_AGE = 86400;
 
     /** @var bool|null whether the history tables exist (migrations run) */
     private static ?bool $available = null;
@@ -61,35 +72,63 @@ class HistoryRepository extends ScopedRepository
     // ---------------------------------------------------------------- fact sources
 
     /**
+     * Other names neighbors may report a device by (sysName, hostname), for FactCollector.
+     *
      * @param  int[]  $ids
-     * @return array<int, array> stp rows (device_id, vlan, designatedRoot, bridgeAddress)
+     * @return array<int, string[]>
      */
-    public function stpRoots(array $ids): array
+    public function hostNames(array $ids): array
     {
-        return $this->rows('stp', $ids, ['device_id', 'vlan', 'designatedRoot', 'bridgeAddress']);
+        $names = [];
+        foreach ($this->rows('devices', $ids, ['device_id', 'sysName', 'hostname']) as $row) {
+            $names[(int) $row['device_id']] = array_values(array_filter([(string) $row['sysName'], (string) $row['hostname']]));
+        }
+
+        return $names;
     }
 
     /**
-     * Ports that spanning tree blocks (ports_stp grows with ports x VLANs, so only the blocking rows).
+     * stp rows (device_id, vlan, designatedRoot, bridgeAddress), one at a time: PVST has one per
+     * switch and VLAN.
      *
      * @param  int[]  $ids
-     * @return array<int, array>
+     * @return \Generator<int, array>
      */
-    public function blockedPorts(array $ids): array
+    public function stpRoots(array $ids): \Generator
     {
-        $rows = [];
+        return $this->stream('stp', $ids, fn (Builder $q) => $q->select(['device_id', 'vlan', 'designatedRoot', 'bridgeAddress']));
+    }
+
+    /**
+     * Ports that spanning tree blocks, one row at a time (ports_stp grows with ports x VLANs, so only
+     * the blocking rows).
+     *
+     * @param  int[]  $ids
+     * @return \Generator<int, array>
+     */
+    public function blockedPorts(array $ids): \Generator
+    {
+        return $this->stream('ports_stp', $ids, fn (Builder $q) => $q->whereIn('state', StpIndex::BLOCKING_STATES)->select(['device_id', 'port_id', 'vlan', 'state']));
+    }
+
+    /**
+     * Rows of a per-device table, one at a time (none when the table does not exist).
+     *
+     * @param  int[]  $ids
+     * @param  callable(Builder): Builder  $query
+     * @return \Generator<int, array>
+     */
+    private function stream(string $table, array $ids, callable $query): \Generator
+    {
         try {
-            foreach (array_chunk($ids, 5000) as $chunk) {
-                foreach (DB::table('ports_stp')->whereIntegerInRaw('device_id', $chunk)->whereIn('state', StpIndex::BLOCKING_STATES)
-                    ->get(['device_id', 'port_id', 'vlan', 'state']) as $row) {
-                    $rows[] = (array) $row;
+            foreach (array_chunk($ids, 1000) as $chunk) {
+                foreach ($query(DB::table($table)->whereIntegerInRaw('device_id', $chunk))->cursor() as $row) {
+                    yield (array) $row;
                 }
             }
         } catch (\Throwable $e) {
-            Log::debug('topology plugin: cannot read ports_stp: ' . $e->getMessage());
+            Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
         }
-
-        return $rows;
     }
 
     /**
@@ -121,7 +160,7 @@ class HistoryRepository extends ScopedRepository
      */
     public function bgpPeers(array $ids): array
     {
-        return $this->rows('bgpPeers', $ids, ['device_id', 'bgpPeerIdentifier', 'bgpPeerRemoteAs', 'bgpPeerState', 'bgpPeerDescr', 'context_name']);
+        return $this->rows('bgpPeers', $ids, ['device_id', 'bgpPeerIdentifier', 'bgpPeerRemoteAs', 'bgpPeerState', 'bgpPeerDescr', 'context_name', 'vrf_id']);
     }
 
     /**
@@ -185,20 +224,10 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * Kinds of facts the history already holds (a kind seen for the first time starts as "initial").
-     *
-     * @return array<string, true>
-     */
-    public function factKinds(): array
-    {
-        return array_fill_keys(DB::table('topology_facts')->distinct()->pluck('kind')->all(), true);
-    }
-
-    /**
      * @param  array<string, array>  $facts  hash => fact
-     * @param  array<string, true>  $knownKinds  kinds already in the history; facts of other kinds are initial
+     * @param  bool  $initial  facts of a kind recorded for the first time (they existed before the history)
      */
-    public function insertFacts(array $facts, CarbonInterface $time, array $knownKinds): int
+    public function insertFacts(array $facts, CarbonInterface $time, bool $initial): int
     {
         $rows = [];
         foreach ($facts as $fact) {
@@ -206,11 +235,12 @@ class HistoryRepository extends ScopedRepository
                 'kind' => $fact['kind'],
                 'hash' => $fact['hash'],
                 'fact_key' => $fact['key'],
+                'node' => isset($fact['data']['b']['node']) ? mb_substr((string) $fact['data']['b']['node'], 0, 191) : null,
                 'device_a' => $fact['device_a'],
                 'device_b' => $fact['device_b'],
                 'data' => FactCollector::json($fact['data']),
                 'data_hash' => $fact['data_hash'],
-                'initial' => ! isset($knownKinds[$fact['kind']]),
+                'initial' => $initial,
                 'first_seen' => $time,
                 'removed_at' => null,
             ];
@@ -254,7 +284,8 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * Forget what ended before $cutoff (facts, findings, runs; the latest run of each type stays).
+     * Forget what ended before $cutoff (facts, findings, runs; the latest finished run of each type
+     * stays, it carries what the history recorded so far).
      *
      * @return int rows deleted
      */
@@ -262,7 +293,7 @@ class HistoryRepository extends ScopedRepository
     {
         $deleted = DB::table('topology_facts')->whereNotNull('removed_at')->where('removed_at', '<', $cutoff)->delete();
         $deleted += DB::table('topology_findings')->whereNotNull('resolved_at')->where('resolved_at', '<', $cutoff)->delete();
-        foreach (DB::table('topology_runs')->select('type', DB::raw('max(id) as id'))->groupBy('type')->get() as $latest) {
+        foreach (DB::table('topology_runs')->whereNotNull('finished_at')->select('type', DB::raw('max(id) as id'))->groupBy('type')->get() as $latest) {
             $deleted += DB::table('topology_runs')->where('type', $latest->type)->where('id', '<', $latest->id)->where('started_at', '<', $cutoff)->delete();
         }
 
@@ -270,41 +301,61 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * Facts of the devices that started or ended in [$from, $to], with their data decoded.
+     * Facts of the devices that started (not with the first snapshot of their kind) or ended in
+     * [$from, $to], with their data decoded: the newest WINDOW_LIMIT of each, truncated when there
+     * were more.
      *
      * @param  int[]  $ids
-     * @return array<int, array>
+     * @return array{rows: array<int, array>, truncated: bool}
      */
     public function windowFacts(CarbonInterface $from, CarbonInterface $to, array $ids): array
     {
-        $rows = [];
-        foreach ($this->touching(DB::table('topology_facts'), $ids)
-            ->where(fn (Builder $q) => $q->whereBetween('first_seen', [$from, $to])->orWhereBetween('removed_at', [$from, $to]))
-            ->orderBy('id')->limit(20000)->get() as $row) {
-            $rows[] = self::factRow((array) $row);
-        }
+        $read = fn (Builder $query, string $column) => $query->orderByDesc($column)->orderByDesc('id')->limit(self::WINDOW_LIMIT)->get()
+            ->map(fn ($row) => self::factRow((array) $row))->all();
+        $added = $read($this->touching(DB::table('topology_facts'), $ids)->whereBetween('first_seen', [$from, $to])->where('initial', 0), 'first_seen');
+        $removed = $read($this->touching(DB::table('topology_facts'), $ids)->whereBetween('removed_at', [$from, $to]), 'removed_at');
 
-        return $rows;
+        return Window::merge($added, $removed, self::WINDOW_LIMIT);
     }
 
     /**
-     * Facts present at the last snapshot that involve the devices.
+     * Facts present at the last snapshot that involve the devices, per kind.
      *
      * @param  int[]  $ids
-     * @param  string[]|null  $kinds
-     * @return array<string, array> hash => fact
+     * @param  string[]  $kinds
+     * @return array<string, int> kind => facts
      */
-    public function currentFacts(array $ids, ?array $kinds = null): array
+    public function currentKinds(array $ids, array $kinds): array
     {
-        $query = $this->touching(DB::table('topology_facts'), $ids)->whereNull('removed_at');
-        if ($kinds !== null) {
-            $query->whereIn('kind', $kinds);
-        }
+        return array_map('intval', $this->touching(DB::table('topology_facts'), $ids)->whereNull('removed_at')->whereIn('kind', $kinds)
+            ->groupBy('kind')->select('kind', DB::raw('count(*) as facts'))->pluck('facts', 'kind')->all());
+    }
 
+    /**
+     * Identities of the facts present at the last snapshot that involve the devices.
+     *
+     * @param  int[]  $ids
+     * @param  string[]  $kinds
+     * @return array<string, string> hash => kind
+     */
+    public function currentHashes(array $ids, array $kinds): array
+    {
+        return $this->touching(DB::table('topology_facts'), $ids)->whereNull('removed_at')->whereIn('kind', $kinds)->pluck('kind', 'hash')->all();
+    }
+
+    /**
+     * Facts present at the last snapshot, by identity, decoded (at most $limit).
+     *
+     * @param  string[]  $hashes
+     * @return array<int, array>
+     */
+    public function currentFactsByHash(array $hashes, int $limit): array
+    {
         $facts = [];
-        foreach ($query->get() as $row) {
-            $row = self::factRow((array) $row);
-            $facts[$row['hash']] = $row;
+        foreach (array_chunk(array_slice(array_values($hashes), 0, $limit), self::CHUNK) as $chunk) {
+            foreach (DB::table('topology_facts')->whereIn('hash', $chunk)->whereNull('removed_at')->get() as $row) {
+                $facts[] = self::factRow((array) $row);
+            }
         }
 
         return $facts;
@@ -318,21 +369,10 @@ class HistoryRepository extends ScopedRepository
      */
     public function priorNodes(array $nodes, CarbonInterface $before): array
     {
-        $wanted = array_fill_keys($nodes, true);
-        if (! $wanted) {
-            return [];
-        }
-
-        // an unmanaged end is the second of a link key ("d5:gi1/0/1|u:ap-12:eth0"), its node id the part
-        // before one of its colons (node ids can contain colons themselves)
         $seen = [];
-        foreach (DB::table('topology_facts')->where('kind', FactCollector::LINK)->where('first_seen', '<', $before)
-            ->where('fact_key', 'like', '%|u:%')->select('fact_key')->cursor() as $row) {
-            $end = substr((string) $row->fact_key, strpos((string) $row->fact_key, '|') + 1);
-            for ($colon = strpos($end, ':', 2); $colon !== false; $colon = strpos($end, ':', $colon + 1)) {
-                if (isset($wanted[substr($end, 0, $colon)])) {
-                    $seen[substr($end, 0, $colon)] = true;
-                }
+        foreach (array_chunk(array_values(array_unique($nodes)), self::CHUNK) as $chunk) {
+            foreach (DB::table('topology_facts')->whereIn('node', $chunk)->where('first_seen', '<', $before)->distinct()->pluck('node') as $node) {
+                $seen[(string) $node] = true;
             }
         }
 
@@ -365,11 +405,19 @@ class HistoryRepository extends ScopedRepository
      */
     public function newToHistory(array $firstSeen): array
     {
+        $earliest = []; // device => its earliest fact
+        foreach (array_chunk(array_keys($firstSeen), self::CHUNK) as $chunk) {
+            foreach (['device_a', 'device_b'] as $column) {
+                foreach (DB::table('topology_facts')->whereIntegerInRaw($column, $chunk)->groupBy($column)
+                    ->select($column . ' as device', DB::raw('min(first_seen) as first'))->get() as $row) {
+                    $earliest[(int) $row->device] = min($earliest[(int) $row->device] ?? PHP_INT_MAX, (int) strtotime((string) $row->first));
+                }
+            }
+        }
+
         $new = [];
-        foreach (array_slice($firstSeen, 0, 500, true) as $deviceId => $time) {
-            $before = DB::table('topology_facts')->where('first_seen', '<', date('Y-m-d H:i:s', $time))
-                ->where(fn (Builder $q) => $q->where('device_a', $deviceId)->orWhere('device_b', $deviceId))->exists();
-            if (! $before) {
+        foreach ($firstSeen as $deviceId => $time) {
+            if (($earliest[$deviceId] ?? PHP_INT_MAX) >= $time) {
                 $new[(int) $deviceId] = true;
             }
         }
@@ -400,34 +448,29 @@ class HistoryRepository extends ScopedRepository
     // ---------------------------------------------------------------- baseline
 
     /**
-     * Baseline facts that involve the devices.
+     * Identities of the baseline facts that involve the devices.
      *
      * @param  int[]  $ids
-     * @param  string[]|null  $kinds
-     * @return array<string, array> hash => fact
+     * @return array<string, string> hash => kind
      */
-    public function baselineFacts(array $ids, ?array $kinds = null): array
+    public function baselineHashes(array $ids): array
     {
-        $query = $this->touching(DB::table('topology_baseline'), $ids);
-        if ($kinds !== null) {
-            $query->whereIn('kind', $kinds);
-        }
+        return $this->touching(DB::table('topology_baseline'), $ids)->pluck('kind', 'hash')->all();
+    }
 
+    /**
+     * Baseline facts by identity, decoded (at most $limit).
+     *
+     * @param  string[]  $hashes
+     * @return array<int, array>
+     */
+    public function baselineFactsByHash(array $hashes, int $limit): array
+    {
         $facts = [];
-        foreach ($query->get() as $row) {
-            $row = (array) $row;
-            $facts[$row['hash']] = [
-                'id' => (int) $row['id'],
-                'kind' => $row['kind'],
-                'hash' => $row['hash'],
-                'key' => $row['fact_key'],
-                'fact_key' => $row['fact_key'],
-                'device_a' => $row['device_a'] !== null ? (int) $row['device_a'] : null,
-                'device_b' => $row['device_b'] !== null ? (int) $row['device_b'] : null,
-                'data' => json_decode($row['data'], true) ?: [],
-                'saved_at' => $row['saved_at'],
-                'saved_by' => $row['saved_by'],
-            ];
+        foreach (array_chunk(array_slice(array_values($hashes), 0, $limit), self::CHUNK) as $chunk) {
+            foreach (DB::table('topology_baseline')->whereIn('hash', $chunk)->get() as $row) {
+                $facts[] = self::baselineRow((array) $row);
+            }
         }
 
         return $facts;
@@ -452,42 +495,42 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * Replace the baseline of the devices with $facts (facts that involve them).
+     * Replace the baseline of the devices with the facts of the last snapshot that involve them
+     * (copied as stored, a chunk at a time).
      *
      * @param  int[]  $ids
-     * @param  array<string, array>  $facts  hash => fact
      * @return array{removed: int, saved: int}
      */
-    public function replaceBaseline(array $ids, array $facts, CarbonInterface $time, ?string $user): array
+    public function replaceBaseline(array $ids, CarbonInterface $time, ?string $user): array
     {
-        return DB::transaction(function () use ($ids, $facts, $time, $user) {
-            $removed = $this->clearBaseline($ids);
-            $rows = [];
-            foreach ($facts as $fact) {
-                if (! in_array($fact['kind'], Baseline::KINDS, true)) {
-                    continue;
-                }
-                $rows[] = [
-                    'kind' => $fact['kind'],
-                    'hash' => $fact['hash'],
-                    'fact_key' => $fact['key'] ?? $fact['fact_key'],
-                    'device_a' => $fact['device_a'],
-                    'device_b' => $fact['device_b'],
-                    'data' => FactCollector::json($fact['data']),
-                    'saved_at' => $time,
-                    'saved_by' => $user !== null ? mb_substr($user, 0, 128) : null,
-                ];
-            }
-            // a fact can involve devices on both sides of the scope: it replaces the saved copy
-            foreach (array_chunk(array_column($rows, 'hash'), self::CHUNK) as $chunk) {
-                $removed += DB::table('topology_baseline')->whereIn('hash', $chunk)->delete();
-            }
-            foreach (array_chunk($rows, self::CHUNK) as $chunk) {
-                DB::table('topology_baseline')->insert($chunk);
-            }
+        return DB::transaction(function () use ($ids, $time, $user) {
+            $result = ['removed' => $this->clearBaseline($ids), 'saved' => 0];
+            $this->touching(DB::table('topology_facts'), $ids)->whereNull('removed_at')->whereIn('kind', Baseline::KINDS)
+                ->select(['id', 'kind', 'hash', 'fact_key', 'device_a', 'device_b', 'data'])
+                ->chunkById(self::CHUNK, function ($facts) use (&$result, $time, $user): void {
+                    $rows = [];
+                    foreach ($facts as $fact) {
+                        $rows[$fact->hash] = ['kind' => $fact->kind, 'hash' => $fact->hash, 'fact_key' => $fact->fact_key, 'device_a' => $fact->device_a,
+                            'device_b' => $fact->device_b, 'data' => $fact->data, 'saved_at' => $time, 'saved_by' => $user !== null ? mb_substr($user, 0, 128) : null];
+                    }
+                    // a fact can involve devices on both sides of the scope: it replaces the saved copy
+                    $result['removed'] += DB::table('topology_baseline')->whereIn('hash', array_keys($rows))->delete();
+                    DB::table('topology_baseline')->insert(array_values($rows));
+                    $result['saved'] += count($rows);
+                });
 
-            return ['removed' => $removed, 'saved' => count($rows)];
+            return $result;
         });
+    }
+
+    /**
+     * Take one fact out of the baseline (an admin accepted that it is gone).
+     *
+     * @param  int[]  $ids  devices of the page's scope; the fact must involve one of them
+     */
+    public function forgetBaselineFact(string $hash, array $ids): int
+    {
+        return $this->touching(DB::table('topology_baseline'), $ids)->where('hash', $hash)->delete();
     }
 
     /**
@@ -506,29 +549,42 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * Baseline links that LLDP/CDP does not report now, as links rows for the redundancy analysis
-     * (see Baseline::linkRows()). Nothing without a baseline or before the migrations ran.
+     * Baseline links that the last snapshot no longer found, as links rows for the redundancy
+     * analysis (see Baseline::linkRows()): one query, cheap enough for every simulation. Nothing
+     * without a baseline, before the migrations ran, or when the last snapshot is older than a day
+     * (the history is switched off or the scheduler does not run).
      *
-     * @param  array<int, array>  $links  links rows now (TopologyRepository::links())
-     * @param  array<int, array>  $ports  port_id => row (ifName, ifDescr) of their ports
      * @param  int[]  $ids  devices of the analysis
      * @return array<int, array>
      */
-    public function missingBaselineLinks(array $links, array $ports, array $ids): array
+    public function missingBaselineLinks(array $ids): array
     {
         if (! $ids || ! $this->available()) {
             return [];
         }
 
         try {
-            $baseline = $this->baselineFacts($ids, [FactCollector::LINK]);
-            if (! $baseline) {
+            $snapshot = $this->latestRun('snapshot');
+            if ($snapshot === null || time() - (int) strtotime($snapshot['started_at']) > self::SNAPSHOT_MAX_AGE) {
                 return [];
             }
-            $current = (new FactCollector(array_fill_keys($ids, ''), $ports))->links($links);
-            $missing = Baseline::goneLinks($baseline, $current);
+            $missing = [];
+            foreach ($this->touching(DB::table('topology_baseline as b'), $ids, 'b.')->where('b.kind', FactCollector::LINK)
+                ->whereNotExists(fn (Builder $q) => $q->from('topology_facts as f')->whereColumn('f.hash', 'b.hash')->whereNull('f.removed_at'))
+                ->select('b.*')->get() as $row) {
+                $fact = self::baselineRow((array) $row);
+                $missing[$fact['hash']] = $fact;
+            }
+            if (! $missing) {
+                return [];
+            }
 
-            return $missing ? Baseline::linkRows($missing, array_flip($ids), $this->goneSince(array_keys($missing))) : [];
+            // ends that have another cable now (Baseline::goneLinks())
+            $devices = array_unique(array_filter(array_merge(array_column($missing, 'device_a'), array_column($missing, 'device_b'))));
+            $current = $this->touching(DB::table('topology_facts'), $devices)->where('kind', FactCollector::LINK)->whereNull('removed_at')
+                ->pluck('fact_key', 'hash')->map(fn ($key) => ['fact_key' => $key])->all();
+
+            return Baseline::linkRows(Baseline::goneLinks($missing, $current), array_flip($ids), $this->goneSince(array_keys($missing)));
         } catch (\Throwable $e) {
             Log::error('topology plugin: cannot compare the links with the baseline: ' . $e->getMessage());
 
@@ -549,15 +605,34 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * The latest finished run of each type.
+     * The latest finished run of a type, null before the first one.
+     *
+     * @return array{started_at: string, finished_at: string, stats: array}|null
+     */
+    public function latestRun(string $type): ?array
+    {
+        $row = DB::table('topology_runs')->where('type', $type)->whereNotNull('finished_at')->orderByDesc('id')->first();
+
+        return $row ? ['started_at' => (string) $row->started_at, 'finished_at' => (string) $row->finished_at, 'stats' => json_decode((string) $row->stats, true) ?: []] : null;
+    }
+
+    /**
+     * The latest finished run of each type, and as 'checks' the latest one of the background checks.
      *
      * @return array<string, array{started_at: string, finished_at: string, stats: array}>
      */
     public function latestRuns(): array
     {
         $runs = [];
-        foreach (DB::table('topology_runs')->whereNotNull('finished_at')->orderByDesc('id')->limit(50)->get() as $row) {
-            $runs[$row->type] ??= ['started_at' => (string) $row->started_at, 'finished_at' => (string) $row->finished_at, 'stats' => json_decode((string) $row->stats, true) ?: []];
+        foreach (array_merge(['snapshot'], HistoryService::ANALYSES) as $type) {
+            if (($run = $this->latestRun($type)) !== null) {
+                $runs[$type] = $run;
+            }
+        }
+        foreach (HistoryService::ANALYSES as $analysis) {
+            if (isset($runs[$analysis]) && $runs[$analysis]['started_at'] > ($runs['checks']['started_at'] ?? '')) {
+                $runs['checks'] = $runs[$analysis];
+            }
         }
 
         return $runs;
@@ -566,35 +641,28 @@ class HistoryRepository extends ScopedRepository
     // ---------------------------------------------------------------- findings history
 
     /**
-     * Findings of an analysis reported by the previous run, oldest first.
+     * Open findings of an analysis (not resolved), oldest first.
      *
-     * @return array<int, array{id: int, hash: string, code: string, severity: string, title: string, devices: int[]}>
+     * @return array<int, array{id: int, hash: string, code: string, severity: string, title: string, devices: int[],
+     *     confirmed: bool, missed_at: ?string, first_seen: string}>
      */
     public function openFindings(string $analysis): array
     {
         return DB::table('topology_findings')->where('analysis', $analysis)->whereNull('resolved_at')->orderBy('id')
-            ->get(['id', 'hash', 'code', 'severity', 'title', 'devices'])
+            ->get(['id', 'hash', 'code', 'severity', 'title', 'devices', 'confirmed', 'missed_at', 'first_seen'])
             ->map(fn ($r) => ['id' => (int) $r->id, 'hash' => $r->hash, 'code' => $r->code, 'severity' => $r->severity, 'title' => $r->title,
-                'devices' => array_map('intval', json_decode((string) $r->devices, true) ?: [])])
+                'devices' => array_map('intval', json_decode((string) $r->devices, true) ?: []), 'confirmed' => (bool) $r->confirmed,
+                'missed_at' => $r->missed_at !== null ? (string) $r->missed_at : null, 'first_seen' => (string) $r->first_seen])
             ->all();
     }
 
     /**
-     * Has the analysis run in the background before (its first run records findings as initial)?
+     * Write one run of an analysis (FindingHistory::run()).
      */
-    public function hasFindings(string $analysis): bool
-    {
-        return DB::table('topology_findings')->where('analysis', $analysis)->exists()
-            || DB::table('topology_runs')->where('type', 'checks')->whereNotNull('finished_at')->where('stats', 'like', '%"' . $analysis . '"%')->exists();
-    }
-
-    /**
-     * @param  array<string, array>  $findings  hash => finding
-     */
-    public function insertFindings(string $analysis, array $findings, CarbonInterface $time, bool $initial): void
+    public function applyFindings(string $analysis, array $run, CarbonInterface $time, bool $initial): void
     {
         $rows = [];
-        foreach ($findings as $hash => $finding) {
+        foreach ($run['insert'] as $hash => $finding) {
             $rows[] = [
                 'analysis' => $analysis,
                 'code' => mb_substr((string) $finding['code'], 0, 64),
@@ -603,31 +671,27 @@ class HistoryRepository extends ScopedRepository
                 'title' => FindingHistory::title($finding),
                 'devices' => json_encode(array_values(array_map('intval', $finding['devices'] ?? []))),
                 'initial' => $initial,
+                'confirmed' => $initial,
                 'first_seen' => $time,
+                'missed_at' => null,
                 'resolved_at' => null,
             ];
         }
         foreach (array_chunk($rows, self::CHUNK) as $chunk) {
             DB::table('topology_findings')->insert($chunk);
         }
-    }
 
-    /**
-     * @param  int[]  $ids
-     */
-    public function resolveFindings(array $ids, CarbonInterface $time): void
-    {
-        foreach (array_chunk($ids, self::CHUNK) as $chunk) {
-            DB::table('topology_findings')->whereIntegerInRaw('id', $chunk)->update(['resolved_at' => $time]);
+        $byTime = [];
+        foreach ($run['resolve'] as $id => $resolvedAt) {
+            $byTime[$resolvedAt][] = (int) $id;
         }
-    }
-
-    /**
-     * @param  array<int, array>  $findings  id => finding with a new severity or wording
-     */
-    public function updateFindings(array $findings): void
-    {
-        foreach ($findings as $id => $finding) {
+        foreach ($byTime as $resolvedAt => $ids) {
+            $this->updateFindingRows($ids, ['resolved_at' => $resolvedAt]);
+        }
+        $this->updateFindingRows($run['miss'], ['missed_at' => $time]);
+        $this->updateFindingRows($run['unmiss'], ['missed_at' => null]);
+        $this->updateFindingRows($run['confirm'], ['confirmed' => true]);
+        foreach ($run['update'] as $id => $finding) {
             DB::table('topology_findings')->where('id', $id)->update(['severity' => $finding['severity'], 'title' => FindingHistory::title($finding)]);
         }
     }
@@ -652,30 +716,43 @@ class HistoryRepository extends ScopedRepository
 
     /**
      * Findings that started or were resolved in [$from, $to], involve the devices and only devices
-     * the user may see (their titles name devices: the diagnostics pages show the user's own).
+     * the user may see (their titles name devices: the diagnostics pages show the user's own); the
+     * newest WINDOW_FINDINGS of them, read page by page so a restricted view is not left empty.
      *
      * @param  int[]  $ids
-     * @return array<int, array>
+     * @return array{rows: array<int, array>, truncated: bool}
      */
     public function windowFindings(CarbonInterface $from, CarbonInterface $to, array $ids): array
     {
         $wanted = array_flip($ids);
         $visible = $this->accessible();
         $rows = [];
-        foreach (DB::table('topology_findings')
-            ->where(fn (Builder $q) => $q->where(fn (Builder $q) => $q->whereBetween('first_seen', [$from, $to])->where('initial', 0))
-                ->orWhereBetween('resolved_at', [$from, $to]))
-            ->orderByDesc('id')->limit(5000)->get() as $row) {
-            $devices = array_map('intval', json_decode((string) $row->devices, true) ?: []);
-            if (! array_filter($devices, fn ($id) => isset($wanted[$id])) || array_filter($devices, fn ($id) => ! isset($visible[$id]))) {
-                continue;
+        $before = null;
+        do {
+            $query = DB::table('topology_findings')
+                ->where(fn (Builder $q) => $q->where(fn (Builder $q) => $q->whereBetween('first_seen', [$from, $to])->where('initial', 0))
+                    ->orWhereBetween('resolved_at', [$from, $to]))
+                ->orderByDesc('id')->limit(2000);
+            if ($before !== null) {
+                $query->where('id', '<', $before);
             }
-            $rows[] = ['analysis' => $row->analysis, 'code' => $row->code, 'severity' => $row->severity, 'title' => $row->title,
-                'devices' => array_values(array_filter($devices, fn ($id) => isset($wanted[$id]))), 'initial' => (bool) $row->initial,
-                'first_seen' => (string) $row->first_seen, 'resolved_at' => $row->resolved_at !== null ? (string) $row->resolved_at : null];
-        }
+            $page = $query->get();
+            foreach ($page as $row) {
+                $before = (int) $row->id;
+                $devices = array_map('intval', json_decode((string) $row->devices, true) ?: []);
+                if (! array_filter($devices, fn ($id) => isset($wanted[$id])) || array_filter($devices, fn ($id) => ! isset($visible[$id]))) {
+                    continue;
+                }
+                if (count($rows) === self::WINDOW_FINDINGS) {
+                    return ['rows' => $rows, 'truncated' => true];
+                }
+                $rows[] = ['analysis' => $row->analysis, 'code' => $row->code, 'severity' => $row->severity, 'title' => $row->title,
+                    'devices' => array_values(array_filter($devices, fn ($id) => isset($wanted[$id]))), 'initial' => (bool) $row->initial,
+                    'first_seen' => (string) $row->first_seen, 'resolved_at' => $row->resolved_at !== null ? (string) $row->resolved_at : null];
+            }
+        } while (count($page) === 2000);
 
-        return $rows;
+        return ['rows' => $rows, 'truncated' => false];
     }
 
     // ---------------------------------------------------------------- helpers
@@ -685,13 +762,43 @@ class HistoryRepository extends ScopedRepository
      *
      * @param  int[]  $ids
      */
-    private function touching(Builder $query, array $ids): Builder
+    private function touching(Builder $query, array $ids, string $prefix = ''): Builder
     {
         if (! $ids) {
             return $query->whereRaw('1 = 0');
         }
 
-        return $query->where(fn (Builder $q) => $q->whereIntegerInRaw('device_a', $ids)->orWhereIntegerInRaw('device_b', $ids));
+        return $query->where(fn (Builder $q) => $q->whereIntegerInRaw($prefix . 'device_a', $ids)->orWhereIntegerInRaw($prefix . 'device_b', $ids));
+    }
+
+    /**
+     * @param  int[]  $ids
+     * @param  array<string, mixed>  $values
+     */
+    private function updateFindingRows(array $ids, array $values): void
+    {
+        foreach (array_chunk($ids, self::CHUNK) as $chunk) {
+            DB::table('topology_findings')->whereIntegerInRaw('id', $chunk)->update($values);
+        }
+    }
+
+    /**
+     * A stored baseline fact with typed columns and decoded data.
+     */
+    private static function baselineRow(array $row): array
+    {
+        return [
+            'id' => (int) $row['id'],
+            'kind' => $row['kind'],
+            'hash' => $row['hash'],
+            'key' => $row['fact_key'],
+            'fact_key' => $row['fact_key'],
+            'device_a' => $row['device_a'] !== null ? (int) $row['device_a'] : null,
+            'device_b' => $row['device_b'] !== null ? (int) $row['device_b'] : null,
+            'data' => json_decode((string) $row['data'], true) ?: [],
+            'saved_at' => (string) $row['saved_at'],
+            'saved_by' => $row['saved_by'],
+        ];
     }
 
     /**

@@ -1130,6 +1130,7 @@ class RedundancyAnalyzer
             $named = array_values(array_filter($exposed, fn ($n) => isset($group['ends'][$n]))) ?: $exposed;
             $behind = array_values(array_diff($exposed, $named));
             $plural = count(array_filter($named, fn ($n) => $this->nodes[$n]['managed'])) > 1;
+            $namedIds = array_values(array_filter(array_map(fn ($n) => $this->nodes[$n]['device_id'] ?? null, $named)));
             $this->add(new Finding(
                 Finding::WARNING, 'redundancy_lost',
                 'redundancy lost: ' . $this->nameList($named, 3),
@@ -1139,7 +1140,8 @@ class RedundancyAnalyzer
                 empty($group['missing'])
                     ? 'Restore the link or device that is down. LibreNMS removes links that LLDP/CDP no longer sees at the next discovery, '
                         . 'so this finding disappears then even if the link stays down, unless a baseline is saved on the Topology Changes page.'
-                    : 'Restore the link, or save the baseline again on the Topology Changes page if it was removed on purpose.',
+                    : 'Restore the link. If it was removed on purpose, an admin accepts that on the Topology Changes page: '
+                        . 'plugin/topology/changes' . ($namedIds ? '?device=' . $namedIds[0] : '') . '.',
                 null, array_merge(array_map(fn ($n) => $this->nodes[$n]['device_id'], $exposed), $group['devices']), $group['ports'],
             ));
         }

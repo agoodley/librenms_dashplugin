@@ -66,7 +66,7 @@ class PageController extends Controller
     private function diagnostics(Request $request, string $analysis, string $what): View
     {
         return $this->page($request, $analysis, $what, fn (array $params, $settings) => FindingBadges::annotate($analysis,
-            $this->service($request, $settings)->$analysis($params), new HistoryRepository($request->user())));
+            $this->service($request, $settings)->$analysis($params), new HistoryRepository($request->user()), 120 * $settings->int('history_interval', 5, 1440)));
     }
 
     /**

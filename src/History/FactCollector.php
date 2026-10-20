@@ -14,7 +14,10 @@ use Agoodley\LibrenmsTopology\Topology\L2Builder;
  * Changes page shows, so it rarely changes while the fact lasts.
  *
  * Every fact: kind, key, hash (identity), device_a / device_b (monitored devices it involves, for
- * permissions), data and data_hash.
+ * permissions), data and data_hash. Spanning tree facts are one per root bridge a switch sees and
+ * one per blocked port, each with its VLANs in the data, so a PVST network of 50 VLANs does not
+ * multiply them by 50. An unmanaged neighbor with a generic LLDP/CDP name ("Switch") is told apart
+ * by the local port id (L2Builder::unmanagedNodeId()).
  */
 class FactCollector
 {
@@ -33,8 +36,10 @@ class FactCollector
     /**
      * @param  array<int, string>  $deviceNames  device_id => display name of the devices in scope
      * @param  array<int, array>  $ports  port_id => port row (ifName / ifDescr), for the ports below
+     * @param  array<int, string[]>  $hostNames  device_id => other names (sysName, hostname) its neighbors may
+     *                                           report it by
      */
-    public function __construct(private readonly array $deviceNames, private readonly array $ports)
+    public function __construct(private readonly array $deviceNames, private readonly array $ports, private readonly array $hostNames = [])
     {
     }
 
@@ -83,7 +88,67 @@ class FactCollector
             $facts += self::fact(self::LINK, $key, $a['device'] ?? $b['device'], $a['device'] !== null ? $b['device'] : null, $data);
         }
 
+        return $this->withoutDoubleViews($facts);
+    }
+
+    /**
+     * Do two ends describe the same neighbor port, one as a device LibreNMS monitors and one as an
+     * unmanaged LLDP/CDP neighbor (same short host name and port)? That is one cable seen before and
+     * after LibreNMS started (or stopped) monitoring the neighbor.
+     *
+     * @param  string[]  $names  other names of the monitored device
+     */
+    public static function sameNeighbor(array $x, array $y, array $names = []): bool
+    {
+        if (isset($x['device']) === isset($y['device'])) {
+            return false;
+        }
+        [$managed, $unmanaged] = isset($x['device']) ? [$x, $y] : [$y, $x];
+        $host = self::shortName((string) ($unmanaged['name'] ?? ''));
+        $known = array_map(fn ($name) => self::shortName((string) $name), array_merge([$managed['name'] ?? '', $managed['host'] ?? ''], $names));
+
+        return $host !== '' && in_array($host, $known, true)
+            && InterfaceName::normalize($managed['port_name'] ?? '') === InterfaceName::normalize($unmanaged['port_name'] ?? '');
+    }
+
+    /**
+     * A neighbor LibreNMS monitors keeps its unmanaged entry on the other side until that side's next
+     * discovery: the same cable, kept once as the link between the two monitored devices.
+     *
+     * @param  array<string, array>  $facts  link facts
+     * @return array<string, array>
+     */
+    private function withoutDoubleViews(array $facts): array
+    {
+        $managed = []; // end key => far monitored ends
+        foreach ($facts as $fact) {
+            if (isset($fact['data']['a']['device'], $fact['data']['b']['device'])) {
+                [$a, $b] = explode('|', $fact['key'], 2);
+                $managed[$a][] = $fact['data']['b'];
+                $managed[$b][] = $fact['data']['a'];
+            }
+        }
+        if (! $managed) {
+            return $facts;
+        }
+
+        foreach ($facts as $hash => $fact) {
+            if (isset($fact['data']['b']['node'])) {
+                foreach ($managed[explode('|', $fact['key'], 2)[0]] ?? [] as $end) {
+                    if (self::sameNeighbor($end, $fact['data']['b'], $this->hostNames[(int) $end['device']] ?? [])) {
+                        unset($facts[$hash]);
+                        break;
+                    }
+                }
+            }
+        }
+
         return $facts;
+    }
+
+    private static function shortName(string $name): string
+    {
+        return strtolower(L2Builder::shortHost(trim($name)));
     }
 
     /**
@@ -115,66 +180,102 @@ class FactCollector
     }
 
     /**
-     * The root bridge each device sees in each spanning tree instance.
+     * The root bridges each device sees: one fact per device and root bridge with the spanning tree
+     * instances (VLAN keys) it is the root of. Only the observing device is involved (device_a): a
+     * user who may see the root bridge does not learn about the switches behind it.
      *
-     * @param  array<int, array>  $stp  stp table rows (device_id, vlan, designatedRoot, bridgeAddress)
+     * @param  iterable<int, array>  $stp  stp table rows (device_id, vlan, designatedRoot, bridgeAddress), read once
      * @return array<string, array>
      */
-    public function stpRoots(array $stp): array
+    public function stpRoots(iterable $stp): array
     {
         $bridges = [];
+        $roots = [];
         foreach ($stp as $row) {
             $mac = StpIndex::mac($row['bridgeAddress'] ?? '');
             if ($mac !== '') {
                 $bridges[$mac] = (int) $row['device_id'];
             }
+            $deviceId = (int) $row['device_id'];
+            $root = StpIndex::mac($row['designatedRoot'] ?? '');
+            if ($root !== '' && isset($this->deviceNames[$deviceId])) {
+                $roots[$deviceId][$root][StpIndex::vlanKey($row['vlan'] ?? null)] = true;
+            }
         }
 
         $facts = [];
-        foreach ($stp as $row) {
-            $deviceId = (int) $row['device_id'];
-            $root = StpIndex::mac($row['designatedRoot'] ?? '');
-            if ($root === '' || ! isset($this->deviceNames[$deviceId])) {
-                continue;
+        foreach ($roots as $deviceId => $byRoot) {
+            foreach ($byRoot as $root => $vlans) {
+                ksort($vlans);
+                $owner = $bridges[$root] ?? null;
+                $facts += self::fact(self::STP_ROOT, "d$deviceId|$root", $deviceId, null, [
+                    'device' => $deviceId,
+                    'device_name' => $this->deviceNames[$deviceId],
+                    'root' => $root,
+                    'root_device' => $owner,
+                    'root_name' => $owner !== null ? ($this->deviceNames[$owner] ?? null) : null,
+                    'vlans' => array_keys($vlans),
+                ]);
             }
-            $vlan = StpIndex::vlanKey($row['vlan'] ?? null);
-            $owner = $bridges[$root] ?? null;
-            $facts += self::fact(self::STP_ROOT, "d$deviceId|v$vlan|$root", $deviceId, $owner !== $deviceId ? $owner : null, [
-                'device' => $deviceId,
-                'device_name' => $this->deviceNames[$deviceId],
-                'vlan' => $vlan,
-                'root' => $root,
-                'root_device' => $owner,
-                'root_name' => $owner !== null ? ($this->deviceNames[$owner] ?? null) : null,
-            ]);
         }
 
         return $facts;
     }
 
     /**
-     * Ports that spanning tree blocks (one fact per port and instance).
+     * Ports that spanning tree blocks: one fact per port with the instances (VLAN keys) it blocks.
      *
-     * @param  array<int, array>  $rows  ports_stp rows (device_id, port_id, vlan, state)
+     * @param  iterable<int, array>  $rows  ports_stp rows (device_id, port_id, vlan, state), read once
      * @return array<string, array>
      */
-    public function blockedPorts(array $rows): array
+    public function blockedPorts(iterable $rows): array
     {
-        $facts = [];
+        return $this->blockedPortFacts(self::blockingPorts($rows, $this->deviceNames));
+    }
+
+    /**
+     * The instances (VLAN keys) each port of the devices blocks.
+     *
+     * @param  iterable<int, array>  $rows  ports_stp rows (device_id, port_id, vlan, state), read once
+     * @param  array<int, mixed>  $devices  device_id => anything
+     * @return array<int, array<int, int[]>> device_id => port_id => VLAN keys
+     */
+    public static function blockingPorts(iterable $rows, array $devices): array
+    {
+        $ports = [];
         foreach ($rows as $row) {
             $deviceId = (int) $row['device_id'];
-            $portId = (int) $row['port_id'];
-            if (! StpIndex::isBlocking($row['state'] ?? null) || ! isset($this->deviceNames[$deviceId])) {
-                continue;
+            if (StpIndex::isBlocking($row['state'] ?? null) && isset($devices[$deviceId])) {
+                $ports[$deviceId][(int) $row['port_id']][StpIndex::vlanKey($row['vlan'] ?? null)] = true;
             }
-            $vlan = StpIndex::vlanKey($row['vlan'] ?? null);
-            $facts += self::fact(self::STP_BLOCKED, "d$deviceId:" . $this->portKey($portId) . "|v$vlan", $deviceId, null, [
-                'device' => $deviceId,
-                'device_name' => $this->deviceNames[$deviceId],
-                'port' => $portId,
-                'port_name' => $this->portName($portId),
-                'vlan' => $vlan,
-            ]);
+        }
+
+        return array_map(fn ($byPort) => array_map(function ($vlans) {
+            ksort($vlans);
+
+            return array_keys($vlans);
+        }, $byPort), $ports);
+    }
+
+    /**
+     * Facts of blocking ports (blockingPorts()).
+     *
+     * @param  array<int, array<int, int[]>>  $ports  device_id => port_id => VLAN keys
+     * @return array<string, array>
+     */
+    public function blockedPortFacts(array $ports): array
+    {
+        $facts = [];
+        foreach ($ports as $deviceId => $byPort) {
+            foreach ($byPort as $portId => $vlans) {
+                $facts += self::fact(self::STP_BLOCKED, "d$deviceId:" . $this->portKey($portId), $deviceId, null, [
+                    'device' => $deviceId,
+                    'device_name' => $this->deviceNames[$deviceId],
+                    'port' => $portId,
+                    'port_name' => $this->portName($portId),
+                    'vlans' => $vlans,
+                ]);
+            }
         }
 
         return $facts;
@@ -235,9 +336,11 @@ class FactCollector
             }
             $peer = strtolower((string) ($row['bgpPeerIdentifier'] ?? ''));
             $context = (string) ($row['context_name'] ?? '');
+            $vrf = (int) ($row['vrf_id'] ?? 0);
             $neighbor = $addresses[$peer] ?? null;
             $neighbor = $neighbor !== null && $neighbor !== $deviceId && isset($this->deviceNames[$neighbor]) ? $neighbor : null;
-            $facts += self::fact(self::BGP, "d$deviceId|$context|$peer", $deviceId, $neighbor, [
+            // the same peer address can exist in several VRFs of a router
+            $facts += self::fact(self::BGP, "d$deviceId|$context|" . ($vrf ? "vrf$vrf|" : '') . $peer, $deviceId, $neighbor, [
                 'device' => $deviceId,
                 'device_name' => $this->deviceNames[$deviceId],
                 'context' => $context,

@@ -2,7 +2,9 @@
 
 namespace Agoodley\LibrenmsTopology;
 
+use Agoodley\LibrenmsTopology\Console\ChecksCommand;
 use Agoodley\LibrenmsTopology\Console\SnapshotCommand;
+use Agoodley\LibrenmsTopology\History\HistoryService;
 use Agoodley\LibrenmsTopology\History\Interval;
 use Agoodley\LibrenmsTopology\Hooks\DeviceOverview;
 use Agoodley\LibrenmsTopology\Hooks\MenuEntry;
@@ -48,7 +50,7 @@ class TopologyServiceProvider extends ServiceProvider
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
 
         if ($this->app->runningInConsole()) {
-            $this->commands([SnapshotCommand::class]);
+            $this->commands([SnapshotCommand::class, ChecksCommand::class]);
             $this->callAfterResolving(Schedule::class, fn (Schedule $schedule) => $this->schedule($schedule, $pluginManager));
         }
 
@@ -60,17 +62,44 @@ class TopologyServiceProvider extends ServiceProvider
     }
 
     /**
-     * The history snapshot and background checks every *History interval* minutes, while the
-     * plugin and its history are enabled (LibreNMS runs `artisan schedule:run` every minute).
+     * The history snapshot and each background check every *History interval* minutes, each in its
+     * own process, while the plugin and its history are enabled (LibreNMS runs `artisan
+     * schedule:run` every minute). Their output goes to topology-snapshot.log in the LibreNMS log
+     * directory, a failure to the eventlog.
      */
     private function schedule(Schedule $schedule, PluginManagerInterface $pluginManager): void
     {
-        $schedule->command(SnapshotCommand::class)
-            ->cron(Interval::cron(self::settings($pluginManager)->int('history_interval', 5, 1440)))
-            ->when(fn () => $pluginManager->pluginEnabled(self::PLUGIN_NAME) && self::settings($pluginManager)->bool('history_enabled'))
-            ->withoutOverlapping(180)
-            ->onOneServer()
-            ->runInBackground();
+        $cron = Interval::cron(self::settings($pluginManager)->int('history_interval', 5, 1440));
+        $log = rtrim((string) self::config('log_dir', storage_path('logs')), '/') . '/topology-snapshot.log';
+        $enabled = fn () => $pluginManager->pluginEnabled(self::PLUGIN_NAME) && self::settings($pluginManager)->bool('history_enabled');
+        $jobs = [[SnapshotCommand::class, ['--no-checks' => true], 'topology:snapshot', $enabled]];
+        foreach (HistoryService::ANALYSES as $analysis) {
+            $jobs[] = [ChecksCommand::class, [$analysis], "topology:checks $analysis",
+                fn () => $enabled() && in_array($analysis, array_map('strtolower', self::settings($pluginManager)->list('history_checks')), true)];
+        }
+        foreach ($jobs as [$command, $options, $name, $when]) {
+            $schedule->command($command, $options)
+                ->cron($cron)
+                ->when($when)
+                ->withoutOverlapping(180)
+                ->onOneServer()
+                ->runInBackground()
+                ->appendOutputTo($log)
+                ->onFailure(fn () => \App\Models\Eventlog::log("The scheduled command $name of the topology plugin failed. Check topology-snapshot.log in the LibreNMS log directory.",
+                    null, 'topology', \LibreNMS\Enum\Severity::Error));
+        }
+    }
+
+    /**
+     * A LibreNMS setting, $default on versions without the LibrenmsConfig facade.
+     */
+    private static function config(string $key, mixed $default): mixed
+    {
+        try {
+            return class_exists(\App\Facades\LibrenmsConfig::class) ? \App\Facades\LibrenmsConfig::get($key, $default) : $default;
+        } catch (\Throwable) {
+            return $default;
+        }
     }
 
     /**

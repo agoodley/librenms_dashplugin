@@ -6,18 +6,20 @@ use Illuminate\Support\Facades\Schema;
 
 /**
  * Tables of the topology history (History\HistoryService): facts as periods of presence, the
- * saved baseline, the runs of the scheduled job and the findings history of the background checks.
+ * saved baseline, the runs of the scheduled jobs and the findings history of the background checks.
+ * Each table is only created when it does not exist, so the migration can run again safely.
  */
 return new class extends Migration
 {
     public function up(): void
     {
         // one row per period a fact (link, port-channel member, STP root or blocked port, adjacency) is seen
-        Schema::create('topology_facts', function (Blueprint $table): void {
+        $this->create('topology_facts', function (Blueprint $table): void {
             $table->id();
             $table->string('kind', 16);
             $table->char('hash', 40);
             $table->string('fact_key', 512);
+            $table->string('node', 191)->nullable(); // unmanaged neighbor of a link (L2Builder::unmanagedNodeId())
             $table->unsignedInteger('device_a')->nullable();
             $table->unsignedInteger('device_b')->nullable();
             $table->text('data');
@@ -31,9 +33,10 @@ return new class extends Migration
             $table->index('removed_at');
             $table->index('device_a');
             $table->index('device_b');
+            $table->index('node');
         });
 
-        Schema::create('topology_baseline', function (Blueprint $table): void {
+        $this->create('topology_baseline', function (Blueprint $table): void {
             $table->id();
             $table->string('kind', 16);
             $table->char('hash', 40)->unique();
@@ -47,7 +50,7 @@ return new class extends Migration
             $table->index('device_b');
         });
 
-        Schema::create('topology_runs', function (Blueprint $table): void {
+        $this->create('topology_runs', function (Blueprint $table): void {
             $table->id();
             $table->string('type', 16);
             $table->dateTime('started_at');
@@ -57,7 +60,7 @@ return new class extends Migration
         });
 
         // one row per period a finding of the background checks is reported
-        Schema::create('topology_findings', function (Blueprint $table): void {
+        $this->create('topology_findings', function (Blueprint $table): void {
             $table->id();
             $table->string('analysis', 16);
             $table->string('code', 64);
@@ -66,13 +69,22 @@ return new class extends Migration
             $table->string('title', 512);
             $table->text('devices');
             $table->boolean('initial')->default(false);
+            $table->boolean('confirmed')->default(false); // reported by two runs in a row
             $table->dateTime('first_seen');
+            $table->dateTime('missed_at')->nullable(); // the run that first missed it, while it may come back
             $table->dateTime('resolved_at')->nullable();
             $table->index(['hash', 'resolved_at']);
             $table->index(['analysis', 'resolved_at']);
             $table->index('first_seen');
             $table->index('resolved_at');
         });
+    }
+
+    private function create(string $name, \Closure $columns): void
+    {
+        if (! Schema::hasTable($name)) {
+            Schema::create($name, $columns);
+        }
     }
 
     public function down(): void
