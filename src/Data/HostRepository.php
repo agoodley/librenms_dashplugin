@@ -239,23 +239,30 @@ class HostRepository extends ScopedRepository
     }
 
     /**
-     * 802.1X / MAB sessions of the MACs (the nac poller module) on the given ports, newest first.
+     * 802.1X / MAB sessions of the MACs (the nac poller module), current ones first: on the given ports (the index is
+     * on port and MAC), or without ports by MAC alone, which reads the whole table (one row per session, small).
      *
      * @param  string[]  $macs
-     * @param  int[]  $portIds  ports where the MACs are learned (the table has no index on the MAC alone)
+     * @param  int[]|null  $portIds  ports where the MACs are learned
      */
-    public function nacByMacs(array $macs, array $portIds): array
+    public function nacByMacs(array $macs, ?array $portIds = null): array
     {
-        $portIds = self::ids($portIds);
-        if (! $macs || ! $portIds) {
+        if (! $macs) {
             return [];
+        }
+        $query = DB::table('ports_nac');
+        if ($portIds !== null) {
+            $portIds = self::ids($portIds);
+            if (! $portIds) {
+                return [];
+            }
+            $query->whereIntegerInRaw('port_id', $portIds);
         }
 
         $wanted = array_flip($macs);
         $variants = array_values(array_unique(array_merge(...array_map([Mac::class, 'variants'], array_values($macs)))));
 
-        return array_values(array_filter($this->nacRows(DB::table('ports_nac')->whereIntegerInRaw('port_id', $portIds)->whereIn('mac_address', $variants)),
-            fn ($row) => isset($wanted[$row['mac']])));
+        return array_values(array_filter($this->nacRows($query->whereIn('mac_address', $variants)), fn ($row) => isset($wanted[$row['mac']])));
     }
 
     /**
@@ -695,6 +702,7 @@ class HostRepository extends ScopedRepository
                     continue;
                 }
                 $rows[] = [
+                    'id' => (int) ($row['ports_nac_id'] ?? 0),
                     'mac' => Mac::normalize((string) $row['mac_address']) ?? strtolower((string) $row['mac_address']),
                     'device_id' => $deviceId,
                     'port_id' => (int) $row['port_id'],
@@ -707,6 +715,7 @@ class HostRepository extends ScopedRepository
                     'host_mode' => (string) ($row['host_mode'] ?? ''),
                     'vlan' => isset($row['vlan']) && $row['vlan'] !== null ? (int) $row['vlan'] : null,
                     'historical' => (bool) ($row['historical'] ?? false),
+                    'first_seen' => self::time($row['created_at'] ?? null),
                     'last_seen' => self::time($row['updated_at'] ?? null),
                 ];
             }

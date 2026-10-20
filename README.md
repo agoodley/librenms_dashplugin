@@ -133,11 +133,14 @@ search ends on the switch the host is plugged into, including:
   after a few minutes) or has no forwarding table data, the answer is *behind* that switch, and the L2 map draws the host
   next to it;
 * the address of a **switch, router or firewall** itself, an interface MAC or a **VRRP / HSRP / GLBP** virtual router MAC:
-  the answer is the device (for a gateway, the router that is master / active now), not a port on the way to it.
+  the answer is the device (for a gateway, the router that is master / active now), not a port on the way to it;
+* a host the forwarding tables do not show yet (LibreNMS reads them every 6 hours), that sits behind a switch without
+  one, or that moved since: its current **802.1X / MAB session** (polled every 5 minutes) gives the port.
 
-An IP search uses the VLAN of the ARP entry: the HSRP and VRRP MACs are the same in every VLAN that uses the group
-number, so a gateway MAC searched by itself gets one answer per VLAN. Every other port that learned the MAC is listed
-with the reason the host is not there. **Show on the L2 map** opens the map centered on the switch with the host drawn
+The HSRP and VRRP MACs are the same in every VLAN that uses the group number, so a gateway is located in the VLAN of
+the router interface with the ARP entry (Vlan10, irb.10, ve 10, the unit of a subinterface such as Gi0/0.10); when that
+names no VLAN the MAC is learned in, and when the MAC itself is searched, there is one answer per VLAN. Every other port
+that learned the MAC is listed with the reason the host is not there. **Show on the L2 map** opens the map centered on the switch with the host drawn
 next to it on its port (next to the switch it is behind; for a device's own address, the device).
 
 Every **port page** gets a *Plugins* tab with the port's far end (LLDP/CDP in both directions), port-channel, VLANs,
@@ -239,7 +242,7 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Warn from | 2 | switches, routers or firewalls cut off by one failure before a single point of failure is a warning |
 | Disabled redundancy checks | – | check codes or categories (`outages`, `lost`, `fake`, `spof`), e.g. `spof_link uplinks_same_device` |
 | Shared access port | 5 MACs | an access port without LLDP/CDP neighbor with this many MACs is flagged by the host locator |
-| DNS lookups | on | hostnames that are not LibreNMS devices are resolved with the server's resolver (`getent`) in a subprocess stopped after 2 seconds; answers and failures are cached for 5 minutes, 20 lookups per user and minute |
+| DNS lookups | on | hostnames that are not LibreNMS devices are resolved with the server's resolver (`/usr/bin/getent` or `/bin/getent`) in a subprocess stopped after 2 seconds, 4 seconds per search; answers and failures are cached for 5 minutes, 20 lookups per user and minute |
 
 ## Permissions
 
@@ -298,7 +301,8 @@ vendor/bin/phpunit
 * Query cost: LibreNMS has no index on the address in the ARP table or on anything but port and device in the IPv6
   neighbor table, so an IPv4 search reads the whole ARP table once and every search the whole IPv6 neighbor table (twice
   for an IPv6 address); the port tab (on every port page) shows IPv4 addresses only and uses indexed lookups. 802.1X
-  sessions are looked up on the ports where the MAC is learned.
+  sessions are looked up on the ports where the MAC is learned, and by the MAC alone (the whole, small session table)
+  when none of them has a current one.
 
 ## Roadmap
 

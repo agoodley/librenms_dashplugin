@@ -5,7 +5,6 @@ namespace Agoodley\LibrenmsTopology\Hosts;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
-use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 
@@ -28,6 +27,12 @@ class DnsResolver
     public const PER_MINUTE = 20;
 
     /**
+     * Where getent may be: fixed paths only, never PATH (php-fpm clears it, and without PATH the working directory
+     * would be searched first).
+     */
+    public const GETENT = ['/usr/bin/getent', '/bin/getent'];
+
+    /**
      * @param  string  $user  rate limit key of the user
      */
     public function __construct(private readonly string $user = '')
@@ -35,12 +40,17 @@ class DnsResolver
     }
 
     /**
-     * @return string[]|null IP addresses (none when the name does not resolve), null when the user made too many lookups
+     * @param  float  $timeout  seconds this lookup may take (a caller with several names to resolve passes what is left)
+     * @return string[]|string IP addresses (none when the name does not resolve), or why the name was not looked up
      */
-    public function __invoke(string $name): ?array
+    public function __invoke(string $name, float $timeout = self::TIMEOUT): array|string
     {
         if (! self::plausible($name)) {
             return [];
+        }
+        $getent = self::getent();
+        if ($getent === null) {
+            return 'DNS lookups are unavailable: getent was not found on the LibreNMS server.';
         }
 
         $key = 'topology-plugin:dns:' . sha1($name);
@@ -51,18 +61,22 @@ class DnsResolver
             }
             $limit = 'topology-plugin:dns-user:' . $this->user;
             if (RateLimiter::tooManyAttempts($limit, self::PER_MINUTE)) {
-                return null;
+                return 'Too many DNS lookups: try again in a minute.';
             }
             RateLimiter::hit($limit, 60);
         } catch (\Throwable $e) {
             Log::debug('topology plugin: no cache for DNS lookups: ' . $e->getMessage());
         }
 
-        $ips = self::lookup($name);
-        try {
-            Cache::put($key, $ips, self::CACHE_SECONDS);
-        } catch (\Throwable) {
-            // not cached
+        $timeout = min(self::TIMEOUT, $timeout);
+        $ips = self::lookup($name, $timeout, $getent);
+        // a failure within a shortened time is not cached
+        if ($ips || $timeout >= self::TIMEOUT) {
+            try {
+                Cache::put($key, $ips, self::CACHE_SECONDS);
+            } catch (\Throwable) {
+                // not cached
+            }
         }
 
         return $ips;
@@ -81,22 +95,45 @@ class DnsResolver
     }
 
     /**
-     * A and AAAA addresses of a name with getent (glibc ahosts, else hosts as on musl), or none when it
-     * does not resolve within the timeout.
+     * The getent binary, from the fixed paths only.
+     */
+    public static function getent(): ?string
+    {
+        foreach (self::GETENT as $path) {
+            if (is_file($path) && is_executable($path)) {
+                return $path;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The getent command line: options end before the name, which may start with "-" (a device hostname).
      *
      * @return string[]
      */
-    public static function lookup(string $name, float $timeout = self::TIMEOUT): array
+    public static function command(string $getent, string $database, string $name): array
     {
-        $getent = class_exists(ExecutableFinder::class) ? (new ExecutableFinder())->find('getent', null, ['/usr/bin', '/bin', '/usr/local/bin']) : null;
-        if ($getent === null) {
-            Log::debug('topology plugin: getent not found, no DNS lookups');
+        return [$getent, $database, '--', $name];
+    }
 
+    /**
+     * A and AAAA addresses of a name with getent (glibc ahosts, else hosts as on musl), or none when it
+     * does not resolve within the timeout.
+     *
+     * @param  string|null  $getent  the binary (default: getent())
+     * @return string[]
+     */
+    public static function lookup(string $name, float $timeout = self::TIMEOUT, ?string $getent = null): array
+    {
+        $getent ??= self::getent();
+        if ($getent === null) {
             return [];
         }
 
         foreach (['ahosts', 'hosts'] as $database) {
-            $process = new Process([$getent, $database, $name]);
+            $process = new Process(self::command($getent, $database, $name));
             $process->setTimeout($timeout);
             try {
                 $process->run();
@@ -109,13 +146,12 @@ class DnsResolver
 
                 return [];
             }
-            if ($process->getExitCode() === 0) {
-                return self::parse($process->getOutput());
+            $output = $process->getOutput();
+            // 1 with no output: this getent does not know the database; otherwise the addresses it printed (a getent
+            // that takes "--" for a key says 2, one key not found, and still prints the name's addresses)
+            if ($process->getExitCode() !== 1 || trim($output) !== '') {
+                return self::parse($output);
             }
-            if ($process->getExitCode() !== 1) {
-                return []; // 2: not found
-            }
-            // 1: this getent does not know the database
         }
 
         return [];

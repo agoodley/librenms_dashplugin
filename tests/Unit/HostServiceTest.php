@@ -37,7 +37,7 @@ class HostServiceTest extends TestCase
             110 => [1, 'Vl10', 'l3ipvlan', '00ab01000110'], 111 => [1, 'Vl20', 'l3ipvlan', '00ab01000110'], 112 => [1, 'Vl30', 'l3ipvlan', '00ab01000110'],
             201 => [2, 'Po1', 'ieee8023adLag'], 202 => [2, 'Te1/1/1'], 209 => [2, 'Vl20', 'l3ipvlan'], 210 => [2, 'Vl30', 'l3ipvlan'],
             301 => [3, 'Te1/1/1'], 305 => [3, 'Gi1/0/1'],
-            401 => [4, 'Te1/1/1'], 403 => [4, 'Gi1/0/3'], 410 => [4, 'Gi1/0/10'],
+            401 => [4, 'Te1/1/1'], 403 => [4, 'Gi1/0/3'], 405 => [4, 'Gi1/0/5'], 410 => [4, 'Gi1/0/10'],
             1301 => [13, 'vmnic0', 'ethernetCsmacd', '00ab13001301'],
         ];
         $neighbors = [
@@ -60,6 +60,8 @@ class HostServiceTest extends TestCase
             self::fdb('d4bed9010203', 4, 403, 10),
             // a printer that was silent when acc-sw2's table was read: only core1 still lists it
             self::fdb('3c2af4000001', 1, 105, 10),
+            // a PC with an 802.1X session on acc-sw2 Gi1/0/5, of which only core1 has an entry
+            self::fdb('d4bed9004002', 1, 105, 10),
         ];
         $since = array_fill_keys([1, 2, 3, 4], self::NOW - HostLocator::STALE_AFTER);
         for ($id = 20; $id < 80; $id++) {
@@ -78,7 +80,14 @@ class HostServiceTest extends TestCase
             'lag' => [102 => 101, 202 => 201],
             'fdb' => $fdb,
             'since' => $since,
-            'counts' => [403 => 1, 305 => 1, 410 => 2],
+            'counts' => [403 => 1, 305 => 1, 405 => 1, 410 => 2],
+            'nac' => [
+                // connected after the last forwarding table read: a session only
+                self::session(1, 'd4bed9004001', 4, 405, 'kchen'),
+                self::session(2, 'd4bed9004002', 4, 405, 'pwalsh'),
+                // the laptop's session at the old desk ended, the one at the hot desk is current
+                self::session(3, self::LAPTOP, 3, 305, 'asmith', true), self::session(4, self::LAPTOP, 4, 403, 'asmith'),
+            ],
             'addresses' => [
                 self::address('10.10.20.1', self::HSRP, 1, 111), self::address('10.10.20.1', self::HSRP, 2, 209),
                 self::address('10.10.30.1', self::HSRP, 1, 112), self::address('10.10.30.1', self::HSRP, 2, 210),
@@ -107,12 +116,41 @@ class HostServiceTest extends TestCase
         return ['mac' => $mac, 'ip' => $ip, 'family' => 4, 'device_id' => $deviceId, 'port_id' => $portId, 'context' => null];
     }
 
-    private static function service(?FakeHostRepository &$repo = null, array $settings = [], ?callable $resolver = null): HostService
+    private static function session(int $id, string $mac, int $deviceId, int $portId, string $user, bool $historical = false): array
     {
-        $repo = new FakeHostRepository(self::data());
+        return ['id' => $id, 'mac' => $mac, 'device_id' => $deviceId, 'port_id' => $portId, 'username' => $user, 'domain' => 'data', 'ip' => '',
+            'status' => 'authorized', 'auth_status' => 'authcSuccess', 'method' => 'dot1x', 'host_mode' => 'multiDomain', 'vlan' => 10,
+            'historical' => $historical, 'first_seen' => self::NOW - 3600, 'last_seen' => $historical ? self::NOW - 86400 : self::NOW - 120];
+    }
 
-        return new HostService($repo, new FakeTopologyRepository(self::data()['lag']), new PluginSettings($settings), $resolver,
+    /**
+     * @param  (\Closure(array): array)|null  $change  changes to the test data
+     */
+    private static function service(?FakeHostRepository &$repo = null, array $settings = [], ?callable $resolver = null, ?\Closure $change = null,
+        string $class = HostService::class): HostService
+    {
+        $data = $change ? $change(self::data()) : self::data();
+        $repo = new FakeHostRepository($data);
+
+        return new $class($repo, new FakeTopologyRepository($data['lag']), new PluginSettings($settings), $resolver,
             fn (string $name, array $parameters = []) => $name . '?' . http_build_query($parameters));
+    }
+
+    /**
+     * Router interfaces that do not name the VLAN (or name another one), and a firewall with ARP entries.
+     */
+    private static function subinterfaces(array $addresses): \Closure
+    {
+        return function (array $data) use ($addresses): array {
+            $data['devices'][50] = ['name' => 'fw1', 'role' => 'firewall'];
+            foreach ([230 => [2, 'Gi0/0.20'], 231 => [2, 'Gi0/0.30'], 232 => [2, 'irb.100'], 5001 => [50, 'ethernet1/1.10'], 5002 => [50, 'ethernet1/1.20']] as $portId => [$deviceId, $name]) {
+                $data['ports'][$portId] = ['device_id' => $deviceId, 'ifName' => $name, 'ifDescr' => $name, 'ifAlias' => '', 'ifType' => 'l2vlan',
+                    'ifOperStatus' => 'up', 'ifPhysAddress' => null, 'ifVlan' => '', 'ifTrunk' => null];
+            }
+            $data['addresses'] = $addresses;
+
+            return $data;
+        };
     }
 
     public function testAnIpAddressUsesTheVlanOfItsArpEntry(): void
@@ -184,12 +222,11 @@ class HostServiceTest extends TestCase
     public function testDnsLookups(): void
     {
         $asked = [];
-        $resolver = function (string $name) use (&$asked): ?array {
+        $resolver = function (string $name, float $timeout) use (&$asked): array|string {
             $asked[] = $name;
 
-            $answers = ['pc-101' => ['10.10.10.55'], 'busy' => null];
-
-            return array_key_exists($name, $answers) ? $answers[$name] : [];
+            return ['pc-101' => ['10.10.10.55'], 'busy' => 'Too many DNS lookups: try again in a minute.',
+                'nodns' => 'DNS lookups are unavailable: getent was not found on the LibreNMS server.'][$name] ?? [];
         };
 
         $found = self::service($repo, [], $resolver)->search('pc-101');
@@ -197,8 +234,10 @@ class HostServiceTest extends TestCase
         $this->assertSame([4, 403], [$found['hosts'][0]['edge']['device_id'], $found['hosts'][0]['edge']['port_id']]);
 
         $this->assertSame('pc-102 is not a device in LibreNMS and does not resolve in DNS.', self::service($repo, [], $resolver)->search('pc-102')['message']);
-        $this->assertSame('Too many DNS lookups: try again in a minute.', self::service($repo, [], $resolver)->search('busy')['message']);
-        $this->assertSame(['pc-101', 'pc-102', 'busy'], $asked);
+        $this->assertSame('busy is not a device in LibreNMS. Too many DNS lookups: try again in a minute.', self::service($repo, [], $resolver)->search('busy')['message']);
+        $this->assertSame('nodns is not a device in LibreNMS. DNS lookups are unavailable: getent was not found on the LibreNMS server.',
+            self::service($repo, [], $resolver)->search('nodns')['message'], 'not "does not resolve"');
+        $this->assertSame(['pc-101', 'pc-102', 'busy', 'nodns'], $asked);
 
         // a device without a stored address: its hostname
         $esx = self::service($repo, [], $resolver)->search('esx-1');
@@ -207,8 +246,87 @@ class HostServiceTest extends TestCase
         $asked = array_values(array_diff($asked, ['esx-1.example.net']));
 
         $off = self::service($repo, ['hosts_dns' => '0'], $resolver)->search('pc-103');
-        $this->assertSame('pc-103 is not a device in LibreNMS (DNS lookups are switched off in the plugin settings).', $off['message']);
-        $this->assertSame(['pc-101', 'pc-102', 'busy'], $asked, 'no lookup when switched off');
+        $this->assertSame('pc-103 is not a device in LibreNMS. DNS lookups are switched off in the plugin settings.', $off['message']);
+        $this->assertSame(['pc-101', 'pc-102', 'busy', 'nodns'], $asked, 'no lookup when switched off');
+    }
+
+    public function testAllDnsLookupsOfASearchShareOneTimeBudget(): void
+    {
+        // a name matching many devices without a stored address: their hostnames are looked up one after another
+        $calls = [];
+        $resolver = function (string $name, float $timeout) use (&$calls): array {
+            $calls[] = $timeout;
+            usleep(120_000);
+
+            return [];
+        };
+        $named = function (array $data): array {
+            $data['named']['lab'] = array_map(fn ($i) => ['device_id' => 100 + $i, 'name' => 'lab-' . $i, 'hostname' => 'lab-' . $i . '.example.net',
+                'role' => 'server', 'ips' => []], range(1, 20));
+
+            return $data;
+        };
+        $started = microtime(true);
+        self::service($repo, [], $resolver, $named, ShortBudgetHostService::class)->search('lab');
+
+        $this->assertLessThan(0.6, microtime(true) - $started, 'the budget bounds the search: ' . json_encode($calls));
+        $this->assertLessThanOrEqual(3, count($calls));
+        foreach ($calls as $timeout) {
+            $this->assertLessThanOrEqual(ShortBudgetHostService::BUDGET, $timeout, 'each lookup gets at most the time that is left');
+        }
+    }
+
+    public function testAHostWithOnlyAnAuthenticationSessionIsLocatedByIt(): void
+    {
+        // connected after the last forwarding table read: no entry anywhere, an 802.1X session on acc-sw2 Gi1/0/5
+        $result = self::service($repo)->search('d4:be:d9:00:40:01');
+
+        $host = $result['hosts'][0];
+        $this->assertSame(['located', 4, 405, 'nac'], [$host['status'], $host['edge']['device_id'], $host['edge']['port_id'], $host['edge']['via']]);
+        $this->assertSame(['kchen'], array_column($host['nac'], 'username'));
+        $this->assertStringContainsString('Located by its current 802.1X / MAB session on acc-sw2 Gi1/0/5', implode(' ', array_column($host['notes'], 'text')));
+        $this->assertSame([[['d4bed9004001'], []], [['d4bed9004001'], null]], $repo->calls['nacByMacs'], 'by port first, then by MAC');
+        $this->assertSame('topology.l2?device=4&depth=1&host=d4bed9004001', $host['map_url']);
+    }
+
+    public function testAnAuthenticationSessionLocatesAHostTheTrailOnlyLeadsTowards(): void
+    {
+        // core1 learned it toward acc-sw2, whose forwarding table does not list it: the session says the port
+        $host = self::service()->search('d4:be:d9:00:40:02')['hosts'][0];
+
+        $this->assertSame(['located', 4, 405, 'nac'], [$host['status'], $host['edge']['device_id'], $host['edge']['port_id'], $host['edge']['via']]);
+        $this->assertNull($host['device']);
+        $this->assertSame(['behind-monitored', 'toward acc-sw2, whose forwarding table does not list it'], [$host['seen'][0]['reason'], $host['seen'][0]['detail']]);
+        $this->assertSame(['pwalsh'], array_column($host['nac'], 'username'));
+    }
+
+    public function testACurrentSessionOnTheLearnedPortNeedsNoSecondLookup(): void
+    {
+        $host = self::service($repo)->search('5c:8a:38:00:00:01')['hosts'][0];
+
+        $this->assertSame([4, 403], [$host['edge']['device_id'], $host['edge']['port_id']]);
+        $this->assertSame([[false, 403], [true, 305]], array_map(fn ($session) => [$session['historical'], $session['port_id']], $host['nac']), 'current first');
+        $this->assertCount(1, $repo->calls['nacByMacs']);
+    }
+
+    public function testRouterInterfacesThatDoNotNameTheVlan(): void
+    {
+        // the gateway's ARP entries are on subinterfaces: their unit is the VLAN
+        $result = self::service(change: self::subinterfaces([self::address('10.10.20.1', self::HSRP, 2, 230), self::address('10.10.30.1', self::HSRP, 2, 231)]))
+            ->search('10.10.20.1');
+        $this->assertSame([[20, 'core2', ['10.10.20.1']]], array_map(fn ($host) => [$host['vlan'], $host['device']['name'], array_column($host['addresses'], 'display')], $result['hosts']));
+
+        // a Juniper irb unit that is not the VLAN id: no VLAN matches, so one answer per VLAN with the searched address only
+        $result = self::service(change: self::subinterfaces([self::address('10.10.20.1', self::HSRP, 2, 232), self::address('10.10.30.1', self::HSRP, 1, 112)]))
+            ->search('10.10.20.1');
+        $this->assertSame([[20, 'gateway', 'core2', ['10.10.20.1']], [30, 'gateway', 'core1', ['10.10.20.1']]],
+            array_map(fn ($host) => [$host['vlan'], $host['status'], $host['device']['name'], array_column($host['addresses'], 'display')], $result['hosts']));
+
+        // a host in the ARP tables of core1 Vl10 and of fw1 ethernet1/1.10, a gateway in those of core2 Vl20 and fw1 ethernet1/1.20: one answer each
+        $both = self::subinterfaces([self::address('10.10.10.55', 'd4bed9010203', 1, 110), self::address('10.10.10.55', 'd4bed9010203', 50, 5001),
+            self::address('10.10.20.1', self::HSRP, 2, 209), self::address('10.10.20.1', self::HSRP, 50, 5002)]);
+        $this->assertCount(1, self::service(change: $both)->search('10.10.10.55')['hosts']);
+        $this->assertSame([[20, 'core2']], array_map(fn ($host) => [$host['vlan'], $host['device']['name']], self::service(change: $both)->search('10.10.20.1')['hosts']));
     }
 
     public function testMessages(): void
@@ -288,9 +406,12 @@ final class FakeHostRepository extends HostRepository
         return array_values(array_filter($this->data['addresses'], fn ($row) => in_array($row['mac'], $macs, true) && ($ipv6 || $row['family'] === 4)));
     }
 
-    public function nacByMacs(array $macs, array $portIds): array
+    public function nacByMacs(array $macs, ?array $portIds = null): array
     {
-        return [];
+        $this->calls['nacByMacs'][] = [array_values($macs), $portIds];
+
+        return array_values(array_filter($this->data['nac'] ?? [], fn ($row) => in_array($row['mac'], $macs, true)
+            && ($portIds === null || in_array($row['port_id'], $portIds, true))));
     }
 
     public function nacByPort(int $portId): array
@@ -360,6 +481,16 @@ final class FakeHostRepository extends HostRepository
         }
 
         return $devices;
+    }
+}
+
+final class ShortBudgetHostService extends HostService
+{
+    public const BUDGET = 0.3;
+
+    protected function dnsBudget(): float
+    {
+        return self::BUDGET;
     }
 }
 

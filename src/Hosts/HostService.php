@@ -21,17 +21,20 @@ class HostService
     /** Addresses of a device or a DNS name looked up per search. */
     public const MAX_IPS = 8;
 
+    /** Seconds all DNS lookups of one search may take together. */
+    public const DNS_BUDGET = 4.0;
+
     /** MACs listed on the port tab. */
     public const PORT_MACS = 50;
 
-    /** @var (callable(string): (string[]|null))|null */
+    /** @var (callable(string, float): (string[]|string))|null */
     private $resolver;
 
     private \Closure $urls;
 
     /**
-     * @param  (callable(string): (string[]|null))|null  $resolver  hostname => IP addresses, null when the user made
-     *                                                             too many lookups (DnsResolver); none: no DNS
+     * @param  (callable(string, float): (string[]|string))|null  $resolver  hostname and seconds left => IP addresses, or
+     *                                                                      why it was not looked up (DnsResolver); none: no DNS
      * @param  (\Closure(string, array): string)|null  $urls  route name and parameters => URL (default: route())
      */
     public function __construct(
@@ -77,16 +80,15 @@ class HostService
                 $searched = array_column($devices, 'device_id');
                 $ips = array_slice(array_values(array_unique(array_merge([], ...array_column($devices, 'ips')))), 0, self::MAX_IPS);
                 if (! $devices) {
-                    $ips = $this->resolve($query['value'], $result['message']);
-                    if ($ips === null) {
+                    $ips = $this->resolve([$query['value']], $why);
+                    if (! $ips) {
+                        $result['message'] = $query['value'] . ' is not a device in LibreNMS' . ($why === null ? ' and does not resolve in DNS.' : '. ' . $why);
+
                         return $result;
                     }
-                } elseif (! $ips && $this->resolver !== null && $this->settings->bool('hosts_dns')) {
+                } elseif (! $ips) {
                     // devices LibreNMS polls by hostname without a stored address
-                    foreach (array_unique(array_column($devices, 'hostname')) as $hostname) {
-                        $ips = array_merge($ips, ($this->resolver)($hostname) ?? []);
-                    }
-                    $ips = array_slice(array_values(array_unique($ips)), 0, self::MAX_IPS);
+                    $ips = $this->resolve(array_column($devices, 'hostname'), $why);
                 }
                 $result['resolved'] = array_map([self::class, 'display'], $ips);
                 // where the interfaces of a server or other end device are plugged in; a switch or router is the answer itself
@@ -95,18 +97,21 @@ class HostService
                 break;
         }
 
-        // the MACs of the addresses, each in the VLAN of the router interface that has the ARP / neighbor entry
+        // the MACs of the addresses, with the VLANs of the router interfaces that have the ARP / neighbor entries
         $targets = [];
         if ($ips) {
             $rows = $this->repo->addressesByIps($ips);
             $vlans = $this->interfaceVlans(array_column($rows, 'port_id'));
             foreach ($rows as $row) {
-                $vlan = $vlans[$row['port_id']] ?? null;
-                $targets[$row['mac'] . '|' . $vlan] ??= ['mac' => $row['mac'], 'vlan' => $vlan, 'optional' => false];
+                $targets[$row['mac']] ??= ['mac' => $row['mac'], 'vlans' => [], 'ips' => [], 'optional' => false];
+                $targets[$row['mac']]['ips'][] = $row['ip'];
+                if (isset($vlans[$row['port_id']])) {
+                    $targets[$row['mac']]['vlans'][] = $vlans[$row['port_id']];
+                }
             }
         }
         foreach ($macs as $mac) {
-            $targets[$mac . '|'] ??= ['mac' => $mac, 'vlan' => null, 'optional' => $query['kind'] === HostQuery::NAME];
+            $targets[$mac] ??= ['mac' => $mac, 'vlans' => [], 'ips' => [], 'optional' => $query['kind'] === HostQuery::NAME];
         }
         $targets = array_values(array_filter($targets, fn ($target) => strlen($target['mac']) === 12));
 
@@ -213,12 +218,15 @@ class HostService
     }
 
     /**
-     * VLAN of a router interface from its name: Vlan10 / Vl10 (Cisco, Arista, Dell, Aruba), Vlanif10
-     * (Huawei), Vlan-interface10 (H3C / Comware), irb.10 and vlan.10 (Juniper).
+     * VLAN of a router interface from its name: Vlan10 / Vl10 (Cisco, Arista, Dell, Aruba), Vlanif10 (Huawei),
+     * Vlan-interface10 (H3C / Comware), ve 10 (Brocade / Ruckus), irb.10 and vlan.10 (Juniper) and the unit of a
+     * subinterface (Gi0/0.10, ethernet1/1.10). The unit or ve number is usually, not always, the VLAN id.
      */
     public static function interfaceVlan(string $name): ?int
     {
-        if (! preg_match('/^(?:vl|vlan|vlanif|vlan-interface|irb\.|vlan\.)\s*(\d{1,4})$/i', trim($name), $match)) {
+        $name = trim($name);
+        if (! preg_match('/^(?:vl|vlan|vlanif|vlan-interface|ve|irb\.|vlan\.)\s*(\d{1,4})$/i', $name, $match)
+            && ! preg_match('#^[a-z][\w/:-]*\.(\d{1,4})$#i', $name, $match)) {
             return null;
         }
         $vlan = (int) $match[1];
@@ -227,40 +235,52 @@ class HostService
     }
 
     /**
-     * IP addresses of a name that is not a LibreNMS device, or null with the reason in $message.
+     * IP addresses of names with the DNS resolver, all lookups within DNS_BUDGET seconds.
      *
-     * @return string[]|null
+     * @param  string[]  $names
+     * @param  string|null  $why  set when DNS was not asked: switched off, too many lookups, no resolver
+     * @return string[]
      */
-    private function resolve(string $name, ?string &$message): ?array
+    private function resolve(array $names, ?string &$why): array
     {
+        $why = null;
         if ($this->resolver === null || ! $this->settings->bool('hosts_dns')) {
-            $message = $name . ' is not a device in LibreNMS' . ($this->resolver === null ? '.' : ' (DNS lookups are switched off in the plugin settings).');
+            $why = $this->resolver === null ? null : 'DNS lookups are switched off in the plugin settings.';
 
-            return null;
+            return [];
         }
 
-        $ips = ($this->resolver)($name);
-        if ($ips === null) {
-            $message = 'Too many DNS lookups: try again in a minute.';
-
-            return null;
+        $ips = [];
+        $deadline = microtime(true) + $this->dnsBudget();
+        foreach (array_unique($names) as $name) {
+            $left = $deadline - microtime(true);
+            if ($left < 0.1) {
+                break;
+            }
+            $answer = ($this->resolver)($name, min(DnsResolver::TIMEOUT, $left));
+            if (is_string($answer)) {
+                $why = $answer;
+                break;
+            }
+            $ips = array_merge($ips, $answer);
         }
-        $ips = array_slice(array_values(array_unique(array_filter($ips, fn ($ip) => filter_var($ip, FILTER_VALIDATE_IP) !== false))), 0, self::MAX_IPS);
-        if (! $ips) {
-            $message = $name . ' is not a device in LibreNMS and does not resolve in DNS.';
 
-            return null;
-        }
+        return array_slice(array_values(array_unique(array_filter($ips, fn ($ip) => filter_var($ip, FILTER_VALIDATE_IP) !== false))), 0, self::MAX_IPS);
+    }
 
-        return $ips;
+    /**
+     * Seconds all DNS lookups of one search may take together.
+     */
+    protected function dnsBudget(): float
+    {
+        return self::DNS_BUDGET;
     }
 
     /**
      * Locate each MAC and describe the answers with names and links.
      *
-     * @param  array<int, array{mac: string, vlan: ?int, optional: bool}>  $targets  vlan: only the entries of that VLAN
-     *                                                                                 (from the ARP entry); optional: left
-     *                                                                                 out when no switch learned it
+     * @param  array<int, array{mac: string, vlans: int[], ips: string[], optional: bool}>  $targets  vlans: of the router
+     *         interfaces with the ARP / neighbor entries of the searched ips; optional: left out when no switch learned it
      * @param  int[]  $searched  devices searched by name, owners of their interface MACs
      * @return array{0: array, 1: bool} answers, truncated
      */
@@ -271,25 +291,24 @@ class HostService
             $byMac[$row['mac']][] = $row;
         }
 
-        // one answer per MAC; a virtual router MAC searched by itself one per VLAN (HSRP group 1 is the same MAC in every VLAN)
+        // one answer per MAC. A virtual router MAC is the same in every VLAN using its group number (HSRP group 1, VRRP
+        // group 10), so it gets one answer per VLAN: the VLANs of its ARP entries, else every VLAN it is learned in,
+        // showing only the searched address (the router interface does not tell its VLAN, or tells another one)
         $answers = [];
         foreach ($targets as $target) {
             $rows = $byMac[$target['mac']] ?? [];
-            $gateway = Mac::gateway($target['mac']) !== null;
             if (! $rows && $target['optional']) {
                 continue;
             }
-            if ($target['vlan'] !== null) {
-                $answers[] = ['rows' => self::inVlan($rows, $target['vlan'], $gateway)] + $target;
+            if (! Mac::gateway($target['mac'])) {
+                $answers[] = ['vlan' => null, 'rows' => $rows, 'only' => null] + $target;
                 continue;
             }
-            $groups = $gateway ? self::byVlan($rows) : [];
-            if (count($groups) > 1) {
-                foreach ($groups as [$vlan, $group]) {
-                    $answers[] = ['vlan' => $vlan, 'rows' => $group] + $target;
-                }
-            } else {
-                $answers[] = ['rows' => $rows] + $target;
+            $groups = self::byVlan($rows);
+            $matched = array_values(array_filter($groups, fn ($group) => $group[0] !== null && in_array($group[0], $target['vlans'], true)));
+            $only = $target['ips'] && ! $matched ? array_values(array_unique($target['ips'])) : null;
+            foreach ($matched ?: ($groups ?: [[null, []]]) as [$vlan, $group]) {
+                $answers[] = ['vlan' => $vlan, 'rows' => $group, 'only' => $only] + $target;
             }
         }
         $truncated = count($answers) > self::MAX_HOSTS;
@@ -303,11 +322,34 @@ class HostService
         $deviceIds = array_values(array_unique(array_column($rows, 'device_id')));
         $portIds = array_values(array_unique(array_filter(array_column($rows, 'port_id'))));
 
+        // 802.1X / MAB sessions on the ports where the MACs are learned (indexed); a MAC without a current session there by
+        // itself: a host that connected after the last forwarding table read, or behind a switch without one
+        $nac = [];
+        foreach ($this->repo->nacByMacs($macs, $portIds) as $row) {
+            $nac[$row['mac']][$row['id']] = $row;
+        }
+        $missing = array_values(array_filter($macs, fn ($mac) => ! array_filter($nac[$mac] ?? [], fn ($row) => ! $row['historical'])));
+        foreach ($missing ? $this->repo->nacByMacs($missing) : [] as $row) {
+            $nac[$row['mac']][$row['id']] = $row;
+        }
+        $sessionPorts = [];
+        $sessionDevices = [];
+        foreach ($nac as $mac => $sessions) {
+            usort($sessions, fn ($a, $b) => [$a['historical'], -$a['last_seen']] <=> [$b['historical'], -$b['last_seen']]);
+            $nac[$mac] = $sessions;
+            foreach ($sessions as $row) {
+                if (! $row['historical']) {
+                    $sessionPorts[] = $row['port_id'];
+                    $sessionDevices[] = $row['device_id'];
+                }
+            }
+        }
+
         $lag = $this->topology->lagParents($deviceIds);
         $wanted = array_flip($portIds);
         $members = array_keys(array_filter($lag, fn ($parent) => isset($wanted[$parent])));
-        $ports = $this->repo->ports(array_merge($portIds, $members));
-        $neighbors = $this->repo->neighbors(array_merge($portIds, $members));
+        $ports = $this->repo->ports(array_merge($portIds, $members, $sessionPorts));
+        $neighbors = $this->repo->neighbors(array_merge($portIds, $members, $sessionPorts));
         $neighborDevices = [];
         $withNeighbors = [];
         foreach ($neighbors as $portId => $list) {
@@ -328,7 +370,7 @@ class HostService
                 $ownerDevices[] = $owner['device_id'];
             }
         }
-        $devices = $this->repo->deviceRows(array_merge($deviceIds, $neighborDevices, $ownerDevices));
+        $devices = $this->repo->deviceRows(array_merge($deviceIds, $neighborDevices, $ownerDevices, $sessionDevices));
         // the switches that learned the MACs, and the neighbors a trail can end at (with or without forwarding table data)
         $since = $this->repo->fdbSince(array_merge($deviceIds, $neighborDevices), $rows);
 
@@ -363,10 +405,6 @@ class HostService
         foreach ($addressRows as $row) {
             $addresses[$row['mac']][] = $row + ['vlan' => $addressVlans[$row['port_id']] ?? null];
         }
-        $nac = [];
-        foreach ($this->repo->nacByMacs($macs, $portIds) as $row) {
-            $nac[$row['mac']][] = $row;
-        }
 
         $describe = function (array $entry) use ($ports, $devices, $vlanNames): array {
             $deviceId = $entry['device_id'];
@@ -391,7 +429,7 @@ class HostService
         $hosts = [];
         foreach ($answers as $answer) {
             $mac = $answer['mac'];
-            $located = $locator->locate($mac, $answer['rows'], $owners[$mac] ?? []);
+            $located = $locator->locate($mac, $answer['rows'], $owners[$mac] ?? [], $nac[$mac] ?? []);
             $vlan = $answer['vlan'];
             $hosts[] = [
                 'mac' => $mac,
@@ -402,7 +440,8 @@ class HostService
                 'addresses' => array_values(array_map(fn ($row) => $row + [
                     'display' => self::display($row['ip']),
                     'device' => $devices[$row['device_id']]['name'] ?? null,
-                ], array_filter($addresses[$mac] ?? [], fn ($row) => $vlan === null || $row['vlan'] === null || $row['vlan'] === $vlan))),
+                ], array_filter($addresses[$mac] ?? [], fn ($row) => $answer['only'] !== null ? in_array($row['ip'], $answer['only'], true)
+                    : $vlan === null || $row['vlan'] === null || $row['vlan'] === $vlan))),
                 'nac' => $nac[$mac] ?? [],
                 'status' => $located['status'],
                 'stale' => $located['stale'],
@@ -473,20 +512,6 @@ class HostService
         }
 
         return $vlans;
-    }
-
-    /**
-     * The entries of one VLAN (and those without VLAN). A host's MAC is in one VLAN, so when no entry has
-     * that VLAN (VLANs not mapped on some switches) all entries are used; a virtual router MAC's only those.
-     */
-    private static function inVlan(array $rows, int $vlan, bool $strict): array
-    {
-        $matching = array_values(array_filter($rows, fn ($row) => $row['vlan'] === $vlan || $row['vlan'] === null));
-        if ($strict || in_array($vlan, array_column($rows, 'vlan'), true)) {
-            return $matching;
-        }
-
-        return $rows;
     }
 
     /**

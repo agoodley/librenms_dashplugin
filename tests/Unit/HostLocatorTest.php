@@ -24,7 +24,8 @@ class HostLocatorTest extends TestCase
         1 => ['name' => 'core1', 'role' => 'l3switch'], 2 => ['name' => 'core2', 'role' => 'l3switch'], 3 => ['name' => 'acc-sw1', 'role' => 'switch'],
         4 => ['name' => 'acc-sw2', 'role' => 'switch'], 5 => ['name' => 'acc-sw3', 'role' => 'switch'], 6 => ['name' => 'acc-sw4', 'role' => 'switch'],
         7 => ['name' => 'acc-sw5', 'role' => 'switch'], 8 => ['name' => 'acc-sw6', 'role' => 'switch'], 10 => ['name' => 'acc-sw7', 'role' => 'switch'],
-        11 => ['name' => 'acc-sw8', 'role' => 'switch'], 13 => ['name' => 'esx-1', 'role' => 'server'], 100 => ['name' => 'lab-sw1', 'role' => 'switch'],
+        11 => ['name' => 'acc-sw8', 'role' => 'switch'], 13 => ['name' => 'esx-1', 'role' => 'server'], 14 => ['name' => 'rtr1', 'role' => 'router'],
+        100 => ['name' => 'lab-sw1', 'role' => 'switch'],
     ];
 
     /** Port-channel members => port-channel. */
@@ -41,11 +42,11 @@ class HostLocatorTest extends TestCase
             104 => [1, 'Po11', 40, true], 105 => [1, 'Te1/0/1', 0], 106 => [1, 'Te1/0/2', 0], 107 => [1, 'Te1/0/3', 30], 108 => [1, 'Te1/0/4', 20],
             110 => [1, 'Vl10', 0], 120 => [1, 'Te1/0/6', 5],
             201 => [2, 'Po1', 4000, true], 202 => [2, 'Te1/1/1', 0], 203 => [2, 'Te1/1/2', 0],
-            204 => [2, 'Te1/0/1', 40], 205 => [2, 'Te1/0/3', 30], 220 => [2, 'Te1/0/6', 5], 221 => [2, 'Te1/0/7', 8],
+            204 => [2, 'Te1/0/1', 40], 205 => [2, 'Te1/0/3', 30], 220 => [2, 'Te1/0/6', 5], 221 => [2, 'Te1/0/7', 8], 222 => [2, 'Te1/0/8', 2],
             302 => [3, 'Te1/1/1', 300], 305 => [3, 'Gi1/0/1', 1], 307 => [3, 'Gi1/0/10', 25], 320 => [3, 'Po10', 3, true], 321 => [3, 'Gi1/0/20', 0],
             404 => [4, 'Gi1/0/48', 12], 405 => [4, 'Gi1/0/5', 2], 406 => [4, 'Gi1/0/47', 300], 412 => [4, 'Gi1/0/12', 30], 420 => [4, 'Po10', 3, true], 421 => [4, 'Gi1/0/20', 0],
             503 => [5, 'Gi1/0/1', 1], 505 => [5, 'Gi1/0/24', 6], 506 => [5, 'Gi1/0/48', 3],
-            603 => [6, 'ge-0/0/1', 7], 701 => [7, 'Gi1/1/1', 200], 703 => [7, 'Gi2/0/1', 2], 803 => [8, 'Gi1/0/2', 12],
+            603 => [6, 'ge-0/0/1', 7], 701 => [7, 'Gi1/1/1', 200], 703 => [7, 'Gi2/0/1', 2], 803 => [8, 'Gi1/0/2', 12], 1005 => [10, 'Gi1/0/5', 1],
             10011 => [100, 'Gi1/0/5', 1], 10012 => [100, 'Gi1/0/6', 29],
         ] as $portId => $port) {
             $ports[$portId] = ['device_id' => $port[0], 'name' => $port[1], 'macs' => $macs[$portId] ?? $port[2], 'aggregate' => $port[3] ?? false];
@@ -84,7 +85,7 @@ class HostLocatorTest extends TestCase
             105 => [self::monitored(3, 'Te1/1/1')], 106 => [self::monitored(3, 'Te1/1/2')],
             107 => [self::monitored(4)], 108 => [self::monitored(5)], 120 => [self::monitored(7)],
             202 => [self::monitored(1, 'Te1/1/1')], 203 => [self::monitored(1, 'Te1/1/2')],
-            204 => [self::monitored(3)], 205 => [self::monitored(4)], 220 => [self::monitored(7)], 221 => [self::monitored(10)],
+            204 => [self::monitored(3)], 205 => [self::monitored(4)], 220 => [self::monitored(7)], 221 => [self::monitored(10)], 222 => [self::monitored(14)],
             302 => [self::monitored(1, 'Te1/0/1')],
             307 => [self::lldp('AP-2F-07', 'Cisco AP Software, ap3g2-k9w8 Version: 8.10.185.0', 'eth0')],
             321 => [self::lldp('srv-db-1.example.net', $server, 'eno1')],
@@ -222,6 +223,24 @@ class HostLocatorTest extends TestCase
         $this->assertStringContainsString('Virtual router address (VRRP group 10): core1 sends from it as the master / active router of the group.', self::texts($result));
         $this->assertEqualsCanonicalizing(['same-destination', 'same-destination', 'toward-owner'], self::reasons($result));
         $this->assertSame([], array_filter($result['notes'], fn ($note) => $note['level'] === 'warning'), 'no loop or moved host warning: ' . self::texts($result));
+    }
+
+    public function testAGatewayTrailEndingAtASwitchWithoutForwardingTableIsBehindIt(): void
+    {
+        // acc-sw7 is a switch without forwarding table data: the master may be anywhere behind it
+        $result = self::locator()->locate('00005e00010a', [self::row(2, 221)]);
+
+        $this->assertSame(['behind', 'acc-sw7'], [$result['status'], $result['device']['name']]);
+        $this->assertStringContainsString('Virtual router address (VRRP group 10): the router that is master / active for the group sends from it.', self::texts($result));
+        $this->assertStringNotContainsString('acc-sw7 sends from it', self::texts($result));
+    }
+
+    public function testAGatewayTrailEndingAtARouterIsTheRouter(): void
+    {
+        // a router has no forwarding table to read: the trail ending at it means it answers the address
+        $result = self::locator()->locate('00005e00010a', [self::row(2, 222)]);
+
+        $this->assertSame(['gateway', 'rtr1'], [$result['status'], $result['device']['name']]);
     }
 
     public function testRouterMacThatIsNoInterfaceMacEndsBehindTheRouter(): void
@@ -385,6 +404,63 @@ class HostLocatorTest extends TestCase
         $this->assertSame('located', $result['status']);
         $this->assertTrue($result['stale']);
         $this->assertStringContainsString('Not seen at the last forwarding table discovery', self::texts($result));
+    }
+
+    private static function session(int $deviceId, int $portId, int $lastSeen = self::NOW, bool $historical = false): array
+    {
+        return ['device_id' => $deviceId, 'port_id' => $portId, 'vlan' => 10, 'first_seen' => $lastSeen - 3600, 'last_seen' => $lastSeen, 'historical' => $historical];
+    }
+
+    public function testAHostSeenOnlyByItsAuthenticationSession(): void
+    {
+        // connected after the last forwarding table read (every 6 hours), authenticated on acc-sw3 Gi1/0/1 (polled every 5 minutes)
+        $result = self::locator()->locate('d4bed9004001', [], [], [self::session(5, 503, self::NOW - 7200, true), self::session(5, 503)]);
+        $this->assertSame(['located', 5, 503, 'nac'], [$result['status'], $result['edge']['device_id'], $result['edge']['port_id'], $result['edge']['via']]);
+        $this->assertStringContainsString('Located by its current 802.1X / MAB session on acc-sw3 Gi1/0/1: no forwarding table you can see lists it yet', self::texts($result));
+        $this->assertSame([10], $result['edge']['vlans']);
+
+        // behind the IP phone on the session's port
+        $phone = self::locator()->locate('d4bed9004002', [], [], [self::session(7, 703)]);
+        $this->assertStringContainsString('Behind IP phone SEP00AB11CD22EF', self::texts($phone));
+
+        $this->assertSame('none', self::locator()->locate('d4bed9004003', [], [], [self::session(5, 503, self::NOW, true)])['status'], 'an ended session is no location');
+    }
+
+    public function testAnAuthenticationSessionGivesThePortWhereTheTrailEnds(): void
+    {
+        // the trail ends at acc-sw7 (no forwarding table): the session is on its Gi1/0/5
+        $result = self::locator()->locate('0019aa000011', [self::row(2, 221)], [], [self::session(10, 1005)]);
+
+        $this->assertSame(['located', 10, 1005, 'nac'], [$result['status'], $result['edge']['device_id'], $result['edge']['port_id'], $result['edge']['via']]);
+        $this->assertNull($result['device']);
+        $this->assertSame(['behind-monitored', 'toward acc-sw7, which has no forwarding table data'], [$result['seen'][0]['reason'], $result['seen'][0]['detail']]);
+        $this->assertStringContainsString('the forwarding tables lead to acc-sw7, which has no forwarding table data.', self::texts($result));
+        $this->assertSame([], array_filter($result['notes'], fn ($note) => $note['level'] === 'warning'));
+
+        // only links between switches learned it
+        $uplinks = self::locator()->locate('0019aa000012', [self::row(1, 105), self::row(3, 302)], [], [self::session(3, 305)]);
+        $this->assertSame(['located', 305], [$uplinks['status'], $uplinks['edge']['port_id']]);
+        $this->assertStringContainsString('the forwarding tables only list it on links between switches', self::texts($uplinks));
+    }
+
+    public function testAnAuthenticationSessionAndTheForwardingTables(): void
+    {
+        // on the port of an old entry: the session shows the host is still there
+        $there = self::locator()->locate('f0def1000003', [self::row(3, 305, 10, self::NOW - 86400)], [], [self::session(3, 305)]);
+        $this->assertSame(['located', 'access', false], [$there['status'], $there['edge']['via'], $there['stale']]);
+        $this->assertStringNotContainsString('Not seen at the last forwarding table discovery', self::texts($there));
+
+        // acc-sw1 was read 3 hours ago with the laptop on Gi1/0/1; its session is on acc-sw3 Gi1/0/1 now: it moved
+        $moved = self::locator([3 => self::NOW - 3 * 3600 - HostLocator::STALE_AFTER])
+            ->locate('f0def1000004', [self::row(3, 305, 10, self::NOW - 3 * 3600)], [], [self::session(5, 503, self::NOW - 120)]);
+        $this->assertSame([5, 503, 'nac'], [$moved['edge']['device_id'], $moved['edge']['port_id'], $moved['edge']['via']]);
+        $this->assertSame('earlier', $moved['seen'][0]['reason']);
+        $this->assertStringContainsString('newer than the forwarding tables: the host moved since they were read', self::texts($moved));
+
+        // both at about the same time on different ports: the forwarding table answer stays, with a warning
+        $both = self::locator()->locate('f0def1000005', [self::row(3, 305)], [], [self::session(5, 503, self::NOW - 60)]);
+        $this->assertSame([3, 305], [$both['edge']['device_id'], $both['edge']['port_id']]);
+        $this->assertStringContainsString('Its current 802.1X / MAB session is on another port (acc-sw3 Gi1/0/1)', self::texts($both));
     }
 
     public function testMacsAreCountedOnTrailEndsOnly(): void
@@ -557,10 +633,11 @@ class HostLocatorTest extends TestCase
 
     public function testRouterInterfaceVlans(): void
     {
-        foreach (['Vl10' => 10, 'Vlan10' => 10, 'vlan 20' => 20, 'Vlanif30' => 30, 'Vlan-interface40' => 40, 'irb.50' => 50, 'vlan.60' => 60] as $name => $vlan) {
+        foreach (['Vl10' => 10, 'Vlan10' => 10, 'vlan 20' => 20, 'Vlanif30' => 30, 'Vlan-interface40' => 40, 'irb.50' => 50, 'vlan.60' => 60,
+            've 70' => 70, 've80' => 80, 'Gi0/0.10' => 10, 'GigabitEthernet0/0/1.100' => 100, 'ethernet1/1.20' => 20, 'xe-0/0/0.30' => 30, 'ae0.40' => 40] as $name => $vlan) {
             $this->assertSame($vlan, HostService::interfaceVlan($name), $name);
         }
-        foreach (['Gi0/0.10', 'BVI1', 've10', 'Vlan0', 'Vlan4095', 'Loopback0', 'Vl10a'] as $name) {
+        foreach (['BVI1', 'Vlan0', 'Vlan4095', 'Loopback0', 'Vl10a', 'xe-0/0/0.0', 'Gi0/0', '10.10.10.1'] as $name) {
             $this->assertNull(HostService::interfaceVlan($name), $name);
         }
     }
@@ -574,6 +651,34 @@ class HostLocatorTest extends TestCase
         $this->assertTrue(DnsResolver::plausible('pc-101.example.net'));
         foreach (['printer.local', 'x.invalid', 'localhost', 'lab_printer', '1.10.10.10.in-addr.arpa'] as $name) {
             $this->assertFalse(DnsResolver::plausible($name), $name);
+        }
+    }
+
+    public function testGetentRunsFromAFixedPathWithTheNameAfterItsOptions(): void
+    {
+        // a device hostname can start with "-": getent parses options anywhere before "--"
+        $this->assertSame(['/usr/bin/getent', 'ahosts', '--', '-oops.example.net'], DnsResolver::command('/usr/bin/getent', 'ahosts', '-oops.example.net'));
+        foreach (DnsResolver::GETENT as $path) {
+            $this->assertStringStartsWith('/', $path);
+        }
+
+        // neither PATH nor the working directory is searched (php-fpm clears PATH)
+        $dir = sys_get_temp_dir() . '/topology-getent-' . getmypid();
+        @mkdir($dir);
+        file_put_contents("$dir/getent", "#!/bin/sh\necho 192.0.2.66 planted\n");
+        chmod("$dir/getent", 0755);
+        $cwd = (string) getcwd();
+        $path = getenv('PATH');
+        try {
+            chdir($dir);
+            putenv('PATH');
+            $getent = DnsResolver::getent();
+            $this->assertTrue($getent === null || in_array($getent, DnsResolver::GETENT, true), 'found ' . $getent);
+        } finally {
+            chdir($cwd);
+            putenv($path === false ? 'PATH' : 'PATH=' . $path);
+            unlink("$dir/getent");
+            rmdir($dir);
         }
     }
 }
