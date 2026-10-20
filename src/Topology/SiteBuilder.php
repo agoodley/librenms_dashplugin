@@ -2,13 +2,13 @@
 
 namespace Agoodley\LibrenmsTopology\Topology;
 
-use Agoodley\LibrenmsTopology\Support\Graph;
-
 /**
  * Builds the site / WAN map: one node per location with its device counts and down devices, and one
  * link per pair of sites adding up the connections between their devices (neighbor links,
  * point-to-point subnets, OSPF adjacencies and BGP sessions). BGP sessions to peers LibreNMS does not
  * monitor join the site to one cloud per remote AS, such as a provider's MPLS VPN or internet transit.
+ * The devices without a location are one site too, but no place that joins sites: the map is never
+ * walked through it.
  */
 class SiteBuilder
 {
@@ -25,9 +25,10 @@ class SiteBuilder
      * @param  array<int, array>  $devices  device_id => row: display, hostname, status, disabled, role, url, location_id,
      *                                      location, lat, lng
      * @param  array<int, array>  $connections  between two devices, or a device and an AS cloud: kind (l2, p2p, ospf, bgp),
-     *     a / b (ends: device_id, port, port_url, aggregate; b is null for a cloud), cloud (id, label, name, remote_as),
-     *     speed (bps), status (up / down), util (%), in_bps / out_bps (measured at end a), network, state, type,
-     *     protocols, description
+     *     a / b (ends: device_id, port, port_url, aggregate; b is null for a cloud), cloud (id, label, name, remote_as,
+     *     private), speed (bps, 0 when only the traffic is known), status (up / down / disabled: shut down on purpose),
+     *     util (%), in_bps / out_bps (measured at end a), network, state, states (of the a and b sides of a session),
+     *     type, protocols, description
      * @param  array<int, int>  $outages  device_id => start of the outage (unix time) of down devices
      */
     public function __construct(
@@ -48,14 +49,8 @@ class SiteBuilder
         $nodes = $this->sites();
         [$edges, $clouds] = $this->siteLinks($nodes);
         $nodes += $clouds;
-
-        $graph = new Graph;
-        foreach (array_keys($nodes) as $id) {
-            $graph->addNode($id);
-        }
-        foreach ($edges as $key => $edge) {
-            $graph->addEdge($edge['from'], $edge['to'], $key);
-        }
+        $adjacent = self::adjacency($edges);
+        $degree = fn (string $id) => count($adjacent[$id] ?? []);
 
         $center = ! empty($options['center']) ? 'site:' . (int) $options['center'] : null;
         if ($center !== null && ! isset($nodes[$center])) {
@@ -63,10 +58,10 @@ class SiteBuilder
         }
 
         $kept = $center !== null
-            ? $graph->distances($center, max(1, (int) ($options['depth'] ?? 1)))
+            ? self::hops($adjacent, $center, max(1, (int) ($options['depth'] ?? 1)))
             : array_fill_keys(array_keys($nodes), true);
         if (! ($options['isolated'] ?? false)) {
-            $kept = array_filter($kept, fn ($_, $id) => $id === $center || $graph->degree((string) $id) > 0, ARRAY_FILTER_USE_BOTH);
+            $kept = array_filter($kept, fn ($_, $id) => $id === $center || $degree((string) $id) > 0, ARRAY_FILTER_USE_BOTH);
         }
 
         $siteIds = array_values(array_filter(array_map('strval', array_keys($kept)), fn ($id) => $nodes[$id]['type'] === 'site'));
@@ -74,8 +69,9 @@ class SiteBuilder
         $max = max(1, (int) ($options['maxSites'] ?? PHP_INT_MAX));
         $truncated = $total > $max;
         if ($truncated) {
-            usort($siteIds, fn ($a, $b) => [$b === $center, $graph->degree($b), $nodes[$b]['devices'], $nodes[$a]['name']]
-                <=> [$a === $center, $graph->degree($a), $nodes[$a]['devices'], $nodes[$b]['name']]);
+            // the centered site, then the best connected; the devices without a location only when there is room
+            $rank = fn (string $id) => [$id === $center, $id !== self::NO_LOCATION, $degree($id), $nodes[$id]['devices']];
+            usort($siteIds, fn ($a, $b) => [...$rank($b), $nodes[$a]['name']] <=> [...$rank($a), $nodes[$b]['name']]);
             $kept = array_intersect_key($kept, array_flip(array_slice($siteIds, 0, $max)))
                 + array_filter($kept, fn ($_, $id) => $nodes[$id]['type'] !== 'site', ARRAY_FILTER_USE_BOTH);
         }
@@ -227,6 +223,7 @@ class SiteBuilder
                     'role' => 'cloud',
                     'status' => 'unknown',
                     'remote_as' => $cloud['remote_as'] ?? null,
+                    'private' => (bool) ($cloud['private'] ?? false),
                 ];
             } else {
                 continue;
@@ -269,9 +266,12 @@ class SiteBuilder
         }
 
         foreach ($edges as &$edge) {
-            $up = count(array_filter($edge['members'], fn ($m) => $m['status'] === 'up'));
+            // a session shut down on purpose is neither up nor a fault
+            $active = array_filter($edge['members'], fn ($m) => $m['status'] !== 'disabled');
+            $up = count(array_filter($active, fn ($m) => $m['status'] === 'up'));
             $edge['status'] = match (true) {
-                $up === count($edge['members']) => 'up',
+                ! $active => 'disabled',
+                $up === count($active) => 'up',
                 $up === 0 => 'down',
                 default => 'degraded',
             };
@@ -309,9 +309,12 @@ class SiteBuilder
         $b = $end($connection['b'] ?? null);
         $in = (int) ($connection['in_bps'] ?? 0);
         $out = (int) ($connection['out_bps'] ?? 0);
+        $states = $connection['states'] ?? null;
         if ($flip && $b !== null) {
             [$a, $b, $in, $out] = [$b, $a, $out, $in];
+            $states = $states ? array_reverse($states) : null;
         }
+        $status = (string) ($connection['status'] ?? 'up');
 
         return [
             'kind' => (string) $connection['kind'],
@@ -319,12 +322,13 @@ class SiteBuilder
             'b' => $b,
             'peer' => $connection['cloud']['label'] ?? null,
             'speed' => (int) ($connection['speed'] ?? 0),
-            'status' => ($connection['status'] ?? 'up') === 'up' ? 'up' : 'down',
+            'status' => in_array($status, ['up', 'disabled'], true) ? $status : 'down',
             'util' => isset($connection['util']) ? (float) $connection['util'] : null,
             'in_bps' => $in,
             'out_bps' => $out,
             'network' => $connection['network'] ?? null,
-            'state' => $connection['state'] ?? null,
+            // the state each side reports, in the member's a / b order, when they differ ("full / exstart")
+            'state' => $states ? (implode(' / ', array_values(array_unique(array_filter($states)))) ?: null) : ($connection['state'] ?? null),
             'type' => $connection['type'] ?? null,
             'protocols' => array_values($connection['protocols'] ?? []),
             'description' => (string) ($connection['description'] ?? ''),
@@ -333,36 +337,70 @@ class SiteBuilder
 
     /**
      * Hierarchy levels for the top-down layout: hops from the centered site, otherwise from the best
-     * connected site of each island (most site links, then most devices).
+     * connected site of each island (most site links, then most devices), never through the devices
+     * without a location.
      */
     private function assignLevels(array &$nodes, array $edges, ?string $center): void
     {
-        $graph = new Graph;
-        foreach (array_keys($nodes) as $id) {
-            $graph->addNode($id);
-        }
-        foreach ($edges as $edge) {
-            $graph->addEdge($edge['from'], $edge['to'], $edge['id']);
-        }
+        $adjacent = self::adjacency($edges);
+        $rank = fn (string $id) => [$id === $center, $nodes[$id]['type'] === 'site' && $id !== self::NO_LOCATION, $nodes[$id]['type'] === 'site',
+            count($adjacent[$id] ?? []), $nodes[$id]['devices'] ?? 0];
+        $roots = array_map('strval', array_keys($nodes));
+        usort($roots, fn ($a, $b) => [...$rank($b), $nodes[$a]['name']] <=> [...$rank($a), $nodes[$b]['name']]);
 
         $levels = [];
-        foreach ($graph->components() as $component) {
-            $start = $center !== null && in_array($center, $component, true) ? $center : null;
-            $best = -1;
-            foreach ($start === null ? $component : [] as $id) {
-                $score = $nodes[$id]['type'] === 'site' ? $graph->degree($id) * 1000000 + $nodes[$id]['devices'] : -1;
-                if ($score > $best) {
-                    [$best, $start] = [$score, $id];
-                }
-            }
-            foreach ($graph->distances((string) $start) as $id => $distance) {
-                $levels[$id] = $distance;
+        foreach ($roots as $root) {
+            if (! isset($levels[$root])) {
+                $levels += self::hops($adjacent, $root, null, $levels);
             }
         }
 
         foreach ($nodes as $id => &$node) {
             $node['level'] = $levels[$id] ?? 0;
         }
+    }
+
+    /**
+     * Site links as neighbor lists.
+     *
+     * @return array<string, string[]>
+     */
+    private static function adjacency(array $edges): array
+    {
+        $adjacent = [];
+        foreach ($edges as $edge) {
+            $adjacent[$edge['from']][] = $edge['to'];
+            $adjacent[$edge['to']][] = $edge['from'];
+        }
+
+        return $adjacent;
+    }
+
+    /**
+     * Hops from a node over the site links, up to $max. The devices without a location are reached
+     * but not crossed (unless the walk starts there): they are not a place that joins two sites.
+     *
+     * @param  array<string, mixed>  $visited  nodes left out
+     * @return array<string, int>
+     */
+    private static function hops(array $adjacent, string $start, ?int $max = null, array $visited = []): array
+    {
+        $distance = [$start => 0];
+        $queue = [$start];
+        for ($i = 0; $i < count($queue); $i++) {
+            $node = $queue[$i];
+            if (($max !== null && $distance[$node] >= $max) || ($node === self::NO_LOCATION && $node !== $start)) {
+                continue;
+            }
+            foreach ($adjacent[$node] ?? [] as $next) {
+                if (! isset($distance[$next]) && ! isset($visited[$next])) {
+                    $distance[$next] = $distance[$node] + 1;
+                    $queue[] = $next;
+                }
+            }
+        }
+
+        return $distance;
     }
 
     private function deviceName(int $deviceId): string

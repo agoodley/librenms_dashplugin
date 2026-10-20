@@ -26,18 +26,24 @@ the top-most down device of an outage is marked with the number of down devices 
 
 One node per LibreNMS location, with its device count and what is down, and one link per pair of sites that adds up
 everything between their devices: LLDP/CDP links (one per cable, port-channel members included), point-to-point
-subnets without a neighbor link such as tunnels or carrier circuits, and OSPF adjacencies and BGP sessions. BGP
-sessions to peers LibreNMS does not monitor join the site to a cloud per remote AS, which shows an MPLS VPN or internet
-transit provider and which sites hang off it.
+subnets, and OSPF adjacencies and BGP sessions (one per circuit, with the state each router reports). A subnet on a
+cable, or on a sub-interface, VLAN interface or port-channel over it, only adds its network to the cable; other subnets,
+such as tunnels or carrier circuits, are links of their own. BGP sessions to peers LibreNMS does not monitor join the
+site to a cloud per remote AS, which shows an MPLS VPN or internet transit provider and which sites hang off it; a
+private AS number is a cloud per site, since sites often reuse them.
 
 ![Site / WAN map](docs/images/site-map.png)
 
 * A site is orange when some of its devices are down and red when all are; a link is dashed orange when some of its
-  cables or sessions are down, and dashed purple when it is only a routing session (BGP over a provider network).
+  cables or sessions are down, and dashed purple when it is only a routing session (BGP over a provider network). A
+  BGP session shut down by an administrator is grey and does not count as down.
 * Link width and color follow the capacity of its cables (or the busiest cable's utilization, or the status); the
-  details list every cable with both ports, speed, utilization and subnet, and every session with its state.
+  details list every cable with both ports, speed, utilization and subnet, and every session with its state. Tunnels
+  and other logical interfaces have no capacity of their own (a tunnel's interface speed is a nominal bandwidth), so a
+  link on them only shows its traffic; a subnet on a sub-interface is measured on the physical port under it.
 * Layouts: hierarchical (the best connected site on top), organic, or **geographic** from the latitude and longitude of
-  the locations (sites in one city are pushed apart, sites without coordinates wait in a row underneath).
+  the locations (sites in one city are pushed apart, sites without coordinates wait in a grid underneath; when most
+  sites have none, the map is laid out without them).
 * Center on a site to see it with its neighbors within N hops, or filter by device group; double-click a site, or use
   the buttons in its details, to open its L2 or L3 map, redundancy page or device list.
 
@@ -197,7 +203,7 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Setting | Default | |
 |---|---|---|
 | Default hops | 2 | hops drawn around a centered device |
-| Maximum devices | 400 | larger maps are trimmed to the best connected devices |
+| Maximum devices | 400 | larger maps are trimmed to the best connected devices (on the site map: sites) |
 | Show unmanaged neighbors / Collapse LAGs / Hide stub networks | on | defaults of the map toggles |
 | Point-to-point prefix | 29 | two-device IPv4 subnets this long or longer become direct links |
 | Excluded subnets | – | CIDRs never drawn on the L3 map (e.g. management networks) |
@@ -236,9 +242,10 @@ root bridge on such a device is not reported as a rogue switch.
 * `src/Redundancy/RedundancyAnalyzer.php` – single points of failure (cut vertices and bridges toward the core,
   `Support\Graph::cuts()`), fake and lost redundancy and outages; `CoreFinder` picks the core, `PortUnits` reads stack
   members and line cards from the hardware inventory.
-* `src/Topology/SiteConnections.php`, `src/Topology/SiteBuilder.php` – the site map: the connections between devices
-  at different locations (the L2 map's link de-duplication and the L3 map's subnets and sessions), added up per pair of
-  sites.
+* `src/Topology/SiteConnections.php`, `SiteSessions.php`, `SiteBuilder.php` – the site map: the cables and
+  point-to-point subnets between devices at different locations (the L2 map's link de-duplication and the L3 map's
+  subnets, placed on physical ports through the interface stack), their OSPF adjacencies and BGP sessions per circuit,
+  added up per pair of sites.
 * `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
@@ -251,8 +258,9 @@ vendor/bin/phpunit
 ## Limitations
 
 * The site map knows the links between monitored devices. Unmanaged neighbors, devices the user may not see and OSPF
-  neighbors LibreNMS does not monitor are left out (their location is unknown); BGP peers LibreNMS does not monitor are
-  grouped by AS, so two providers in the same AS are one cloud.
+  neighbors LibreNMS does not monitor are left out (their location is unknown), as are sessions to devices outside a
+  device group filter; BGP peers LibreNMS does not monitor are grouped by AS, so two providers in the same AS are one
+  cloud. The devices without a location are one site, which the map never walks through (hops, hierarchy).
 
 * STP data comes from the BRIDGE-MIB as polled by LibreNMS: MST instances other than the CIST are not
   available, and findings reflect the last poll (a check can fire during re-convergence).

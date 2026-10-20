@@ -199,6 +199,51 @@ class SiteBuilderTest extends TestCase
         $this->assertSame(0, self::node($result, 'site:1')['level'], 'the hub is the top of the hierarchy');
     }
 
+    public function testDevicesWithoutALocationAreNotAHub(): void
+    {
+        // three unrelated sites, each with an access point that has no location cabled to the site's switch
+        $devices = [];
+        $connections = [];
+        foreach ([1, 2, 3] as $site) {
+            $devices[$site] = self::device($site, "sw$site", $site);
+            $devices[10 + $site] = self::device(10 + $site, "ap$site", null, 'wireless');
+            $connections[] = self::link($site, 'Gi1/0/1', 10 + $site, 'eth0');
+        }
+        $builder = new SiteBuilder($devices, $connections);
+
+        $centered = $builder->build(['center' => 1, 'depth' => 2]);
+        $this->assertSame([SiteBuilder::NO_LOCATION => 1, 'site:1' => 0], array_column($centered['nodes'], 'level', 'id'), 'no hops through it');
+
+        $all = $builder->build();
+        $this->assertSame([SiteBuilder::NO_LOCATION => 1, 'site:1' => 0, 'site:2' => 0, 'site:3' => 0], array_column($all['nodes'], 'level', 'id'),
+            'every site tops its own hierarchy');
+
+        // left out first when the map is too large, although it has the most links
+        $this->assertSame(['site:1', 'site:2', 'site:3'], array_column($builder->build(['maxSites' => 3])['nodes'], 'id'));
+    }
+
+    public function testSessionsShutDownAndTheStateOfEachSide(): void
+    {
+        $devices = [1 => self::device(1, 'rtr-a', 1, 'router'), 2 => self::device(2, 'rtr-b', 2, 'router'), 3 => self::device(3, 'rtr-c', 3, 'router')];
+        $session = fn (int $a, int $b, string $kind, string $status, array $states) => ['kind' => $kind, 'a' => ['device_id' => $a], 'b' => ['device_id' => $b],
+            'status' => $status, 'state' => implode(' / ', array_filter($states)), 'states' => $states, 'type' => $kind === 'ospf' ? 'OSPF' : 'eBGP'];
+        $result = (new SiteBuilder($devices, [
+            // reported with end a in site 2: the states turn with the member
+            $session(2, 1, 'ospf', 'down', ['exstart', 'full']),
+            $session(1, 2, 'bgp', 'up', ['established', 'established']),
+            $session(1, 2, 'bgp', 'disabled', ['idle', 'active']),
+            $session(1, 3, 'bgp', 'disabled', ['idle', null]),
+        ]))->build();
+
+        [$ab, $ac] = $result['edges'];
+        $this->assertSame(['site:1', 'site:2'], [$ab['from'], $ab['to']]);
+        $this->assertSame(['full / exstart', 'established', 'idle / active'], array_column($ab['members'], 'state'));
+        $this->assertSame(['down', 'up', 'disabled'], array_column($ab['members'], 'status'));
+        $this->assertSame('degraded', $ab['status'], 'a session shut down on purpose is not counted');
+        $this->assertSame(['disabled', 'idle'], [$ac['status'], $ac['members'][0]['state']]);
+        $this->assertSame([0, 1], [$result['stats']['down_links'], $result['stats']['degraded_links']]);
+    }
+
     public function testSiteIdOfADevice(): void
     {
         $this->assertSame('site:7', SiteBuilder::siteId(['location_id' => 7]));

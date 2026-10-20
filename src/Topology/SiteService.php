@@ -8,8 +8,10 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
 
 /**
  * The site / WAN map: every device the user may see grouped by location, joined by the neighbor
- * links, point-to-point subnets and routing sessions between locations. Links and subnets are
- * found the same way as on the L2 and L3 maps (L2Builder::uniqueLinks(), L3Builder).
+ * links, point-to-point subnets and routing sessions between locations. Links are found as on the
+ * L2 map (L2Builder::uniqueLinks()) and subnets as on the L3 map (L3Builder), from the addresses
+ * with a point-to-point prefix only; routing neighbors are looked up among every device the user
+ * may see (SiteSessions).
  */
 class SiteService
 {
@@ -46,21 +48,33 @@ class SiteService
             $connections->addLinks(L2Builder::uniqueLinks($links, $devices, $ports), $ports, $lag);
         }
 
-        // point-to-point subnets and routing sessions, as on the L3 map
-        $bgp = $p['bgp'] ? $this->repo->bgpPeers($ids) : [];
-        $l3 = (new L3Builder($devices, $this->repo->addresses($ids, true), $p['ospf'] ? $this->repo->ospfNeighbors($ids) : [], $bgp))->build([
+        // point-to-point subnets between locations, on the interfaces under them
+        $prefix4 = $this->settings->int('l3_p2p_prefix', 8, 32);
+        $l3 = (new L3Builder($devices, $this->sites->subnetAddresses($ids, $prefix4, 126)))->build([
             'hideStubs' => true,
-            'p2pPrefix4' => $this->settings->int('l3_p2p_prefix', 8, 32),
+            'p2pPrefix4' => $prefix4,
             'p2pPrefix6' => 126,
             'exclude' => $this->settings->list('l3_exclude'),
-            'ospf' => $p['ospf'],
-            'bgp' => $p['bgp'],
+            'ospf' => false,
+            'bgp' => false,
         ]);
-        $connections->addL3($l3, $this->repo->ports($connections->subnetPorts($l3)), $bgp);
+        $subnetPorts = $connections->subnetPorts($l3);
+        if ($subnetPorts) {
+            $ports = $this->repo->ports($subnetPorts);
+            $stack = $this->stack($ports);
+            $connections->addSubnets($l3, $ports + $this->repo->ports(SiteConnections::below($subnetPorts, $stack)), $stack);
+        }
+
+        // OSPF adjacencies and BGP sessions
+        $ospf = $p['ospf'] ? $this->repo->ospfNeighbors($ids) : [];
+        $bgp = $p['bgp'] ? $this->repo->bgpPeers($ids) : [];
+        $owners = $ospf || $bgp ? $this->sites->addressOwners(array_merge(array_column($ospf, 'ospfNbrIpAddr'),
+            array_column($ospf, 'ospfNbrRtrId'), array_column($bgp, 'bgpPeerIdentifier'))) : [];
+        $sessions = (new SiteSessions($devices, $owners))->addOspf($ospf)->addBgp($bgp);
 
         $down = array_keys(array_filter($devices, fn ($device) => L2Builder::deviceStatus($device) === 'down'));
         $maxSites = $this->settings->int('max_nodes', 10, 5000);
-        $result = (new SiteBuilder($devices, $connections->all(), $this->repo->outageStarts($down)))->build([
+        $result = (new SiteBuilder($devices, array_merge($connections->all(), $sessions->all()), $this->repo->outageStarts($down)))->build([
             'center' => $p['location'],
             'depth' => $p['depth'],
             'isolated' => $p['isolated'],
@@ -81,5 +95,38 @@ class SiteService
         ];
 
         return $result;
+    }
+
+    /**
+     * Interface stack under the subnet ports' devices: ifStackTable, port-channel membership (also
+     * Cisco PAgP) and the parents of sub-interfaces the stack does not list, by name.
+     *
+     * @param  array<int, array>  $ports  port_id => row of the subnet ports
+     * @return array<int, int[]> port_id => ports right below it
+     */
+    private function stack(array $ports): array
+    {
+        $deviceIds = array_values(array_unique(array_map('intval', array_column($ports, 'device_id'))));
+        $stack = $this->sites->portStack($deviceIds);
+        foreach ($this->repo->lagParents($deviceIds) as $member => $aggregate) {
+            $stack[$aggregate][] = $member;
+        }
+
+        $parents = SiteConnections::unitParents($ports, $stack);
+        $names = [];
+        foreach ($parents as $parent) {
+            $names[$parent['device_id']] = array_merge($names[$parent['device_id']] ?? [], $parent['names']);
+        }
+        $found = $this->sites->portsByName($names);
+        foreach ($parents as $portId => $parent) {
+            foreach ($parent['names'] as $name) {
+                if (isset($found[$parent['device_id']][$name])) {
+                    $stack[$portId] = [$found[$parent['device_id']][$name]];
+                    break;
+                }
+            }
+        }
+
+        return $stack;
     }
 }

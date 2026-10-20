@@ -1956,6 +1956,13 @@
     // ------------------------------------------------------------------ site / WAN map
 
     /**
+     * "1 site", "3 sites".
+     */
+    function plural(count, word, words) {
+        return count + ' ' + (count === 1 ? word : (words || word + 's'));
+    }
+
+    /**
      * Data URI of the site icon (a building) colored by status: blue all up, orange some devices down, red all down.
      */
     function siteIconUrl(status) {
@@ -1981,7 +1988,7 @@
 
     /**
      * Site link: width and color from the capacity (or utilization / status) of its links, dashed when it
-     * only consists of routing sessions or is not fully up.
+     * only consists of routing sessions or is not fully up, grey dotted when every session was shut down.
      */
     TopologyMap.prototype.visSiteEdge = function (edge) {
         var routingOnly = !edge.links;
@@ -1999,6 +2006,9 @@
             dashes = [6, 4];
         } else if (edge.status === 'degraded' && !routingOnly) {
             dashes = [12, 4];
+        } else if (edge.status === 'disabled') {
+            color = STATUS_COLORS.disabled;
+            dashes = [2, 4];
         }
 
         var tooltip = document.createElement('div');
@@ -2043,17 +2053,136 @@
     };
 
     /**
+     * Push apart positions closer than gap (sites in one city or at one address). A crowd in one cell of
+     * a grid of the gap's size first goes round its middle in a sunflower spiral; then each position is
+     * only compared with those in its own and the neighboring cells, and moves by the sum of its pushes
+     * (at most half the gap per round). Fixed positions do not move.
+     */
+    function spreadPositions(positions, ids, gap, fixed) {
+        fixed = fixed || {};
+        var count = ids.length;
+        var x = new Float64Array(count);
+        var y = new Float64Array(count);
+        var still = ids.map(function (id, i) {
+            x[i] = positions[id].x;
+            y[i] = positions[id].y;
+            return !!fixed[id];
+        });
+        var cellOf = function (i) {
+            return (Math.floor(x[i] / gap) + 32768) * 65536 + Math.floor(y[i] / gap) + 32768;
+        };
+        var group = function (map, key, i) {
+            var list = map.get(key);
+            if (list) {
+                list.push(i);
+            } else {
+                map.set(key, [i]);
+            }
+        };
+        var i;
+
+        var crowds = new Map();
+        for (i = 0; i < count; i++) {
+            if (!still[i]) {
+                group(crowds, cellOf(i), i);
+            }
+        }
+        crowds.forEach(function (crowd) {
+            if (crowd.length < 3) {
+                return;
+            }
+            var cx = 0;
+            var cy = 0;
+            crowd.forEach(function (p) {
+                cx += x[p] / crowd.length;
+                cy += y[p] / crowd.length;
+            });
+            crowd.sort(function (a, b) {
+                return Math.hypot(x[a] - cx, y[a] - cy) - Math.hypot(x[b] - cx, y[b] - cy) || a - b;
+            });
+            crowd.forEach(function (p, k) {
+                var radius = gap * 0.66 * Math.sqrt(k + 0.5); // one gap between neighbors
+                x[p] = cx + radius * Math.cos(k * 2.39996); // the golden angle
+                y[p] = cy + radius * Math.sin(k * 2.39996);
+            });
+        });
+
+        var moveX = new Float64Array(count);
+        var moveY = new Float64Array(count);
+        for (var round = 0; round < 100; round++) {
+            var cells = new Map();
+            for (i = 0; i < count; i++) {
+                group(cells, cellOf(i), i);
+            }
+            moveX.fill(0);
+            moveY.fill(0);
+            var overlaps = 0;
+            cells.forEach(function (list, cell) {
+                for (var dx = -1; dx <= 1; dx++) {
+                    for (var dy = -1; dy <= 1; dy++) {
+                        var near = cell + dx * 65536 + dy;
+                        var others = near >= cell ? cells.get(near) : null;
+                        for (var a = 0; others && a < list.length; a++) {
+                            for (var b = near === cell ? a + 1 : 0; b < others.length; b++) {
+                                var p = list[a];
+                                var q = others[b];
+                                var ex = x[q] - x[p];
+                                var ey = y[q] - y[p];
+                                var distance = Math.sqrt(ex * ex + ey * ey);
+                                if (distance >= gap || (still[p] && still[q])) {
+                                    continue;
+                                }
+                                overlaps++;
+                                if (distance < 0.01) {
+                                    var angle = ((p * 5 + q) % 12) * Math.PI / 6;
+                                    ex = Math.cos(angle);
+                                    ey = Math.sin(angle);
+                                    distance = 1;
+                                }
+                                var push = (gap - distance) / 2 + 0.5;
+                                var pushP = still[p] ? 0 : (still[q] ? 2 * push : push);
+                                var pushQ = still[q] ? 0 : (still[p] ? 2 * push : push);
+                                moveX[p] -= ex / distance * pushP;
+                                moveY[p] -= ey / distance * pushP;
+                                moveX[q] += ex / distance * pushQ;
+                                moveY[q] += ey / distance * pushQ;
+                            }
+                        }
+                    }
+                }
+            });
+            if (!overlaps) {
+                break;
+            }
+            for (i = 0; i < count; i++) {
+                var length = Math.sqrt(moveX[i] * moveX[i] + moveY[i] * moveY[i]);
+                var factor = length > gap / 2 ? gap / 2 / length : 1;
+                x[i] += moveX[i] * factor;
+                y[i] += moveY[i] * factor;
+            }
+        }
+
+        ids.forEach(function (id, index) {
+            positions[id].x = x[index];
+            positions[id].y = y[index];
+        });
+    }
+
+    /**
      * Geographic layout: sites by latitude / longitude (equirectangular projection around their center,
-     * scaled to the map canvas, nudged apart where they overlap), sites without coordinates in a row under
-     * them, clouds above the middle of their sites. Null when no site has coordinates.
+     * scaled to the map canvas, nudged apart where they overlap), sites without coordinates in a grid
+     * under them, clouds above the middle of their sites. Null (the organic layout) when most sites have
+     * no coordinates.
      */
     TopologyMap.prototype.geoPositions = function () {
         var nodes = this.data.nodes;
-        var edges = this.data.edges;
-        var placed = nodes.filter(function (node) {
-            return node.type === 'site' && node.lat !== null && node.lng !== null;
+        var sites = nodes.filter(function (node) {
+            return node.type === 'site';
         });
-        if (!placed.length) {
+        var placed = sites.filter(function (node) {
+            return node.lat !== null && node.lng !== null;
+        });
+        if (!placed.length || placed.length * 2 < sites.length) {
             return null;
         }
 
@@ -2071,6 +2200,9 @@
         var height = Math.max.apply(null, lats) - Math.min.apply(null, lats);
         var scale = Math.min(width > 0 ? 1100 / width : Infinity, height > 0 ? 600 / height : Infinity);
         scale = isFinite(scale) ? scale : 1;
+        // a dense network gets more room: about two gap x gap squares per site, up to 8 times the canvas
+        var gap = 120;
+        scale *= Math.min(8, Math.max(1, Math.sqrt(placed.length * 2 * gap * gap / (Math.max(width * scale, 1) * Math.max(height * scale, 1)))));
         var positions = {};
         placed.forEach(function (node) {
             positions[node.id] = {x: (node.lng - lng0) * k * scale, y: -(node.lat - lat0) * scale};
@@ -2078,38 +2210,9 @@
 
         // sites in one city, or at the same address, would overlap: push them apart
         var ids = Object.keys(positions);
-        var gap = 120;
-        for (var round = 0; ids.length <= 300 && round < 60; round++) {
-            var moved = false;
-            for (var i = 0; i < ids.length; i++) {
-                for (var j = i + 1; j < ids.length; j++) {
-                    var a = positions[ids[i]];
-                    var b = positions[ids[j]];
-                    var dx = b.x - a.x;
-                    var dy = b.y - a.y;
-                    var distance = Math.sqrt(dx * dx + dy * dy);
-                    if (distance >= gap) {
-                        continue;
-                    }
-                    if (distance < 0.01) {
-                        var angle = ((i * 5 + j) % 12) * Math.PI / 6;
-                        dx = Math.cos(angle);
-                        dy = Math.sin(angle);
-                        distance = 1;
-                    }
-                    var push = (gap - distance) / 2 + 1;
-                    a.x -= dx / distance * push;
-                    a.y -= dy / distance * push;
-                    b.x += dx / distance * push;
-                    b.y += dy / distance * push;
-                    moved = true;
-                }
-            }
-            if (!moved) {
-                break;
-            }
-        }
+        spreadPositions(positions, ids, gap);
 
+        // sites without coordinates: a grid under the map, as wide as the placed sites
         var xs = ids.map(function (id) {
             return positions[id].x;
         });
@@ -2118,33 +2221,46 @@
         });
         var left = Math.min.apply(null, xs);
         var bottom = Math.max.apply(null, ys) + 180;
-        nodes.filter(function (node) {
-            return node.type === 'site' && !positions[node.id];
-        }).forEach(function (node, index) {
-            positions[node.id] = {x: left + index * 170, y: bottom};
+        var unplaced = sites.filter(function (node) {
+            return !positions[node.id];
         });
+        var columns = Math.max(Math.floor((Math.max.apply(null, xs) - left) / 170) + 1, Math.ceil(Math.sqrt(unplaced.length)));
+        unplaced.forEach(function (node, index) {
+            positions[node.id] = {x: left + (index % columns) * 170, y: bottom + Math.floor(index / columns) * 120};
+        });
+        bottom += Math.ceil(unplaced.length / columns) * 120;
 
-        nodes.filter(function (node) {
+        // clouds above the middle of their sites, moved off the sites they would cover
+        var around = {};
+        this.data.edges.forEach(function (edge) {
+            (around[edge.from] = around[edge.from] || []).push(edge.to);
+            (around[edge.to] = around[edge.to] || []).push(edge.from);
+        });
+        var fixed = {};
+        sites.forEach(function (node) {
+            fixed[node.id] = true;
+        });
+        var clouds = nodes.filter(function (node) {
             return node.type !== 'site';
-        }).forEach(function (node, index) {
-            var around = edges.filter(function (edge) {
-                return edge.from === node.id || edge.to === node.id;
-            }).map(function (edge) {
-                return positions[edge.from === node.id ? edge.to : edge.from];
+        });
+        clouds.forEach(function (node, index) {
+            var points = (around[node.id] || []).map(function (id) {
+                return positions[id];
             }).filter(Boolean);
-            if (!around.length) {
-                positions[node.id] = {x: left + index * 170, y: bottom + 180};
+            if (!points.length) {
+                positions[node.id] = {x: left + index * 170, y: bottom + 60};
                 return;
             }
             positions[node.id] = {
-                x: around.reduce(function (sum, point) {
+                x: points.reduce(function (sum, point) {
                     return sum + point.x;
-                }, 0) / around.length + (index % 2 ? 60 : -60),
-                y: around.reduce(function (sum, point) {
+                }, 0) / points.length + (index % 2 ? 60 : -60),
+                y: points.reduce(function (sum, point) {
                     return sum + point.y;
-                }, 0) / around.length - 150
+                }, 0) / points.length - 150
             };
         });
+        spreadPositions(positions, Object.keys(positions), gap, fixed);
 
         return positions;
     };
@@ -2192,8 +2308,9 @@
                 }).join(', ') + (node.down_devices.length > 25 ? ' &hellip; and ' + (node.down_devices.length - 25) + ' more' : '')) +
                 this.row('Coordinates', node.lat !== null ? esc(node.lat + ', ' + node.lng) : '<span class="text-muted">not set</span>');
         } else {
-            html += this.row('Remote AS', esc(node.remote_as)) +
-                '<tr><td colspan="2" class="text-muted">BGP peers that LibreNMS does not monitor, grouped by their AS: a provider network or an internet transit.</td></tr>';
+            html += this.row('Remote AS', esc(node.remote_as)) + '<tr><td colspan="2" class="text-muted">' + (node.private
+                ? 'BGP peers in a private AS that LibreNMS does not monitor. Sites often reuse private AS numbers, so every site has a cloud of its own.'
+                : 'BGP peers that LibreNMS does not monitor, grouped by their AS: a provider network or an internet transit.') + '</td></tr>';
         }
         html += '</table>';
 
@@ -2258,11 +2375,18 @@
         if (edge.routing.bgp) {
             routing.push(edge.routing.bgp + ' BGP');
         }
+        // tunnels and other logical interfaces have no capacity of their own
+        var unknown = edge.members.filter(function (member) {
+            return (member.kind === 'l2' || member.kind === 'p2p') && !member.speed;
+        }).length;
+        var capacity = (edge.speed ? esc(formatSpeed(edge.speed) + 'bps') : '') + (unknown
+            ? '<span class="text-muted">' + (edge.speed ? ' + ' : '') + esc(plural(unknown, 'link') + ' with traffic only (tunnel or logical interface)') + '</span>'
+            : '');
 
         var html = '<h4 class="topo-panel-title">' + esc(fromName) + ' &harr; ' + esc(toName) + '</h4><table class="table table-condensed topo-kv">' +
             this.row('Status', '<span class="topo-status-' + esc(edge.status) + '">' + esc(edge.status) + '</span>') +
             this.row('Links', edge.links ? esc(edge.links) : '') +
-            this.row('Capacity', edge.speed ? esc(formatSpeed(edge.speed) + 'bps') : '') +
+            this.row('Capacity', capacity) +
             this.row('Busiest link', edge.util !== null ? esc(edge.util + '%') : '') +
             this.row('Traffic', edge.links ? esc(fromName + ' → ' + toName + ': ' + formatRate(edge.from_bps)) + '<br>' +
                 esc(toName + ' → ' + fromName + ': ' + formatRate(edge.to_bps)) : '') +
@@ -2284,7 +2408,8 @@
                     (point.aggregate ? ' <small class="text-muted">(' + esc(point.aggregate) + ')</small>' : '');
             };
             var detail = member.kind === 'l2' || member.kind === 'p2p'
-                ? formatSpeed(member.speed) + (member.util !== null ? ' \u00b7 ' + member.util + '%' : '')
+                ? (member.speed ? formatSpeed(member.speed) + (member.util !== null ? ' \u00b7 ' + member.util + '%' : '')
+                    : 'traffic only \u00b7 ' + formatRate(Math.max(member.in_bps, member.out_bps)))
                 : member.state || '';
             html += '<tr><th>' + esc(kind) + '<br><span class="topo-status-' + esc(member.status) + '">' + esc(member.status) + '</span> ' +
                 '<small>' + esc(detail) + '</small></th><td>' + end(member.a) + '<br>&harr; ' + end(member.b) +
@@ -2315,9 +2440,11 @@
         html += '<div><span class="topo-line topo-line-dashed" style="border-color:#8e44ad"></span> Routing sessions only (OSPF / BGP)</div>' +
             '<div><span class="topo-line topo-line-dashed" style="border-color:#e67e22"></span> Some links or sessions down</div>' +
             '<div><span class="topo-line topo-line-dashed" style="border-color:#c0392b"></span> All down</div>' +
+            '<div><span class="topo-line topo-line-dashed" style="border-color:' + STATUS_COLORS.disabled + '"></span> BGP sessions shut down by an administrator</div>' +
             '</div><p class="text-muted topo-hint">A site is a LibreNMS location. Links between devices at different locations, point-to-point ' +
-            'subnets and OSPF / BGP sessions add up to one link per pair of sites. Click a site or link for details; double-click a site to open ' +
-            'its L2 map. The geographic layout places sites by the latitude / longitude of their location.</p>';
+            'subnets and OSPF / BGP sessions add up to one link per pair of sites; tunnels and other logical interfaces only add their traffic. ' +
+            'Click a site or link for details; double-click a site to open its L2 map. The geographic layout places sites by the latitude / ' +
+            'longitude of their location.</p>';
         this.panel.innerHTML = html;
     };
 
@@ -2327,28 +2454,36 @@
     TopologyMap.prototype.updateSiteStatus = function () {
         var stats = this.data.stats || {};
         var scope = this.data.scope || {};
-        var parts = [stats.sites + ' sites', stats.devices + ' devices', stats.links + ' site links'];
+        var parts = [plural(stats.sites, 'site'), plural(stats.devices, 'device'), plural(stats.links, 'site link')];
         if (stats.clouds) {
-            parts.push(stats.clouds + ' external AS');
+            parts.push(plural(stats.clouds, 'external AS', 'external ASes'));
         }
         if (stats.down_devices) {
-            parts.push('<span class="text-danger">' + stats.down_devices + ' devices down' + (stats.down_sites ? ' (' + stats.down_sites + ' sites entirely)' : '') + '</span>');
+            parts.push('<span class="text-danger">' + plural(stats.down_devices, 'device') + ' down' +
+                (stats.down_sites ? ' (' + plural(stats.down_sites, 'site') + ' entirely)' : '') + '</span>');
         }
         if (stats.down_links || stats.degraded_links) {
-            parts.push('<span class="topo-text-warning">' + (stats.down_links + stats.degraded_links) + ' site links not fully up</span>');
+            parts.push('<span class="topo-text-warning">' + plural(stats.down_links + stats.degraded_links, 'site link') + ' not fully up</span>');
         }
         var html = parts.join(' &middot; ');
         if (scope.root_name) {
-            html = 'Centered on <b>' + esc(scope.root_name) + '</b> (' + esc(scope.depth) + ' hops) &middot; ' + html;
+            html = 'Centered on <b>' + esc(scope.root_name) + '</b> (' + esc(plural(Number(scope.depth), 'hop')) + ') &middot; ' + html;
         }
         if (scope.truncated) {
             html += ' &middot; <span class="topo-text-warning"><i class="fa fa-exclamation-triangle"></i> Showing ' + scope.shown + ' of ' + scope.total +
                 ' sites (limit ' + scope.max_nodes + '). Center on a site or pick a group to narrow the map.</span>';
         }
-        if (this.view.layout === 'geographic' && !this.data.nodes.some(function (node) {
+        var sites = this.data.nodes.filter(function (node) {
+            return node.type === 'site';
+        });
+        var placed = sites.filter(function (node) {
             return node.lat !== null && node.lat !== undefined;
-        })) {
+        }).length;
+        if (this.view.layout === 'geographic' && !placed) {
             html += ' &middot; <span class="topo-text-warning">No location has a latitude / longitude, so the geographic layout is not available.</span>';
+        } else if (this.view.layout === 'geographic' && placed * 2 < sites.length) {
+            html += ' &middot; <span class="topo-text-warning">Only ' + placed + ' of ' + sites.length +
+                ' sites have a latitude / longitude, so they are laid out without them.</span>';
         }
         if (!this.data.nodes.length) {
             html = '<span class="topo-text-warning">No sites with links found for this scope (tick <i>Unlinked sites</i> to show every location).</span>';
