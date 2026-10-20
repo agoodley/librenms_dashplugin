@@ -79,12 +79,13 @@ class SiteRepository extends ScopedRepository
     }
 
     /**
-     * Locations of the monitored devices the user may see on the far side of the given ports (active
-     * LLDP / CDP links reported by either side): whether a port faces a switch of its own site, a
-     * device at another site, or nothing LibreNMS knows (a carrier handoff).
+     * The monitored devices the user may see on the far side of the given ports, with their
+     * locations (active LLDP / CDP links reported by either side): whether a port faces a switch of
+     * its own site, a device at another site, or nothing LibreNMS knows (a carrier handoff).
      *
      * @param  int[]  $portIds
-     * @return array<int, array<int, int|null>> port_id => location ids of its neighbors (null: no location)
+     * @return array<int, array<int, array{device_id: int, location_id: int|null}>> port_id => its neighbors (location
+     *     null: none)
      */
     public function portNeighbors(array $portIds): array
     {
@@ -103,7 +104,10 @@ class SiteRepository extends ScopedRepository
                 foreach ([['local', 'remote'], ['remote', 'local']] as [$near, $far]) {
                     if (isset($wanted[(int) $link->{$near . '_port_id'}]) && $this->canSee((int) $link->{$far . '_device_id'})) {
                         $location = $link->{$far . '_location'};
-                        $neighbors[(int) $link->{$near . '_port_id'}][] = $location !== null ? (int) $location : null;
+                        $neighbors[(int) $link->{$near . '_port_id'}][] = [
+                            'device_id' => (int) $link->{$far . '_device_id'},
+                            'location_id' => $location !== null ? (int) $location : null,
+                        ];
                     }
                 }
             }
@@ -113,10 +117,39 @@ class SiteRepository extends ScopedRepository
     }
 
     /**
-     * Interface addresses with their prefix length (IPv4 and IPv6) of a few devices.
+     * Neighbor links among the devices the user may see at one location (null: the devices without
+     * one), as device adjacency.
+     *
+     * @return array<int, int[]> device_id => devices it has a link with
+     */
+    public function siteAdjacency(?int $locationId): array
+    {
+        $ids = array_values(array_filter(array_map('intval', DB::table('devices as d')->leftJoin('locations as l', 'l.id', '=', 'd.location_id')
+            ->when($locationId === null, fn ($query) => $query->whereNull('l.id'), fn ($query) => $query->where('l.id', $locationId))
+            ->pluck('d.device_id')->all()), fn (int $id) => $this->canSee($id)));
+        $here = array_flip($ids);
+        $adjacency = [];
+        foreach (array_chunk($ids, self::CHUNK) as $chunk) {
+            foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $chunk)
+                ->get(['local_device_id', 'remote_device_id']) as $link) {
+                [$a, $b] = [(int) $link->local_device_id, (int) $link->remote_device_id];
+                if ($a !== $b && isset($here[$b])) {
+                    $adjacency[$a][$b] = true;
+                    $adjacency[$b][$a] = true;
+                }
+            }
+        }
+
+        return array_map('array_keys', $adjacency);
+    }
+
+    /**
+     * Interface addresses with their prefix length (IPv4 and IPv6) of a few devices, and the type and
+     * name of their interfaces.
      *
      * @param  int[]  $deviceIds
-     * @return array<int, array<int, array{0: string, 1: int}>> device_id => [address, prefix length]
+     * @return array<int, array<int, array{0: string, 1: int, 2: array}>> device_id => [address, prefix length,
+     *     port (ifType, ifName, ifDescr)]
      */
     public function interfaceAddresses(array $deviceIds): array
     {
@@ -125,8 +158,9 @@ class SiteRepository extends ScopedRepository
             foreach ([['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen'], ['ipv6_addresses', 'ipv6_compressed', 'ipv6_prefixlen']] as [$table, $address, $prefixlen]) {
                 foreach (DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
                     ->whereIntegerInRaw('p.device_id', $chunk)->where('p.deleted', 0)
-                    ->get(['p.device_id', 'a.' . $address . ' as address', 'a.' . $prefixlen . ' as prefixlen']) as $row) {
-                    $addresses[(int) $row->device_id][] = [(string) $row->address, (int) $row->prefixlen];
+                    ->get(['p.device_id', 'p.ifType', 'p.ifName', 'p.ifDescr', 'a.' . $address . ' as address', 'a.' . $prefixlen . ' as prefixlen']) as $row) {
+                    $addresses[(int) $row->device_id][] = [(string) $row->address, (int) $row->prefixlen,
+                        ['ifType' => $row->ifType, 'ifName' => $row->ifName, 'ifDescr' => $row->ifDescr]];
                 }
             }
         }
@@ -187,8 +221,8 @@ class SiteRepository extends ScopedRepository
      * a session to a device outside the map's scope is not a session to an unknown network.
      *
      * @param  string[]  $addresses  IPv4 / IPv6 addresses
-     * @return array<string, array<int, array{device_id: int, prefixlen: int, vrf: string}>> address (canonical form) =>
-     *     owners (a device once per VRF), by device id
+     * @return array<string, array<int, array{device_id: int, prefixlen: int, vrf: string, port: array}>> address (canonical
+     *     form) => owners (a device once per VRF; port: ifType, ifName, ifDescr of the interface), by device id
      */
     public function addressOwners(array $addresses): array
     {
@@ -209,7 +243,8 @@ class SiteRepository extends ScopedRepository
                 // the address columns are not indexed: comparing bytes rather than collated text makes the scan several times faster
                 foreach (DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
                     ->whereIn(DB::raw('CAST(a.' . $address . ' AS BINARY)'), $chunk)->where('p.deleted', 0)
-                    ->get(['p.device_id', 'p.ifVrf', 'a.' . $address . ' as address', 'a.' . $prefixlen . ' as prefixlen', 'a.context_name']) as $row) {
+                    ->get(['p.device_id', 'p.ifVrf', 'p.ifType', 'p.ifName', 'p.ifDescr', 'a.' . $address . ' as address',
+                        'a.' . $prefixlen . ' as prefixlen', 'a.context_name']) as $row) {
                     if ($this->canSee((int) $row->device_id)) {
                         $rows[] = (array) $row;
                     }
@@ -226,7 +261,8 @@ class SiteRepository extends ScopedRepository
                 continue;
             }
             $vrf = (string) (($row['ifVrf'] ? ($vrfs[$row['ifVrf']] ?? '') : '') ?: ($row['context_name'] ?? ''));
-            $owners[inet_ntop($packed)][$row['device_id'] . '|' . $vrf] ??= ['device_id' => (int) $row['device_id'], 'prefixlen' => (int) $row['prefixlen'], 'vrf' => $vrf];
+            $owners[inet_ntop($packed)][$row['device_id'] . '|' . $vrf] ??= ['device_id' => (int) $row['device_id'], 'prefixlen' => (int) $row['prefixlen'],
+                'vrf' => $vrf, 'port' => ['ifType' => $row['ifType'], 'ifName' => $row['ifName'], 'ifDescr' => $row['ifDescr']]];
         }
         foreach ($owners as &$list) {
             usort($list, fn (array $a, array $b) => [$a['device_id'], $a['vrf']] <=> [$b['device_id'], $b['vrf']]);

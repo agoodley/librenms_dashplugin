@@ -15,7 +15,7 @@ use Agoodley\LibrenmsTopology\Support\Graph;
  * site to a cloud per remote AS; a private AS number can be a different network at every site (each
  * branch's firewall in AS65001), so its clouds are per site, except that sites peering with the same
  * address share one when it is not on a subnet of their routers (a cloud VPN gateway in AS65515) or
- * when it is on a subnet that their routers join with addresses of their own (a DMVPN hub).
+ * when it is on a tunnel subnet that their routers join with addresses of their own (a DMVPN hub).
  */
 class SiteSessions
 {
@@ -35,8 +35,8 @@ class SiteSessions
      * @param  array<int, array>  $devices  device_id => row with location_id, location and bgpLocalAs: the map's scope
      * @param  array<string, array<int, array{device_id: int, prefixlen: int, vrf: string}>>  $owners  address => devices
      *     the user may see with that interface address, by device id (SiteRepository::addressOwners())
-     * @param  array<int, array<int, array{0: string, 1: int}>>  $interfaces  device_id => interface addresses and prefix
-     *     lengths of the routers listed by unknownSources()
+     * @param  array<int, array<int, array{0: string, 1: int, 2?: array}>>  $interfaces  device_id => interface addresses,
+     *     prefix lengths and ports of the routers listed by unknownSources() (SiteRepository::interfaceAddresses())
      */
     public function __construct(private readonly array $devices, private readonly array $owners, private readonly array $interfaces = [])
     {
@@ -253,9 +253,10 @@ class SiteSessions
     /**
      * Private AS clouds that several sites share: sites whose routers peer with the same address in
      * the same private AS, when that address is not on a subnet of their routers (a session from a
-     * loopback or a tunnel to a cloud VPN gateway), or is on a subnet their routers join with an
-     * address of their own (spokes .2, .3, .4 of a DMVPN hub at .1). Every branch's firewall at
-     * 192.168.255.2, with the router at 192.168.255.1 everywhere, stays a cloud per site.
+     * loopback or a tunnel to a cloud VPN gateway), or is on a tunnel subnet their routers join with
+     * an address of their own (spokes .2, .3, .4 of a DMVPN hub at .1). Every branch's firewall at
+     * 192.168.255.2 stays a cloud per site, with the router at the same address everywhere or at an
+     * address of its own on an Ethernet transit LAN.
      *
      * @param  array<int, array{0: int, 1: int, 2: array}>  $clouds  sessions to unmonitored peers: router, remote AS, side
      * @return array<string, string> "AS|site id" => id of the shared cloud
@@ -266,12 +267,12 @@ class SiteSessions
         foreach ($clouds as [$local, $remoteAs, $side]) {
             if (self::isPrivateAs($remoteAs)) {
                 $site = $remoteAs . '|' . SiteBuilder::siteId($this->devices[$local]);
-                [$connected, $address] = $this->source($local, $side);
+                [$connected, $address, $tunnel] = $this->source($local, $side);
                 $peer = &$peers[$remoteAs . '@' . $side['peer']];
                 $peer['sites'][$site] = true;
                 $peer['remote'] = ($peer['remote'] ?? false) || $connected === false;
                 if ($connected) {
-                    $peer['sources'][$site][$address] = true;
+                    $peer['sources'][$site][$address] = $tunnel;
                 }
                 unset($peer);
             }
@@ -279,9 +280,10 @@ class SiteSessions
 
         $graph = new Graph;
         foreach ($peers as $address => $peer) {
-            // the routers' addresses on the peer's subnet, of each site: no two sites with the same one
+            // the routers' addresses on the peer's subnet, of each site: no two sites with the same one, all on tunnels
             $sources = array_merge(...array_map('array_keys', array_values($peer['sources'] ?? [])));
-            $segment = count($peer['sources'] ?? []) > 1 && count(array_unique($sources)) === count($sources);
+            $segment = count($peer['sources'] ?? []) > 1 && count(array_unique($sources)) === count($sources)
+                && ! in_array(false, array_merge(...array_map('array_values', array_values($peer['sources']))), true);
             if (count($peer['sites']) > 1 && ($segment || ($peer['remote'] && ! $sources))) {
                 foreach (array_keys($peer['sites']) as $site) {
                     $graph->addEdge($site, $address);
@@ -301,11 +303,12 @@ class SiteSessions
     }
 
     /**
-     * Is the peer of a session on a subnet of the router, and the router's address on it: [true,
-     * address], [false, null] when it is not, [null, null] when that is not known. The session's
-     * local address tells while the session is up, the router's interface addresses when it is down.
+     * Is the peer of a session on a subnet of the router, the router's address on it and whether that
+     * is a tunnel interface: [true, address, tunnel], [false, null, false] when it is not on one,
+     * [null, null, false] when that is not known. The session's local address tells while the session
+     * is up, the router's interface addresses when it is down.
      *
-     * @return array{0: bool|null, 1: string|null}
+     * @return array{0: bool|null, 1: string|null, 2: bool}
      */
     private function source(int $local, array $side): array
     {
@@ -313,21 +316,22 @@ class SiteSessions
             if ($owner['device_id'] === $local) {
                 $subnet = self::subnet($side['own'], $owner['prefixlen']);
 
-                return $subnet !== null && Cidr::contains($subnet, $side['peer']) ? [true, $side['own']] : [false, null];
+                return $subnet !== null && Cidr::contains($subnet, $side['peer'])
+                    ? [true, $side['own'], SiteConnections::isTunnel($owner['port'] ?? [])] : [false, null, false];
             }
         }
         if (! isset($this->interfaces[$local])) {
-            return [null, null];
+            return [null, null, false];
         }
-        foreach ($this->interfaces[$local] as [$address, $prefix]) {
-            $address = self::canonical($address);
-            $subnet = $address === null ? null : self::subnet($address, $prefix);
+        foreach ($this->interfaces[$local] as $interface) {
+            $address = self::canonical($interface[0]);
+            $subnet = $address === null ? null : self::subnet($address, $interface[1]);
             if ($subnet !== null && Cidr::contains($subnet, $side['peer'])) {
-                return [true, $address];
+                return [true, $address, SiteConnections::isTunnel($interface[2] ?? [])];
             }
         }
 
-        return [false, null];
+        return [false, null, false];
     }
 
     /**

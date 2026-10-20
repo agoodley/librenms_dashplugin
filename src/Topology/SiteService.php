@@ -63,7 +63,8 @@ class SiteService
             $ports = $this->repo->ports($subnetPorts);
             $stack = $this->stack($ports);
             $below = SiteConnections::below($subnetPorts, $stack);
-            $connections->addSubnets($l3, $ports + $this->repo->ports($below), $stack, $this->sites->portNeighbors(array_merge($subnetPorts, $below)));
+            $connections->addSubnets($l3, $ports + $this->repo->ports($below), $stack, $this->sites->portNeighbors(array_merge($subnetPorts, $below)),
+                fn (string $site) => $this->sites->siteAdjacency($site === SiteBuilder::NO_LOCATION ? null : (int) substr($site, strlen('site:'))));
         }
 
         // OSPF adjacencies and BGP sessions
