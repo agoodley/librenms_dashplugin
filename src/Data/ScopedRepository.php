@@ -24,6 +24,14 @@ abstract class ScopedRepository
     }
 
     /**
+     * The user the repository is scoped to, so another feature's repository can serve the same request.
+     */
+    public function user(): mixed
+    {
+        return $this->user;
+    }
+
+    /**
      * Devices the user may see, optionally limited to a device group and/or location.
      *
      * @return int[]

@@ -55,6 +55,22 @@ class StpAnalyzerTest extends TestCase
         $this->assertSame('warning', $codes['nondesignated_forwarding'] ?? null);
     }
 
+    public function testChecksCanBeDisabledByCodeOrCategory(): void
+    {
+        $broken = [32 => ['state' => 'forwarding']];
+
+        $byCode = $this->codes($this->analyze([], $broken, ['stp_disabled_checks' => 'forwarding_loop']));
+        $this->assertArrayNotHasKey('forwarding_loop', $byCode);
+        $this->assertArrayHasKey('nondesignated_forwarding', $byCode);
+
+        $byCategory = $this->analyze([], $broken, ['stp_disabled_checks' => 'ports, loops']);
+        $this->assertArrayNotHasKey('nondesignated_forwarding', $this->codes($byCategory));
+        $this->assertArrayNotHasKey('forwarding_loop', $this->codes($byCategory));
+
+        $all = $this->analyze([], $broken);
+        $this->assertSame('loops', array_column($all['findings'], 'category', 'code')['forwarding_loop']);
+    }
+
     public function testMlagIsNotALoop(): void
     {
         // leafA(5) and leafB(6) share access(7) Po70 and a peer link: all forwarding is expected

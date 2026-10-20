@@ -2,10 +2,12 @@
 
 namespace Agoodley\LibrenmsTopology\Topology;
 
+use Agoodley\LibrenmsTopology\Data\LoopEvidenceRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
 use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
 use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
+use Agoodley\LibrenmsTopology\Stp\LoopEvidence;
 use Agoodley\LibrenmsTopology\Stp\StpAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
@@ -179,8 +181,9 @@ class TopologyService
         }
         $portIds = array_merge($portIds, array_keys($lag), array_values($lag));
 
+        $devices = $this->repo->devices($scope);
         $analyzer = new StpAnalyzer(
-            $this->repo->devices($scope),
+            $devices,
             $index,
             $links,
             $this->repo->analysisPorts($portIds),
@@ -193,12 +196,43 @@ class TopologyService
         $result['vlans'] = $this->repo->stpVlans($scope);
         $result['notice'] = $notice;
         $result['filter'] = $p + ['effective_vlan' => $vlan];
+        $result = LoopEvidence::merge($result, $this->loopEvidence($devices, $links));
 
         if ($p['device']) {
             $result = self::filterStpForDevice($result, $p['device']);
         }
 
         return $result;
+    }
+
+    /**
+     * Loop evidence of the devices in scope: broadcast / multicast counters of their inter-switch
+     * ports and the loop related syslog messages of their switches and routers (when the user may
+     * read syslog).
+     */
+    private function loopEvidence(array $devices, array $links): array
+    {
+        $repo = new LoopEvidenceRepository($this->repo->user());
+        $ports = $repo->portRates(array_keys(LoopEvidence::interSwitchPorts($devices, $links)));
+
+        $senders = array_keys(array_filter($devices, fn ($d) => in_array($d['role'] ?? '', [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER], true)));
+        $since = time() - $this->settings->int('stp_syslog_hours', 1, 720) * 3600;
+        $pattern = LoopEvidence::databasePattern($this->settings);
+        $hidden = ! $repo->canViewSyslog();
+        $syslog = ['rows' => [], 'truncated' => false];
+        $sent = 0;
+        if (! $hidden && $pattern !== null && $senders) {
+            $syslog = $repo->syslog($senders, $since, $pattern);
+            $sent = $repo->syslogDevices($senders, $since);
+        }
+
+        return (new LoopEvidence($devices, $links, $ports, $syslog['rows'],
+            $repo->portNames(array_column($syslog['rows'], 'device_id')), $this->settings))->analyze([
+                'syslog_hidden' => $hidden,
+                'syslog_truncated' => $syslog['truncated'],
+                'syslog_devices' => $sent,
+                'syslog_scope' => count($senders),
+            ]);
     }
 
     /**
@@ -414,6 +448,7 @@ class TopologyService
         $result['blocked'] = array_values(array_filter($result['blocked'], fn ($b) => $b['device_id'] === $deviceId));
         $result['domains'] = array_values(array_filter($result['domains'], fn ($d) => in_array($deviceId, $d['member_ids'], true)));
         $result['events'] = array_values(array_filter($result['events'], fn ($e) => $e['device_id'] === $deviceId));
+        $result['loop_evidence'] = LoopEvidence::forDevice($result['loop_evidence'] ?? [], $deviceId);
         $result['summary'] = StpAnalyzer::summarize($result['domains'], $result['bridges'], $result['blocked'], $result['findings'], $result['summary']['recent_tc_window']);
 
         return $result;

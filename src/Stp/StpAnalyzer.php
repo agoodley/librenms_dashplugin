@@ -15,6 +15,37 @@ class StpAnalyzer
 {
     private const DEFAULT_PRIORITY = 32768;
 
+    /**
+     * Check codes and their category; the "disabled checks" setting accepts either (the loop
+     * evidence checks are in LoopEvidence::CHECKS).
+     */
+    public const CHECKS = [
+        'root_mismatch' => 'root',
+        'root_not_polled' => 'root',
+        'root_unmanaged' => 'root',
+        'root_default_priority' => 'root',
+        'root_not_preferred' => 'root',
+        'root_at_edge' => 'root',
+        'root_changed' => 'root',
+        'timers_non_default' => 'config',
+        'timer_relation' => 'config',
+        'timer_mismatch' => 'config',
+        'protocol_mix' => 'config',
+        'diameter' => 'config',
+        'tc_rate' => 'changes',
+        'tc_recent' => 'changes',
+        'root_port_changed' => 'changes',
+        'port_broken' => 'ports',
+        'port_flapping' => 'ports',
+        'nondesignated_forwarding' => 'ports',
+        'port_transitioning' => 'ports',
+        'no_root_port' => 'ports',
+        'stp_disabled_port' => 'ports',
+        'forwarding_loop' => 'loops',
+        'loop_without_stp' => 'loops',
+        'no_stp_data' => 'loops',
+    ];
+
     /** @var array<int, array{a_dev: int, a_port: int, b_dev: int, b_port: int}> */
     private array $physLinks = [];
 
@@ -28,6 +59,9 @@ class StpAnalyzer
 
     /** @var Finding[] */
     private array $findings = [];
+
+    /** @var array<string, true> disabled check codes and categories */
+    private array $disabled;
 
     /** @var array<string, array> root bridge MAC lookups (owners, FDB sightings, vendor) */
     private array $rootLookups = [];
@@ -50,6 +84,7 @@ class StpAnalyzer
         private ?int $now = null,
     ) {
         $this->now ??= time();
+        $this->disabled = array_fill_keys(array_map('strtolower', $settings->list('stp_disabled_checks')), true);
         foreach ($this->lagParent as $member => $parent) {
             $this->lagMembers[$parent][] = $member;
         }
@@ -106,7 +141,7 @@ class StpAnalyzer
         $this->checkLoopsWithoutStp();
         $this->checkEvents();
 
-        $findings = self::mergeAcrossVlans(array_map(fn (Finding $f) => $f->toArray(), $this->findings));
+        $findings = self::mergeAcrossVlans(array_map(fn (Finding $f) => $f->toArray() + ['category' => self::CHECKS[$f->code] ?? 'other'], $this->findings));
         usort($findings, fn ($a, $b) => [Finding::SEVERITY_ORDER[$a['severity']], $a['vlan'] ?? -1, $a['title']]
             <=> [Finding::SEVERITY_ORDER[$b['severity']], $b['vlan'] ?? -1, $b['title']]);
 
@@ -1412,7 +1447,9 @@ class StpAnalyzer
 
     private function add(Finding $finding): void
     {
-        $this->findings[] = $finding;
+        if (! isset($this->disabled[$finding->code]) && ! isset($this->disabled[self::CHECKS[$finding->code] ?? ''])) {
+            $this->findings[] = $finding;
+        }
     }
 
     /**
