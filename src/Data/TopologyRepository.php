@@ -132,6 +132,38 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
+     * The rows of links() that $keep accepts, streamed: a network's thousands of phones and servers
+     * are never held at once by callers that only need some of them or a count.
+     *
+     * @param  int[]  $ids
+     * @param  callable(array): bool  $keep  gets every row, anonymized like links() does
+     * @return array<int, array> the kept rows, in links.id order
+     */
+    public function linksWhere(array $ids, callable $keep): array
+    {
+        if (! $ids) {
+            return [];
+        }
+
+        $accessible = $this->accessible();
+        $links = [];
+        foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $ids)
+            ->select(['id', 'local_device_id', 'local_port_id', 'remote_device_id', 'remote_port_id', 'remote_hostname',
+                'remote_port', 'remote_platform', 'remote_version', 'protocol'])->orderBy('id')->cursor() as $link) {
+            $link = (array) $link;
+            if ($link['remote_device_id'] && ! isset($accessible[(int) $link['remote_device_id']])) {
+                $link['remote_device_id'] = 0;
+                $link['remote_port_id'] = null;
+            }
+            if ($keep($link)) {
+                $links[] = $link;
+            }
+        }
+
+        return $links;
+    }
+
+    /**
      * @param  int[]  $portIds
      * @param  string[]|null  $columns  only these columns and no url (large analyses)
      * @return array<int, array> port_id => row (with url)

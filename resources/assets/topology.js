@@ -1784,6 +1784,7 @@
             html += this.row('Status', '<span class="topo-status-' + esc(node.status) + '">' + esc(node.status) + '</span>') +
                 this.row('Role', esc(node.role)) + this.row('Hardware', esc(node.hardware)) + this.row('OS', esc((node.os || '') + ' ' + (node.version || ''))) +
                 this.row('Location', esc(node.location)) + this.row('Platform', esc(node.platform));
+            if (node.group) html += this.groupRow(node.group);
             if (this.mode === 'l3') html += this.layerNodeRows(node);
             if (node.loopbacks && node.loopbacks.length) html += this.row('Loopbacks', esc(node.loopbacks.join(', ')));
             if (node.bgpLocalAs) html += this.row('BGP AS', esc(node.bgpLocalAs));
@@ -1847,7 +1848,7 @@
                 '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.stpPage + '?device=' + node.device_id) + '">STP</a> ' +
                 '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.redundancyPage + '?device=' + node.device_id) + '">Redundancy</a> ';
         }
-        if (this.mode === 'l2' && node.type !== 'subnet') {
+        if (this.mode === 'l2' && node.type !== 'subnet' && !node.group) {
             actions += '<button class="btn btn-xs btn-danger" data-sim-node="' + esc(id) + '"><i class="fa fa-bolt"></i> ' +
                 (this.isFailed('node', id) ? 'Undo simulated failure' : 'Simulate failure') + '</button>';
         }
@@ -1967,7 +1968,7 @@
             });
             html += '</table>';
         }
-        if (this.mode === 'l2') {
+        if (this.mode === 'l2' && !edge.group) {
             html += '<div class="topo-actions"><button class="btn btn-xs btn-danger" data-sim-edge="' + esc(id) + '"><i class="fa fa-bolt"></i> ' +
                 (this.isFailed('edge', id) ? 'Undo simulated failure' : 'Simulate failure of this link') + '</button></div>';
         }
@@ -2028,6 +2029,24 @@
     };
 
     /**
+     * Details row of a node standing for the end devices of one kind seen by a switch (too many to draw).
+     */
+    TopologyMap.prototype.groupRow = function (group) {
+        var more = group.count - group.names.length;
+        return this.row('Neighbors', esc(group.names.join(', ')) + (more > 0 ? ' and ' + more + ' more' : '')) +
+            '<tr><td colspan="2" class="text-muted">The map has no room for each of them: they are drawn as one node per switch and kind. ' +
+            'Center the map on the switch or narrow it to a group or location with fewer devices to see them one by one.</td></tr>';
+    };
+
+    /**
+     * Status line note: end devices drawn in groups.
+     */
+    TopologyMap.prototype.groupedStatus = function (grouped) {
+        return '<span class="text-muted" title="Phones, servers and access points are drawn as one node per switch and kind when the map has no room for each.">' +
+            grouped + ' end device' + (grouped === 1 ? '' : 's') + ' in groups</span>';
+    };
+
+    /**
      * Status line under the map: counts, centered device and truncation warning.
      */
     TopologyMap.prototype.updateStatus = function () {
@@ -2058,6 +2077,9 @@
         if (scope.truncated) {
             html += ' &middot; <span class="topo-text-warning"><i class="fa fa-exclamation-triangle"></i> Showing ' + scope.shown + ' of ' + scope.total +
                 ' devices (limit ' + scope.max_nodes + '). Pick a device, group or location to narrow the map.</span>';
+        }
+        if (stats.grouped) {
+            html += ' &middot; ' + this.groupedStatus(stats.grouped);
         }
         if (!this.data.nodes.length) {
             html = '<span class="topo-text-warning">No ' + (this.mode === 'l2' ? 'LLDP/CDP neighbor links' : 'L3 interfaces') + ' found for this scope.</span>';

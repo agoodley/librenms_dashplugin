@@ -7,6 +7,7 @@ use Agoodley\LibrenmsTopology\Data\L3LayerRepository;
 use Agoodley\LibrenmsTopology\Data\LoopEvidenceRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
+use Agoodley\LibrenmsTopology\Redundancy\LeafNeighbors;
 use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
 use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\LoopEvidence;
@@ -53,7 +54,21 @@ class TopologyService
     public function l2(array $p): array
     {
         [$scope, $root] = $this->repo->scope($p);
-        $links = $this->repo->links($scope);
+        // end devices (phones, servers, access points) are only counted at first: when the map has no room for
+        // them they are drawn as one group per device and kind, else their rows are read again below
+        $ends = [];
+        $links = $this->repo->linksWhere($scope, function (array $link) use (&$ends): bool {
+            if (! self::endDeviceNeighbor($link)) {
+                return true;
+            }
+            $group = &$ends[(int) $link['local_device_id']][DeviceRole::fromNeighbor($link['remote_platform'], $link['remote_version'], $link['remote_hostname'])];
+            $group['count'] = ($group['count'] ?? 0) + 1;
+            if (count($group['names'] ?? []) < L2Builder::GROUP_NAMES && $link['remote_hostname'] !== '') {
+                $group['names'][] = (string) $link['remote_hostname'];
+            }
+
+            return false;
+        });
         $ids = L2Builder::scopeDevices($links, $scope, $root, $root ? $p['depth'] : null);
 
         $linked = [];
@@ -63,6 +78,9 @@ class TopologyService
                 $linked[(int) $link['remote_device_id']] = ($linked[(int) $link['remote_device_id']] ?? 0) + 1;
             }
         }
+        foreach ($ends as $deviceId => $groups) {
+            $linked[$deviceId] = ($linked[$deviceId] ?? 0) + array_sum(array_column($groups, 'count'));
+        }
         if (! $root && ! $p['isolated']) {
             $ids = array_values(array_filter($ids, fn ($id) => isset($linked[$id])));
         }
@@ -70,6 +88,17 @@ class TopologyService
         [$ids, $total, $truncated] = $this->limit($ids, $root, $linked);
         $idSet = array_flip($ids);
         $links = array_values(array_filter($links, fn ($l) => isset($idSet[(int) $l['local_device_id']])));
+        $ends = array_intersect_key($ends, $idSet);
+        if ($p['unmanaged'] && $ends) {
+            $nodes = count($ids) + count(array_filter($links, fn ($l) => ! $l['remote_device_id']));
+            foreach ($ends as $groups) {
+                $nodes += array_sum(array_column($groups, 'count'));
+            }
+            if ($nodes <= $this->maxNodes()) {
+                $links = array_merge($links, $this->repo->linksWhere($ids, fn (array $link) => self::endDeviceNeighbor($link)));
+                $ends = [];
+            }
+        }
 
         $linkPorts = [];
         foreach ($links as $link) {
@@ -92,6 +121,7 @@ class TopologyService
             $lag,
             $stp,
             $this->repo->deviceVlans($ids),
+            $ends,
         );
 
         $result = $builder->build([
@@ -208,7 +238,12 @@ class TopologyService
             : $this->singleInstanceIndex($keys, $vlan, $lag);
         unset($keys);
 
-        $links = $this->repo->links($scope);
+        // the neighbours of the analyzed STP ports and of port-channel members (STP runs on the aggregate, LLDP on
+        // its members), and of the other ports unless they are end devices (phones...)
+        $stpPorts = array_flip($index->portIds());
+        $links = $this->repo->linksWhere($scope, fn (array $link) => ! self::endDeviceNeighbor($link)
+            || isset($stpPorts[(int) $link['local_port_id']]) || isset($lag[(int) $link['local_port_id']]));
+        unset($stpPorts);
         $portIds = $index->portIds();
         foreach ($links as $link) {
             $portIds[] = (int) $link['local_port_id'];
@@ -333,7 +368,22 @@ class TopologyService
     public function links(array $p): array
     {
         [$scope, $device] = $this->repo->scope($p);
-        $links = $this->repo->links($scope);
+        // end devices (phones, servers, access points) take part in no link check: LinkAnalyzer only needs to
+        // know that a device reports neighbours, which one row without a port tells for all of them
+        $reporting = [];
+        $links = $this->repo->linksWhere($scope, function (array $link) use (&$reporting): bool {
+            if (! self::endDeviceNeighbor($link)) {
+                return true;
+            }
+            $reporting[(int) $link['local_device_id']] = true;
+
+            return false;
+        });
+        foreach (array_keys($reporting) as $deviceId) {
+            $links[] = ['id' => 0, 'local_device_id' => $deviceId, 'local_port_id' => 0, 'remote_device_id' => 0, 'remote_port_id' => null,
+                'remote_hostname' => '', 'remote_port' => '', 'remote_platform' => '', 'remote_version' => '', 'protocol' => ''];
+        }
+        unset($reporting);
 
         $remote = [];
         $linkPorts = [];
@@ -446,7 +496,17 @@ class TopologyService
     public function redundancyAnalyzer(array $scope, bool $details): RedundancyAnalyzer
     {
         $all = $this->repo->deviceIds();
-        $links = $this->repo->links($all);
+        // baseline links that LLDP/CDP no longer reports are down links of the design
+        $missing = $this->history?->missingBaselineLinks($all) ?? [];
+
+        // not the rows of thousands of phones: only the ports of unmanaged neighbours seen on one port
+        $leafNeighbors = new LeafNeighbors($missing);
+        $links = $this->repo->linksWhere($all, $leafNeighbors->keep(...));
+        if ($leafNeighbors->hasSeveral()) {
+            $links = array_merge($links, $this->repo->linksWhere($all, $leafNeighbors->several(...)));
+        }
+        $leaves = $leafNeighbors->leaves();
+        unset($leafNeighbors);
 
         $linkPorts = [];
         $perDevice = [];
@@ -455,13 +515,17 @@ class TopologyService
             $linkPorts[] = (int) $link['remote_port_id'];
             $perDevice[(int) $link['local_device_id']][(int) $link['local_port_id']] = true;
         }
+        foreach ($leaves as $deviceId => $portIds) {
+            foreach ($portIds as $portId) {
+                $linkPorts[] = $portId;
+                $perDevice[$deviceId][$portId] = true;
+            }
+        }
         $linkPorts = array_values(array_unique(array_filter($linkPorts)));
         $lag = $this->repo->lagParents($all);
         $aggregates = array_values(array_unique(array_intersect_key($lag, array_flip($linkPorts))));
         $ports = $this->repo->ports(array_merge($linkPorts, $aggregates), self::REDUNDANCY_PORT_COLUMNS);
 
-        // baseline links that LLDP/CDP no longer reports are down links of the design
-        $missing = $this->history?->missingBaselineLinks($all) ?? [];
         if ($missing) {
             $links = array_merge($links, $missing);
             $ports += $this->repo->ports(array_diff(array_merge(array_column($missing, 'local_port_id'), array_column($missing, 'remote_port_id')), array_keys($ports)), self::REDUNDANCY_PORT_COLUMNS);
@@ -479,7 +543,7 @@ class TopologyService
             $outageStarts = $this->repo->outageStarts(array_keys(array_filter($devices, fn ($d) => empty($d['status']))));
         }
 
-        return new RedundancyAnalyzer($devices, $scope, $links, $ports, $lag, $this->settings, $entityUnits, $outageStarts, $this->repo->stpPriorities($all));
+        return new RedundancyAnalyzer($devices, $scope, $links, $ports, $lag, $this->settings, $entityUnits, $outageStarts, $this->repo->stpPriorities($all), $leaves);
     }
 
     /**
@@ -570,6 +634,16 @@ class TopologyService
 
         return StpIndex::partial($keys['keys'], $this->repo->stpInstancesFor($selected), $this->repo->stpPorts(array_keys($selected), $selected),
             $lag, $keys['bridges']);
+    }
+
+    /**
+     * Is the links row an LLDP/CDP neighbour that is not monitored (or not visible) and an end device
+     * (phone, server, access point), by its platform or system description?
+     */
+    private static function endDeviceNeighbor(array $link): bool
+    {
+        return empty($link['remote_device_id'])
+            && DeviceRole::isEndDevice(DeviceRole::fromNeighbor($link['remote_platform'] ?? '', $link['remote_version'] ?? '', $link['remote_hostname'] ?? ''));
     }
 
     /**

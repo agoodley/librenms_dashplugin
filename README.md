@@ -501,7 +501,9 @@ To remove the plugin and its tables:
 ## Usage tips
 
 * **Center on a device** and pick the number of hops for large networks (the map is capped at *Maximum devices*,
-  default 400). Double-click any device to re-center on it.
+  default 400). Double-click any device to re-center on it. When the devices and their unmanaged neighbors are more
+  than that, the phones, servers and access points of each switch are drawn as one node per kind ("20 phones");
+  centered on a switch with few hops, they are drawn one by one again.
 * Pick a **VLAN** on the L2 map to see which switches/trunks carry it and that VLAN's spanning tree
   (root bridge, port roles, blocked ports). Domain rows and findings on the STP page link straight to that view.
 * Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope).
@@ -655,6 +657,11 @@ vendor/bin/phpunit
 
 ## Limitations
 
+* The pages of the whole network fit in PHP's default 128 MB on 1,242 switches with 23,000 phones and 50 PVST VLANs
+  (largest: redundancy 102 MB, links 86 MB, spanning tree 84 MB, L2 map 66 MB); a page also raises PHP's memory limit to
+  LibreNMS' `php_memory_limit`, or 256 MB when it is not set. Above 3,000 spanning tree instances or 40,000 STP port
+  rows the STP page analyzes one VLAN at a time (VLAN 1 / CST until another is picked); the background check covers
+  every VLAN. One VLAN of a very large PVST network with STP rows for every port can still need more.
 * The site map knows the links between monitored devices. Unmanaged neighbors, devices the user may not see and OSPF
   neighbors LibreNMS does not monitor are left out (their location is unknown), as are sessions to devices outside a
   device group filter; BGP peers LibreNMS does not monitor are grouped by AS, so two providers in the same AS are one
