@@ -311,6 +311,26 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
+     * Forget facts the history no longer records (links to phones, FactCollector::links()): all
+     * their periods and their baseline entries, as if they had never been recorded, so no change is
+     * reported and the baseline does not miss them.
+     *
+     * @param  int[]  $ids  their open periods
+     */
+    public function dropFacts(array $ids): int
+    {
+        foreach (array_chunk($ids, self::CHUNK) as $chunk) {
+            $hashes = DB::table('topology_facts')->whereIntegerInRaw('id', $chunk)->pluck('hash')->all();
+            $this->transaction(function () use ($hashes): void {
+                DB::table('topology_facts')->whereIn('hash', $hashes)->delete();
+                DB::table('topology_baseline')->whereIn('hash', $hashes)->delete();
+            });
+        }
+
+        return count($ids);
+    }
+
+    /**
      * New details (names, platform) of facts that are still there.
      *
      * @param  array<int, array>  $facts  id => fact

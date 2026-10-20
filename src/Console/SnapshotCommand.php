@@ -30,8 +30,9 @@ class SnapshotCommand extends HistoryCommand
         // a run that finds the other one still running skips (a warning, no failure)
         $done = $this->locked('snapshot', function () use ($service): void {
             $stats = $service->snapshot();
-            $this->info(sprintf('Topology snapshot of %d devices: %d facts, %d new, %d gone, %d updated, %d old rows pruned (%.2f s).',
-                $stats['devices'], $stats['facts'], $stats['added'], $stats['removed'], $stats['updated'], $stats['pruned'], $stats['seconds']));
+            $this->info(sprintf('Topology snapshot of %d devices: %d facts, %d new, %d gone, %d updated, %d old rows pruned%s (%.2f s).',
+                $stats['devices'], $stats['facts'], $stats['added'], $stats['removed'], $stats['updated'], $stats['pruned'],
+                isset($stats['dropped']) ? sprintf(', %d links to phones no longer recorded', $stats['dropped']) : '', $stats['seconds']));
 
             if ($this->option('baseline')) {
                 $saved = $service->saveBaseline(['device' => null, 'group' => null, 'location' => null], 'lnms topology:snapshot');

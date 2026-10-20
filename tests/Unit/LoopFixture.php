@@ -74,12 +74,12 @@ class LoopFixture
     }
 
     /**
-     * An LLDP/CDP neighbour LibreNMS does not monitor.
+     * An LLDP/CDP neighbour LibreNMS does not monitor ($description: the LLDP system description).
      */
-    public function neighbor(int $deviceId, string $port, string $host, string $platform = ''): self
+    public function neighbor(int $deviceId, string $port, string $host, string $platform = '', string $description = ''): self
     {
         $portId = $this->port($deviceId, $port);
-        $this->links[] = self::row($deviceId, $portId, 0, null, $host, 'eth0', $platform);
+        $this->links[] = self::row($deviceId, $portId, 0, null, $host, 'eth0', $platform) + ['remote_version' => $description];
 
         return $this;
     }

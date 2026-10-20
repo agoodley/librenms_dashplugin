@@ -45,25 +45,27 @@ class FactCollector
 
     /**
      * Facts of the LLDP/CDP links (unmanaged neighbors included, phones left out), de-duplicated
-     * as on the L2 map.
+     * as on the L2 map. A neighbor's role is read as on the L2 map, from its CDP platform or LLDP
+     * system description (DeviceRole::fromNeighbor()).
      *
      * @param  array<int, array>  $links  links table rows (see TopologyRepository::links())
+     * @param  string[]|null  $phones  set to the hashes the links to phones would have: a fact recorded before its
+     *                                 neighbor was known as a phone is dropped without a "gone" (FactDiff)
      * @return array<string, array> hash => fact
      */
-    public function links(array $links): array
+    public function links(array $links, ?array &$phones = null): array
     {
         $facts = [];
+        $phones = [];
         foreach (L2Builder::uniqueLinks($links, $this->deviceNames, $this->ports) as $link) {
             $a = $this->monitoredEnd((int) $link['a_device'], $link['a_port'] ? (int) $link['a_port'] : null, '');
+            $role = null;
             if ($link['b_device']) {
                 // the name its neighbor's LLDP/CDP reports stands in for it where the user may not see it
                 $b = $this->monitoredEnd((int) $link['b_device'], $link['b_port'] ? (int) $link['b_port'] : null, (string) $link['b_name'])
                     + ['host' => mb_substr((string) $link['b_host'], 0, 120)];
             } else {
-                $role = DeviceRole::fromPlatform($link['b_platform'], $link['b_host']);
-                if ($role === DeviceRole::PHONE) {
-                    continue; // end devices that move all day: no topology change, and tens of thousands of them
-                }
+                $role = DeviceRole::fromNeighbor($link['b_platform'], $link['b_version'], $link['b_host']);
                 $node = L2Builder::unmanagedNodeId($link);
                 $b = [
                     'key' => $node . ':' . InterfaceName::normalize($link['b_name']),
@@ -84,6 +86,10 @@ class FactCollector
             }
 
             $key = $a['key'] . '|' . $b['key'];
+            if ($role === DeviceRole::PHONE) {
+                $phones[] = self::hash(self::LINK, $key); // end devices that move all day: no topology change, and tens of thousands of them
+                continue;
+            }
             $data = ['a' => self::endData($a), 'b' => self::endData($b)];
             $facts += self::fact(self::LINK, $key, $a['device'] ?? $b['device'], $a['device'] !== null ? $b['device'] : null, $data);
         }

@@ -121,7 +121,8 @@ blocked ports with their neighbor across the link, every bridge instance and rec
 report it): the broadcast and multicast rates of the inter-switch links at the last poll, storms first, compared with
 the unicast traffic and the link speed; and the loop related messages the switches sent to LibreNMS' syslog in the last
 24 hours, grouped by device and check, with the ports, MAC addresses and VLANs they name and a link to those messages.
-Links to phones, access points and servers are not inter-switch links. The syslog checks recognize the messages of
+Links to phones, access points and servers are not inter-switch links (an unmanaged neighbor is typed as on the L2 map,
+from its CDP platform or LLDP system description). The syslog checks recognize the messages of
 Cisco IOS / IOS-XE / NX-OS, Arista EOS, Junos and ProCurve / ArubaOS-Switch; each pattern is a setting, so other vendors
 can be added. A message counts for the first check that matches it, so a port err-disabled by BPDU guard is a BPDU guard
 finding (and with `bpdu_guard` in the disabled checks, those messages are left out rather than reported as err-disable).
@@ -749,7 +750,10 @@ vendor/bin/phpunit
 * The topology history sees what LibreNMS saw at each snapshot: LLDP/CDP neighbors are refreshed at discovery (every 6
   hours by default), spanning tree, OSPF and BGP at polling. A change shows up at the first snapshot after LibreNMS
   noticed it, and a change undone in between is not seen. Phones are left out (they move all day), and devices disabled
-  in LibreNMS keep their last state.
+  in LibreNMS keep their last state. Unmanaged neighbors are typed as on the L2 map, from their CDP platform or LLDP
+  system description: a link recorded while its neighbor was not known as a phone (before it sent its description, or
+  before this plugin version) is dropped from the history and the baseline at the snapshot that types it as one, as if
+  it had never been recorded, without a "Link gone".
 * The snapshot and each background check run over the whole network, one after the other, each in its own process with
   LibreNMS' `php_memory_limit` (512 MB when it is not set). For 1,242 switches with 23,000 phones and 50 PVST VLANs:
   snapshot 1 s and 115 MB, spanning tree check with loop evidence 5 s and 250 MB (one VLAN at a time), link check 1 s and
