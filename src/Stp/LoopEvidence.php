@@ -263,7 +263,7 @@ class LoopEvidence
             $remote = (int) ($link['remote_device_id'] ?? 0);
             $role = isset($devices[$remote])
                 ? ($devices[$remote]['role'] ?? DeviceRole::UNKNOWN)
-                : DeviceRole::fromPlatform($link['remote_platform'] ?? '', $link['remote_hostname'] ?? '');
+                : DeviceRole::fromNeighbor($link['remote_platform'] ?? '', $link['remote_version'] ?? '', $link['remote_hostname'] ?? '');
             if (in_array($role, $ends, true)) {
                 continue;
             }

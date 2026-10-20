@@ -68,7 +68,8 @@ class TopologyServiceProvider extends ServiceProvider
      * The history snapshot, then the background checks, every *History interval* minutes while the
      * plugin and its history are enabled (LibreNMS runs `artisan schedule:run` every minute; see
      * History\Jobs). The output goes to topology-snapshot.log in the LibreNMS log directory, a
-     * failure to the eventlog.
+     * failure to the eventlog. While a run is still going the next intervals are skipped, also on
+     * other servers, for at most as long as the longest run takes (Jobs::LOCK_SECONDS).
      */
     private function schedule(Schedule $schedule, PluginManagerInterface $pluginManager): void
     {
@@ -79,7 +80,7 @@ class TopologyServiceProvider extends ServiceProvider
             $schedule->command($name, $parameters)
                 ->cron($cron)
                 ->when($enabled)
-                ->withoutOverlapping(180)
+                ->withoutOverlapping(intdiv(Jobs::LOCK_SECONDS, 60))
                 ->onOneServer()
                 ->runInBackground()
                 ->appendOutputTo($log)

@@ -176,7 +176,8 @@ blocked ports with their neighbor across the link, every bridge instance and rec
 report it): the broadcast and multicast rates of the inter-switch links at the last poll, storms first, compared with
 the unicast traffic and the link speed; and the loop related messages the switches sent to LibreNMS' syslog in the last
 24 hours, grouped by device and check, with the ports, MAC addresses and VLANs they name and a link to those messages.
-Links to phones, access points and servers are not inter-switch links. The syslog checks recognize the messages of
+Links to phones, access points and servers are not inter-switch links (an unmanaged neighbor is typed as on the L2 map,
+from its CDP platform or LLDP system description). The syslog checks recognize the messages of
 Cisco IOS / IOS-XE / NX-OS, Arista EOS, Junos and ProCurve / ArubaOS-Switch; each pattern is a setting, so other vendors
 can be added. A message counts for the first check that matches it, so a port err-disabled by BPDU guard is a BPDU guard
 finding (and with `bpdu_guard` in the disabled checks, those messages are left out rather than reported as err-disable).
@@ -454,9 +455,9 @@ old and new root bridge with the VLANs of all their switches ("VLANs 10-29: root
 switches"; when the switches differ, with the switches of each VLAN: "VLAN 31 on 1,242 switches, VLAN 33 on 1 switch").
 **Accept** takes one missing item out of the baseline when it is gone on purpose, or makes a root bridge change the
 expected one on all its switches, each for its own VLANs (two admins accepting overlapping changes at once take turns).
-The redundancy page uses it too: a baseline link that LLDP/CDP no longer reports counts as a down link, so a lost uplink
-is still reported after LibreNMS deleted its neighbor at the next discovery (a port that now has another cable is a
-moved cable, not a lost path).
+The redundancy page, the rollout planner and the device dependencies use it too: a baseline link that LLDP/CDP no longer
+reports counts as a down link, so a lost uplink is still reported after LibreNMS deleted its neighbor at the next
+discovery (a port that now has another cable is a moved cable, not a lost path).
 
 After each snapshot the **background checks** run the spanning tree (one VLAN at a time, with the loop evidence of
 storms and syslog messages), link, redundancy and routing & IP checks over all devices, one after the other and each in
@@ -536,15 +537,18 @@ the plugin update them). The history is recorded by the LibreNMS scheduler, whic
 (`librenms-scheduler` timer or cron, see `./validate.php`): `topology:snapshot` every *History interval*, which records
 the snapshot and then runs `topology:checks stp|links|redundancy|routing` one after the other, each in a process of its
 own; the output goes to `logs/topology-snapshot.log`, a failure to the eventlog. `./lnms topology:snapshot` does the
-same now.
+same now. With several pollers (distributed polling) it runs on one of them at a time: the snapshot and each check
+take a lock in LibreNMS' cache (the database, unless `CACHE_STORE` or `CACHE_DRIVER` in `.env` names a store all
+pollers share, as distributed polling needs), so a run, scheduled or manual, skips while another one holds it.
 
 `./validate.php` then warns that the database schema "has extra migrations
 (2026_10_20_000000_create_topology_history_tables, 2026_10_20_100000_create_topology_custom_maps_table,
-2026_10_20_100100_create_topology_views_table, 2026_10_21_000000_add_finding_subjects_to_topology_history)" and is
-"between releases": those are the plugin's migrations, and the warning stays while the plugin is installed. While it
-warns, validate.php skips its checks of LibreNMS' own schema (structure and collation). **Do not delete the plugin's
-rows from the `migrations` table** to silence it: validate.php then lists the `topology_*` tables as extra tables and
-offers to drop them. **Never apply that fix**: it deletes the history, the baseline and the saved views.
+2026_10_20_100100_create_topology_views_table, 2026_10_21_000000_add_finding_subjects_to_topology_history,
+2026_10_22_000000_widen_topology_finding_devices)" (in the order they were applied) and is "between releases": those
+are the plugin's migrations, and the warning stays while the plugin is installed. While it warns, validate.php skips its
+checks of LibreNMS' own schema (structure and collation). **Do not delete the plugin's rows from the `migrations` table**
+to silence it: validate.php then lists the `topology_*` tables as extra tables and offers to drop them. **Never apply
+that fix**: it deletes the history, the baseline and the saved views.
 
 To remove the plugin and its tables:
 
@@ -820,9 +824,10 @@ vendor/bin/phpunit
   when none of them has a current one. Whether a session is on a switch behind the one a trail ends at follows the
   LLDP/CDP links of each device once per search, by indexed lookups (the links a device reports, and those reported to
   its ports: a link without a known far port is missed).
-* The rollout planner and the device dependencies follow the same LLDP/CDP links: devices without neighbor data get no
-  parents and are left out of rollout plans. Whether devices back each other up is decided strictly (a part without
-  its core devices counts as cut off as a whole), so the core devices of a part never share a batch.
+* The rollout planner and the device dependencies follow the same LLDP/CDP links, and the baseline links LLDP/CDP no
+  longer reports: devices without neighbor data get no parents and are left out of rollout plans. Whether devices back
+  each other up is decided strictly (a part without its core devices counts as cut off as a whole), so the core devices
+  of a part never share a batch.
 * Derived parents never form a loop, so of two switches at the same distance from the core only one can depend on the
   other, and in a mesh a device can keep a path through switches farther from the core while all its parents are down:
   LibreNMS then suppresses its alerts although it may still be reachable. LibreNMS parents must be monitored devices,
@@ -830,14 +835,21 @@ vendor/bin/phpunit
 * The topology history sees what LibreNMS saw at each snapshot: LLDP/CDP neighbors are refreshed at discovery (every 6
   hours by default), spanning tree, OSPF and BGP at polling. A change shows up at the first snapshot after LibreNMS
   noticed it, and a change undone in between is not seen. Phones are left out (they move all day), and devices disabled
-  in LibreNMS keep their last state.
+  in LibreNMS keep their last state. Unmanaged neighbors are typed as on the L2 map, from their CDP platform or LLDP
+  system description: a link recorded while its neighbor was not known as a phone (before it sent its description, or
+  before this plugin version) is dropped from the history and the baseline at the snapshot that types it as one, as if
+  it had never been recorded, without a "Link gone".
 * The snapshot and each background check run over the whole network, one after the other, each in its own process with
   LibreNMS' `php_memory_limit` (512 MB when it is not set). For 1,242 switches with 23,000 phones and 50 PVST VLANs:
   snapshot 1 s and 115 MB, spanning tree check with loop evidence 5 s and 250 MB (one VLAN at a time), link check 1 s and
   160 MB, redundancy check 1 s and 125 MB, the Changes page 0.4 s and 72 MB. For 2,000 routers with 50,000 addresses,
   8,000 OSPF adjacencies and 8,000 BGP sessions: snapshot 1.3 s and 80 MB, routing & IP check 1.3 s and 107 MB (with 1,800
   findings). A check that fails or takes more than an hour is logged in `topology-snapshot.log` and the eventlog, and the
-  others still run.
+  others still run. A lock lasts as long as the longest run could (5 hours 10 minutes: the snapshot and four checks of
+  up to an hour) unless its run releases it, which it does when it ends, also on a fatal error such as running out of
+  memory; `topology:snapshot` releases the lock of a check it stopped or that was killed. A run killed outright
+  otherwise (`kill -9` of `topology:snapshot` or of a manual run) keeps its lock until it expires, as the scheduler's
+  own overlap lock does.
 * A finding that gets milder stays open at the highest severity it reached until it is gone (a duplicate address the
   routing check takes for two separate networks while an OSPF adjacency between them is down stays a warning). A new
   finding goes on for a gone one only when it is about all the devices of the gone one or about a part of them (the
@@ -847,6 +859,8 @@ vendor/bin/phpunit
   on several devices names none of them.
 * The routing & IP check of the background reads its tables strictly: a table that cannot be read, or only in part,
   fails the run (logged, and nothing of the findings history changes), where the routing page shows what could be read.
+  A background check that cannot store its findings history fails the same way: it writes it in one transaction, and
+  its eventlog entries after it. The device list of a finding holds up to 16 MB (an outage of 2 million devices).
 * The redundancy analysis compares the baseline with the last snapshot, and only while that is less than a day old.
 * `./validate.php` warns about the plugin's migrations while the plugin is installed and then skips its checks of
   LibreNMS' own schema (see [Installation](#installation)).

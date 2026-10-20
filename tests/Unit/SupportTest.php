@@ -114,11 +114,11 @@ class SupportTest extends TestCase
         $this->assertSame(DeviceRole::SWITCH, DeviceRole::classify(['type' => 'network'], ['vlans' => 20, 'l3_interfaces' => 1]));
         $this->assertSame(DeviceRole::ROUTER, DeviceRole::classify(['type' => 'network', 'os' => 'iosxr']));
         $this->assertSame(DeviceRole::ROUTER, DeviceRole::classify(['type' => 'network'], ['l3_interfaces' => 4]));
-        $this->assertSame(DeviceRole::PHONE, DeviceRole::fromPlatform('Cisco IP Phone 8845'));
-        $this->assertSame(DeviceRole::WIRELESS, DeviceRole::fromPlatform('cisco AIR-AP2802I-E-K9'));
-        $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromPlatform('cisco WS-C2960X-48FPD-L'));
-        $this->assertSame(DeviceRole::SERVER, DeviceRole::fromPlatform('VMware ESX'));
-        $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromPlatform(''));
+        $this->assertSame(DeviceRole::PHONE, DeviceRole::fromNeighbor('Cisco IP Phone 8845', null));
+        $this->assertSame(DeviceRole::WIRELESS, DeviceRole::fromNeighbor('cisco AIR-AP2802I-E-K9', null));
+        $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor('cisco WS-C2960X-48FPD-L', null));
+        $this->assertSame(DeviceRole::SERVER, DeviceRole::fromNeighbor('VMware ESX', null));
+        $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromNeighbor('', null));
     }
 
     public function testRolesOfLldpNeighborsComeFromTheirSystemDescription(): void

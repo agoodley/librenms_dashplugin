@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsTopology\Topology;
 
 use Agoodley\LibrenmsTopology\Data\DependencyRepository;
+use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Redundancy\CoreAdvice;
 use Agoodley\LibrenmsTopology\Redundancy\DependencyPlanner;
@@ -297,11 +298,13 @@ class PlanningService
     }
 
     /**
-     * The redundancy analysis of every device the user may see, built once per request.
+     * The redundancy analysis of every device the user may see, built once per request; with the
+     * baseline links that LLDP/CDP no longer reports, as on the redundancy page.
      */
     private function analyzer(): RedundancyAnalyzer
     {
-        return $this->analyzer ??= (new TopologyService($this->repo, $this->settings))->redundancyAnalyzer($this->repo->deviceIds(), false);
+        return $this->analyzer ??= (new TopologyService($this->repo, $this->settings, $this->repo->sibling(HistoryRepository::class)))
+            ->redundancyAnalyzer($this->repo->deviceIds(), false);
     }
 
     /**

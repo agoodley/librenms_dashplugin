@@ -47,8 +47,10 @@ class HistoryService
 
     /**
      * Record the topology as it is now: insert new facts, close the facts that are gone, update
-     * changed details; nothing is written for facts that did not change. Then forget what ended
-     * before the retention period.
+     * changed details; nothing is written for facts that did not change. A link recorded before its
+     * neighbor was known as a phone is dropped from the history quietly, as if it had never been
+     * recorded (its neighbor's role is all that changed). Then forget what ended before the
+     * retention period.
      *
      * @return array<string, int|float> counts for the command output and the run record
      */
@@ -63,18 +65,24 @@ class HistoryService
         $ids = $topology->deviceIds();
         $stats = ['devices' => count($ids), 'facts' => 0, 'added' => 0, 'removed' => 0, 'updated' => 0];
         $recorded = [];
+        $leftOut = [];
         $skipped = function (string $kind, \Throwable $e) use (&$stats): void {
             Log::error("topology plugin: snapshot of $kind skipped: " . $e->getMessage());
             $stats['skipped'][] = $kind;
         };
-        foreach (Jobs::read($this->sources($topology, $ids), $skipped) as $kind => $current) {
+        foreach (Jobs::read($this->sources($topology, $ids, $leftOut), $skipped) as $kind => $current) {
             // spanning tree facts keep their VLANs in the data: a change of them is a new period the Changes page can compare
-            $diff = FactDiff::diff($this->history->openFacts($kind), $current, in_array($kind, [FactCollector::STP_ROOT, FactCollector::STP_BLOCKED], true));
+            $diff = FactDiff::diff($this->history->openFacts($kind), $current, in_array($kind, [FactCollector::STP_ROOT, FactCollector::STP_BLOCKED], true),
+                $leftOut[$kind] ?? []);
+            unset($leftOut[$kind]);
             $stats['facts'] += count($current);
             // what the first snapshot of a kind finds existed before the history: no change
             $stats['added'] += $this->history->insertFacts($diff['insert'], $started, Runs::initial($previous['stats'] ?? null, $kind));
             $stats['removed'] += $this->history->closeFacts($diff['remove'], $started);
             $stats['updated'] += $this->history->updateFacts($diff['update']);
+            if ($diff['drop']) {
+                $stats['dropped'] = ($stats['dropped'] ?? 0) + $this->history->dropFacts($diff['drop']);
+            }
             $recorded[] = $kind;
         }
         $stats['pruned'] = $this->history->prune($started->copy()->subDays($this->settings->int('history_retention_days', 1, 3650)));
@@ -102,7 +110,9 @@ class HistoryService
      * Run one background check and record its findings history; a device gets an eventlog entry
      * when it gets its first confirmed finding of the check or loses its last one (see
      * FindingHistory), from the eventlog severity setting on and except the skipped checks. Each
-     * analysis keeps its own runs (type = analysis).
+     * analysis keeps its own runs (type = analysis). A run that cannot read the network or store
+     * its findings history (one transaction) leaves the history and the eventlog as they were, and
+     * one whose eventlog entries cannot be written stops there: both are recorded as errors.
      *
      * @param  callable(string, int|null, string, string): void|null  $eventlog  writer (message, device_id, severity,
      *                                                                           reference); default: LibreNMS eventlog
@@ -116,32 +126,32 @@ class HistoryService
         $params = MapParams::parse([], $this->settings);
         try {
             $findings = $this->findings($analysis, $params);
+
+            // the first successful run records what is there already: only later changes are news
+            $initial = Runs::initial($previous['stats'] ?? null, $analysis);
+            $open = $this->history->openFindings($analysis);
+            $devices = [];
+            foreach ([$open, $findings] as $list) {
+                foreach ($list as $finding) {
+                    foreach ($finding['devices'] ?? [] as $device) {
+                        $devices[(int) $device] = true;
+                    }
+                }
+            }
+            // the names their titles use tell which devices a finding is about
+            $changes = FindingHistory::run($analysis, $open, $findings, $started->toDateTimeString(), $initial, $this->history->names(array_keys($devices)));
+            $this->history->transaction(fn () => $this->history->applyFindings($analysis, $changes, $started, $initial));
+            $entries = $initial ? [] : FindingHistory::eventlog($analysis, $changes['before'], $changes['after'],
+                strtolower($this->settings->all()['history_eventlog_severity'] ?? 'warning'), FindingHistory::skipList($this->settings->all()['history_eventlog_skip'] ?? ''));
+            $eventlog ??= self::eventlog(...);
+            foreach ($entries as $entry) {
+                $eventlog($entry['message'], $entry['device_id'], $entry['severity'], $entry['reference']);
+            }
         } catch (\Throwable $e) {
             Log::error("topology plugin: background $analysis check failed: " . $e->getMessage());
             $this->history->finishRun($run, ['error' => 1, 'recorded' => Runs::record($previous['stats'] ?? null, [])], Carbon::now());
 
             return ['error' => 1];
-        }
-
-        // the first successful run records what is there already: only later changes are news
-        $initial = Runs::initial($previous['stats'] ?? null, $analysis);
-        $open = $this->history->openFindings($analysis);
-        $devices = [];
-        foreach ([$open, $findings] as $list) {
-            foreach ($list as $finding) {
-                foreach ($finding['devices'] ?? [] as $device) {
-                    $devices[(int) $device] = true;
-                }
-            }
-        }
-        // the names their titles use tell which devices a finding is about
-        $changes = FindingHistory::run($analysis, $open, $findings, $started->toDateTimeString(), $initial, $this->history->names(array_keys($devices)));
-        $this->history->applyFindings($analysis, $changes, $started, $initial);
-        $entries = $initial ? [] : FindingHistory::eventlog($analysis, $changes['before'], $changes['after'],
-            strtolower($this->settings->all()['history_eventlog_severity'] ?? 'warning'), FindingHistory::skipList($this->settings->all()['history_eventlog_skip'] ?? ''));
-        $eventlog ??= self::eventlog(...);
-        foreach ($entries as $entry) {
-            $eventlog($entry['message'], $entry['device_id'], $entry['severity'], $entry['reference']);
         }
 
         $stats = ['findings' => count($findings), 'new' => count($changes['insert']), 'confirmed' => count($changes['confirm']),
@@ -344,19 +354,22 @@ class HistoryService
      * large network is read a kind at a time and a kind that cannot be read is skipped alone.
      *
      * @param  int[]  $ids
+     * @param  array<string, string[]>  $leftOut  set by a reader to the hashes of what it no longer records (FactDiff)
      * @return array<string, callable(): array<string, array>> kind => reader (hash => fact)
      */
-    private function sources(TopologyRepository $topology, array $ids): array
+    private function sources(TopologyRepository $topology, array $ids, array &$leftOut): array
     {
         $names = $this->history->names($ids);
         $hostNames = $this->history->hostNames($ids);
         $collector = fn (array $portIds) => new FactCollector($names, $topology->ports($portIds, self::PORT_COLUMNS), $hostNames);
 
         return [
-            FactCollector::LINK => function () use ($topology, $ids, $collector) {
+            FactCollector::LINK => function () use ($topology, $ids, $collector, &$leftOut) {
                 $links = $topology->links($ids);
+                $facts = $collector(array_merge(array_column($links, 'local_port_id'), array_column($links, 'remote_port_id')))->links($links, $phones);
+                $leftOut[FactCollector::LINK] = $phones;
 
-                return $collector(array_merge(array_column($links, 'local_port_id'), array_column($links, 'remote_port_id')))->links($links);
+                return $facts;
             },
             FactCollector::LAG => function () use ($topology, $ids, $collector) {
                 $lag = $topology->lagParents($ids, true);

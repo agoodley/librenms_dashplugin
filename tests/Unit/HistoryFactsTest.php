@@ -215,8 +215,8 @@ class HistoryFactsTest extends TestCase
         $hash = array_key_first($now);
         $open = [['id' => 7, 'hash' => $hash, 'data_hash' => md5('vlans 0 only')]];
 
-        $this->assertSame(['insert' => [], 'remove' => [], 'update' => [7 => $now[$hash]]], FactDiff::diff($open, $now));
-        $this->assertSame(['insert' => $now, 'remove' => [7], 'update' => []], FactDiff::diff($open, $now, true));
+        $this->assertSame(['insert' => [], 'remove' => [], 'update' => [7 => $now[$hash]], 'drop' => []], FactDiff::diff($open, $now));
+        $this->assertSame(['insert' => $now, 'remove' => [7], 'update' => [], 'drop' => []], FactDiff::diff($open, $now, true));
     }
 
     public function testSnapshotWritesOnlyChanges(): void
@@ -237,9 +237,33 @@ class HistoryFactsTest extends TestCase
         $this->assertSame([$hashes[2]], array_keys($diff['insert']));
         $this->assertSame([3, 4], $diff['remove']);
         $this->assertSame([2], array_keys($diff['update']));
-        $this->assertSame(['insert' => [], 'remove' => [], 'update' => []], FactDiff::diff([
+        $this->assertSame(['insert' => [], 'remove' => [], 'update' => [], 'drop' => []], FactDiff::diff([
             ['id' => 1, 'hash' => $hashes[0], 'data_hash' => $current[$hashes[0]]['data_hash']],
         ], [$hashes[0] => $current[$hashes[0]]]));
+    }
+
+    public function testNeighborsAreTypedFromTheirLldpSystemDescription(): void
+    {
+        $collector = new FactCollector(self::NAMES, self::ports());
+        $lldp = fn (int $port, string $host, string $description) => ['local_device_id' => 3, 'local_port_id' => $port, 'remote_device_id' => 0,
+            'remote_port_id' => null, 'remote_hostname' => $host, 'remote_port' => 'Port 1', 'remote_platform' => '', 'remote_version' => $description,
+            'protocol' => 'lldp'];
+        $links = [
+            $lldp(31, 'bldg2-idf3', 'Juniper Networks, Inc. ex2300-48p Ethernet Switch, kernel JUNOS 21.4R3-S4'),
+            $lldp(32, 'vvx450-3f', 'Polycom;VVX-VVX_450;3111-48450-001,9;SIP/6.4.3.5113/04-Jan-22 13:24;UP/6.4.3.5113/04-Jan-22 13:24;'),
+            $lldp(33, 'srv-db-1', 'Linux srv-db-1 5.15.0-91-generic #101-Ubuntu SMP x86_64'),
+        ];
+
+        $facts = $collector->links($links, $phones);
+
+        $this->assertSame([['bldg2-idf3', 'switch'], ['srv-db-1', 'server']], array_map(fn ($f) => [$f['data']['b']['name'], $f['data']['b']['role']], array_values($facts)),
+            'an LLDP-only switch is a switch, the phone is left out');
+        $this->assertCount(1, $phones);
+
+        // the phone's link was recorded before its neighbor was known as a phone: it leaves the history without a "gone"
+        $open = [['id' => 9, 'hash' => $phones[0], 'data_hash' => 'unknown role'], ['id' => 10, 'hash' => sha1('a cable pulled'), 'data_hash' => 'x']];
+        $diff = FactDiff::diff($open, $facts, false, $phones);
+        $this->assertSame([[9], [10]], [$diff['drop'], $diff['remove']]);
     }
 
     public function testScheduleInterval(): void
