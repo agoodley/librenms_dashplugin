@@ -20,11 +20,17 @@ class SiteController extends Controller
 {
     use BuildsTopology;
 
+    /**
+     * plugin/topology/sites: the map page.
+     */
     public function show(Request $request): View
     {
         return $this->page($request, 'map', 'site map', fn () => null, ['mode' => 'sites']);
     }
 
+    /**
+     * plugin/topology/api/sites: sites, site links and AS clouds (SiteService::sites()).
+     */
     public function api(Request $request): JsonResponse
     {
         $settings = $this->settings();

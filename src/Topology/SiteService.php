@@ -26,10 +26,12 @@ class SiteService
      */
     public function sites(array $p): array
     {
-        $devices = $this->sites->devices($this->sites->deviceIds($p['group']));
-        // the roles the maps show (bridging and routing facts), not only the device type
-        foreach ($this->repo->devices(array_keys($devices)) as $id => $device) {
-            $devices[$id]['role'] = $device['role'];
+        $ids = $this->sites->deviceIds($p['group']);
+        $devices = $this->repo->devices($ids);
+        foreach ($this->sites->locations($ids) as $id => $location) {
+            if (isset($devices[$id])) {
+                $devices[$id] = $location + $devices[$id];
+            }
         }
         $ids = array_keys($devices);
         $connections = new SiteConnections($devices);

@@ -2,7 +2,6 @@
 
 namespace Agoodley\LibrenmsTopology\Data;
 
-use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -15,37 +14,29 @@ class SiteRepository extends ScopedRepository
     private const CHUNK = 5000;
 
     /**
-     * Devices with their location (the site they belong to). The role comes from the device type
-     * only: the site map counts devices, it does not draw them.
+     * Location (the site) of each device: id, name and coordinates. A device whose location row is
+     * gone has none.
      *
      * @param  int[]  $ids  devices the user may see
-     * @return array<int, array> device_id => row: display, hostname, status, role, url, bgpLocalAs, location_id,
-     *                           location, lat, lng
+     * @return array<int, array{location_id: int|null, location: string|null, lat: mixed, lng: mixed}> device_id => location
      */
-    public function devices(array $ids): array
+    public function locations(array $ids): array
     {
-        $devices = [];
+        $locations = [];
         foreach (array_chunk(array_values(array_unique($ids)), self::CHUNK) as $chunk) {
-            $rows = DB::table('devices')
-                ->leftJoin('locations', 'devices.location_id', '=', 'locations.id')
+            foreach (DB::table('devices')->leftJoin('locations', 'devices.location_id', '=', 'locations.id')
                 ->whereIntegerInRaw('devices.device_id', $chunk)
-                ->get([
-                    'devices.device_id', 'devices.hostname', 'devices.sysName', 'devices.display', 'devices.hardware',
-                    'devices.os', 'devices.type', 'devices.status', 'devices.disabled', 'devices.ignore', 'devices.bgpLocalAs',
-                    'devices.location_id', 'locations.location as location', 'locations.lat', 'locations.lng',
-                ]);
-            foreach ($rows as $row) {
-                $row = (array) $row;
-                $id = (int) $row['device_id'];
-                // a location row can be gone while devices still point at it
-                $row['location_id'] = $row['location'] !== null && $row['location_id'] ? (int) $row['location_id'] : null;
-                $row['role'] = DeviceRole::classify($row);
-                $row['url'] = url('device/' . $id);
-                $devices[$id] = $row;
+                ->get(['devices.device_id', 'locations.id as location_id', 'locations.location', 'locations.lat', 'locations.lng']) as $row) {
+                $locations[(int) $row->device_id] = [
+                    'location_id' => $row->location_id !== null ? (int) $row->location_id : null,
+                    'location' => $row->location,
+                    'lat' => $row->lat,
+                    'lng' => $row->lng,
+                ];
             }
         }
 
-        return $devices;
+        return $locations;
     }
 
     /**

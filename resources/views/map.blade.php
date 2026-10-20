@@ -170,7 +170,6 @@
             'stpPage' => route('topology.stp'),
             'redundancyPage' => route('topology.redundancy'),
             'simulate' => route('topology.api.simulate'),
-            'sitesPage' => route('topology.sites'),
             'devicesPage' => url('devices'),
         ],
     ];

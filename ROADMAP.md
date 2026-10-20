@@ -29,7 +29,7 @@ The plugin's conventions apply to all of them:
 | 12 | [Coverage report](#12-coverage-report) | planned | S |
 | 9 | [More L3 map layers](#9-more-l3-map-layers) | planned | S each |
 | 10 | [Loop evidence on the STP page](#10-loop-evidence-on-the-stp-page) | planned | S–M |
-| 8 | [Site / WAN view](#8-site--wan-view) | later | M |
+| 8 | [Site / WAN map](README.md#site--wan-map) | **done** | – |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
 | 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
 
@@ -156,12 +156,6 @@ The L3 counterpart of the spanning tree page.
   root guard, UDLD, CDP duplex and native VLAN mismatch. Vendor message patterns should be configurable.
 
 ## Later
-
-### 8. Site / WAN view
-
-* One node per location with the links between sites added up (count, capacity, utilization, status), optionally
-  placed geographically from `locations.lat` / `lng`; click a site to open its L2/L3 map.
-* Keeps large networks readable, since a device map is capped at *Maximum devices* (400 by default).
 
 ### 11. Sharing & export
 

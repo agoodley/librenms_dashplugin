@@ -2205,7 +2205,7 @@
             connected.forEach(function (visEdge) {
                 var edge = visEdge.data;
                 html += '<tr data-edge="' + esc(visEdge.id) + '"><td>' + esc(self.nodeName(edge.from === id ? edge.to : edge.from)) + '</td><td>' +
-                    esc(self.siteLinkLabel(edge) || '') + '</td><td><span class="topo-status-' + esc(edge.status) + '">' + esc(edge.status) + '</span></td></tr>';
+                    esc(self.siteLinkLabel(edge) || '') + ' <span class="topo-status-' + esc(edge.status) + '">' + esc(edge.status) + '</span></td></tr>';
             });
             html += '</table>';
         }
@@ -2268,8 +2268,7 @@
                 esc(toName + ' → ' + fromName + ': ' + formatRate(edge.to_bps)) : '') +
             this.row('Routing', esc(routing.join(', '))) + '</table>';
 
-        html += '<h5>Members (' + edge.members.length + ')</h5><table class="table table-condensed topo-kv topo-site-members"><tr><th></th><th>' +
-            esc(fromName) + '</th><th>' + esc(toName) + '</th><th></th></tr>';
+        html += '<h5>Members (' + edge.members.length + ')</h5><table class="table table-condensed topo-kv topo-site-members">';
         edge.members.forEach(function (member) {
             var kind = {
                 l2: (member.protocols || []).join('/').toUpperCase() || 'Link',
@@ -2285,11 +2284,11 @@
                     (point.aggregate ? ' <small class="text-muted">(' + esc(point.aggregate) + ')</small>' : '');
             };
             var detail = member.kind === 'l2' || member.kind === 'p2p'
-                ? esc(formatSpeed(member.speed) + (member.util !== null ? ' ' + member.util + '%' : ''))
-                : esc(member.state || '');
-            html += '<tr><td>' + esc(kind) + '</td><td>' + end(member.a) + '</td><td>' + end(member.b) +
-                (member.network ? '<br><small class="text-muted">' + esc(member.network) + '</small>' : '') + '</td><td>' +
-                '<span class="topo-status-' + esc(member.status) + '">' + esc(member.status) + '</span> ' + detail + '</td></tr>';
+                ? formatSpeed(member.speed) + (member.util !== null ? ' \u00b7 ' + member.util + '%' : '')
+                : member.state || '';
+            html += '<tr><th>' + esc(kind) + '<br><span class="topo-status-' + esc(member.status) + '">' + esc(member.status) + '</span> ' +
+                '<small>' + esc(detail) + '</small></th><td>' + end(member.a) + '<br>&harr; ' + end(member.b) +
+                (member.network ? '<br><small class="text-muted">' + esc(member.network) + '</small>' : '') + '</td></tr>';
         });
         html += '</table>';
         this.panel.innerHTML = html;

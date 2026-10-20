@@ -1,6 +1,6 @@
 # LibreNMS Topology & Spanning Tree plugin
 
-NetBrain-style **Layer 2** and **Layer 3** network diagrams plus **spanning tree**, **link & VLAN** and
+NetBrain-style **Layer 2**, **Layer 3** and **site / WAN** network diagrams plus **spanning tree**, **link & VLAN** and
 **redundancy & failure impact** diagnostics for [LibreNMS](https://www.librenms.org), built entirely from data LibreNMS
 already collects (LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, IP addresses, OSPF, BGP,
 transceiver sensors and the hardware inventory).
@@ -21,6 +21,25 @@ details panel for every device and link (speed, duplex, VLANs, traffic, STP stat
 PNG and CSV, full screen, and shareable URLs. On the L2 map, **Simulate failure** in the details of a device or link
 shows which devices would lose their path to the core (failures add up, so "what if both go down" works too), and
 the top-most down device of an outage is marked with the number of down devices behind it.
+
+### Site / WAN map
+
+One node per LibreNMS location, with its device count and what is down, and one link per pair of sites that adds up
+everything between their devices: LLDP/CDP links (one per cable, port-channel members included), point-to-point
+subnets without a neighbor link such as tunnels or carrier circuits, and OSPF adjacencies and BGP sessions. BGP
+sessions to peers LibreNMS does not monitor join the site to a cloud per remote AS, which shows an MPLS VPN or internet
+transit provider and which sites hang off it.
+
+![Site / WAN map](docs/images/site-map.png)
+
+* A site is orange when some of its devices are down and red when all are; a link is dashed orange when some of its
+  cables or sessions are down, and dashed purple when it is only a routing session (BGP over a provider network).
+* Link width and color follow the capacity of its cables (or the busiest cable's utilization, or the status); the
+  details list every cable with both ports, speed, utilization and subnet, and every session with its state.
+* Layouts: hierarchical (the best connected site on top), organic, or **geographic** from the latitude and longitude of
+  the locations (sites in one city are pushed apart, sites without coordinates wait in a row underneath).
+* Center on a site to see it with its neighbors within N hops, or filter by device group; double-click a site, or use
+  the buttons in its details, to open its L2 or L3 map, redundancy page or device list.
 
 ### Spanning tree diagnostics
 
@@ -146,8 +165,8 @@ composer config --global repositories.librenms-topology '{"type": "path", "url":
 ./lnms plugin:add agoodley/librenms-topology-plugin @dev
 ```
 
-The plugin is enabled automatically. Open **Overview → Plugins → L2 Topology Map / L3 Topology Map / STP
-Diagnostics / Link & VLAN Diagnostics / Redundancy & Failure Impact**, or go to `/plugin/topology`. It can be disabled or configured in
+The plugin is enabled automatically. Its maps and diagnostics pages are listed under **Overview → Plugins**, and
+`/plugin/topology` shows them all with a short description. It can be disabled or configured in
 **Overview → Plugins → Plugin Admin → topology → Settings**.
 
 To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
@@ -168,8 +187,10 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   same as JSON).
 * If the automatic core is not your core, set **Core devices** in the settings; the switches next to the LibreNMS
   poller are a good choice when you want "what can the poller still reach".
-* `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links` and `api/redundancy` return the same data as JSON (same
-  query parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`) for automation.
+* Give the locations a latitude and longitude (LibreNMS can look them up from the address) and the site map can lay
+  the network out geographically; the first visit uses that layout.
+* `plugin/topology/api/l2`, `api/l3`, `api/sites`, `api/stp`, `api/links` and `api/redundancy` return the same data as
+  JSON (same query parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`) for automation.
 
 ## Settings
 
@@ -215,6 +236,9 @@ root bridge on such a device is not reported as a rogue switch.
 * `src/Redundancy/RedundancyAnalyzer.php` – single points of failure (cut vertices and bridges toward the core,
   `Support\Graph::cuts()`), fake and lost redundancy and outages; `CoreFinder` picks the core, `PortUnits` reads stack
   members and line cards from the hardware inventory.
+* `src/Topology/SiteConnections.php`, `src/Topology/SiteBuilder.php` – the site map: the connections between devices
+  at different locations (the L2 map's link de-duplication and the L3 map's subnets and sessions), added up per pair of
+  sites.
 * `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
@@ -225,6 +249,10 @@ vendor/bin/phpunit
 ```
 
 ## Limitations
+
+* The site map knows the links between monitored devices. Unmanaged neighbors, devices the user may not see and OSPF
+  neighbors LibreNMS does not monitor are left out (their location is unknown); BGP peers LibreNMS does not monitor are
+  grouped by AS, so two providers in the same AS are one cloud.
 
 * STP data comes from the BRIDGE-MIB as polled by LibreNMS: MST instances other than the CIST are not
   available, and findings reflect the last poll (a check can fire during re-convergence).
