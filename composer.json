@@ -1,6 +1,6 @@
 {
     "name": "agoodley/librenms-topology-plugin",
-    "description": "LibreNMS plugin: NetBrain-style Layer 2 / Layer 3 topology maps, Spanning Tree, link / VLAN and redundancy diagnostics",
+    "description": "LibreNMS plugin: Layer 2, Layer 3 and site maps, spanning tree, link, routing, redundancy and coverage diagnostics, a host locator, rollout planner, device dependencies and a topology history",
     "keywords": [
         "librenms",
         "plugin",
