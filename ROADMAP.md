@@ -21,6 +21,8 @@ The plugin's conventions apply to all of them:
 | 1 | [Link & VLAN diagnostics](README.md#link--vlan-diagnostics) | **done** | – |
 | 3 | [Redundancy & failure impact](README.md#redundancy--failure-impact) | **done** | – |
 | 4 | [Routing & IP diagnostics](README.md#routing--ip-diagnostics) | **done** | – |
+| 5 | [Topology history, diff and baseline](README.md#topology-history-baseline-and-background-checks) | **done** | – |
+| 6 | [Background diagnostics → eventlog](README.md#topology-history-baseline-and-background-checks) | **done** | – |
 | 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
 | 7 | [Automatic device dependencies](README.md#device-dependencies) | **done** | – |
 | 9 | [More L3 map layers](README.md#layer-3-map-overlays) | **done** | – |
@@ -28,16 +30,14 @@ The plugin's conventions apply to all of them:
 | 12 | [Coverage report](README.md#coverage-report) | **done** | – |
 | 8 | [Site / WAN map](README.md#site--wan-map) | **done** | – |
 | 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
-| 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
-| 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
 | 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
+| 15 | [Maps at a point in time](#15-maps-at-a-point-in-time) | later | M |
 
 Effort: S = new checks or an overlay on data the plugin already loads; M = new queries plus a page or tab;
 L = several new parts (tables, jobs, UI).
 
-**Why this order:** 2 answers the most frequent day-to-day question. 5 and 6 share the same scheduled job and tables and
-turn every check into something that runs without anyone opening a page. The rest builds on those.
+**Why this order:** 2 answers the most frequent day-to-day question. The rest builds on the tools that are done.
 
 ## What a plugin can do in LibreNMS
 
@@ -45,7 +45,8 @@ turn every check into something that runs without anyone opening a page. The res
   There is no hook for dashboard widgets or device tabs.
 * A plugin package can ship routes, views and **database migrations**, and register **scheduled commands**
   (LibreNMS runs Laravel's scheduler).
-* The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (see 6) and the Custom Map widget (see 11).
+* The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (the background checks write their
+  findings there) and the Custom Map widget (see 11).
 
 ## Next up
 
@@ -62,29 +63,6 @@ turn every check into something that runs without anyone opening a page. The res
   (802.1X; the `nac` poller module is off by default), `vendor_ouis`.
 * Caveat: FDB and ARP tables are refreshed at discovery (every 6 hours by default); the `arp-table` poller module (off
   by default) refreshes ARP every poll. Show "last seen" with every answer.
-
-## Planned
-
-### 5. Topology history, diff and baseline
-
-* A scheduled job snapshots links, port-channels, STP roots and blocked ports, and OSPF/BGP adjacencies into plugin
-  tables (store changes, not full copies).
-* **What changed since yesterday / last week:** links added or removed, a port whose neighbor changed (moved cable),
-  a new unmanaged switch or AP, root bridge moved, adjacency lost.
-* **Baseline:** save the current topology as the expected one and report what is missing. LibreNMS deletes LLDP rows
-  that are no longer seen, so a redundant uplink that disappears leaves no trace today: the redundancy page reports a
-  lost uplink only until the next discovery. With a baseline it can keep reporting it.
-* Later: show the maps as they were at a given time.
-* Needs: migrations, a scheduled command, a retention setting.
-
-### 6. Background diagnostics → eventlog
-
-* Run the STP and link checks on a schedule and write new and resolved findings to the LibreNMS eventlog. They then
-  show on device pages and in the eventlog dashboard widget, and alert rules can match them.
-* Keep a findings history (first seen, resolved) and mark "new since the last run" on the pages.
-* A finding's identity is its code, devices, ports and VLAN.
-* Builds on the scheduled job and tables of 5.
-
 
 ## Later
 
@@ -103,6 +81,13 @@ turn every check into something that runs without anyone opening a page. The res
   single path) and show every hop's ports, speed, utilization and errors.
 * **L3:** hop-by-hop lookups in the `route` table (the `route` discovery module is off by default and heavy), falling
   back to connected subnets and OSPF/BGP adjacencies.
+
+### 15. Maps at a point in time
+
+* Draw the L2/L3 maps as they were at a given time, or mark on today's map what changed since then, from the facts
+  the topology history keeps (`topology_facts`: links, port-channel members, root bridges, adjacencies with their
+  first seen and removed times).
+* Ports, VLANs and device details are not in the history: the past map shows them as they are now.
 
 ## Ideas for separate plugins
 

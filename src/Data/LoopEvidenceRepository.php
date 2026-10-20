@@ -116,6 +116,9 @@ class LoopEvidenceRepository extends ScopedRepository
      */
     public function canViewSyslog(): bool
     {
+        if ($this->isSystem()) {
+            return true; // the background checks: their eventlog entries name only the check
+        }
         try {
             if (! class_exists(\App\Models\Syslog::class) || Gate::getPolicyFor(\App\Models\Syslog::class) === null) {
                 return true;

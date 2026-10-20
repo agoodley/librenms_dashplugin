@@ -39,14 +39,33 @@ class StpIndex
             }
         }
 
+        $this->addPorts($ports);
+
+        foreach ($this->instances as &$byVlan) {
+            ksort($byVlan);
+        }
+    }
+
+    /**
+     * The same bridges and instances with other port rows: the background checks load the port
+     * rows of one instance (VLAN) at a time.
+     */
+    public function withPorts(iterable $ports): static
+    {
+        $index = clone $this;
+        $index->ports = [];
+        $index->portsByIndex = [];
+        $index->addPorts($ports);
+
+        return $index;
+    }
+
+    private function addPorts(iterable $ports): void
+    {
         foreach ($ports as $row) {
             $row = self::normalizePort((array) $row);
             $this->ports[$row['device_id']][$row['vlan']][$row['port_id']] = $row;
             $this->portsByIndex[$row['device_id']][$row['vlan']][$row['port_index']] = $row;
-        }
-
-        foreach ($this->instances as &$byVlan) {
-            ksort($byVlan);
         }
     }
 
