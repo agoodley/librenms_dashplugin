@@ -127,10 +127,10 @@ class RoutingAnalyzer
     /** @var array<string, array<int, array<int, true>>> VRF name (lowercase) => device => devices it is joined to in that routing table */
     private array $joined = [];
 
-    /** @var array<int, array<int, true>> device => devices it is joined to by links without addresses (in every routing table) */
+    /** @var array<int, array<int, true>> device => devices it is joined to in every routing table (links without addresses, see joinLinks()) */
     private array $joinedAny = [];
 
-    /** @var array<int, int>|null device => its network over the links without addresses (made once, see network()) */
+    /** @var array<int, int>|null device => its network over the links that join every routing table (made once, see network()) */
     private ?array $anyNetworks = null;
 
     /** @var array<string, array<int, int>> VRF name (lowercase) => union-find parents of the networks, after that table's own links */
@@ -368,12 +368,12 @@ class RoutingAnalyzer
 
     /**
      * The addresses on each linked port and its subinterfaces, and the routing tables each LLDP/CDP
-     * link joins: the VRFs both ends are in. An end without addresses (an L2 port, a LAG member, a
-     * port with SVIs behind it, or a port LibreNMS did not resolve) is in the VRFs of its device's
-     * addresses that share a subnet with the other end (see sharedVrfs()). A link whose ends are in
-     * VRFs of different names (a provider edge facing a customer router) is a routing boundary and
-     * joins none; a link between devices that share no subnet at all (unnumbered, or switches without
-     * addresses) joins every routing table.
+     * link joins: the VRFs both ends are in, so a link whose ends are in VRFs of different names (a
+     * provider edge facing a customer router) is a routing boundary and joins none. An end without
+     * addresses (an L2 port, a LAG member, a port with SVIs behind it, or a port LibreNMS did not
+     * resolve) facing one with addresses is in the VRFs of its device's addresses that share a subnet
+     * with that end (see sharedVrfs()). A link with no addresses on either end joins every table
+     * unless a subnet the two devices share is in VRFs of different names (see agreedVrfs()).
      */
     private function joinLinks(): void
     {
@@ -414,14 +414,16 @@ class RoutingAnalyzer
         foreach ($this->lldp as [$a, $portA, , $b, $portB]) {
             $endA = $this->onLink[$portA] ?? [];
             $endB = $this->onLink[$portB] ?? [];
-            $vrfsA = $endA ? self::vrfsOf($endA) : $this->sharedVrfs($a, $b, $endB, $peers, $subnets);
-            $vrfsB = $endB ? self::vrfsOf($endB) : $this->sharedVrfs($b, $a, $endA, $peers, $subnets);
-            if ($vrfsA === null && $vrfsB === null) {
+            if ($endA || $endB) {
+                $vrfsA = $endA ? self::vrfsOf($endA) : $this->sharedVrfs($a, $b, $endB, $peers, $subnets);
+                $vrfsB = $endB ? self::vrfsOf($endB) : $this->sharedVrfs($b, $a, $endA, $peers, $subnets);
+                $vrfs = $vrfsA === null ? $vrfsB : ($vrfsB === null ? $vrfsA : array_intersect_key($vrfsA, $vrfsB));
+            } elseif (($vrfs = $this->agreedVrfs($a, $b, $peers, $subnets)) === null) {
                 $this->joinedAny[$a][$b] = $this->joinedAny[$b][$a] = true;
 
                 continue;
             }
-            foreach (array_keys($vrfsA === null ? $vrfsB : ($vrfsB === null ? $vrfsA : array_intersect_key($vrfsA, $vrfsB))) as $vrf) {
+            foreach (array_keys($vrfs) as $vrf) {
                 $this->joined[(string) $vrf][$a][$b] = $this->joined[(string) $vrf][$b][$a] = true;
             }
         }
@@ -429,26 +431,70 @@ class RoutingAnalyzer
 
     /**
      * VRF names (lowercase) of a device's addresses whose subnet holds an address of the other end
-     * of a link, or, when that end has no addresses either, any address of the other device; on both
-     * sides leaving out loopbacks and the ports of links to third devices. Null when there are none.
+     * of a link (loopbacks and the ports of links to third devices left out); null when there are none.
      *
      * @param  list<Address>  $theirs  the addresses of the other end
      * @param  array<int, array<int, true>>  $peers  linked port => devices at its other ends
-     * @param  array<int, array{0: array<string, list<Address>>, 1: array<int, array<int, true>>}>  $subnets  device => its
-     *         addresses by subnet and its prefix lengths by address length (built here when needed)
+     * @param  array<int, array{0: array<string, list<Address>>, 1: array<int, array<int, true>>}>  $subnets  see holding()
      * @return array<string, true>|null
      */
     private function sharedVrfs(int $device, int $other, array $theirs, array $peers, array &$subnets): ?array
     {
-        // an address on a port linked to devices other than $peer belongs to those links
-        $usable = function (Address $address, int $peer) use ($peers): bool {
-            $port = $this->linkPort[$address->portId ?? 0] ?? $address->portId ?? 0;
-
-            return ! $address->host && (! isset($peers[$port]) || isset($peers[$port][$peer]));
-        };
-        if (! $theirs) {
-            $theirs = array_filter($this->byDevice[$other] ?? [], fn (Address $address) => $usable($address, $device));
+        $vrfs = [];
+        foreach ($theirs as $their) {
+            foreach ($this->holding($device, $other, $their, $peers, $subnets) as $mine) {
+                $vrfs[strtolower($mine->vrf)] = true;
+            }
         }
+
+        return $vrfs ?: null;
+    }
+
+    /**
+     * The routing tables a link without addresses on either end joins, from the subnets its two devices
+     * share (loopbacks and the ports of links to third devices left out). Only a shared subnet in VRFs
+     * of different names on the two devices (a provider edge facing a customer router over a
+     * port-channel) makes it a routing boundary: then it joins the VRFs both sides have in a shared
+     * subnet, possibly none. Otherwise, switches sharing a management subnet or VRF-lite trunks, it is
+     * one L2 domain and joins every table (null).
+     *
+     * @param  array<int, array<int, true>>  $peers  linked port => devices at its other ends
+     * @param  array<int, array{0: array<string, list<Address>>, 1: array<int, array<int, true>>}>  $subnets  see holding()
+     * @return array<string, true>|null
+     */
+    private function agreedVrfs(int $a, int $b, array $peers, array &$subnets): ?array
+    {
+        $agreed = [];
+        $boundary = false;
+        foreach ([[$a, $b], [$b, $a]] as [$device, $other]) {
+            foreach ($this->byDevice[$other] ?? [] as $their) {
+                if (! $this->usable($their, $device, $peers)) {
+                    continue;
+                }
+                foreach ($this->holding($device, $other, $their, $peers, $subnets) as $mine) {
+                    if (strtolower($mine->vrf) === strtolower($their->vrf)) {
+                        $agreed[strtolower($mine->vrf)] = true;
+                    } else {
+                        $boundary = true;
+                    }
+                }
+            }
+        }
+
+        return $boundary ? $agreed : null;
+    }
+
+    /**
+     * A device's addresses whose subnet holds an address of the other device, without loopbacks and
+     * the ports of links to third devices.
+     *
+     * @param  array<int, array<int, true>>  $peers  linked port => devices at its other ends
+     * @param  array<int, array{0: array<string, list<Address>>, 1: array<int, array<int, true>>}>  $subnets  device => its
+     *         addresses by subnet and its prefix lengths by address length (built here when needed)
+     * @return list<Address>
+     */
+    private function holding(int $device, int $other, Address $their, array $peers, array &$subnets): array
+    {
         if (! isset($subnets[$device])) {
             $subnets[$device] = [[], []];
             foreach ($this->byDevice[$device] ?? [] as $address) {
@@ -458,19 +504,29 @@ class RoutingAnalyzer
                 }
             }
         }
-
-        $vrfs = [];
-        foreach ($theirs as $their) {
-            foreach (array_keys($subnets[$device][1][strlen($their->packed)] ?? []) as $prefix) {
-                foreach ($subnets[$device][0][$their->key($prefix)] ?? [] as $mine) {
-                    if ($usable($mine, $other)) {
-                        $vrfs[strtolower($mine->vrf)] = true;
-                    }
+        $found = [];
+        foreach (array_keys($subnets[$device][1][strlen($their->packed)] ?? []) as $prefix) {
+            foreach ($subnets[$device][0][$their->key($prefix)] ?? [] as $mine) {
+                if ($this->usable($mine, $other, $peers)) {
+                    $found[] = $mine;
                 }
             }
         }
 
-        return $vrfs ?: null;
+        return $found;
+    }
+
+    /**
+     * Can an address stand for a link to $peer? Not a loopback, and not on a port linked to devices
+     * other than $peer (the address belongs to those links).
+     *
+     * @param  array<int, array<int, true>>  $peers  linked port => devices at its other ends
+     */
+    private function usable(Address $address, int $peer, array $peers): bool
+    {
+        $port = $this->linkPort[$address->portId ?? 0] ?? $address->portId ?? 0;
+
+        return ! $address->host && (! isset($peers[$port]) || isset($peers[$port][$peer]));
     }
 
     /**
@@ -1718,8 +1774,8 @@ class RoutingAnalyzer
     }
 
     /**
-     * Are two devices directly joined in a routing table: an LLDP/CDP link whose addressed ends are in
-     * that VRF (or without addresses), or an OSPF adjacency between instances in VRFs of that name?
+     * Are two devices directly joined in a routing table: an LLDP/CDP link that joins it (see
+     * joinLinks()), or an OSPF adjacency between instances in VRFs of that name?
      */
     private function joined(int $a, int $b, string $vrf): bool
     {
@@ -1728,9 +1784,9 @@ class RoutingAnalyzer
 
     /**
      * Network of a device in a routing table (a device id standing for it): the devices joined in it
-     * (joined()), directly or through others. The networks of the links without addresses, which join
-     * every table, are made once; each table's own links are merged on top of them (union-find), so a
-     * table costs only its own links.
+     * (joined()), directly or through others. The networks of the links that join every table are made
+     * once; each table's own links are merged on top of them (union-find), so a table costs only its own
+     * links.
      */
     private function network(int $deviceId, string $vrf): int
     {

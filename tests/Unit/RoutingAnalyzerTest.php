@@ -1058,6 +1058,63 @@ class RoutingAnalyzerTest extends TestCase
         $this->assertSame('info', self::find($result, 'ip_duplicate', '10.47.0.1')['severity'], 'but not in BLUE');
     }
 
+    public function testSwitchesSharingOnlyAManagementSubnet(): void
+    {
+        // a trunk without addresses between two access switches whose management addresses share a subnet, and a
+        // tenant's router in VRF TENANT on an access port of each, both with one address: the trunk is one L2 domain
+        // that joins every table unless a subnet the switches share is in VRFs of different names; loopbacks and
+        // ports linked to other devices do not count
+        $variants = [
+            'management subnet in the global table' => ['', '', null, 'warning'],
+            'VRF names in another case' => ['mgmt', 'MGMT', null, 'warning'],
+            'loopback of another VRF in the subnet' => ['', '', fn (RoutingFixture $n) => $n->address(52, 'Loopback1', '10.10.10.99/32', 'LAB'), 'warning'],
+            'subnet reused in another VRF toward a firewall' => ['', '', fn (RoutingFixture $n) => $n->router(55, 'fw', null)
+                ->link(52, $n->address(52, 'Gi1/0/40', '10.10.10.10/30', 'FW'), 55, $n->address(55, 'eth0', '10.10.10.9/30', 'FW')), 'warning'],
+            'management subnet in VRFs of different names' => ['', 'MGMT', null, 'info'],
+        ];
+        foreach ($variants as $how => [$vrf1, $vrf2, $extra, $severity]) {
+            $net = RoutingFixture::network();
+            $net->router(51, 'sw1', null)->router(52, 'sw2', null)->router(53, 'r-tenant1')->router(54, 'r-tenant2');
+            $net->address(51, 'Vlan1', '10.10.10.11/24', $vrf1);
+            $net->address(52, 'Vlan1', '10.10.10.12/24', $vrf2);
+            $net->link(51, 951, 52, 952, 'Gi1/0/48', 'Gi1/0/48');
+            $net->link(53, $net->address(53, 'Gi0/0', '10.61.0.1/24', 'TENANT'), 51, 953, null, 'Gi1/0/1');
+            $net->link(54, $net->address(54, 'Gi0/0', '10.61.0.2/24', 'TENANT'), 52, 954, null, 'Gi1/0/1');
+            $net->address(53, 'Gi0/1', '10.60.0.1/24', 'TENANT');
+            $net->address(54, 'Gi0/1', '10.60.0.1/24', 'TENANT');
+            if ($extra) {
+                $extra($net);
+            }
+
+            $this->assertSame($severity, self::find($net->analyzer()->analyze(), 'ip_duplicate', '10.60.0.1')['severity'] ?? null, $how);
+        }
+    }
+
+    public function testVrfLiteTrunkWhoseSharedSubnetsAgree(): void
+    {
+        // a trunk without addresses between two distribution switches with SVIs of VRFs RED and BLUE in the same
+        // subnets on both sides, and a router on each with subinterfaces in RED and GREEN (which has no SVIs on the
+        // switches) reusing one address per VRF: every shared subnet agrees, so the trunk joins every table; one
+        // shared subnet in VRFs of different names makes it a boundary that joins only the VRFs that agree (RED)
+        foreach (['BLUE' => 'warning', 'BLUE2' => 'info'] as $blue => $green) {
+            $net = RoutingFixture::network();
+            $net->router(61, 'dist1', null)->router(62, 'dist2', null)->router(63, 'r-a')->router(64, 'r-b');
+            $net->link(61, 961, 62, 962, 'Te1/1/1', 'Te1/1/1')->link(61, 963, 63, 973, 'Gi1/0/1', 'Gi0/0')->link(62, 964, 64, 974, 'Gi1/0/1', 'Gi0/0');
+            foreach ([61 => 1, 62 => 2] as $device => $host) {
+                $net->address($device, 'Vlan10', "10.71.10.$host/24", 'RED');
+                $net->address($device, 'Vlan20', "10.71.20.$host/24", $device === 62 ? $blue : 'BLUE');
+            }
+            foreach ([63, 64] as $device) {
+                $net->address($device, 'Gi0/0.11', '10.73.0.1/24', 'RED');
+                $net->address($device, 'Gi0/0.30', '10.72.0.1/24', 'GREEN');
+            }
+            $result = $net->analyzer()->analyze();
+
+            $this->assertSame('warning', self::find($result, 'ip_duplicate', '10.73.0.1')['severity'] ?? null, $blue);
+            $this->assertSame($green, self::find($result, 'ip_duplicate', '10.72.0.1')['severity'] ?? null, $blue);
+        }
+    }
+
     /**
      * Provider r1-r2 core link 10.0.0.0/30 (area 0) and a customer cust-ce/cust-ce2 reusing it (area 5, 5/20 s).
      */

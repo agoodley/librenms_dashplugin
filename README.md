@@ -167,9 +167,10 @@ adjacency, neighbors in one routing table, the two addresses of a /30 or /31 hel
 interfaces, one OSPF domain. A link whose ends are in differently named VRFs (a provider edge facing a customer router)
 is a routing boundary, so a provider and its customers are separate networks; a link end without an address (an L2
 port, a LAG member, a port with SVIs behind it) is in the VRFs of its device's addresses that share a subnet with the
-other end. A duplicate address between devices that LibreNMS sees no link between in that routing table is only info:
-that includes sites joined only through BGP or an MPLS VPN, which count as separate networks. Host-local bridges
-(virbr0, docker0, ...) are left out.
+other end. A link without addresses on either end (a trunk) joins every routing table, unless a subnet its two devices
+share is in differently named VRFs on them: then it joins only the VRFs that agree. A duplicate address between devices
+that LibreNMS sees no link between in that routing table is only info: that includes sites joined only through BGP or
+an MPLS VPN, which count as separate networks. Host-local bridges (virbr0, docker0, ...) are left out.
 VRF names are local to each router and compared without case: a provider edge facing a customer router joins VRFs on
 purpose and is not reported. LSA checksum sums are not compared (they change with every LSA refresh), BGP sessions in a
 state outside the BGP state machine (Junos peers that LibreNMS has not matched yet) are listed but not checked.
