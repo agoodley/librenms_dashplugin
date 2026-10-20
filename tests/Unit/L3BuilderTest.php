@@ -111,6 +111,20 @@ class L3BuilderTest extends TestCase
         $this->assertSame(0, $nodes['as:64512']['level'], 'external AS drawn at the top');
     }
 
+    public function testAllMembersOfALanAreOneHopApart(): void
+    {
+        $addresses = [
+            $this->address(1, 12, 'Gi0/1', '10.1.0.1', 24),
+            $this->address(2, 22, 'Gi0/1', '10.1.0.2', 24),
+            $this->address(3, 31, 'Vlan100', '10.1.0.3', 24),
+        ];
+        $result = (new L3Builder($this->devices(), $addresses))->build(['root' => 2, 'depth' => 1, 'ospf' => false, 'bgp' => false]);
+        $ids = array_column(array_filter($result['nodes'], fn ($n) => $n['type'] === 'device'), 'device_id');
+        sort($ids);
+        $this->assertSame([1, 2, 3], $ids);
+        $this->assertCount(3, array_filter($result['edges'], fn ($e) => $e['kind'] === 'member'));
+    }
+
     public function testScopeAroundDevice(): void
     {
         $addresses = $this->addresses();

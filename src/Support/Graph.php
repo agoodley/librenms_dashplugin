@@ -25,6 +25,9 @@ class Graph
         return $this;
     }
 
+    /**
+     * Add an undirected edge; edges with distinct keys between the same nodes are parallel edges.
+     */
     public function addEdge(int|string $a, int|string $b, int|string|null $key = null): self
     {
         $this->addNode($a)->addNode($b);
@@ -57,6 +60,9 @@ class Graph
         return array_keys($this->adjacency[$node] ?? []);
     }
 
+    /**
+     * Number of distinct neighbours.
+     */
     public function degree(int|string $node): int
     {
         return count($this->adjacency[$node] ?? []);
@@ -165,6 +171,78 @@ class Graph
         }
 
         return null;
+    }
+
+    /**
+     * Nodes that lie on at least one cycle, i.e. that have an incident edge which is not a
+     * bridge (cut edge). Parallel edges count as a cycle. Tarjan's bridge finding with an
+     * iterative DFS, O(nodes + edges).
+     *
+     * @return array<int, int|string>
+     */
+    public function nodesOnCycles(): array
+    {
+        $index = [];
+        $low = [];
+        $counter = 0;
+        $onCycle = [];
+
+        foreach ($this->nodes() as $root) {
+            if (isset($index[$root])) {
+                continue;
+            }
+
+            $index[$root] = $low[$root] = $counter++;
+            // frames: node, edge used to reach it, its incident [neighbour, edge] pairs, next position
+            $stack = [[$root, null, $this->incident($root), 0]];
+            while ($stack) {
+                $top = count($stack) - 1;
+                [$node, $parentEdge, $incident, $position] = $stack[$top];
+
+                if ($position < count($incident)) {
+                    $stack[$top][3]++;
+                    [$next, $edgeKey] = $incident[$position];
+                    if ($edgeKey === $parentEdge) {
+                        continue;
+                    }
+                    if (! isset($index[$next])) {
+                        $index[$next] = $low[$next] = $counter++;
+                        $stack[] = [$next, $edgeKey, $this->incident($next), 0];
+                    } else {
+                        $low[$node] = min($low[$node], $index[$next]);
+                    }
+                    continue;
+                }
+
+                array_pop($stack);
+                if ($stack) {
+                    $parent = $stack[count($stack) - 1][0];
+                    $low[$parent] = min($low[$parent], $low[$node]);
+                    if ($low[$node] <= $index[$parent]) {
+                        // the tree edge parent-node is not a bridge: both ends are on a cycle
+                        $onCycle[$parent] = true;
+                        $onCycle[$node] = true;
+                    }
+                }
+            }
+        }
+
+        return array_keys($onCycle);
+    }
+
+    /**
+     * @return array<int, array{0: int|string, 1: int|string}> [neighbour, edge key] pairs of a node
+     */
+    private function incident(int|string $node): array
+    {
+        $pairs = [];
+        foreach ($this->adjacency[$node] ?? [] as $next => $edgeKeys) {
+            foreach (array_keys($edgeKeys) as $edgeKey) {
+                $pairs[] = [$next, $edgeKey];
+            }
+        }
+
+        return $pairs;
     }
 
     /**

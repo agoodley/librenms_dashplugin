@@ -8,22 +8,34 @@ use Agoodley\LibrenmsTopology\Support\MapParams;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
-use Illuminate\Support\Facades\Log;
 
+/**
+ * Pages of the plugin. The map pages are shells filled by resources/assets/topology.js from the
+ * JSON API; the STP diagnostics page is rendered on the server.
+ */
 class PageController extends Controller
 {
     use BuildsTopology;
 
+    /**
+     * plugin/topology/l2: Layer 2 map.
+     */
     public function l2(Request $request): View
     {
         return $this->map($request, 'l2');
     }
 
+    /**
+     * plugin/topology/l3: Layer 3 map.
+     */
     public function l3(Request $request): View
     {
         return $this->map($request, 'l3');
     }
 
+    /**
+     * plugin/topology/stp: spanning tree diagnostics.
+     */
     public function stp(Request $request): View
     {
         $settings = $this->settings();
@@ -35,8 +47,7 @@ class PageController extends Controller
         try {
             $result = $this->service($request, $settings)->stp($params);
         } catch (\Throwable $e) {
-            Log::error('topology plugin: STP analysis failed: ' . $e->getMessage() . PHP_EOL . $e->getTraceAsString());
-            $error = $e->getMessage();
+            $error = $this->failure('spanning tree analysis', $e);
         }
 
         return view('topology::stp', [
@@ -49,6 +60,9 @@ class PageController extends Controller
         ]);
     }
 
+    /**
+     * Map page shell with the filter choices (device groups, locations) and current parameters.
+     */
     private function map(Request $request, string $mode): View
     {
         $settings = $this->settings();
@@ -64,6 +78,9 @@ class PageController extends Controller
         ]);
     }
 
+    /**
+     * Cache busting version of the JS/CSS assets (newest modification time).
+     */
     public static function assetVersion(): string
     {
         $files = glob(__DIR__ . '/../../../resources/assets/*') ?: [];

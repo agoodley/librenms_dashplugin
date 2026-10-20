@@ -9,11 +9,17 @@ use LibreNMS\Interfaces\Plugins\Hooks\SinglePageHook;
  */
 class Page implements SinglePageHook
 {
+    /**
+     * Every logged in user may open the landing page.
+     */
     public function authorize(): bool
     {
         return true;
     }
 
+    /**
+     * @return array{title: string, content_view: string} rendered by LibreNMS inside its plugin page layout
+     */
     public function handle(string $pluginName): array
     {
         return [

@@ -56,9 +56,10 @@ class TopologyService
         $lag = $this->repo->lagParents($ids);
         $linkPorts = array_values(array_filter(array_unique(array_merge($linkPorts, array_map(fn ($p) => $lag[$p] ?? 0, $linkPorts)))));
 
-        [$instances, $stpPorts] = $this->repo->stpRows($ids, $p['vlan']);
-        $stp = new StpIndex($instances, $stpPorts, $lag);
-        $ports = $this->repo->ports(array_merge($linkPorts, array_column($stpPorts, 'port_id')));
+        // the overlay shows one instance per device: the one carrying the selected VLAN
+        $stp = $this->singleInstanceIndex($this->repo->stpInstances($ids), $p['vlan'], $lag);
+        $rootPorts = array_filter(array_map(fn ($id) => $stp->rootPortId($id, $p['vlan']), $ids));
+        $ports = $this->repo->ports(array_merge($linkPorts, $rootPorts));
 
         $builder = new L2Builder(
             $this->repo->devices($ids),
@@ -154,29 +155,32 @@ class TopologyService
             $notice = 'Large spanning tree data set: showing VLAN 1 / CST only, select a VLAN to analyze another instance.';
         }
 
-        [$instances, $stpPorts] = $this->repo->stpRows($scope, $vlan);
-        $links = $this->repo->links($scope);
-        $lag = $this->repo->lagParents(array_values(array_unique(array_map(fn ($i) => (int) $i['device_id'], $instances))));
+        $instances = $this->repo->stpInstances($scope);
+        $stpDevices = array_values(array_unique(array_map(fn ($i) => (int) $i['device_id'], $instances)));
+        $lag = $this->repo->lagParents($stpDevices);
+        $index = $vlan === null
+            ? new StpIndex($instances, $this->repo->stpPorts($stpDevices), $lag)
+            : $this->singleInstanceIndex($instances, $vlan, $lag);
 
-        $portIds = array_column($stpPorts, 'port_id');
+        $links = $this->repo->links($scope);
+        $portIds = $index->portIds();
         foreach ($links as $link) {
             $portIds[] = (int) $link['local_port_id'];
             $portIds[] = (int) $link['remote_port_id'];
         }
         $portIds = array_merge($portIds, array_keys($lag), array_values($lag));
-        $ports = $this->repo->analysisPorts($portIds);
 
         $analyzer = new StpAnalyzer(
             $this->repo->devices($scope),
-            new StpIndex($instances, $stpPorts, $lag),
+            $index,
             $links,
-            $ports,
+            $this->repo->analysisPorts($portIds),
             $lag,
             $this->settings,
             $this->repo->stpEvents($scope, $this->settings->int('stp_event_days', 1, 365)),
         );
 
-        $result = $analyzer->analyze($this->repo->rootLookups($analyzer->unknownRootMacs()), $vlan);
+        $result = $analyzer->analyze($this->repo->rootLookups($index->unknownRootMacs()), $vlan);
         $result['vlans'] = $this->repo->stpVlans($scope);
         $result['notice'] = $notice;
         $result['filter'] = $p + ['effective_vlan' => $vlan];
@@ -189,12 +193,13 @@ class TopologyService
     }
 
     /**
-     * Data for the device overview panel (kept cheap: only the device itself).
+     * Data for the device overview panel. Runs on every device page view, so it only reads the
+     * device's own rows plus a cheap lookup of who owns the root bridges it follows.
      */
     public function deviceSummary(int $deviceId): array
     {
         $links = $this->repo->links([$deviceId]);
-        [$instances, $stpPorts] = $this->repo->stpRows([$deviceId]);
+        $instances = $this->repo->stpInstances([$deviceId]);
 
         $neighbors = [];
         foreach ($links as $link) {
@@ -210,33 +215,27 @@ class TopologyService
 
         if ($instances) {
             $lag = $this->repo->lagParents([$deviceId]);
-            $portIds = array_merge(array_column($stpPorts, 'port_id'), array_map(fn ($l) => (int) $l['local_port_id'], $links));
+            $index = new StpIndex($instances, $this->repo->stpPorts([$deviceId]), $lag);
             $remoteIds = array_values(array_unique(array_filter(array_map(fn ($l) => (int) $l['remote_device_id'], $links))));
 
-            // which monitored devices own the root bridges this device follows?
             $rootMacs = array_values(array_unique(array_filter(array_map(fn ($i) => StpIndex::mac($i['designatedRoot'] ?? ''), $instances))));
-            $lookups = $this->repo->rootLookups($rootMacs);
-            $ownerIds = [];
-            foreach ($lookups as $lookup) {
-                foreach ($lookup['owners'] as $owner) {
-                    $ownerIds[] = (int) $owner['device_id'];
-                }
-            }
-
             $analyzer = new StpAnalyzer(
-                $this->repo->devices(array_values(array_unique(array_merge([$deviceId], $remoteIds, $ownerIds)))),
-                new StpIndex($instances, $stpPorts, $lag),
+                $this->repo->devices(array_merge([$deviceId], $remoteIds)),
+                $index,
                 $links,
-                $this->repo->ports($portIds),
+                $this->repo->ports(array_merge($index->portIds(), array_map(fn ($l) => (int) $l['local_port_id'], $links))),
                 $lag,
                 $this->settings,
             );
-            $summary['stp'] = $analyzer->deviceSummary($deviceId, $lookups);
+            $summary['stp'] = $analyzer->deviceSummary($deviceId, $this->repo->rootLookups($rootMacs, deep: false));
         }
 
         return $summary;
     }
 
+    /**
+     * Narrow a full STP result to one device (STP page opened from a device page).
+     */
     public static function filterStpForDevice(array $result, int $deviceId): array
     {
         $result['findings'] = array_values(array_filter($result['findings'], fn ($f) => in_array($deviceId, $f['devices'], true)));
@@ -244,17 +243,26 @@ class TopologyService
         $result['blocked'] = array_values(array_filter($result['blocked'], fn ($b) => $b['device_id'] === $deviceId));
         $result['domains'] = array_values(array_filter($result['domains'], fn ($d) => in_array($deviceId, $d['member_ids'], true)));
         $result['events'] = array_values(array_filter($result['events'], fn ($e) => $e['device_id'] === $deviceId));
-
-        $counts = ['critical' => 0, 'warning' => 0, 'info' => 0];
-        foreach ($result['findings'] as $finding) {
-            $counts[$finding['severity']]++;
-        }
-        $result['summary']['findings'] = $counts;
-        $result['summary']['status'] = $counts['critical'] ? 'critical' : ($counts['warning'] ? 'warning' : 'ok');
-        $result['summary']['instances'] = count($result['bridges']);
-        $result['summary']['blocked_ports'] = count($result['blocked']);
+        $result['summary'] = StpAnalyzer::summarize($result['domains'], $result['bridges'], $result['blocked'], $result['findings'], $result['summary']['recent_tc_window']);
 
         return $result;
+    }
+
+    /**
+     * STP index holding, for every bridge, the port rows of the one instance that carries $vlan
+     * (null: the default instance). Instance rows are complete so PVST bridges are recognized.
+     *
+     * @param  array<int, int>  $lag
+     */
+    private function singleInstanceIndex(array $instances, ?int $vlan, array $lag): StpIndex
+    {
+        $selector = new StpIndex($instances);
+        $keys = [];
+        foreach ($selector->deviceIds() as $deviceId) {
+            $keys[$deviceId] = $selector->keyFor($deviceId, $vlan);
+        }
+
+        return new StpIndex($instances, $this->repo->stpPorts(array_keys($keys), $keys), $lag);
     }
 
     /**
@@ -298,11 +306,17 @@ class TopologyService
         return [array_slice($ids, 0, $max), $total, true];
     }
 
+    /**
+     * Maximum devices drawn on one map (setting, 10-5000).
+     */
     private function maxNodes(): int
     {
         return $this->settings->int('max_nodes', 10, 5000);
     }
 
+    /**
+     * Description of what the map shows, for the status line (centered device, filters, truncation).
+     */
     private function scopeInfo(array $p, ?int $root, int $total, int $shown, bool $truncated): array
     {
         return [

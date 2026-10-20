@@ -227,6 +227,114 @@ class StpAnalyzerTest extends TestCase
         $this->assertSame(0, $merged[0]['vlan']);
     }
 
+    public function testPvstBridgeWithoutTheVlanDoesNotJoinVlanIslands(): void
+    {
+        // A - B - C chained; VLAN 20 exists on A and C only (separate islands, separate roots),
+        // B runs PVST for VLANs 1 and 30. B must not be taken for a single-instance (CST) bridge.
+        $devices = [];
+        foreach ([1 => 'A', 2 => 'B', 3 => 'C'] as $id => $name) {
+            $devices[$id] = ['device_id' => $id, 'display' => $name, 'role' => 'switch', 'uptime' => 864000];
+        }
+        $instances = [];
+        foreach ([1 => [null, 20], 2 => [null, 30], 3 => [null, 20]] as $id => $vlans) {
+            foreach ($vlans as $vlan) {
+                $root = $vlan === 20 ? "00000000000$id" : '000000000002';
+                $instances[] = ['device_id' => $id, 'vlan' => $vlan, 'bridgeAddress' => "00000000000$id", 'designatedRoot' => $root, 'priority' => 32768];
+            }
+        }
+        $links = [
+            ['local_device_id' => 1, 'local_port_id' => 11, 'remote_device_id' => 2, 'remote_port_id' => 21],
+            ['local_device_id' => 2, 'local_port_id' => 22, 'remote_device_id' => 3, 'remote_port_id' => 31],
+        ];
+        $index = new StpIndex($instances);
+        $this->assertNull($index->keyFor(2, 20), 'PVST bridge without VLAN 20');
+
+        $result = (new StpAnalyzer($devices, $index, $links, [], [], new PluginSettings()))->analyze([], 20);
+        $this->assertArrayNotHasKey('root_mismatch', $this->codes($result));
+        $this->assertCount(2, $result['domains']);
+    }
+
+    public function testPortStpFlagCoversInstancesThatWereNotLoaded(): void
+    {
+        // port 42 has no rows in the loaded instance, but ports_stp has rows for it in another VLAN
+        $stpPorts = array_values(array_filter(CampusFixture::stpPorts(), fn ($p) => $p['port_id'] !== 42));
+        $ports = CampusFixture::ports();
+        foreach ($ports as &$port) {
+            $port['has_stp'] = $port['port_id'] !== 42 ? in_array($port['port_id'], array_column($stpPorts, 'port_id'), true) : true;
+        }
+        unset($port);
+        $analyzer = new StpAnalyzer(CampusFixture::devices(), new StpIndex(CampusFixture::stpInstances(), $stpPorts, CampusFixture::lagParent()),
+            CampusFixture::links(), $ports, CampusFixture::lagParent(), new PluginSettings());
+        $this->assertArrayNotHasKey('stp_disabled_port', $this->codes($analyzer->analyze()));
+    }
+
+    public function testRootChangeBurstOfOnePollCountsOnce(): void
+    {
+        $burst = [];
+        foreach (range(0, 49) as $second) {
+            $burst[] = ['device_id' => 3, 'datetime' => sprintf('2026-10-19 10:00:%02d', $second % 60), 'message' => 'STP designated root changed: a > b'];
+        }
+        $result = $this->analyze([], [], [], $burst);
+        $finding = array_values(array_filter($result['findings'], fn ($f) => $f['code'] === 'root_changed'))[0];
+        $this->assertSame('warning', $finding['severity']);
+        $this->assertStringContainsString('acc1 (1)', $finding['detail']);
+
+        $polls = [];
+        foreach (['09:00', '09:05', '09:10'] as $time) {
+            $polls[] = ['device_id' => 3, 'datetime' => "2026-10-19 $time:00", 'message' => 'STP designated root changed: a > b'];
+        }
+        $this->assertSame('critical', $this->codes($this->analyze([], [], [], $polls))['root_changed']);
+    }
+
+    public function testRootOutsideAnalyzedScopeIsNotReported(): void
+    {
+        $outside = '0000000000aa';
+        $overrides = [];
+        foreach ([1, 2, 3, 4] as $id) {
+            $overrides[$id] = ['designatedRoot' => $outside, 'rootBridge' => 0];
+        }
+        $lookups = [$outside => ['owners' => [['device_id' => 99, 'port_id' => null, 'name' => 'dc-core', 'source' => 'stp']], 'fdb' => [], 'vendor' => '', 'hidden' => false]];
+        $result = $this->analyze($overrides, [], [], [], $lookups);
+        $codes = $this->codes($result);
+        $this->assertArrayNotHasKey('root_unmanaged', $codes);
+        $this->assertArrayNotHasKey('root_not_polled', $codes);
+        $this->assertSame('dc-core', $result['domains'][0]['root']['name']);
+        $this->assertSame(99, $result['domains'][0]['root']['device_id']);
+    }
+
+    public function testSummaryOfFilteredResult(): void
+    {
+        $result = $this->analyze([], [42 => ['state' => 'broken']]);
+        $bridges = array_values(array_filter($result['bridges'], fn ($b) => $b['device_id'] === 4));
+        $blocked = array_values(array_filter($result['blocked'], fn ($b) => $b['device_id'] === 4));
+        $summary = StpAnalyzer::summarize($result['domains'], $bridges, $blocked, [], 3600);
+        $this->assertSame(1, $summary['bridges']);
+        $this->assertSame(1, $summary['instances']);
+        $this->assertSame(0, $summary['blocked_ports'], 'broken ports are not counted as blocked');
+        $this->assertSame('ok', $summary['status']);
+    }
+
+    public function testIndexHelpers(): void
+    {
+        $index = new StpIndex(CampusFixture::stpInstances([4 => ['designatedRoot' => '112233445566']]), CampusFixture::stpPorts(), CampusFixture::lagParent());
+        $this->assertSame(['112233445566'], $index->unknownRootMacs());
+        $this->assertSame(31, $index->rootPortId(3, null));
+        $this->assertNull($index->rootPortId(1, null), 'root bridge has no root port');
+        $this->assertContains(33, $index->portIds());
+    }
+
+    public function testRedundantPathThroughSwitchWithoutStpData(): void
+    {
+        // acc1 reports no STP data but is dual-homed to both cores (a loop STP must protect)
+        $instances = array_values(array_filter(CampusFixture::stpInstances(), fn ($i) => $i['device_id'] !== 3));
+        $ports = array_values(array_filter(CampusFixture::stpPorts(), fn ($p) => $p['device_id'] !== 3));
+        $analyzer = new StpAnalyzer(CampusFixture::devices(), new StpIndex($instances, $ports, CampusFixture::lagParent()),
+            CampusFixture::links(), CampusFixture::ports(), CampusFixture::lagParent(), new PluginSettings());
+        $finding = array_values(array_filter($analyzer->analyze()['findings'], fn ($f) => $f['code'] === 'loop_without_stp'))[0] ?? null;
+        $this->assertNotNull($finding);
+        $this->assertSame([3], $finding['devices']);
+    }
+
     public function testPvstKeySelection(): void
     {
         $index = new StpIndex([

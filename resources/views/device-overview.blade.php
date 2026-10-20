@@ -1,3 +1,4 @@
+{{-- Device overview panel (Hooks\DeviceOverview): neighbours and per-VLAN spanning tree state of one device. --}}
 @if($summary && ($summary['neighbors'] || $summary['stp']))
 @php
     $stp = $summary['stp'];

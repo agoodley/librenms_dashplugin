@@ -50,6 +50,9 @@ class StpIndex
         }
     }
 
+    /**
+     * VLAN key of an stp/ports_stp row: NULL, 0 and 1 (default instance / VLAN 1) become 0.
+     */
     public static function vlanKey(mixed $vlan): int
     {
         $vlan = (int) $vlan;
@@ -57,11 +60,18 @@ class StpIndex
         return $vlan <= 1 ? 0 : $vlan;
     }
 
+    /**
+     * Label of a VLAN key for display ("VLAN 1 / CST", "VLAN 20").
+     */
     public static function vlanLabel(int $key): string
     {
         return $key === 0 ? 'VLAN 1 / CST' : 'VLAN ' . $key;
     }
 
+    /**
+     * stp table row with typed values; MACs as 12 hex characters, times in seconds
+     * (LibreNMS already converts BRIDGE-MIB centiseconds).
+     */
     public static function normalizeInstance(array $row): array
     {
         return [
@@ -86,6 +96,9 @@ class StpIndex
         ];
     }
 
+    /**
+     * ports_stp table row with typed values; state/enable lowercase, MACs as 12 hex characters.
+     */
     public static function normalizePort(array $row): array
     {
         return [
@@ -120,16 +133,25 @@ class StpIndex
         return $hex === '000000000000' ? '' : $hex;
     }
 
+    /**
+     * aa:bb:cc:dd:ee:ff for display, "?" when unknown.
+     */
     public static function formatMac(string $hex): string
     {
         return $hex === '' ? '?' : implode(':', str_split($hex, 2));
     }
 
+    /**
+     * Bridge ID as shown by switches: priority.mac (e.g. 4097.00:a0:c9:00:00:01).
+     */
     public static function bridgeId(int $priority, string $mac): string
     {
         return $priority . '.' . self::formatMac($mac);
     }
 
+    /**
+     * 802.1D blocking or 802.1w discarding.
+     */
     public static function isBlocking(?string $state): bool
     {
         return in_array($state, self::BLOCKING_STATES, true);
@@ -143,6 +165,63 @@ class StpIndex
         return $this->bridges[$mac] ?? null;
     }
 
+    /**
+     * Root bridge MACs that belong to none of the indexed bridges (to be looked up elsewhere:
+     * other devices, interface MACs, FDB).
+     *
+     * @return string[]
+     */
+    public function unknownRootMacs(): array
+    {
+        $macs = [];
+        foreach ($this->instances as $byVlan) {
+            foreach ($byVlan as $instance) {
+                if ($instance['designatedRoot'] !== '' && ! isset($this->bridges[$instance['designatedRoot']])) {
+                    $macs[$instance['designatedRoot']] = true;
+                }
+            }
+        }
+
+        // numeric looking MACs become int array keys
+        return array_map('strval', array_keys($macs));
+    }
+
+    /**
+     * All port ids with STP rows in the index.
+     *
+     * @return int[]
+     */
+    public function portIds(): array
+    {
+        $ids = [];
+        foreach ($this->ports as $byVlan) {
+            foreach ($byVlan as $ports) {
+                foreach (array_keys($ports) as $portId) {
+                    $ids[$portId] = true;
+                }
+            }
+        }
+
+        return array_keys($ids);
+    }
+
+    /**
+     * port_id of the root port of the instance carrying $vlan, null on the root bridge or when unknown.
+     */
+    public function rootPortId(int $deviceId, ?int $vlan): ?int
+    {
+        $key = $this->keyFor($deviceId, $vlan);
+        $instance = $key !== null ? $this->instance($deviceId, $key) : null;
+        if (! $instance || ! $instance['rootPort'] || self::isRoot($instance)) {
+            return null;
+        }
+
+        return $this->portByIndex($deviceId, $key, $instance['rootPort'])['port_id'] ?? null;
+    }
+
+    /**
+     * Does the device report any STP instance?
+     */
     public function hasStp(int $deviceId): bool
     {
         return ! empty($this->instances[$deviceId]);
@@ -164,6 +243,9 @@ class StpIndex
         return $this->instances[$deviceId] ?? [];
     }
 
+    /**
+     * Instance of a device for a VLAN key, null when the device has none.
+     */
     public function instance(int $deviceId, int $vlanKey): ?array
     {
         return $this->instances[$deviceId][$vlanKey] ?? null;
@@ -218,6 +300,9 @@ class StpIndex
         return $this->ports[$deviceId][$vlanKey] ?? [];
     }
 
+    /**
+     * Port row by BRIDGE-MIB bridge port number (dot1dStpRootPort refers to it).
+     */
     public function portByIndex(int $deviceId, int $vlanKey, int $portIndex): ?array
     {
         return $this->portsByIndex[$deviceId][$vlanKey][$portIndex] ?? null;

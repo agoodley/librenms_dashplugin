@@ -14,25 +14,38 @@ use LibreNMS\Interfaces\Plugins\Hooks\DeviceOverviewHook;
  */
 class DeviceOverview implements DeviceOverviewHook
 {
+    /**
+     * Shown on every device; the panel hides itself when the device has no neighbours or STP data.
+     */
     public function authorize(): bool
     {
         return true;
     }
 
+    /**
+     * Called by LibreNMS with dependency injection.
+     *
+     * @param  string  $pluginName  injected by LibreNMS (view namespace)
+     * @param  array  $settings  plugin settings injected by LibreNMS
+     * @param  \App\Models\Device  $device  device of the overview page
+     */
     public function handle(string $pluginName, array $settings, $device): View
     {
-        // LibreNMS disables a plugin whose hook throws, so never let an error escape
+        // LibreNMS disables a plugin whose hook throws, and the view is rendered later inside the
+        // device page: render it here so no error can escape
         try {
             $service = new TopologyService(new TopologyRepository(auth()->user()), new PluginSettings($settings));
-            $summary = $service->deviceSummary((int) $device->device_id);
+            $view = view("$pluginName::device-overview", [
+                'device' => $device,
+                'summary' => $service->deviceSummary((int) $device->device_id),
+            ]);
+            $view->render();
+
+            return $view;
         } catch (\Throwable $e) {
             Log::error('topology plugin: device overview failed: ' . $e->getMessage());
-            $summary = null;
-        }
 
-        return view("$pluginName::device-overview", [
-            'device' => $device,
-            'summary' => $summary,
-        ]);
+            return view("$pluginName::device-overview", ['device' => $device, 'summary' => null]);
+        }
     }
 }

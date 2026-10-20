@@ -41,6 +41,10 @@ class SupportTest extends TestCase
         $this->assertFalse(Cidr::contains('10.0.0.0/8', '192.168.0.1'));
         $this->assertTrue(Cidr::contains('2001:db8::/32', '2001:db8:5::1'));
         $this->assertFalse(Cidr::contains('10.0.0.0/8', '2001:db8::1'));
+        $this->assertTrue(Cidr::contains('10.1.1.1', '10.1.1.1'));
+        foreach (['10.255.0.0/', '10.255.0.0/x', '10.255.0.0/33', '10.255.0.0/-1'] as $malformed) {
+            $this->assertFalse(Cidr::contains($malformed, '192.168.1.0/24'), "$malformed must not match everything");
+        }
         $this->assertTrue(Cidr::isIgnorable('127.0.0.1'));
         $this->assertTrue(Cidr::isIgnorable('169.254.10.1'));
         $this->assertTrue(Cidr::isIgnorable('fe80::1'));
@@ -66,6 +70,26 @@ class SupportTest extends TestCase
         // two parallel links between the same switches form a loop
         $parallel = (new Graph)->addEdge('a', 'b', 'x')->addEdge('a', 'b', 'y');
         $this->assertNotNull($parallel->findCycle());
+    }
+
+    public function testNodesOnCycles(): void
+    {
+        // triangle 1-2-3 with a tail 3-4-5: only the triangle is on a cycle
+        $graph = (new Graph)->addEdge(1, 2)->addEdge(2, 3)->addEdge(3, 1)->addEdge(3, 4)->addEdge(4, 5);
+        $nodes = $graph->nodesOnCycles();
+        sort($nodes);
+        $this->assertSame([1, 2, 3], $nodes);
+
+        // two independent links between the same switches are a loop, a tree is not
+        $this->assertCount(2, (new Graph)->addEdge('a', 'b', 'x')->addEdge('a', 'b', 'y')->nodesOnCycles());
+        $this->assertSame([], (new Graph)->addEdge(1, 2)->addEdge(2, 3)->addEdge(2, 4)->nodesOnCycles());
+
+        // two rings joined by a bridge edge 3-10
+        $rings = (new Graph)->addEdge(1, 2)->addEdge(2, 3)->addEdge(3, 1)->addEdge(3, 10)
+            ->addEdge(10, 11)->addEdge(11, 12)->addEdge(12, 10)->addNode(99);
+        $nodes = $rings->nodesOnCycles();
+        sort($nodes);
+        $this->assertSame([1, 2, 3, 10, 11, 12], $nodes);
     }
 
     public function testDeviceRoles(): void

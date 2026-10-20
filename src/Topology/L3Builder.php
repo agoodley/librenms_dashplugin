@@ -44,8 +44,13 @@ class L3Builder
     }
 
     /**
+     * Build the map data returned by api/l3: nodes (devices, subnets, external routers / AS
+     * clouds), edges (p2p, member, ospf, bgp), VRFs and statistics.
+     *
      * @param  array{hideStubs?: bool, p2pPrefix4?: int, p2pPrefix6?: int, exclude?: string[], vrf?: string|null,
      *     ospf?: bool, bgp?: bool, root?: int|null, depth?: int|null}  $options
+     *     hideStubs: leave out subnets with a single device, p2pPrefix4/6: prefix length from which a
+     *     two-device subnet is drawn as a direct link, root/depth: only devices within depth hops
      */
     public function build(array $options = []): array
     {
@@ -56,22 +61,21 @@ class L3Builder
 
         $this->index($options['exclude'] ?? [], $options['vrf'] ?? null);
 
-        // device adjacency through shared subnets, used for scoping and levels
-        $deviceGraph = new Graph;
-        foreach ($this->subnets as $subnet) {
-            $members = array_values(array_unique(array_column($subnet['members'], 'device_id')));
-            foreach ($members as $deviceId) {
-                $deviceGraph->addNode($deviceId);
-            }
-            for ($i = 1; $i < count($members); $i++) {
-                $deviceGraph->addEdge($members[0], $members[$i]);
+        // devices joined through subnet nodes (device - subnet - device = one device hop), so every
+        // member of a shared LAN is one hop from every other member
+        $graph = new Graph;
+        foreach ($this->subnets as $key => $subnet) {
+            foreach (array_unique(array_column($subnet['members'], 'device_id')) as $deviceId) {
+                $graph->addEdge((int) $deviceId, 's:' . $key);
             }
         }
 
-        $kept = array_flip($deviceGraph->nodes());
+        $isDevice = fn ($node) => is_int($node);
+        $kept = array_flip(array_filter($graph->nodes(), $isDevice));
         if ($root && isset($this->devices[$root])) {
-            $deviceGraph->addNode($root);
-            $kept = $deviceGraph->distances($root, $options['depth'] ?? null);
+            $graph->addNode($root);
+            $depth = $options['depth'] ?? null;
+            $kept = array_filter($graph->distances($root, $depth === null ? null : $depth * 2), $isDevice, ARRAY_FILTER_USE_KEY);
         }
 
         $nodes = [];
@@ -192,15 +196,13 @@ class L3Builder
     }
 
     /**
-     * Device ids that have usable L3 interfaces in the address rows.
+     * Sort the address rows into subnets (per VRF), loopbacks / host routes and an IP => device
+     * index used to resolve routing neighbours. Link-local, loopback, multicast and excluded
+     * networks are skipped.
      *
-     * @return int[]
+     * @param  string[]  $exclude  CIDRs never drawn
+     * @param  string|null  $vrfFilter  only keep subnets of this VRF (null or '' keeps every VRF)
      */
-    public function deviceIds(): array
-    {
-        return array_values(array_unique(array_map('intval', array_column($this->addresses, 'device_id'))));
-    }
-
     private function index(array $exclude, ?string $vrfFilter): void
     {
         $this->subnets = [];
@@ -251,6 +253,9 @@ class L3Builder
         ksort($this->subnets);
     }
 
+    /**
+     * Device end of a subnet link: interface name, address(es) and status.
+     */
     private function endpoint(array $member): array
     {
         $name = InterfaceName::label($member);
@@ -268,6 +273,11 @@ class L3Builder
         ];
     }
 
+    /**
+     * Map node for a monitored L3 device with its loopbacks, stub networks and BGP AS.
+     *
+     * @param  string[]  $stubs  networks only this device is attached to
+     */
     private function deviceNode(int $deviceId, array $stubs): array
     {
         $device = $this->devices[$deviceId];
@@ -294,11 +304,18 @@ class L3Builder
         ];
     }
 
+    /**
+     * Device owning an IP address, looked up in the same VRF first.
+     */
     private function lookupIp(string $ip, string $vrf = ''): ?int
     {
         return $this->ipIndex[$vrf . '|' . $ip] ?? $this->ipIndex[$ip] ?? null;
     }
 
+    /**
+     * OSPF adjacencies as overlay edges (both directions merged; the edge is down unless every side
+     * reports full/2-way). Neighbours that are not monitored become external router nodes.
+     */
     private function addOspf(array &$nodes, array &$edges, array $kept): void
     {
         $pairs = [];
@@ -364,6 +381,10 @@ class L3Builder
         }
     }
 
+    /**
+     * BGP sessions as overlay edges, iBGP when both sides share the AS. Peers that are not
+     * monitored are grouped into one cloud per remote AS. A pair is down if any session is not established.
+     */
     private function addBgp(array &$nodes, array &$edges, array $kept): void
     {
         $pairs = [];
@@ -435,6 +456,9 @@ class L3Builder
         }
     }
 
+    /**
+     * Parallel edges between two nodes (e.g. a link plus an OSPF adjacency) are drawn as separate curves.
+     */
     private function assignParallelIndexes(array &$edges): void
     {
         $pairs = [];
@@ -450,6 +474,11 @@ class L3Builder
         }
     }
 
+    /**
+     * Hierarchy levels for the top-down layout: distance through subnets from the centered device,
+     * otherwise from the best placed node of each island (external AS clouds on top, then firewalls,
+     * routers and L3 switches).
+     */
     private function assignLevels(array &$nodes, array $edges, ?int $root): void
     {
         $graph = new Graph;

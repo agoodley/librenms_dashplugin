@@ -1,3 +1,4 @@
+{{-- L2 / L3 map page (PageController::l2/l3): filters and view options; resources/assets/topology.js draws the map from the JSON API. --}}
 @extends('layouts.librenmsv1')
 
 @section('title', $mode === 'l2' ? 'Layer 2 Topology' : 'Layer 3 Topology')
@@ -21,7 +22,7 @@
         </label>
         <label><span class="topo-group-label">Hops</span>
             <select name="depth" class="form-control">
-                @foreach(range(1, 6) as $depth)
+                @foreach(range(1, 10) as $depth)
                     <option value="{{ $depth }}" @selected($params['depth'] == $depth)>{{ $depth }}</option>
                 @endforeach
             </select>

@@ -13,6 +13,9 @@
         });
     }
 
+    /**
+     * Bits per second to a short speed label: 10000000000 => "10G".
+     */
     function formatSpeed(bps) {
         bps = Number(bps) || 0;
         if (!bps) {
@@ -28,11 +31,17 @@
         return bps + 'bps';
     }
 
+    /**
+     * Traffic rate label ("1.2Gbps").
+     */
     function formatRate(bps) {
         var speed = formatSpeed(bps);
         return speed ? speed + 'bps' : '0bps';
     }
 
+    /**
+     * Seconds to "95s", "12m", "3.5h" or "2.1d".
+     */
     function formatDuration(seconds) {
         if (seconds === null || seconds === undefined) {
             return '-';
@@ -50,10 +59,16 @@
         return (Math.round(seconds / 8640) / 10) + 'd';
     }
 
+    /**
+     * LibreNMS toggles the "dark" class on <html> for its dark theme.
+     */
     function isDark() {
         return document.documentElement.classList.contains('dark');
     }
 
+    /**
+     * Canvas colors for the current LibreNMS theme.
+     */
     function theme() {
         return isDark() ? {
             background: '#1d2024', text: '#e6e6e6', textStroke: '#1d2024', labelBg: 'rgba(36,39,44,0.88)',
@@ -71,6 +86,9 @@
     var STATUS_COLORS = {up: '#1f6fb2', down: '#c0392b', disabled: '#8a949e', unknown: '#7d8a96'};
     var iconCache = {};
 
+    /**
+     * Lighten (positive amount) or darken (negative) a #rrggbb color.
+     */
     function shade(hex, amount) {
         var num = parseInt(hex.slice(1), 16);
         var r = Math.max(0, Math.min(255, (num >> 16) + amount));
@@ -79,6 +97,9 @@
         return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
     }
 
+    /**
+     * White arrow from (x1,y1) to (x2,y2) used inside the device icons.
+     */
     function arrow(x1, y1, x2, y2) {
         var angle = Math.atan2(y2 - y1, x2 - x1);
         var head = 5;
@@ -88,6 +109,9 @@
             '<polygon points="' + x2 + ',' + y2 + ' ' + hx1.toFixed(1) + ',' + hy1.toFixed(1) + ' ' + hx2.toFixed(1) + ',' + hy2.toFixed(1) + '" fill="#fff"/>';
     }
 
+    /**
+     * SVG body (64x64 viewBox) of the icon for a device role, drawn in the given color.
+     */
     function svgFor(role, color) {
         var dark = shade(color, -45);
         var light = shade(color, 35);
@@ -140,6 +164,9 @@
         }
     }
 
+    /**
+     * Data URI of a role icon colored by status (blue up, red down, grey disabled/unmanaged), cached.
+     */
     function iconUrl(role, status, managed) {
         var color = STATUS_COLORS[status] || STATUS_COLORS.unknown;
         if (managed === false && status === 'unknown') {
@@ -166,6 +193,9 @@
         return '#8e9aa6';
     }
 
+    /**
+     * Link color for a utilization percentage (green < 30%, yellow, orange, red >= 80%).
+     */
     function utilColor(util) {
         if (util === null || util === undefined) return '#8e9aa6';
         if (util >= 80) return '#c0392b';
@@ -174,6 +204,9 @@
         return '#2e9e44';
     }
 
+    /**
+     * Link width grows with speed; aggregates are drawn one pixel wider.
+     */
     function speedWidth(speed, lag) {
         var width = 1.5;
         if (speed >= 100e9) width = 5.5;
@@ -210,6 +243,9 @@
         this.load();
     }
 
+    /**
+     * View options (layout, labels, colors, STP overlay) remembered per map type in this browser.
+     */
     TopologyMap.prototype.restoreView = function () {
         try {
             var saved = JSON.parse(window.localStorage.getItem('topology.view.' + this.mode) || '{}');
@@ -218,11 +254,12 @@
                     this.view[key] = saved[key];
                 }
             }
+            // first visit of the L3 map: the organic layout suits subnets better
+            if (this.mode === 'l3' && !window.localStorage.getItem('topology.view.l3')) {
+                this.view.layout = 'organic';
+            }
         } catch (e) {
-            // storage unavailable
-        }
-        if (this.mode === 'l3' && !window.localStorage.getItem('topology.view.l3')) {
-            this.view.layout = 'organic';
+            // storage unavailable (blocked site data, private mode): keep the defaults
         }
     };
 
@@ -234,6 +271,9 @@
         }
     };
 
+    /**
+     * Wire the filter form (reloads data) and the view bar (redraws only) to the map.
+     */
     TopologyMap.prototype.bindControls = function () {
         var self = this;
         var form = document.getElementById('topo-filters');
@@ -337,6 +377,9 @@
         }
     };
 
+    /**
+     * Current filter form as query parameters; checkboxes are always sent (1/0) so they override the plugin defaults.
+     */
     TopologyMap.prototype.query = function () {
         var form = document.getElementById('topo-filters');
         var params = new URLSearchParams();
@@ -353,6 +396,9 @@
         return params;
     };
 
+    /**
+     * Put query parameters back into the filter form (browser back/forward).
+     */
     TopologyMap.prototype.applyQueryToForm = function (params) {
         var form = document.getElementById('topo-filters');
         Array.prototype.forEach.call(form.elements, function (element) {
@@ -367,6 +413,9 @@
         });
     };
 
+    /**
+     * Identifies what the map shows (center, hops, group, location, VRF), used to store saved layouts.
+     */
     TopologyMap.prototype.scopeKey = function () {
         var params = this.query();
         return ['device', 'depth', 'group', 'location', 'vrf'].map(function (key) {
@@ -374,6 +423,10 @@
         }).join('&');
     };
 
+    /**
+     * Fetch the map data for the current filters, update the URL (shareable) and redraw.
+     * @param {boolean} fromHistory  triggered by back/forward: do not rewrite the URL
+     */
     TopologyMap.prototype.load = function (fromHistory) {
         var self = this;
         var params = this.query();
@@ -383,24 +436,41 @@
         this.updateNavLinks(params);
         this.setLoading(true);
 
+        // only the latest request may update the map: abort the previous one and ignore late answers
+        var requestId = this.requestId = (this.requestId || 0) + 1;
+        if (this.abort) {
+            this.abort.abort();
+        }
+        this.abort = window.AbortController ? new window.AbortController() : null;
+
         fetch(this.config.urls.api + '?' + params.toString(), {
             credentials: 'same-origin',
-            headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+            headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+            signal: this.abort ? this.abort.signal : undefined
         }).then(function (response) {
-            return response.json().then(function (body) {
-                if (!response.ok) {
-                    throw new Error(body && body.error ? body.error : 'HTTP ' + response.status);
+            return response.json().catch(function () {
+                return null; // HTML error page or login redirect
+            }).then(function (body) {
+                if (!response.ok || body === null) {
+                    throw new Error(body && body.error ? body.error : 'HTTP ' + response.status + (response.redirected ? ': session expired, reload the page' : ''));
                 }
                 return body;
             });
         }).then(function (data) {
+            if (requestId !== self.requestId) {
+                return;
+            }
             self.data = data;
             self.populateSelects(data);
             self.render(false);
         }).catch(function (error) {
-            self.status.innerHTML = '<span class="text-danger"><i class="fa fa-exclamation-triangle"></i> ' + esc(error.message) + '</span>';
+            if (requestId === self.requestId && error.name !== 'AbortError') {
+                self.status.innerHTML = '<span class="text-danger"><i class="fa fa-exclamation-triangle"></i> ' + esc(error.message) + '</span>';
+            }
         }).finally(function () {
-            self.setLoading(false);
+            if (requestId === self.requestId) {
+                self.setLoading(false);
+            }
         });
     };
 
@@ -410,6 +480,9 @@
         }
     };
 
+    /**
+     * Keep the scope (device, hops, group, location, VLAN) when switching between the L2, L3 and STP tabs.
+     */
     TopologyMap.prototype.updateNavLinks = function (params) {
         var keep = new URLSearchParams();
         ['device', 'depth', 'group', 'location', 'vlan'].forEach(function (key) {
@@ -422,6 +495,9 @@
         });
     };
 
+    /**
+     * Fill the VLAN (L2) or VRF (L3) selector with the values present in the loaded data.
+     */
     TopologyMap.prototype.populateSelects = function (data) {
         var fill = function (id, items, allLabel) {
             var select = document.getElementById(id);
@@ -455,6 +531,9 @@
         return 'topology.layout.' + this.mode + '.' + this.scopeKey();
     };
 
+    /**
+     * Device positions saved for this map scope, or null.
+     */
     TopologyMap.prototype.savedPositions = function () {
         try {
             return JSON.parse(window.localStorage.getItem(this.layoutKey()) || 'null');
@@ -463,6 +542,11 @@
         }
     };
 
+    /**
+     * (Re)create the vis-network from the loaded data: saved positions win over the hierarchical
+     * or organic layout; organic layouts are frozen once stabilized so devices stay where dragged.
+     * @param {boolean} relayout  ignore saved positions
+     */
     TopologyMap.prototype.render = function (relayout) {
         var self = this;
         if (!this.data) {
@@ -565,6 +649,9 @@
         this.updateSearchList();
     };
 
+    /**
+     * vis-network node for a device, unmanaged neighbour, subnet or AS cloud.
+     */
     TopologyMap.prototype.visNode = function (node) {
         var colors = theme();
         var tooltip = document.createElement('div');
@@ -596,6 +683,10 @@
         return visNode;
     };
 
+    /**
+     * vis-network edge: color, width, dashes and center label from the link data and the view options
+     * (color by speed/utilization/status, STP blocked links, VLAN dimming, parallel link curves).
+     */
     TopologyMap.prototype.visEdge = function (edge) {
         var colors = theme();
         var color;
@@ -690,11 +781,17 @@
         return visEdge;
     };
 
+    /**
+     * Is a VLAN selected on the L2 map?
+     */
     TopologyMap.prototype.isVlanFiltered = function () {
         var vlan = document.getElementById('topo-vlan');
         return vlan && vlan.value !== '';
     };
 
+    /**
+     * Apply changed view options without reloading or re-laying out the map.
+     */
     TopologyMap.prototype.restyle = function () {
         var self = this;
         if (!this.data) {
@@ -707,6 +804,9 @@
         this.showLegend();
     };
 
+    /**
+     * Paint the theme background on the canvas (so PNG exports are not transparent).
+     */
     TopologyMap.prototype.drawBackground = function (ctx) {
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -715,6 +815,9 @@
         ctx.restore();
     };
 
+    /**
+     * Point at fraction t along an edge, following curved (parallel) edges when vis-network exposes the curve.
+     */
     TopologyMap.prototype.edgePoint = function (edgeId, from, to, t) {
         var internal = this.network && this.network.body && this.network.body.edges[edgeId];
         if (internal && internal.edgeType && typeof internal.edgeType.getPoint === 'function') {
@@ -730,6 +833,10 @@
         return {x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t};
     };
 
+    /**
+     * Drawn after vis-network: interface names at both ends of every link (with the STP port role),
+     * IP addresses on the L3 map, blocked port markers and root bridge badges.
+     */
     TopologyMap.prototype.drawOverlays = function (ctx) {
         var self = this;
         if (!this.data || !this.network) {
@@ -831,6 +938,9 @@
         return slots;
     };
 
+    /**
+     * Boxed multi-line label centered on a point; accent colors the border and text (blocked ports).
+     */
     TopologyMap.prototype.drawLabel = function (ctx, point, lines, colors, accent) {
         ctx.font = '10px Arial';
         var width = 0;
@@ -859,6 +969,9 @@
         });
     };
 
+    /**
+     * Orange circle with a cross on a blocked port (red when the port is broken).
+     */
     TopologyMap.prototype.drawBlockedMarker = function (ctx, point, broken) {
         ctx.beginPath();
         ctx.arc(point.x, point.y, 7, 0, Math.PI * 2);
@@ -874,6 +987,9 @@
         ctx.stroke();
     };
 
+    /**
+     * Star next to the root bridge; red with "ROOT?" for an unmanaged neighbour suspected to be the root.
+     */
     TopologyMap.prototype.drawRootBadge = function (ctx, position, suspected, offset) {
         var cx = position.x + offset, cy = position.y - offset, outer = 9, inner = 4;
         ctx.beginPath();
@@ -909,6 +1025,9 @@
         return html;
     };
 
+    /**
+     * Hover text of a link: both ends, speed or network, routing protocol state.
+     */
     TopologyMap.prototype.edgeTooltip = function (edge) {
         var a = edge.a ? (this.nodeName(edge.from) + ' ' + (edge.a.short || '')) : this.nodeName(edge.from);
         var b = edge.b ? (this.nodeName(edge.to) + ' ' + (edge.b.short || '')) : this.nodeName(edge.to);
@@ -937,6 +1056,9 @@
         return value === null || value === undefined || value === '' ? '' : '<tr><th>' + esc(label) + '</th><td>' + value + '</td></tr>';
     };
 
+    /**
+     * Details panel of a device / subnet: properties, STP state, connections (clickable) and actions.
+     */
     TopologyMap.prototype.showNode = function (id) {
         var self = this;
         var visNode = this.nodes.get(id);
@@ -1016,6 +1138,9 @@
         });
     };
 
+    /**
+     * Table rows describing one end of a link (interface, status, speed, VLANs, traffic, STP).
+     */
     TopologyMap.prototype.endpointRows = function (endpoint) {
         if (!endpoint) {
             return '';
@@ -1043,6 +1168,9 @@
         return html;
     };
 
+    /**
+     * Details panel of a link: both ends, aggregate members, or routing session details.
+     */
     TopologyMap.prototype.showEdge = function (id) {
         var visEdge = this.edges.get(id);
         if (!visEdge) {
@@ -1095,6 +1223,9 @@
         this.panel.innerHTML = html;
     };
 
+    /**
+     * Legend shown in the details panel when nothing is selected.
+     */
     TopologyMap.prototype.showLegend = function () {
         var roles = this.mode === 'l2'
             ? [['l3switch', 'L3 switch'], ['switch', 'L2 switch'], ['router', 'Router'], ['firewall', 'Firewall'], ['wireless', 'Wireless / AP'], ['server', 'Server'], ['phone', 'Phone'], ['unknown', 'Unmanaged']]
@@ -1129,6 +1260,9 @@
         this.panel.innerHTML = html;
     };
 
+    /**
+     * Status line under the map: counts, centered device and truncation warning.
+     */
     TopologyMap.prototype.updateStatus = function () {
         var stats = this.data.stats || {};
         var scope = this.data.scope || {};
@@ -1157,6 +1291,9 @@
         this.status.innerHTML = html;
     };
 
+    /**
+     * Device names offered by the "Find device" box.
+     */
     TopologyMap.prototype.updateSearchList = function () {
         var list = document.getElementById('topo-search-list');
         if (!list) {
@@ -1169,6 +1306,9 @@
         }).join('');
     };
 
+    /**
+     * Select and zoom to the first device whose name matches (exact match first).
+     */
     TopologyMap.prototype.find = function (text) {
         text = String(text || '').toLowerCase().trim();
         if (!text || !this.data) {
@@ -1186,6 +1326,9 @@
         }
     };
 
+    /**
+     * Reload the map centered on a device (double-click or "Center map here").
+     */
     TopologyMap.prototype.recenter = function (deviceId, name) {
         var $ = window.jQuery;
         var select = document.getElementById('topo-device');
@@ -1217,6 +1360,9 @@
         }
     };
 
+    /**
+     * Forget saved positions for this scope and lay the map out again.
+     */
     TopologyMap.prototype.resetLayout = function () {
         try {
             window.localStorage.removeItem(this.layoutKey());
@@ -1226,6 +1372,9 @@
         this.render(true);
     };
 
+    /**
+     * Short notification (LibreNMS toastr when available).
+     */
     TopologyMap.prototype.flash = function (message) {
         if (window.toastr) {
             window.toastr.info(message);
@@ -1234,6 +1383,9 @@
         }
     };
 
+    /**
+     * Let the browser save a data URI as a file.
+     */
     TopologyMap.prototype.download = function (href, filename) {
         var link = document.createElement('a');
         link.href = href;
@@ -1247,6 +1399,9 @@
         return 'topology-' + this.mode + '-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '');
     };
 
+    /**
+     * Download the current view of the map as PNG.
+     */
     TopologyMap.prototype.exportPng = function () {
         var canvas = this.container.querySelector('canvas');
         if (canvas) {
@@ -1255,6 +1410,9 @@
         }
     };
 
+    /**
+     * Download the links of the map as CSV (one row per link / session).
+     */
     TopologyMap.prototype.exportCsv = function () {
         if (!this.data) {
             return;

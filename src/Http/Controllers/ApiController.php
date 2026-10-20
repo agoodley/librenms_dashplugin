@@ -7,27 +7,43 @@ use Agoodley\LibrenmsTopology\Support\MapParams;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
-use Illuminate\Support\Facades\Log;
 
+/**
+ * JSON API behind the map pages, also usable for automation:
+ * GET plugin/topology/api/{l2,l3,stp} with the same query parameters as the pages
+ * (device, depth, group, location, vlan, vrf and the map toggles).
+ */
 class ApiController extends Controller
 {
     use BuildsTopology;
 
+    /**
+     * Layer 2 map: devices, LLDP/CDP links, VLANs and STP state.
+     */
     public function l2(Request $request): JsonResponse
     {
         return $this->respond($request, 'l2');
     }
 
+    /**
+     * Layer 3 map: devices, subnets, OSPF adjacencies and BGP sessions.
+     */
     public function l3(Request $request): JsonResponse
     {
         return $this->respond($request, 'l3');
     }
 
+    /**
+     * Spanning tree diagnostics (findings, domains, bridges, blocked ports, events).
+     */
     public function stp(Request $request): JsonResponse
     {
         return $this->respond($request, 'stp');
     }
 
+    /**
+     * Build one of the data sets; errors become a JSON {error} with HTTP 500.
+     */
     private function respond(Request $request, string $map): JsonResponse
     {
         $settings = $this->settings();
@@ -36,9 +52,7 @@ class ApiController extends Controller
         try {
             return response()->json($this->service($request, $settings)->$map($params));
         } catch (\Throwable $e) {
-            Log::error("topology plugin: building $map failed: " . $e->getMessage() . PHP_EOL . $e->getTraceAsString());
-
-            return response()->json(['error' => "Unable to build the $map view: " . $e->getMessage()], 500);
+            return response()->json(['error' => $this->failure("$map view", $e)], 500);
         }
     }
 }
