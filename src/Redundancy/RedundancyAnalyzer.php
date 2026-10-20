@@ -246,6 +246,68 @@ class RedundancyAnalyzer
     }
 
     /**
+     * Nodes of the graphs and the devices they stand for: node id => device_id (null for unmanaged
+     * neighbours), name, role, managed, network, up; the copies of an end device (see build()) also
+     * carry 'of', the node id of their device, which is kept here for its name but is no graph node.
+     *
+     * @return array<string, array>
+     */
+    public function nodes(): array
+    {
+        return $this->nodes;
+    }
+
+    /**
+     * Copy of the design graph (every device and link) or of the current one (only what is up),
+     * both with the CORE node joined to the core devices.
+     */
+    public function graph(bool $current = false): Graph
+    {
+        return clone ($current ? $this->current : $this->design);
+    }
+
+    /**
+     * End devices with several links => their copies in the graphs (one per link).
+     *
+     * @return array<string, string[]>
+     */
+    public function copies(): array
+    {
+        return $this->copies;
+    }
+
+    /**
+     * Unmanaged neighbours that hang off a node alone (phones, PCs, access points): node => their local
+     * ports; they are no graph nodes and go down with that node.
+     *
+     * @return array<string, int[]>
+     */
+    public function leaves(): array
+    {
+        return $this->leaves;
+    }
+
+    /**
+     * Part of the network (connected component of the design graph) of every graph node.
+     *
+     * @return array<string, int>
+     */
+    public function parts(): array
+    {
+        return $this->part;
+    }
+
+    /**
+     * Bridge priority of the default spanning tree instance of the devices that report one.
+     *
+     * @return array<int, int> device_id => priority
+     */
+    public function bridgePriorities(): array
+    {
+        return $this->stpPriority;
+    }
+
+    /**
      * What the given failures cut off the core now, on top of what is down already: the failure
      * simulation of the map, computed on the whole network. References: node ids of the map
      * (d:<device_id>, u:<neighbour>), p:<port_id> for a link by one of its ports (a port-channel
@@ -802,8 +864,9 @@ class RedundancyAnalyzer
                 'single point of failure: ' . $name . ($this->nodes[$node]['managed'] ? '' : ' (unmanaged neighbor)'),
                 ($chosen ? "$name is the only core device of this part of the network. " : '')
                 . match (true) {
-                    $tie => "If $name fails, the network splits into $pieces parts of the same size and " . $this->lostText($lost, $node) . ' lose their connection: ',
-                    $onlyCore => "If $name fails, the network splits into $pieces parts and " . $this->lostText($lost, $node) . ' are cut off from the largest of them: ',
+                    $tie => "If $name fails, the network splits into $pieces parts of the same size and " . $this->lostText($lost, $node) . ' ' . $this->lose($lost, $node) . ' connection: ',
+                    $onlyCore => "If $name fails, the network splits into $pieces parts and " . $this->lostText($lost, $node)
+                        . ($this->lostCount($lost, $node) === 1 ? ' is' : ' are') . ' cut off from the largest of them: ',
                     default => "If $name fails, " . $this->lostText($lost, $node) . ' ' . $this->lose($lost, $node) . ' path to the core: ',
                 }
                 . $this->nameList($lost) . '.',
@@ -1614,8 +1677,17 @@ class RedundancyAnalyzer
      */
     private function lose(array $nodes, ?string $failed = null): string
     {
-        return count($nodes) + $this->unmanagedCount($nodes, $failed) - count(array_filter($nodes, fn ($n) => ! $this->nodes[$n]['managed'])) === 1
-            ? 'loses its' : 'lose their';
+        return $this->lostCount($nodes, $failed) === 1 ? 'loses its' : 'lose their';
+    }
+
+    /**
+     * Number of devices lostText() counts: monitored devices and unmanaged neighbours.
+     *
+     * @param  array<int, string>  $nodes
+     */
+    private function lostCount(array $nodes, ?string $failed = null): int
+    {
+        return count(array_filter($nodes, fn ($n) => $this->nodes[$n]['managed'])) + $this->unmanagedCount($nodes, $failed);
     }
 
     /**

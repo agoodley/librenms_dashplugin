@@ -72,6 +72,16 @@
             </label>
             <label><input type="checkbox" name="ospf" value="1" @checked($params['ospf'])> OSPF</label>
             <label><input type="checkbox" name="bgp" value="1" @checked($params['bgp'])> BGP</label>
+            {{-- more overlays, shown by topology.js when the map's devices have such data; disabled until then so they stay out of the URL --}}
+            @foreach([
+                'ospfv3' => ['OSPFv3', 'OSPFv3 adjacencies'],
+                'isis' => ['IS-IS', 'IS-IS adjacencies'],
+                'ipsec' => ['IPsec', 'IPsec tunnels to monitored devices and external peers'],
+                'mpls' => ['MPLS LSPs', 'MPLS label switched paths, with an arrow toward the tail (off by default: a full mesh joins every two PEs)'],
+                'pw' => ['Pseudowires', 'Pseudowires between PE devices, with the MTU check of their attachment circuits'],
+            ] as $layer => [$layerLabel, $layerTitle])
+                <label data-layer="{{ $layer }}" title="{{ $layerTitle }}" style="display: none"><input type="checkbox" name="{{ $layer }}" value="1" @checked($params[$layer]) @disabled(! request()->has($layer))> {{ $layerLabel }}</label>
+            @endforeach
             <label><input type="checkbox" name="ipv6" value="1" @checked($params['ipv6'])> IPv6</label>
             <label title="Include every device with an IP address, not only routers, L3 switches and firewalls">
                 <input type="checkbox" name="all_devices" value="1" @checked($params['all_devices'])> All devices

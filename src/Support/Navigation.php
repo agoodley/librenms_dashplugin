@@ -46,6 +46,18 @@ class Navigation
             'route' => 'topology.hosts', 'group' => 'tools', 'tab' => 'Host Locator', 'title' => 'Host Locator', 'icon' => 'fa-map-marker', 'scoped' => false,
             'description' => 'Where is this plugged in? An IP, MAC or hostname to its switch port, VLAN, vendor and 802.1X user, following the forwarding tables past uplinks, port-channels, phones and access points.',
         ],
+        'coverage' => [
+            'route' => 'topology.coverage', 'group' => 'diagnostics', 'tab' => 'Coverage', 'title' => 'Monitoring Coverage', 'icon' => 'fa-binoculars',
+            'description' => 'Switches, routers, firewalls and access points seen as LLDP/CDP neighbors but not monitored, devices missing from the maps because they report no neighbors, and ports that look like unmanaged switches.',
+        ],
+        'rollout' => [
+            'route' => 'topology.rollout', 'group' => 'tools', 'tab' => 'Rollout Planner', 'title' => 'Rollout Planner', 'icon' => 'fa-layer-group',
+            'description' => 'Batches for a firmware upgrade, reboot or configuration change of many devices: farthest from the core first, never two devices that back each other up at once, and what each batch takes down.',
+        ],
+        'dependencies' => [
+            'route' => 'topology.dependencies', 'group' => 'tools', 'tab' => 'Dependencies', 'title' => 'Device Dependencies', 'icon' => 'fa-sort-amount-down',
+            'description' => 'LibreNMS parent devices derived from the topology toward the core (both uplinks of dual-homed devices), compared with the current ones and checked against past outages.',
+        ],
     ];
 
     /**

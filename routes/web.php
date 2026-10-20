@@ -2,8 +2,10 @@
 
 use Agoodley\LibrenmsTopology\Http\Controllers\ApiController;
 use Agoodley\LibrenmsTopology\Http\Controllers\AssetController;
+use Agoodley\LibrenmsTopology\Http\Controllers\CoverageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\HostController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PageController;
+use Agoodley\LibrenmsTopology\Http\Controllers\PlanningController;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use Illuminate\Support\Facades\Route;
 
@@ -27,6 +29,16 @@ Route::middleware(['web', 'auth'])
         Route::get('api/redundancy', [ApiController::class, 'redundancy'])->name('api.redundancy');
         Route::get('api/simulate', [ApiController::class, 'simulate'])->name('api.simulate');
         Route::get('api/hosts', [HostController::class, 'api'])->name('api.hosts');
+
+        Route::get('coverage', [CoverageController::class, 'index'])->name('coverage');
+        Route::get('api/coverage', [CoverageController::class, 'api'])->name('api.coverage');
+
+        // rollout planner and device dependencies
+        Route::get('rollout', [PlanningController::class, 'rollout'])->name('rollout');
+        Route::get('api/rollout', [PlanningController::class, 'rolloutApi'])->name('api.rollout');
+        Route::get('dependencies', [PlanningController::class, 'dependencies'])->name('dependencies');
+        Route::post('dependencies', [PlanningController::class, 'applyDependencies'])->name('dependencies.apply');
+        Route::get('api/dependencies', [PlanningController::class, 'dependenciesApi'])->name('api.dependencies');
 
         Route::get('assets/{file}', AssetController::class)
             ->where('file', '[A-Za-z0-9_-]+\.(js|css)')

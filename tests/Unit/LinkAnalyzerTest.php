@@ -445,6 +445,30 @@ class LinkAnalyzerTest extends TestCase
         $this->assertEqualsCanonicalizing([10, 20, 21, 30], $split['ports']);
     }
 
+    public function testLldpNeighborsJoinASplitVlanOnlyWhenTheirDescriptionMayBeASwitch(): void
+    {
+        // core1 Gi1/0/15 and acc1 Gi1/0/33 see the same LLDP neighbor, known by its system description only (LibreNMS
+        // stores no platform for LLDP): a switch may carry VLAN 10 from one to the other, a server or a phone does not
+        $split = function (string $sysDescr): bool {
+            $links = LinkFixture::links();
+            foreach ([[1, 15], [3, 33]] as [$deviceId, $portId]) {
+                $links[] = ['remote_platform' => null, 'remote_version' => $sysDescr] + LinkFixture::link($deviceId, $portId, 0, null, 'host-01', 'eth' . $deviceId);
+            }
+            $codes = $this->codes($this->analyze(
+                vlans: [31 => [1 => true], 32 => [1 => true], 15 => [10 => false], 33 => [10 => false]],
+                links: $links,
+                extraPorts: [15 => LinkFixture::port(15, 1, 'GigabitEthernet1/0/15'), 33 => LinkFixture::port(33, 3, 'GigabitEthernet1/0/33')],
+            ));
+
+            return isset($codes['vlan_split']);
+        };
+
+        $this->assertFalse($split('Juniper Networks, Inc. ex2300-c-12p Ethernet Switch, kernel JUNOS 21.4R3-S4'));
+        $this->assertFalse($split('Acme NetOS 1.2'), 'a neighbor of unknown type may be a switch');
+        $this->assertTrue($split('VMware ESXi 8.0.2 build-22380479 VMware, Inc. VMware7,1'), 'a dual-homed server');
+        $this->assertTrue($split('Cisco IP Phone CP-8845, V3, sip88xx.14-1-1-0001-136'));
+    }
+
     public function testUnmanagedSwitchesWithFactoryNamesDoNotJoinASplitVlan(): void
     {
         // two different desk switches both advertise "Switch": they are not one device

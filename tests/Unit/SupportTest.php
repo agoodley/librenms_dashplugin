@@ -135,8 +135,30 @@ class SupportTest extends TestCase
         $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor('', 'Cumulus Linux version 5.4.0 running on Mellanox SN2010', 'leaf2'));
         // a CDP platform wins over the description; nothing known stays unknown
         $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor('cisco WS-C2960X-48FPD-L', 'Linux', 'sw1'));
-        $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromNeighbor(null, 'Cisco IOS Software, C2960X Software (C2960X-UNIVERSALK9-M)', 'sw2'));
+        $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromNeighbor(null, 'Acme NetOS 1.2', 'box1'));
         $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromNeighbor(null, '', ''));
+
+        // the system descriptions of common switches and routers
+        $descriptions = [
+            'Cisco IOS Software, C2960X Software (C2960X-UNIVERSALK9-M), Version 15.2(7)E3, RELEASE SOFTWARE (fc1)' => DeviceRole::SWITCH,
+            'Cisco IOS Software [Cupertino], Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.9.4' => DeviceRole::SWITCH,
+            'Cisco NX-OS(tm) n9000, Software (n9000-dk9), Version 9.3(10), RELEASE SOFTWARE' => DeviceRole::SWITCH,
+            'Arista Networks EOS version 4.28.3M running on an Arista Networks DCS-7050SX3-48YC8' => DeviceRole::SWITCH,
+            'Aruba JL658A 6300M 24SFP+ 4SFP56 Swch FL.10.10.1020' => DeviceRole::SWITCH,
+            'ExtremeXOS (X460G2-48p-10G4) version 30.7.1.1 30.7.1.1-patch1-5' => DeviceRole::SWITCH,
+            'Ruckus ICX7150-48P, IronWare Version 08.0.95 Compiled on Mar 23 2022' => DeviceRole::SWITCH,
+            'Dell EMC Networking OS10 Enterprise. Copyright (c) 1999-2023 by Dell Inc.' => DeviceRole::SWITCH,
+            'Cisco IOS Software, C2900 Software (C2900-UNIVERSALK9-M), Version 15.7(3)M8' => DeviceRole::ROUTER,
+            'Cisco IOS XR Software, Version 7.5.2' => DeviceRole::ROUTER,
+            'VyOS 1.4-rolling-202307250317' => DeviceRole::ROUTER,
+            'ArubaOS (MODEL: 515), Version 8.10.0.6' => DeviceRole::WIRELESS,
+            'Cisco IOS Software [Cupertino], C9800 Software (C9800_IOSXE-K9), Version 17.9.4a' => DeviceRole::WIRELESS,
+            'U6-LR 6.5.62.14789' => DeviceRole::WIRELESS,
+            'Cisco Firepower Threat Defense, Version 7.2.5' => DeviceRole::FIREWALL,
+        ];
+        foreach ($descriptions as $description => $role) {
+            $this->assertSame($role, DeviceRole::fromNeighbor(null, $description, 'neighbor'), $description);
+        }
     }
 
     public function testSettingsAndParams(): void
