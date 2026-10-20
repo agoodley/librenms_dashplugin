@@ -54,6 +54,10 @@
             ['redundancy_warn_devices', 'number', 'Warn when one failure cuts off at least this many switches, routers or firewalls', 'smaller single points of failure are info'],
             ['redundancy_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (outages, lost, fake, spof), e.g. uplinks_same_device spof_link'],
         ],
+        'Host locator' => [
+            ['hosts_shared_port_macs', 'number', 'Flag an access port without LLDP/CDP neighbor from this many MACs', 'an unmanaged switch, hub or virtualization host is probably connected to it'],
+            ['hosts_dns', 'bool', 'Look up hostnames that are not LibreNMS devices in DNS', 'with the server\'s resolver (getent), 2 seconds per name and 4 per search, cached for 5 minutes, 20 lookups per user and minute'],
+        ],
         'Monitoring coverage' => [
             ['coverage_mac_threshold', 'number', 'Report access ports without LLDP/CDP neighbor from this many MAC addresses', 'in the last discovery: a likely unmanaged switch or hub (a phone on the port does not count as a neighbor); 0 disables the count'],
             ['coverage_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (unmonitored, devices, ports), e.g. not_linked hub_suspected'],

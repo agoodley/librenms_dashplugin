@@ -23,13 +23,13 @@ The plugin's conventions apply to all of them:
 | 4 | [Routing & IP diagnostics](README.md#routing--ip-diagnostics) | **done** | – |
 | 5 | [Topology history, diff and baseline](README.md#topology-history-baseline-and-background-checks) | **done** | – |
 | 6 | [Background diagnostics → eventlog](README.md#topology-history-baseline-and-background-checks) | **done** | – |
+| 2 | [Host locator and port tab](README.md#host-locator-and-port-tab) | **done** | – |
 | 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
 | 7 | [Automatic device dependencies](README.md#device-dependencies) | **done** | – |
 | 9 | [More L3 map layers](README.md#layer-3-map-overlays) | **done** | – |
 | 10 | [Loop evidence on the STP page](README.md#spanning-tree-diagnostics) | **done** | – |
 | 12 | [Coverage report](README.md#coverage-report) | **done** | – |
 | 8 | [Site / WAN map](README.md#site--wan-map) | **done** | – |
-| 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
 | 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
 | 15 | [Maps at a point in time](#15-maps-at-a-point-in-time) | later | M |
@@ -37,32 +37,17 @@ The plugin's conventions apply to all of them:
 Effort: S = new checks or an overlay on data the plugin already loads; M = new queries plus a page or tab;
 L = several new parts (tables, jobs, UI).
 
-**Why this order:** 2 answers the most frequent day-to-day question. The rest builds on the tools that are done.
+**Why this order:** the path trace (13) finds both of its ends with the host locator (2).
 
 ## What a plugin can do in LibreNMS
 
-* Hooks: menu entry, single page, settings page, device overview panel and **port tab**. The port tab is not used yet.
+* Hooks: menu entry, single page, settings page, device overview panel and **port tab** (used by the host locator).
   There is no hook for dashboard widgets or device tabs.
 * A plugin package can ship routes, views and **database migrations**, and register **scheduled commands**
   (LibreNMS runs Laravel's scheduler).
 * The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (the background checks write their
   findings there) and the Custom Map widget (see 11).
 
-## Next up
-
-### 2. Host locator ("where is this plugged in?") and port tab
-
-* Enter an IP, MAC or hostname; get the switch port, VLAN, vendor, first/last seen and 802.1X user, highlighted on the
-  L2 map.
-* LibreNMS' own FDB search lists every switch that learned the MAC and only marks a port when it holds exactly one
-  MAC, which misses phones with a PC behind them, APs and VM hosts. The plugin knows which ports are inter-switch
-  links and port-channels, so it can rule them out and find the edge port.
-* **Port tab** on every port page: the device and port at the far end, STP role per VLAN, VLANs, port-channel, MACs and
-  IPs learned on the port. It runs on every port page view, so it must stay cheap.
-* Data: `ipv4_mac` (ARP), `ipv6_nd`, `ports_fdb` (`created_at` / `updated_at` give first/last seen), `ports_nac`
-  (802.1X; the `nac` poller module is off by default), `vendor_ouis`.
-* Caveat: FDB and ARP tables are refreshed at discovery (every 6 hours by default); the `arp-table` poller module (off
-  by default) refreshes ARP every poll. Show "last seen" with every answer.
 
 ## Later
 

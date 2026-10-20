@@ -50,6 +50,8 @@ class PluginSettings
         'routing_prefix_warn_percent' => '80',
         'routing_ignore_addresses' => '',
         'routing_disabled_checks' => '',
+        'hosts_shared_port_macs' => '5',
+        'hosts_dns' => '1',
         'coverage_mac_threshold' => '4',
         'coverage_disabled_checks' => '',
         'history_enabled' => '1',

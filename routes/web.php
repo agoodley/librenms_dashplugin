@@ -4,6 +4,7 @@ use Agoodley\LibrenmsTopology\Http\Controllers\ApiController;
 use Agoodley\LibrenmsTopology\Http\Controllers\AssetController;
 use Agoodley\LibrenmsTopology\Http\Controllers\CoverageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\HistoryController;
+use Agoodley\LibrenmsTopology\Http\Controllers\HostController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PlanningController;
 use Agoodley\LibrenmsTopology\Http\Controllers\RoutingController;
@@ -26,6 +27,7 @@ Route::middleware(['web', 'auth'])
         Route::get('routing', [RoutingController::class, 'index'])->name('routing');
         Route::get('changes', [HistoryController::class, 'changes'])->name('changes');
         Route::post('changes/baseline', [HistoryController::class, 'baseline'])->name('changes.baseline');
+        Route::get('hosts', [HostController::class, 'index'])->name('hosts');
 
         Route::get('api/l2', [ApiController::class, 'l2'])->name('api.l2');
         Route::get('api/l3', [ApiController::class, 'l3'])->name('api.l3');
@@ -36,6 +38,7 @@ Route::middleware(['web', 'auth'])
         Route::get('api/simulate', [ApiController::class, 'simulate'])->name('api.simulate');
         Route::get('api/routing', [RoutingController::class, 'api'])->name('api.routing');
         Route::get('api/changes', [HistoryController::class, 'api'])->name('api.changes');
+        Route::get('api/hosts', [HostController::class, 'api'])->name('api.hosts');
 
         Route::get('coverage', [CoverageController::class, 'index'])->name('coverage');
         Route::get('api/coverage', [CoverageController::class, 'api'])->name('api.coverage');

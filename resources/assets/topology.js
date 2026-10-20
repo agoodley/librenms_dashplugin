@@ -40,6 +40,14 @@
     }
 
     /**
+     * 12 lowercase hex digits of a MAC address (aa:bb:cc:dd:ee:ff, aabb.ccdd.eeff, ...), null when it is not one.
+     */
+    function normalizeMac(value) {
+        var hex = String(value === null || value === undefined ? '' : value).toLowerCase().replace(/^0x/, '').replace(/[:\-. ]/g, '');
+        return /^[0-9a-f]{12}$/.test(hex) ? hex : null;
+    }
+
+    /**
      * Seconds to "95s", "12m", "3.5h" or "2.1d".
      */
     function formatDuration(seconds) {
@@ -224,6 +232,10 @@
     /** Unmanaged neighbors that do not pass traffic between their links, by the role of their platform. */
     var END_ROLES = ['server', 'phone', 'wireless'];
 
+    // node and edge ids of the located host (host=<mac>)
+    var HOST_NODE = 'host:located';
+    var HOST_EDGE = 'host:port';
+
     /** L3 overlays beyond OSPF and BGP: edge kind => name, color and dash pattern (distinct from OSPF, BGP and subnets). */
     var L3_LAYERS = {
         ospfv3: {name: 'OSPFv3 adjacency', color: '#2e86de', dashes: [2, 4]},
@@ -256,6 +268,8 @@
         this.simMap = {nodes: {}, edges: {}};
         this.simResult = null;
         this.outages = {top: {}, behind: {}};
+        // a host found by the host locator (host=<mac> in the URL), drawn next to its switch
+        this.host = {mac: normalizeMac(new URLSearchParams(window.location.search).get('host')), data: null, warned: false};
         this.container = document.getElementById('topo-canvas');
         this.panel = document.getElementById('topo-details');
         this.status = document.getElementById('topo-status');
@@ -456,7 +470,12 @@
         var self = this;
         var params = this.query();
         if (!fromHistory) {
-            window.history.replaceState(null, '', window.location.pathname + '?' + params.toString());
+            // the located host stays in the shareable URL
+            var url = new URLSearchParams(params.toString());
+            if (this.host.mac) {
+                url.set('host', this.host.mac);
+            }
+            window.history.replaceState(null, '', window.location.pathname + '?' + url.toString());
         }
         this.updateNavLinks(params);
         this.setLoading(true);
@@ -679,6 +698,7 @@
         this.showLegend();
         this.updateSearchList();
         this.updateSimBox();
+        this.drawHost();
     };
 
     /**
@@ -1742,6 +1762,9 @@
      * Details panel of a device / subnet: properties, STP state, connections (clickable) and actions.
      */
     TopologyMap.prototype.showNode = function (id) {
+        if (id === HOST_NODE) {
+            return this.showHost();
+        }
         var self = this;
         var visNode = this.nodes.get(id);
         if (!visNode) {
@@ -1886,6 +1909,9 @@
      * Details panel of a link: both ends, aggregate members, or routing session details.
      */
     TopologyMap.prototype.showEdge = function (id) {
+        if (id === HOST_EDGE) {
+            return this.showHost();
+        }
         var visEdge = this.edges.get(id);
         if (!visEdge) {
             return;
@@ -2094,6 +2120,138 @@
         }
     };
 
+    // ------------------------------------------------------------------ located host (host locator)
+
+    /**
+     * Draw the host of host=<mac> next to the switch it is plugged into, joined by its port, or next to the device it is
+     * somewhere behind, and select it; an address of a monitored device selects that device. The answer comes from the
+     * host locator API, once per page; the host is drawn again after every redraw.
+     */
+    TopologyMap.prototype.drawHost = function () {
+        var self = this;
+        if (!this.host.mac || this.mode !== 'l2' || !this.config.urls.hosts || !this.network) {
+            return;
+        }
+        if (this.host.data === null) {
+            this.host.data = false; // loading
+            fetch(this.config.urls.hosts + '?q=' + encodeURIComponent(this.host.mac), {
+                credentials: 'same-origin',
+                headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+            }).then(function (response) {
+                return response.ok ? response.json() : null;
+            }).then(function (body) {
+                self.host.data = (body && body.hosts && body.hosts[0]) || {missing: true};
+                self.drawHost();
+            }).catch(function () {
+                self.host.data = {missing: true};
+                self.drawHost();
+            });
+            return;
+        }
+        if (!this.host.data) {
+            return; // still loading
+        }
+
+        var host = this.host.data;
+        var name = host.readable || this.host.mac.match(/../g).join(':');
+        var warn = function (message) {
+            if (!self.host.warned) {
+                self.host.warned = true;
+                self.flash(message);
+            }
+        };
+
+        // an address of a monitored device: the device is the answer
+        if ((host.status === 'owner' || host.status === 'gateway') && host.device) {
+            var deviceNode = 'd:' + host.device.device_id;
+            if (this.nodes.get(deviceNode)) {
+                this.network.selectNodes([deviceNode]);
+                this.network.focus(deviceNode, {scale: Math.max(1, this.network.getScale()), animation: {duration: 500}});
+                this.showNode(deviceNode);
+            } else {
+                warn(name + ' is an address of ' + host.device.name + ', which is not on this map.');
+            }
+            return;
+        }
+
+        var edge = host.edge;
+        var behind = host.status === 'behind' && host.device ? host.device : null;
+        var anchor = behind ? 'd:' + behind.device_id : (edge ? 'd:' + edge.device_id : null);
+        var where = behind ? 'behind ' + behind.name : (edge ? edge.device + ' ' + edge.port : '');
+        if (!anchor || !this.nodes.get(anchor)) {
+            warn(anchor ? name + ' is ' + (behind ? '' : 'on ') + where + ', which is not on this map.' : name + ' is not in a forwarding table you can see.');
+            return;
+        }
+
+        var anchorNode = this.nodes.get(anchor);
+        var position = this.network.getPositions([anchor])[anchor] || {x: 0, y: 0};
+        var ips = (host.addresses || []).map(function (address) {
+            return address.display;
+        });
+        var tooltip = document.createElement('div');
+        tooltip.className = 'topo-tooltip';
+        tooltip.innerHTML = '<b>' + esc(host.readable) + '</b><br>' + esc(host.vendor || '') + (ips.length ? '<br>' + esc(ips.slice(0, 4).join(', ')) : '') +
+            '<br>' + esc(where);
+        this.nodes.update({
+            id: HOST_NODE,
+            label: [ips[0], host.vendor, host.readable].filter(Boolean).join('\n'),
+            title: tooltip,
+            shape: 'image',
+            image: iconUrl('other', 'up', false),
+            size: 16,
+            level: anchorNode.level !== undefined ? anchorNode.level + 1 : undefined,
+            x: position.x + 90,
+            y: position.y + 150,
+            data: {id: HOST_NODE, name: host.readable, type: 'host'}
+        });
+        this.edges.update({
+            id: HOST_EDGE,
+            from: anchor,
+            to: HOST_NODE,
+            dashes: behind ? [2, 6] : [5, 4],
+            width: 2,
+            color: {color: '#f39c12', highlight: '#f39c12', hover: '#f39c12'},
+            // shaped like a link so the interface label and the switch's connection list show the port
+            data: {id: HOST_EDGE, from: anchor, to: HOST_NODE, kind: 'host', a: behind ? null : {name: edge.port, short: edge.port}, b: null}
+        });
+        this.network.selectNodes([HOST_NODE]);
+        this.network.focus(HOST_NODE, {scale: Math.max(1, this.network.getScale()), animation: {duration: 500}});
+        this.showHost();
+    };
+
+    /**
+     * Details panel of the located host: where it is plugged in (or what it is behind) and what the locator says about it.
+     */
+    TopologyMap.prototype.showHost = function () {
+        var host = this.host.data;
+        if (!host || !host.edge) {
+            return;
+        }
+        var edge = host.edge;
+        var link = function (url, text) {
+            return url ? '<a href="' + esc(url) + '">' + esc(text) + '</a>' : esc(text);
+        };
+        var html = '<h4 class="topo-panel-title"><i class="fa fa-map-marker"></i> ' + esc(host.readable) + '</h4><table class="table table-condensed topo-kv">' +
+            this.row('Vendor', esc(host.vendor || '-')) +
+            this.row('Addresses', esc((host.addresses || []).map(function (address) {
+                return address.display;
+            }).join(', ') || '-')) +
+            (host.status === 'behind' && host.device ? this.row('Behind', link(host.device.url, host.device.name)) : '') +
+            this.row(host.status === 'behind' ? 'Learned on' : 'Switch', link(edge.device_url, edge.device)) +
+            this.row('Port', link(edge.port_url, edge.port)) +
+            this.row('VLAN', esc((edge.vlans || []).join(', ') || '-')) +
+            this.row('Last seen', esc(edge.last_seen ? formatDuration(Math.max(0, Math.round(Date.now() / 1000 - edge.last_seen))) + ' ago' : '-')) +
+            '</table>';
+        (host.notes || []).forEach(function (note) {
+            html += '<div class="topo-host-note topo-host-note-' + esc(note.level) + '">' + esc(note.text) + '</div>';
+        });
+        if (this.config.urls.hostsPage) {
+            html += '<div class="topo-actions"><a class="btn btn-xs btn-default" href="' + esc(this.config.urls.hostsPage + '?q=' + encodeURIComponent(host.readable)) +
+                '"><i class="fa fa-map-marker"></i> Host locator</a></div>';
+        }
+        this.panel.innerHTML = html;
+    };
+
     // ------------------------------------------------------------------ layout persistence & export
 
     TopologyMap.prototype.saveLayout = function () {
@@ -2124,8 +2282,9 @@
      * Short notification (LibreNMS toastr when available).
      */
     TopologyMap.prototype.flash = function (message) {
+        // toastr inserts HTML, and messages carry device, port and host names
         if (window.toastr) {
-            window.toastr.info(message);
+            window.toastr.info(esc(message));
         } else {
             this.status.innerHTML = esc(message);
         }
@@ -2765,6 +2924,7 @@
         },
         // exposed for tests
         _formatSpeed: formatSpeed,
-        _iconUrl: iconUrl
+        _iconUrl: iconUrl,
+        _normalizeMac: normalizeMac
     };
 })(window, document);

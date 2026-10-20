@@ -50,6 +50,10 @@ class Navigation
             'route' => 'topology.redundancy', 'group' => 'diagnostics', 'tab' => 'Redundancy', 'title' => 'Redundancy & Failure Impact', 'icon' => 'fa-code-branch',
             'description' => 'Single points of failure, uplinks that only look redundant (same switch, same stack member), redundancy lost right now, and outages with the devices behind them.',
         ],
+        'hosts' => [
+            'route' => 'topology.hosts', 'group' => 'tools', 'tab' => 'Host Locator', 'title' => 'Host Locator', 'icon' => 'fa-map-marker', 'scoped' => false,
+            'description' => 'Where is this plugged in? An IP, MAC or hostname to its switch port, VLAN, vendor and 802.1X user, following the forwarding tables past uplinks, port-channels, phones and access points.',
+        ],
         'coverage' => [
             'route' => 'topology.coverage', 'group' => 'diagnostics', 'tab' => 'Coverage', 'title' => 'Monitoring Coverage', 'icon' => 'fa-binoculars',
             'description' => 'Switches, routers, firewalls and access points seen as LLDP/CDP neighbors but not monitored, devices missing from the maps because they report no neighbors, and ports that look like unmanaged switches.',
