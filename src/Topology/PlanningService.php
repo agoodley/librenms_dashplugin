@@ -108,7 +108,7 @@ class PlanningService
      */
     public function dependencies(array $p): array
     {
-        [$rows, $known] = $this->view($p, $this->repo->deviceIds());
+        [$rows, $known, $derived] = $this->view($p, $this->repo->deviceIds());
         $current = $known['parents'];
         $changes = DependencyPlanner::changes($rows);
 
@@ -134,8 +134,10 @@ class PlanningService
                 $core[] = ['device_id' => (int) $deviceId, 'mode' => $mode];
             }
         }
-        $advice = CoreAdvice::singleCores($this->analyzer());
-        $names = array_map(fn ($info) => $info['name'], $this->deviceInfo(array_merge($ids, array_column($core, 'device_id'), array_column($advice, 'lookalike'))));
+        // the parents a switch cabled like a second core switch gets until it is set as core
+        $advice = array_map(fn ($entry) => $entry + ['parents' => $derived[$entry['lookalike']]['parents'] ?? []], CoreAdvice::singleCores($this->analyzer()));
+        $names = array_map(fn ($info) => $info['name'], $this->deviceInfo(array_merge($ids, array_column($core, 'device_id'),
+            array_column($advice, 'lookalike'), ...array_column($advice, 'parents'))));
         $count = fn (string $change) => count(array_filter($rows, fn ($r) => $r['change'] === $change));
 
         return [
@@ -245,8 +247,9 @@ class PlanningService
      *
      * @param  array{device: ?int, group: ?int, location: ?int}  $p
      * @param  int[]  $all  every device the user may see
-     * @return array{0: array<int, array>, 1: array{parents: array<int, int[]>, disabled: array<int, string>, hidden: array<int, int>}}
-     *     rows (see DependencyPlanner::compare()) and DependencyRepository::parents()
+     * @return array{0: array<int, array>, 1: array{parents: array<int, int[]>, disabled: array<int, string>, hidden: array<int, int>},
+     *     2: array<int, array>} rows (see DependencyPlanner::compare()), DependencyRepository::parents() and
+     *     DependencyPlanner::derive()
      */
     private function view(array $p, array $all): array
     {
@@ -267,7 +270,7 @@ class PlanningService
         usort($rows, fn ($a, $b) => [self::CHANGE_ORDER[$a['change']] ?? 9, $a['hops'] ?? PHP_INT_MAX] <=> [self::CHANGE_ORDER[$b['change']] ?? 9, $b['hops'] ?? PHP_INT_MAX]
             ?: strnatcasecmp($this->name($a['device_id']), $this->name($b['device_id'])));
 
-        return [$rows, $known];
+        return [$rows, $known, $derived];
     }
 
     /**

@@ -71,7 +71,7 @@
                 <div class="alert alert-warning topo-core-advice">
                     <i class="fa fa-exclamation-triangle"></i> <strong>{{ $name($advice['lookalike']) }}</strong> is cabled like a core switch
                     ({{ $advice['shared'] }} switches have links to both it and <strong>{{ $name($advice['core']) }}</strong>, the only core device of its part of the network):
-                    add it to <i>Core devices</i> in the plugin settings. Until then it is planned like an access switch, before the core.
+                    add it to <i>Core devices</i> in the plugin settings. Until then it is planned like any other switch, before the core.
                 </div>
             @endif
         @endforeach

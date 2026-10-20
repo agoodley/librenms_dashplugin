@@ -54,10 +54,11 @@ class CoreAdvice
             }
             $core = $cores[0];
             $around = $neighbours($core);
+            $isAround = array_flip($around);
             $best = null;
             $bestShared = 0;
             foreach ($around as $candidate) {
-                $shared = count(array_intersect($around, $neighbours($candidate)));
+                $shared = count(array_filter($neighbours($candidate), fn ($node) => isset($isAround[$node])));
                 $key = [-$shared, $priority[$candidate] ?? self::DEFAULT_PRIORITY, (int) $nodes[$candidate]['device_id']];
                 if ($best === null || $key < $best[0]) {
                     $best = [$key, $candidate];

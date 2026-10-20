@@ -141,9 +141,9 @@ the core over every LLDP/CDP link, also links that are down now.
 
 * Dual-homed devices get both uplink devices, so their alerts are only suppressed when both are down.
 * A switch also gets the switches next to it at the same distance from the core that rank before it: lower spanning
-  tree bridge priority, then more central (fewer hops to the other switches), then lower device id. So a switch cabled
-  to both switches of a core pair gets both even when only one of them is set as core, as long as the other one has the
-  lower bridge priority.
+  tree bridge priority (without the VLAN bits), then a switch cabled like a second core switch, then lower device id.
+  So a switch cabled to both switches of a core pair gets both even when only one of them is set as core, and the order
+  of two switches stays the same when other switches are added or removed.
 * Parents always come first in that order (closer to the core, then by rank), so derived dependencies never form a loop.
 * An unmonitored switch in between is skipped to the next monitored device toward the core.
 * Core devices and devices without a path to a core keep their current parents.
@@ -218,8 +218,8 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   same as JSON).
 * If the automatic core is not your core, set **Core devices** in the settings; the switches next to the LibreNMS
   poller are a good choice when you want "what can the poller still reach". Set both switches of a core pair: with only
-  one, the other one depends on it alone on the dependencies page and the rollout planner plans it like an access
-  switch (both pages name a switch that is cabled like a second core switch).
+  one, the other one gets parents on the dependencies page and the rollout planner plans it like any other switch
+  (both pages name a switch that is cabled like a second core switch).
 * Before a firmware rollout, plan it on **Rollout Planner** for the device group or location, then put each batch and
   the devices listed under it in a LibreNMS maintenance window while it runs.
 * `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links`, `api/redundancy`, `api/rollout` and `api/dependencies`

@@ -85,12 +85,21 @@ class DependencyPlannerTest extends TestCase
         $this->assertSame([self::C2], $parents[self::D2]);
         $this->assertSame([self::C2, self::D1], self::parents(self::square(), [], [self::D1 => 32769, self::D2 => 32770])[self::D2]);
 
-        // then the more central switch (fewer hops to the other switches): acc1 hangs off dist2
-        $net = self::square();
-        $net->device(self::A1, 'acc1')->link(self::A1, 'Gi1/0/49', self::D2, 'Gi1/0/1');
-        $parents = self::parents($net);
-        $this->assertSame([self::C1, self::D2], $parents[self::D1]);
-        $this->assertSame([self::C2], $parents[self::D2]);
+    }
+
+    public function testOrderDoesNotDependOnOtherSwitches(): void
+    {
+        // a peer link between the distribution switches: dist2 gets dist1, whatever else hangs off either of them
+        $net = RedundancyFixture::campus();
+        $net->link(self::D1, 'Te1/1/5', self::D2, 'Te1/1/5');
+        $this->assertSame([self::C1, self::C2, self::D1], self::parents($net)[self::D2]);
+
+        $net->device(8, 'acc3')->link(8, 'Gi1/0/49', self::D2, 'Gi1/0/8');
+        $this->assertSame([self::C1, self::C2, self::D1], self::parents($net)[self::D2]);
+        $this->assertSame([self::C1, self::C2], self::parents($net)[self::D1]);
+
+        $net->device(9, 'acc4')->link(9, 'Gi1/0/49', self::D1, 'Gi1/0/9')->device(10, 'acc5')->link(10, 'Gi1/0/49', self::D1, 'Gi1/0/10');
+        $this->assertSame([self::C1, self::C2, self::D1], self::parents($net)[self::D2]);
     }
 
     public function testOddRingDependsOnBothSides(): void
@@ -117,7 +126,7 @@ class DependencyPlannerTest extends TestCase
             ->link(10, 'Gi1/0/50', 11, 'Gi1/0/49')->link(11, 'Gi1/0/50', self::D2, 'Gi1/0/11');
         $derived = (new DependencyPlanner($net->analyzer()))->derive();
 
-        $this->assertSame([8], $derived[9]['parents'], 'ranks first (as central, lower device id)');
+        $this->assertSame([8], $derived[9]['parents'], 'ranks first (lower device id)');
         $this->assertSame([9, 11], $derived[10]['parents'], 'its own uplink and the switch next to it');
         $this->assertSame([3, 3], [$derived[9]['hops'], $derived[10]['hops']]);
         $this->assertSame([], DependencyPlanner::loops(array_map(fn ($entry) => $entry['parents'], $derived)));
@@ -137,10 +146,51 @@ class DependencyPlannerTest extends TestCase
         $this->assertSame([self::D1, self::D2], $derived[self::A1]['parents']);
         $this->assertSame([['core' => self::C1, 'lookalike' => self::C2, 'shared' => 2]], CoreAdvice::singleCores($analyzer));
 
-        // without spanning tree data the distribution switches are more central than core2: the page says to set it as core
+        // without spanning tree data core2 ranks first as the switch cabled like a second core switch
         $analyzer = $net->analyzer(['redundancy_core' => 'core1']);
+        $derived = (new DependencyPlanner($analyzer))->derive();
         $this->assertSame([['core' => self::C1, 'lookalike' => self::C2, 'shared' => 2]], CoreAdvice::singleCores($analyzer));
-        $this->assertSame([], DependencyPlanner::loops(array_map(fn ($entry) => $entry['parents'], (new DependencyPlanner($analyzer))->derive())));
+        $this->assertSame([self::C1], $derived[self::C2]['parents']);
+        $this->assertSame([self::C1, self::C2], $derived[self::D1]['parents']);
+        $this->assertSame([self::C1, self::C2], $derived[self::D2]['parents']);
+
+        // a lower bridge priority still ranks first
+        $derived = (new DependencyPlanner($net->analyzer(['redundancy_core' => 'core1'], null, [], [], [self::D1 => 4096])))->derive();
+        $this->assertSame([self::C1, self::D1], $derived[self::C2]['parents']);
+        $this->assertSame([self::C1], $derived[self::D1]['parents']);
+        $this->assertSame([], DependencyPlanner::loops(array_map(fn ($entry) => $entry['parents'], $derived)));
+    }
+
+    public function testLargeCampusWithRingsIsDerivedQuickly(): void
+    {
+        // 40 distribution pairs with a peer link, each with a ring of 30 access switches from one to the other
+        $net = new RedundancyFixture;
+        $net->device(1, 'core1')->device(2, 'core2')->link(1, 'Te1/1/1', 2, 'Te1/1/1');
+        $id = 2;
+        for ($pod = 0; $pod < 40; $pod++) {
+            $a = ++$id;
+            $b = ++$id;
+            $net->device($a, "dist{$pod}a")->device($b, "dist{$pod}b")->link($a, 'Te1/1/1', 1, "Te1/0/$a")->link($a, 'Te1/1/2', 2, "Te1/0/$a")
+                ->link($b, 'Te1/1/1', 1, "Te1/0/$b")->link($b, 'Te1/1/2', 2, "Te1/0/$b")->link($a, 'Te1/1/3', $b, 'Te1/1/3');
+            $previous = $a;
+            for ($i = 0; $i < 30; $i++) {
+                $net->device(++$id, "acc{$pod}-{$i}")->link($id, 'Gi1/0/49', $previous, "Gi1/0/50-$i");
+                $previous = $id;
+            }
+            $net->link($previous, 'Gi1/0/50', $b, 'Gi1/0/1');
+        }
+        $analyzer = $net->analyzer();
+        $start = microtime(true);
+        $derived = (new DependencyPlanner($analyzer))->derive();
+        $elapsed = microtime(true) - $start;
+
+        $this->assertCount(1282, $derived);
+        $this->assertSame([], DependencyPlanner::loops(array_map(fn ($entry) => $entry['parents'], $derived)));
+        // the first ring runs dist0a (3), acc 5 to 34, dist0b (4): 19 and 20 are the farthest, 20 also depends on 19
+        $this->assertSame([18], $derived[19]['parents']);
+        $this->assertSame([19, 21], $derived[20]['parents']);
+        $this->assertSame([1, 2, 3], $derived[4]['parents']);
+        $this->assertLessThan(1.0, $elapsed);
     }
 
     public function testDualHomedServerAndLoneDevices(): void

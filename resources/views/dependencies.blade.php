@@ -75,11 +75,19 @@
         @endphp
         @foreach($result['advice'] as $advice)
             @if($advice['lookalike'])
+                @php
+                    $adviceParents = array_map($name, $advice['parents']);
+                    $parentList = count($adviceParents) > 1 ? implode(', ', array_slice($adviceParents, 0, -1)) . ' and ' . end($adviceParents) : implode('', $adviceParents);
+                @endphp
                 <div class="alert alert-warning topo-core-advice">
                     <i class="fa fa-exclamation-triangle"></i> <strong>{{ $name($advice['lookalike']) }}</strong> is cabled like a core switch
                     ({{ $advice['shared'] }} switches have links to both it and <strong>{{ $name($advice['core']) }}</strong>, the only core device of its part of the network):
-                    add it to <i>Core devices</i> in the plugin settings. Until then it gets {{ $name($advice['core']) }} as its only parent, and LibreNMS suppresses
-                    its alerts whenever {{ $name($advice['core']) }} is down.
+                    add it to <i>Core devices</i> in the plugin settings, so it gets no parents.
+                    @if(count($adviceParents) === 1)
+                        Until then it depends on {{ $parentList }} alone, and LibreNMS suppresses its alerts whenever {{ $parentList }} is down.
+                    @elseif($adviceParents)
+                        Until then it depends on {{ $parentList }}, and LibreNMS suppresses its alerts while all of them are down.
+                    @endif
                 </div>
             @endif
         @endforeach
@@ -218,8 +226,8 @@
         <p class="text-muted" style="font-size: 12px">
             Parents are the neighbors one hop closer to the core, over every LLDP/CDP link (also links that are down now): dual-homed devices get both
             uplinks, and unmonitored switches in between are skipped to the next monitored device. A switch also gets the switches next to it at the
-            same distance from the core that rank before it (lower spanning tree bridge priority, then more central, then lower device id). Parents
-            always come first in that order, so they never make a loop.
+            same distance from the core that rank before it (lower spanning tree bridge priority, then a switch cabled like a second core switch, then
+            lower device id). Parents always come first in that order, so they never make a loop.
             Outages: started while all parents were down (within {{ \Agoodley\LibrenmsTopology\Redundancy\DependencyPlanner::OUTAGE_TOLERANCE / 60 }}
             minutes), now / with the derived parents. A disabled parent never counts as down; applying a change removes it.
             @if($single)

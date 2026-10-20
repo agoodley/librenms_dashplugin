@@ -10,10 +10,11 @@ namespace Agoodley\LibrenmsTopology\Redundancy;
  *  - its neighbours one hop closer to the core, through unmanaged devices (LibreNMS parents must be
  *    monitored devices, so an unmonitored switch is skipped to the next monitored one);
  *  - its switches, routers and firewalls at the same distance from the core that rank before it:
- *    lower spanning tree bridge priority, then more central (fewer hops to the other switches),
- *    then lower device id. A switch cabled to both switches of a core pair whose second switch is
- *    not set as core gets that second switch too when it has the lower bridge priority (as a
- *    secondary root bridge does), and of two peer-linked switches the later one gets the first.
+ *    lower spanning tree bridge priority (without the VLAN bits), then the switch cabled like a
+ *    second core switch (see CoreAdvice), then lower device id. So a switch cabled to both switches
+ *    of a core pair whose second switch is not set as core gets that second switch too, and of two
+ *    peer-linked switches the later one gets the first. The order only depends on these devices,
+ *    not on the rest of the cabling, so it stays the same when other switches come and go.
  * Parents always rank before their children in one strict order (distance, then that rank), so the
  * dependencies never form a loop; more parents only make suppression rarer, the safe side. Core
  * devices and devices without a path to a core get no parents: their current ones are kept.
@@ -48,8 +49,8 @@ class DependencyPlanner
     /** @var array<int, int> device_id => bridge priority without the VLAN bits */
     private array $priority = [];
 
-    /** @var array<string, int> node => hops to every switch, router and firewall it reaches (memo) */
-    private array $hopTotal = [];
+    /** @var array<int, true> device_id => cabled like a second core switch (see CoreAdvice) */
+    private array $lookalike = [];
 
     public function __construct(private RedundancyAnalyzer $analyzer)
     {
@@ -61,6 +62,11 @@ class DependencyPlanner
         $this->distance = array_map('intval', $graph->distances(RedundancyAnalyzer::CORE));
         foreach ($analyzer->bridgePriorities() as $deviceId => $priority) {
             $this->priority[(int) $deviceId] = (int) $priority & 0xF000;
+        }
+        foreach (CoreAdvice::singleCores($analyzer) as $advice) {
+            if ($advice['lookalike'] !== null) {
+                $this->lookalike[$advice['lookalike']] = true;
+            }
         }
     }
 
@@ -157,43 +163,17 @@ class DependencyPlanner
 
     /**
      * Strict order of two network devices at the same distance from the core: lower bridge priority,
-     * then fewer hops to the other switches (more central), then lower device id.
+     * then the switch cabled like a second core switch, then lower device id.
      */
     private function ranksBefore(string $a, string $b): bool
     {
         $deviceA = (int) $this->nodes[$a]['device_id'];
         $deviceB = (int) $this->nodes[$b]['device_id'];
         $order = ($this->priority[$deviceA] ?? self::DEFAULT_PRIORITY) <=> ($this->priority[$deviceB] ?? self::DEFAULT_PRIORITY)
-            ?: $this->hopTotal($a) <=> $this->hopTotal($b)
+            ?: isset($this->lookalike[$deviceB]) <=> isset($this->lookalike[$deviceA])
             ?: $deviceA <=> $deviceB;
 
         return $order < 0;
-    }
-
-    /**
-     * Hops from the node to every switch, router and firewall it reaches without the core node: the
-     * centrality CoreFinder ranks automatic core candidates by.
-     */
-    private function hopTotal(string $node): int
-    {
-        if (! isset($this->hopTotal[$node])) {
-            $hops = [$node => 0];
-            $queue = [$node];
-            $total = 0;
-            for ($i = 0; $i < count($queue); $i++) {
-                foreach ($this->adjacency[$queue[$i]] as $next) {
-                    if ($next !== RedundancyAnalyzer::CORE && ! isset($hops[$next])) {
-                        $hops[$next] = $hops[$queue[$i]] + 1;
-                        $queue[] = $next;
-                        $info = $this->nodes[$next] ?? null;
-                        $total += $info && $info['managed'] && $info['network'] ? $hops[$next] : 0;
-                    }
-                }
-            }
-            $this->hopTotal[$node] = $total;
-        }
-
-        return $this->hopTotal[$node];
     }
 
     /**
