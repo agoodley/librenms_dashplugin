@@ -12,9 +12,7 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
  */
 class CoverageService
 {
-    /** Port columns of the LLDP/CDP ports (names and description), and of the counted access ports (also mode and type). */
-    private const NAME_COLUMNS = ['port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifAlias'];
-
+    /** Port columns the report needs (names, description, mode and type). */
     private const PORT_COLUMNS = ['port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifAlias', 'ifType', 'ifTrunk', 'deleted'];
 
     public function __construct(
@@ -33,32 +31,16 @@ class CoverageService
     public function report(array $p): array
     {
         [$scope, $device] = $this->repo->scope($p);
+        // streamed from the database each time it is read: here for the ports to count, then twice by the analyzer
         $links = $this->repo->links($scope);
-
-        // the analyzed devices, the devices that see them and the monitored neighbours they report
-        $ids = $scope;
-        $portIds = [];
-        $addresses = [];
-        foreach ($links as $link) {
-            $ids[] = (int) $link['local_device_id'];
-            if ($link['remote_device_id'] && $this->repo->canSee((int) $link['remote_device_id'])) {
-                $ids[] = (int) $link['remote_device_id'];
-            }
-            $portIds[] = (int) $link['local_port_id'];
-            $portIds[] = (int) $link['remote_port_id'];
-            $host = trim((string) $link['remote_hostname']);
-            if (! $link['remote_device_id'] && filter_var($host, FILTER_VALIDATE_IP)) {
-                $addresses[] = $host;
-            }
-        }
-        $devices = $this->topology->devices(array_values(array_unique($ids)));
+        $devices = $this->topology->devices($scope);
         $lagParent = $this->topology->lagParents($scope);
 
         // MAC addresses are only counted on access ports without a neighbour that explains them, of the
         // centered device alone when there is one
         $threshold = $this->settings->int('coverage_mac_threshold', 0, 1000000);
         $busy = [];
-        if ($threshold) {
+        if ($threshold && $scope) {
             $candidates = array_diff_key(
                 $this->repo->accessPorts($device !== null ? [$device] : $scope),
                 CoverageAnalyzer::explainedPorts($links), $lagParent, array_flip($lagParent),
@@ -70,12 +52,12 @@ class CoverageService
             $devices,
             $scope,
             $links,
-            ($busy ? $this->topology->ports(array_keys($busy), self::PORT_COLUMNS) : []) + $this->topology->ports($portIds, self::NAME_COLUMNS),
+            fn (array $portIds) => $this->topology->ports($portIds, self::PORT_COLUMNS),
             $lagParent,
-            $this->repo->knownDevices($addresses),
+            $this->repo->knownDevices($this->repo->addressNames($scope)),
             $busy,
             $busy ? $this->topology->portVlans(array_keys($busy)) : [],
-            $this->repo->protocolsModuleOff(array_intersect_key($devices, array_flip($scope))),
+            $this->repo->protocolsModuleOff($devices),
             $this->repo->xdpAutodiscovery(),
             $this->settings,
         );

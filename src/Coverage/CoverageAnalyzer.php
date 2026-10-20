@@ -18,7 +18,9 @@ use Agoodley\LibrenmsTopology\Topology\L2Builder;
  *    are missing from the maps and the checks;
  *  - ports that look like an unmanaged switch or hub: several neighbours on one port, or an access
  *    port with many MAC addresses and no neighbour that explains them.
- * Pure PHP: all data is passed in as arrays so it can be tested without LibreNMS.
+ * Pure PHP: all data is passed in as arrays (the LLDP/CDP rows as any iterable, which is read twice)
+ * so it can be tested without LibreNMS. Phones, servers and other end devices are only counted: a
+ * network has tens of thousands of them and they never make a finding.
  */
 class CoverageAnalyzer
 {
@@ -79,14 +81,23 @@ class CoverageAnalyzer
     /** @var Finding[] */
     private array $findings = [];
 
+    /** @var array<int, array> port rows of the ports the report names */
+    private array $portRows = [];
+
+    /** @var array<string, int> role => unmonitored neighbours that are only counted (phones, servers, ...) */
+    private array $counted = [];
+
+    /** @var array<string, int> the same, of the neighbours of the centered device */
+    private array $countedOf = [];
+
     /**
-     * @param  array<int, array>  $devices  device_id => row (display, hostname, role, type, os, status) of the analyzed
-     *                                       devices and of the monitored devices they report or that report them
+     * @param  array<int, array>  $devices  device_id => row (display, hostname, role, type, os, status) of the analyzed devices
      * @param  int[]  $scope  analyzed devices (the group / location filter)
-     * @param  array<int, array>  $links  links rows reported by the analyzed devices and rows of other devices that name
-     *                                    them; a remote device the user may not see is already anonymized (id 0)
-     * @param  array<int, array>  $ports  port_id => port row (ifName, ifDescr, ifAlias, ifTrunk, ifType, deleted, device_id)
-     *                                    of the link ports and the busy ports
+     * @param  iterable<array>  $links  links rows reported by the analyzed devices and rows of other devices that name them,
+     *     read twice (an array, or a lazy collection that streams them); a remote device the user may not see is already
+     *     anonymized (id 0)
+     * @param  array<int, array>|\Closure  $ports  port_id => port row (ifName, ifDescr, ifAlias, ifTrunk, ifType, deleted,
+     *     device_id), or a function that returns them for a list of port ids: called once with the ports the report names
      * @param  array<int, int>  $lagParent  member port_id => aggregate port_id
      * @param  array<int, array{name: string, hostname: string, sysname: string, names: string[], disabled: bool}>  $known
      *     the monitored devices the user may see (also disabled ones): display name, lower case hostname and sysName,
@@ -102,8 +113,8 @@ class CoverageAnalyzer
     public function __construct(
         private array $devices,
         array $scope,
-        private array $links,
-        private array $ports,
+        private iterable $links,
+        private array|\Closure $ports,
         private array $lagParent,
         private array $known,
         private array $busyPorts,
@@ -138,11 +149,17 @@ class CoverageAnalyzer
     public function analyze(?int $device = null): array
     {
         $this->findings = [];
-        $reports = new NeighborReports($this->links, $this->devices);
+        $this->counted = [];
+        $this->countedOf = [];
 
-        $neighbors = $this->checkNeighbors();
-        $devices = $this->checkDevices($reports);
-        $ports = $this->checkPorts();
+        $seen = $this->readLinks($device);
+        $merged = $this->readNeighbors($seen['listed'], $seen['linked']);
+        $this->loadPorts($merged, $seen);
+
+        $neighbors = $this->checkNeighbors($merged, $device);
+        unset($merged);
+        $devices = $this->checkDevices($seen['reports']);
+        $ports = $this->checkPorts($seen['shared'], $seen['phones'], $seen['explained']);
 
         if ($device !== null) {
             $neighbors = array_values(array_filter($neighbors, fn ($n) => in_array($device, $n['candidates'], true)
@@ -162,7 +179,7 @@ class CoverageAnalyzer
         $key = fn ($f) => [Finding::SEVERITY_ORDER[$f['severity']], $categoryOrder[$f['category']] ?? 99, $f['title']];
         usort($findings, fn ($a, $b) => $key($a) <=> $key($b));
 
-        $summary = $this->summarize($findings, $neighbors, $devices, $ports);
+        $summary = $this->summarize($findings, $neighbors, $devices, $ports, $device === null ? $this->counted : $this->countedOf);
         $result = [
             'summary' => $summary,
             'findings' => array_slice($findings, 0, self::ROWS),
@@ -202,12 +219,12 @@ class CoverageAnalyzer
     /**
      * Ports facing an LLDP/CDP neighbour that explains many MAC addresses: any neighbour but an IP phone
      * (a phone passes on the PC behind it; an unmanaged switch behind a phone is what the check is for),
-     * on either end of the link. Shared with the repository, which only counts MAC addresses elsewhere.
+     * on either end of the link. Used before the MAC addresses are counted, which only happens elsewhere.
      *
-     * @param  array<int, array>  $links  links rows
+     * @param  iterable<array>  $links  links rows
      * @return array<int, true> port ids
      */
-    public static function explainedPorts(array $links): array
+    public static function explainedPorts(iterable $links): array
     {
         $explained = [];
         foreach ($links as $link) {
@@ -230,115 +247,286 @@ class CoverageAnalyzer
      * days have passed, so only the latest stamp of a device counts, and only when it is from the device's
      * last discovery: when that discovery found no address on these ports, all they have is older.
      *
-     * @param  array<int, array{port_id: int, device_id: int, seen: int, macs: int}>  $groups  address count per port
-     *     and update time (unix time) of the candidate ports
+     * @param  iterable<array{port_id: int, device_id: int, seen: int, macs: int}>  $groups  address count per port and
+     *     update time (unix time) of the candidate ports, in any order
      * @param  array<int, array{0: ?int, 1: float}>  $discovered  device_id => [end of the last discovery (unix time,
      *     null when unknown), its duration in seconds]
      * @return array<int, array{device_id: int, macs: int, last_seen: int}> port_id => count and time of the last discovery
      */
-    public static function currentMacCounts(array $groups, array $discovered, int $min): array
+    public static function currentMacCounts(iterable $groups, array $discovered, int $min): array
     {
-        $latest = [];
+        $latest = [];   // device => its latest update time
+        $portSeen = []; // port => its latest update time
+        $busy = [];     // port => the count of its latest update time, when it reaches $min
         foreach ($groups as $group) {
-            $deviceId = (int) $group['device_id'];
-            $latest[$deviceId] = max($latest[$deviceId] ?? 0, (int) $group['seen']);
-        }
-
-        $counts = [];
-        foreach ($groups as $group) {
+            $portId = (int) $group['port_id'];
             $deviceId = (int) $group['device_id'];
             $seen = (int) $group['seen'];
-            [$end, $took] = $discovered[$deviceId] ?? [null, 0];
-            // the forwarding table is read during the discovery: a minute of slack for the rounding to seconds
-            if ($seen !== $latest[$deviceId] || ($end !== null && $seen < $end - (int) ceil((float) $took) - 60) || (int) $group['macs'] < $min) {
+            $latest[$deviceId] = max($latest[$deviceId] ?? 0, $seen);
+            if ($seen <= ($portSeen[$portId] ?? -1)) {
                 continue;
             }
-            $counts[(int) $group['port_id']] = ['device_id' => $deviceId, 'macs' => (int) $group['macs'], 'last_seen' => $seen];
+            $portSeen[$portId] = $seen;
+            if ((int) $group['macs'] >= $min) {
+                $busy[$portId] = ['device_id' => $deviceId, 'macs' => (int) $group['macs'], 'last_seen' => $seen];
+            } else {
+                unset($busy[$portId]);
+            }
         }
 
-        return $counts;
+        foreach ($busy as $portId => $port) {
+            [$end, $took] = $discovered[$port['device_id']] ?? [null, 0];
+            // the forwarding table is read during the discovery: a minute of slack for the rounding to seconds
+            if ($port['last_seen'] !== $latest[$port['device_id']] || ($end !== null && $port['last_seen'] < $end - (int) ceil((float) $took) - 60)) {
+                unset($busy[$portId]);
+            }
+        }
+
+        return $busy;
+    }
+
+    // ---------------------------------------------------------------- reading the LLDP/CDP rows
+
+    /**
+     * First pass over the LLDP/CDP rows, keeping what the checks need instead of the rows: who reports
+     * whom, the unmonitored neighbours that get a row (network devices, names of monitored devices and
+     * disabled devices) and the number of the others by type, the ports facing a neighbour that explains
+     * their MAC addresses, the ports with several neighbours and the phones on the busy ports.
+     *
+     * @return array{reports: NeighborReports, listed: array<string, int>, linked: array<string, int>, explained: array<int, true>,
+     *     shared: array<int, string[]>, phones: array<int, string[]>}
+     */
+    private function readLinks(?int $device): array
+    {
+        $reports = new NeighborReports([], $this->known + $this->devices);
+        $bits = array_flip(self::ROLE_ORDER);
+        $network = 0;
+        foreach (self::NETWORK_ROLES as $role) {
+            $network |= 1 << $bits[$role];
+        }
+
+        $roles = [];     // unmonitored neighbour => bits of the roles its rows suggest
+        $listed = [];    // unmonitored neighbour that gets a row => true
+        $linked = [];    // unmonitored neighbour => the disabled device it is linked to
+        $ofDevice = [];  // unmonitored neighbours of the centered device => true
+        $explained = [];
+        $first = [];     // port => phone flag, identity, "\0" and name of its first neighbour
+        $more = [];      // port => identity => [name, phone] of its other neighbours
+        $phones = [];    // busy port => identity => phone name
+        foreach ($this->links as $link) {
+            $reports->add($link);
+            $ld = (int) $link['local_device_id'];
+            $lp = (int) ($link['local_port_id'] ?? 0);
+            $rd = (int) ($link['remote_device_id'] ?? 0);
+            $disabled = $rd && ($this->known[$rd]['disabled'] ?? false);
+            $role = ! $rd || $disabled ? self::rowRole($link) : null;
+            $phone = ! $rd && $role === DeviceRole::PHONE;
+            if (! $phone) {
+                if ($lp) {
+                    $explained[$lp] = true;
+                }
+                if (! empty($link['remote_port_id'])) {
+                    $explained[(int) $link['remote_port_id']] = true;
+                }
+            }
+            if (! isset($this->scope[$ld])) {
+                continue;
+            }
+
+            $host = trim((string) ($link['remote_hostname'] ?? ''));
+            if ($lp) {
+                // "SW1.example.net", "sw1" and CDP's "SW1(FOC1234X5Y6)" are one neighbour
+                $name = $host !== '' ? $host : ($rd ? $this->deviceName($rd) : '');
+                $identity = L2Builder::shortHost(strtolower((string) preg_replace('/\(.*\)$/', '', $name)));
+                if ($identity !== '') {
+                    if (! isset($first[$lp])) {
+                        $first[$lp] = ($phone ? '1' : '0') . $identity . "\0" . $name;
+                    } elseif (substr($first[$lp], 1, (int) strpos($first[$lp], "\0") - 1) !== $identity) {
+                        $more[$lp][$identity] ??= [$name, $phone];
+                    }
+                    if ($phone && isset($this->busyPorts[$lp])) {
+                        $phones[$lp][$identity] ??= $name;
+                    }
+                }
+            }
+
+            if ($rd && ! $disabled) {
+                continue; // a monitored neighbour
+            }
+            $id = L2Builder::unmanagedNodeId(['b_host' => $host, 'a_device' => $ld, 'a_port' => $lp, 'b_name' => (string) ($link['remote_port'] ?? '')]);
+            if (! isset($roles[$id])) {
+                $roles[$id] = 0;
+                if ($this->matches($host)) {
+                    $listed[$id] = true; // may be a monitored device LibreNMS did not link
+                }
+            }
+            $roles[$id] |= 1 << $bits[$role];
+            if ($disabled) {
+                $listed[$id] = true;
+                $linked[$id] = $rd;
+            }
+            if ($ld === $device) {
+                $ofDevice[$id] = true;
+            }
+        }
+
+        // a neighbour is a network device when any of its rows says so; the others are only counted
+        foreach ($roles as $id => $roleBits) {
+            if ($roleBits & $network) {
+                $listed[$id] = true;
+            }
+            if (isset($listed[$id])) {
+                $listed[$id] = $roleBits;
+                continue;
+            }
+            $this->countEndDevice(self::roleOf($roleBits), isset($ofDevice[$id]));
+        }
+        unset($roles);
+
+        $shared = [];
+        foreach ($more as $portId => $others) {
+            $names = [substr($first[$portId], (int) strpos($first[$portId], "\0") + 1)];
+            $phoneCount = (int) ($first[$portId][0] === '1');
+            foreach ($others as [$name, $phone]) {
+                $names[] = $name;
+                $phoneCount += (int) $phone;
+            }
+            // two neighbours that are not phones, or two phones (a phone passes on one PC, not another phone)
+            if (count($names) - $phoneCount >= 2 || $phoneCount >= 2) {
+                $shared[$portId] = $names;
+            }
+        }
+
+        return [
+            'reports' => $reports,
+            'listed' => $listed,
+            'linked' => $linked,
+            'explained' => $explained,
+            'shared' => $shared,
+            'phones' => array_map('array_values', $phones),
+        ];
+    }
+
+    /**
+     * Second pass: the rows of the unmonitored neighbours that get a row, merged into one per neighbour
+     * with every port it is seen on.
+     *
+     * @param  array<string, int>  $listed  neighbour id => bits of its roles
+     * @param  array<string, int>  $linked  neighbour id => disabled device
+     * @return array<string, array> neighbour id => name, platform, description, protocols, sightings, role bits, linked device
+     */
+    private function readNeighbors(array $listed, array $linked): array
+    {
+        if (! $listed) {
+            return [];
+        }
+
+        $neighbors = [];
+        foreach ($this->links as $link) {
+            $ld = (int) $link['local_device_id'];
+            $rd = (int) ($link['remote_device_id'] ?? 0);
+            if (! isset($this->scope[$ld]) || ($rd && ! ($this->known[$rd]['disabled'] ?? false))) {
+                continue;
+            }
+            $host = trim((string) ($link['remote_hostname'] ?? ''));
+            $lp = (int) ($link['local_port_id'] ?? 0);
+            $id = L2Builder::unmanagedNodeId(['b_host' => $host, 'a_device' => $ld, 'a_port' => $lp, 'b_name' => (string) ($link['remote_port'] ?? '')]);
+            if (! isset($listed[$id])) {
+                continue;
+            }
+
+            $neighbor = &$neighbors[$id];
+            $neighbor ??= [
+                'id' => $id, 'name' => $host, 'platform' => '', 'description' => '', 'protocols' => [], 'sightings' => [],
+                'roles' => $listed[$id], 'linked' => $linked[$id] ?? null,
+            ];
+            // CDP gives a platform; LLDP has none and LibreNMS keeps its system description in remote_version
+            if ($neighbor['platform'] === '') {
+                $neighbor['platform'] = trim((string) ($link['remote_platform'] ?? ''));
+            }
+            if ($neighbor['description'] === '') {
+                $neighbor['description'] = mb_substr(trim((string) ($link['remote_version'] ?? '')), 0, 200);
+            }
+            $protocol = strtolower(trim((string) ($link['protocol'] ?? '')));
+            if ($protocol !== '') {
+                $neighbor['protocols'][$protocol] = true;
+            }
+            $neighbor['sightings'][$ld . '#' . $lp] ??= ['device_id' => $ld, 'port_id' => $lp ?: null, 'remote_port' => (string) ($link['remote_port'] ?? '')];
+            unset($neighbor);
+        }
+
+        return $neighbors;
+    }
+
+    /**
+     * The rows of the ports the report names: where the listed neighbours are seen, the ports of the devices
+     * without neighbours that others see, the ports with several neighbours and the busy ports.
+     */
+    private function loadPorts(array $merged, array $seen): void
+    {
+        if (is_array($this->ports)) {
+            $this->portRows = $this->ports;
+
+            return;
+        }
+
+        $ids = $seen['shared'] + $this->busyPorts;
+        foreach ($merged as $neighbor) {
+            foreach ($neighbor['sightings'] as $sighting) {
+                if ($sighting['port_id']) {
+                    $ids[$sighting['port_id']] = true;
+                }
+            }
+        }
+        foreach (array_keys($this->scope) as $deviceId) {
+            if (! $seen['reports']->reportsNeighbors($deviceId)) {
+                foreach ($seen['reports']->seenBy($deviceId) as $sighting) {
+                    $ids += array_fill_keys(array_filter([$sighting['port_id'], $sighting['remote_port_id']]), true);
+                }
+            }
+        }
+        $this->portRows = $ids ? ($this->ports)(array_keys($ids)) : [];
     }
 
     // ---------------------------------------------------------------- unmonitored neighbours
 
     /**
-     * LLDP/CDP neighbours of the analyzed devices that LibreNMS does not monitor (or monitors under a
-     * name it did not link, or has disabled): one row per neighbour, merging every sighting.
+     * Rows of the unmonitored neighbours that are network devices or named like a monitored device (or
+     * linked to a disabled one), with their findings.
      *
+     * @param  array<string, array>  $merged  see readNeighbors()
      * @return array<int, array> neighbour rows, network devices first
      */
-    private function checkNeighbors(): array
+    private function checkNeighbors(array $merged, ?int $device): array
     {
-        $neighbors = [];
-        foreach ($this->links as $link) {
-            $ld = (int) $link['local_device_id'];
-            $rd = (int) ($link['remote_device_id'] ?? 0);
-            $disabled = $rd && ($this->known[$rd]['disabled'] ?? false);
-            if (! isset($this->scope[$ld]) || ($rd && ! $disabled)) {
-                continue; // reported by a device outside the scope, or a monitored neighbour
-            }
-
-            $host = trim((string) ($link['remote_hostname'] ?? ''));
-            $lp = (int) ($link['local_port_id'] ?? 0);
-            $id = L2Builder::unmanagedNodeId(['b_host' => $host, 'a_device' => $ld, 'a_port' => $lp, 'b_name' => (string) ($link['remote_port'] ?? '')]);
-            $neighbor = &$neighbors[$id];
-            $neighbor ??= [
-                'id' => $id, 'name' => $host, 'platform' => '', 'description' => '', 'roles' => [], 'protocols' => [], 'sightings' => [], 'linked' => null,
-            ];
-            // CDP gives a platform; LLDP has none and LibreNMS keeps its system description in remote_version
-            $platform = trim((string) ($link['remote_platform'] ?? ''));
-            $description = trim((string) ($link['remote_version'] ?? ''));
-            if ($neighbor['platform'] === '') {
-                $neighbor['platform'] = $platform;
-            }
-            if ($neighbor['description'] === '') {
-                $neighbor['description'] = $description;
-            }
-            $neighbor['roles'][self::rowRole($link)] = true;
-            $protocol = strtolower(trim((string) ($link['protocol'] ?? '')));
-            if ($protocol !== '') {
-                $neighbor['protocols'][$protocol] = true;
-            }
-            if ($disabled) {
-                $neighbor['linked'] = $rd; // linked to a device that is disabled in LibreNMS
-            }
-            $neighbor['sightings'][$ld . '#' . $lp] ??= [
-                'device_id' => $ld,
-                'port_id' => $lp ?: null,
-                'port' => $lp ? $this->portName($lp) : '',
-                'remote_port' => (string) ($link['remote_port'] ?? ''),
-            ];
-            unset($neighbor);
-        }
-
-        // each merged neighbour becomes its row in place, the sort keys are computed once: tens of thousands
-        // of phones are common
+        // sort keys computed once, rows built in place
         $roleOrder = array_flip(self::ROLE_ORDER);
         $statusOrder = ['not_monitored' => 0, 'not_linked' => 1, 'ambiguous' => 2, 'disabled' => 3];
         $keys = [];
-        foreach ($neighbors as $id => &$neighbor) {
+        foreach ($merged as $id => &$neighbor) {
             $reporters = array_values(array_unique(array_column($neighbor['sightings'], 'device_id')));
             [$status, $candidates] = $this->identify($neighbor, $reporters);
-            $role = DeviceRole::UNKNOWN;
-            foreach (self::ROLE_ORDER as $candidate) {
-                if ($candidate !== DeviceRole::UNKNOWN && isset($neighbor['roles'][$candidate])) {
-                    $role = $candidate; // the first specific role wins
-                    break;
-                }
+            $role = self::roleOf($neighbor['roles']);
+            $network = in_array($role, self::NETWORK_ROLES, true);
+            if ($status === 'not_monitored' && ! $network) {
+                // named like the device that sees it: an end device after all
+                $this->countEndDevice($role, in_array($device, $reporters, true));
+                unset($merged[$id]);
+                continue;
             }
             $neighbor = [
                 'id' => $neighbor['id'],
                 'name' => $neighbor['name'],
                 'address' => filter_var($neighbor['name'], FILTER_VALIDATE_IP) ? $neighbor['name'] : null,
                 'role' => $role,
-                'network' => in_array($role, self::NETWORK_ROLES, true),
+                'network' => $network,
                 'platform' => $neighbor['platform'],
-                'description' => mb_substr($neighbor['description'], 0, 200),
+                'description' => $neighbor['description'],
                 'protocols' => array_keys($neighbor['protocols']),
                 'status' => $status,
                 'device_id' => in_array($status, ['not_linked', 'disabled'], true) ? $candidates[0] : null,
                 'candidates' => $candidates,
-                'sightings' => array_values($neighbor['sightings']),
+                'sightings' => array_map(fn ($s) => $s + ['port' => $s['port_id'] ? $this->portName($s['port_id']) : ''], array_values($neighbor['sightings'])),
             ];
             $this->neighborFinding($neighbor);
             $keys[$id] = sprintf('%02d%d', $roleOrder[$role] ?? 99, $statusOrder[$status]) . strtolower($neighbor['name']);
@@ -348,7 +536,7 @@ class CoverageAnalyzer
 
         $rows = [];
         foreach ($keys as $id => $key) {
-            $rows[] = $neighbors[$id];
+            $rows[] = $merged[$id];
         }
 
         return $rows;
@@ -411,14 +599,11 @@ class CoverageAnalyzer
 
     /**
      * Finding of an unmonitored neighbour: switches, routers and firewalls are warnings, access points
-     * info (a controller often monitors them); phones, servers and unknown devices are only listed.
-     * Unlinked, ambiguous and disabled neighbours are info whatever they are.
+     * info (a controller often monitors them). Unlinked, ambiguous and disabled neighbours are info
+     * whatever they are.
      */
     private function neighborFinding(array $row): void
     {
-        if ($row['status'] === 'not_monitored' && ! $row['network']) {
-            return;
-        }
         $where = $this->sightingText($row['sightings']);
         $sees = count($row['sightings']) === 1 ? 'sees' : 'see';
         $about = $row['platform'] !== '' ? $row['platform'] : mb_strimwidth($row['description'], 0, 70, '…');
@@ -623,17 +808,19 @@ class CoverageAnalyzer
      *    that are not Ethernet and ports whose addresses spread over three or more VLANs (an access point,
      *    a hypervisor or a trunk) are left out.
      *
+     * @param  array<int, string[]>  $shared  port_id => names of its neighbours, see readLinks()
+     * @param  array<int, string[]>  $phonesOn  busy port_id => names of the phones on it
+     * @param  array<int, true>  $explained  ports facing a neighbour that explains their MAC addresses
      * @return array<int, array> port rows, most MAC addresses first
      */
-    private function checkPorts(): array
+    private function checkPorts(array $shared, array $phonesOn, array $explained): array
     {
         $rows = [];
-        [$shared, $phonesOn] = $this->portNeighbors($this->busyPorts);
         foreach ($shared as $portId => $neighbors) {
-            $port = $this->ports[$portId] ?? ['device_id' => 0];
+            $port = $this->portRows[$portId] ?? ['device_id' => 0];
             $deviceId = (int) $port['device_id'];
             $busy = $this->busyPorts[$portId] ?? null;
-            $row = $this->portRow($portId, $deviceId, $busy) + ['neighbors' => array_values($neighbors)];
+            $row = $this->portRow($portId, $deviceId, $busy) + ['neighbors' => $neighbors];
             $rows[] = $row;
             $name = $this->deviceName($deviceId);
             $this->add(new Finding(
@@ -648,14 +835,12 @@ class CoverageAnalyzer
                 null, [$deviceId], [(int) $portId],
             ));
         }
-        $shared = array_flip(array_column($rows, 'port_id'));
 
         $threshold = $this->settings->int('coverage_mac_threshold', 0, 1000000);
         if ($threshold && $this->busyPorts) {
-            $explained = self::explainedPorts($this->links);
             $aggregates = array_flip(array_map('intval', $this->lagParent));
             foreach ($this->busyPorts as $portId => $busy) {
-                $port = $this->ports[$portId] ?? null;
+                $port = $this->portRows[$portId] ?? null;
                 $deviceId = (int) $busy['device_id'];
                 if (! $port || ! empty($port['deleted']) || ! isset($this->scope[$deviceId]) || isset($shared[$portId])
                     || (int) $busy['macs'] < $threshold || (int) ($busy['vlan_count'] ?? 0) >= self::MANY_VLANS
@@ -697,80 +882,6 @@ class CoverageAnalyzer
     }
 
     /**
-     * LLDP/CDP neighbours on the ports of the analyzed devices: the ports with several different ones (two
-     * or more that are not phones, or two phones: a phone passes on one PC, not another phone) with their
-     * names, and the phones on the given ports. LLDP and CDP of one device, and a name with or without its
-     * domain, count once.
-     *
-     * @param  array<int, mixed>  $phonePorts  port_id => anything: the ports whose phones are wanted
-     * @return array{0: array<int, string[]>, 1: array<int, string[]>} port_id => neighbour names of the ports with
-     *     several, port_id => phone names
-     */
-    private function portNeighbors(array $phonePorts): array
-    {
-        // counted in flat maps first: there is a row for every phone
-        $seen = [];
-        $total = [];
-        $phones = [];
-        foreach ($this->links as $link) {
-            $neighbor = $this->portNeighbor($link);
-            if ($neighbor === null || isset($seen[$neighbor[0] . '#' . $neighbor[1]])) {
-                continue;
-            }
-            $seen[$neighbor[0] . '#' . $neighbor[1]] = true;
-            $total[$neighbor[0]] = ($total[$neighbor[0]] ?? 0) + 1;
-            if ($neighbor[3]) {
-                $phones[$neighbor[0]] = ($phones[$neighbor[0]] ?? 0) + 1;
-            }
-        }
-        unset($seen);
-        $wanted = [];
-        foreach ($total as $portId => $count) {
-            $phoneCount = $phones[$portId] ?? 0;
-            if ($count - $phoneCount >= 2 || $phoneCount >= 2) {
-                $wanted[$portId] = true;
-            }
-        }
-
-        $shared = [];
-        $phoneNames = [];
-        foreach ($this->links as $link) {
-            $lp = (int) ($link['local_port_id'] ?? 0);
-            if (! isset($wanted[$lp]) && ! isset($phonePorts[$lp])) {
-                continue;
-            }
-            [$lp, $identity, $name, $phone] = $this->portNeighbor($link) ?? [0, '', '', false];
-            if (isset($wanted[$lp])) {
-                $shared[$lp][$identity] ??= $name;
-            }
-            if ($phone && isset($phonePorts[$lp])) {
-                $phoneNames[$lp][$identity] ??= $name;
-            }
-        }
-
-        return [array_map('array_values', $shared), array_map('array_values', $phoneNames)];
-    }
-
-    /**
-     * Port, identity, name and phone flag of the neighbour of a links row on a port of an analyzed device,
-     * null for other rows. "SW1.example.net", "sw1" and CDP's "SW1(FOC1234X5Y6)" are one identity.
-     *
-     * @return array{0: int, 1: string, 2: string, 3: bool}|null
-     */
-    private function portNeighbor(array $link): ?array
-    {
-        $lp = (int) ($link['local_port_id'] ?? 0);
-        if (! $lp || ! isset($this->scope[(int) $link['local_device_id']])) {
-            return null;
-        }
-        $rd = (int) ($link['remote_device_id'] ?? 0);
-        $name = trim((string) ($link['remote_hostname'] ?? '')) ?: ($rd ? $this->deviceName($rd) : '');
-        $identity = L2Builder::shortHost(strtolower((string) preg_replace('/\(.*\)$/', '', $name)));
-
-        return $identity === '' ? null : [$lp, $identity, $name, ! $rd && self::rowRole($link) === DeviceRole::PHONE];
-    }
-
-    /**
      * Table row of a port: name, description and, when its forwarding table was counted, MAC addresses
      * and their VLANs.
      */
@@ -783,7 +894,7 @@ class CoverageAnalyzer
             'device_id' => $deviceId,
             'port_id' => $portId,
             'port' => $this->portName($portId),
-            'alias' => trim((string) ($this->ports[$portId]['ifAlias'] ?? '')),
+            'alias' => trim((string) ($this->portRows[$portId]['ifAlias'] ?? '')),
             'macs' => $busy ? (int) $busy['macs'] : null,
             'vlans' => $vlans,
             'last_seen' => $busy['last_seen'] ?? null,
@@ -806,17 +917,20 @@ class CoverageAnalyzer
     // ---------------------------------------------------------------- summary and helpers
 
     /**
-     * Counts for the summary cards: findings by severity, unmonitored neighbours by status and role,
-     * devices with gaps and ports that look like an unmanaged switch.
+     * Counts for the summary cards: findings by severity, unmonitored neighbours by status and role
+     * (also the end devices that are only counted), devices with gaps and ports that look like an
+     * unmanaged switch.
+     *
+     * @param  array<string, int>  $counted  role => end devices that are only counted
      */
-    private function summarize(array $findings, array $neighbors, array $devices, array $ports): array
+    private function summarize(array $findings, array $neighbors, array $devices, array $ports, array $counted): array
     {
         $severities = ['critical' => 0, 'warning' => 0, 'info' => 0];
         foreach ($findings as $finding) {
             $severities[$finding['severity']]++;
         }
-        $roles = [];
-        $statuses = ['not_monitored' => 0, 'not_linked' => 0, 'ambiguous' => 0, 'disabled' => 0];
+        $roles = $counted;
+        $statuses = ['not_monitored' => array_sum($counted), 'not_linked' => 0, 'ambiguous' => 0, 'disabled' => 0];
         foreach ($neighbors as $neighbor) {
             $statuses[$neighbor['status']]++;
             if ($neighbor['status'] === 'not_monitored') {
@@ -827,18 +941,46 @@ class CoverageAnalyzer
         foreach ($devices as $device) {
             $states[$device['state']]++;
         }
+        $byRole = fn (array $counts) => array_filter(array_map(fn ($role) => $counts[$role] ?? 0, array_combine(self::ROLE_ORDER, self::ROLE_ORDER)));
 
         return [
             'status' => Finding::worst(array_column($findings, 'severity')),
             'findings' => $severities,
-            'neighbors' => count($neighbors),
+            'neighbors' => count($neighbors) + array_sum($counted),
             'not_monitored' => count(array_filter($neighbors, fn ($n) => $n['status'] === 'not_monitored' && $n['network'])),
             'statuses' => $statuses,
-            'roles' => $roles,
+            'roles' => $byRole($roles),
+            'other_neighbors' => $byRole($counted),
             'devices' => $states['silent'] + $states['isolated'],
             'states' => $states,
             'ports' => count($ports),
         ];
+    }
+
+    /**
+     * Count an unmonitored end device (phone, server, ...) that gets no row.
+     */
+    private function countEndDevice(string $role, bool $ofDevice): void
+    {
+        $this->counted[$role] = ($this->counted[$role] ?? 0) + 1;
+        if ($ofDevice) {
+            $this->countedOf[$role] = ($this->countedOf[$role] ?? 0) + 1;
+        }
+    }
+
+    /**
+     * The role of a neighbour from the bits of the roles its rows suggest: the first specific one in
+     * ROLE_ORDER, so a CDP platform beats an LLDP description that tells nothing.
+     */
+    private static function roleOf(int $bits): string
+    {
+        foreach (self::ROLE_ORDER as $bit => $role) {
+            if ($role !== DeviceRole::UNKNOWN && $bits & (1 << $bit)) {
+                return $role;
+            }
+        }
+
+        return DeviceRole::UNKNOWN;
     }
 
     /**
@@ -899,7 +1041,7 @@ class CoverageAnalyzer
 
     private function portName(int $portId): string
     {
-        $port = $this->ports[$portId] ?? null;
+        $port = $this->portRows[$portId] ?? null;
 
         return $port ? InterfaceName::short(InterfaceName::label($port)) : "port #$portId";
     }

@@ -124,8 +124,12 @@ What LibreNMS does not see, so the gaps in the maps and the checks are known:
 | **Several neighbors on one port**: two or more LLDP/CDP neighbors on one port (two that are not phones, or two phones): something LibreNMS does not see connects them | info |
 | **Possible unmanaged switch or hub**: an Ethernet access port with 4 or more MAC addresses (setting) in its device's last forwarding table discovery and no LLDP/CDP neighbor that explains them (a phone only explains the PC behind it) – an unmanaged switch or hub, or a server, hypervisor or access point that bridges without announcing itself | info |
 
-Phones, servers and neighbors of unknown type are listed without a finding, as are servers, printers, other devices that
-usually run no LLDP/CDP and firewalls whose OS supports neither (Cisco ASA and FTD); a device that is down is info.
+The type of a neighbor comes from its CDP platform or, for LLDP, its system description, which names the software: Cisco
+IOS (the model in it tells a C2960 switch from a C2900 router), IOS XE, NX-OS and IOS XR, Arista EOS, Juniper, Aruba
+(CX switches and access points), ExtremeXOS, Dell OS10, MikroTik, VyOS, FortiGate and Firepower, for example. Phones,
+servers and neighbors of unknown type are counted, not listed, and get no finding; servers, printers, other devices that
+usually run no LLDP/CDP and firewalls whose OS supports neither (Cisco ASA and FTD) are listed without a finding among the
+monitored devices without neighbors; a device that is down is info.
 Factory default names (`Switch`, `MikroTik`, ...) are one neighbor per port and never match a monitored device. Trunks,
 port-channels, ports that are not Ethernet (such as an access point's radio) and ports whose MAC addresses are in three or
 more VLANs (access points, hypervisors) are not counted as a possible unmanaged switch. The advice for an unmonitored
@@ -200,6 +204,7 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   JSON (same query parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`) for automation.
   `api/coverage` cuts each list at the same 500 rows as the page and returns the full counts as `findings_total`,
   `neighbors_total`, `devices_total` and `ports_total`: narrow it with `device`, `group` or `location` for the rest.
+  Phones, servers and other end devices among the neighbors are only counted, in `summary.other_neighbors`.
 
 ## Settings
 
@@ -280,10 +285,11 @@ vendor/bin/phpunit
   *Add* opens the Add Device page without it. Neighbors LibreNMS did not link are matched to monitored devices by
   hostname, sysName, display name (a name without domain matches the same first label with any domain) and interface
   address; LibreNMS itself also links by MAC address, which the report cannot check. A neighbor whose platform,
-  description and name tell nothing is listed as of unknown type, without a finding. MAC addresses are those of each
+  description and name tell nothing is counted as of unknown type, without a finding. MAC addresses are those of each
   device's last discovery (LibreNMS keeps older ones for `ports_fdb_purge` days): when that discovery found none on a
-  port, the port is not reported. The whole network of 1,200 switches with 36,000 phones takes about 2 seconds and
-  150 MB of PHP memory; the group and location filters analyze a part.
+  port, the port is not reported. The LLDP/CDP rows are read from the database in chunks and phones and other end
+  devices are only counted, so the whole network of 1,200 switches with 36,000 phones and 2.8 million forwarding table
+  entries takes about 2 seconds and 30 MB of PHP memory.
 * Servers, access points and phones are recognized by their LibreNMS device type, unmanaged neighbors by their CDP
   platform or, for LLDP (which has no platform), their system description; a neighbor with neither counts as a switch. Down devices without any LLDP/CDP neighbor are
   not listed as outages: nothing tells what they depend on.

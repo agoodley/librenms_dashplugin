@@ -74,8 +74,12 @@
                     $roleCounts[] = $plural($summary['roles'][$key], $roles[$key][0], $key === 'switch' ? 'switches' : null);
                 }
             }
-            $mainNeighbors = array_values(array_filter($result['neighbors'], fn ($n) => $n['network'] || $n['status'] !== 'not_monitored'));
-            $otherNeighbors = array_values(array_filter($result['neighbors'], fn ($n) => ! $n['network'] && $n['status'] === 'not_monitored'));
+            // phones, servers and other end devices are only counted
+            $endDevices = ['unknown' => ['device of unknown type', 'devices of unknown type'], 'server' => ['server', 'servers'], 'phone' => ['phone', 'phones'], 'other' => ['other device', 'other devices']];
+            $otherCounts = [];
+            foreach ($summary['other_neighbors'] as $key => $count) {
+                $otherCounts[] = number_format($count) . ' ' . ($endDevices[$key] ?? [$key, $key . 's'])[$count === 1 ? 0 : 1];
+            }
             $gapDevices = array_values(array_filter($result['devices'], fn ($d) => $d['state'] !== 'quiet'));
             $quietDevices = array_values(array_filter($result['devices'], fn ($d) => $d['state'] === 'quiet'));
         @endphp
@@ -148,13 +152,10 @@
                 <span class="text-muted">(switches, routers, firewalls and access points seen as LLDP/CDP neighbors, and neighbors LibreNMS did not link to their device: named like a monitored device, like several, or disabled)</span>
             </div>
             <div class="table-responsive">
-                @include('topology::partials.coverage-neighbors', ['rows' => $mainNeighbors])
+                @include('topology::partials.coverage-neighbors', ['rows' => $result['neighbors']])
             </div>
-            @if($otherNeighbors)
-                <details class="topo-details">
-                    <summary>Other LLDP/CDP neighbors that are not monitored ({{ count($otherNeighbors) }}: phones, servers and devices of unknown type)</summary>
-                    <div class="table-responsive">@include('topology::partials.coverage-neighbors', ['rows' => $otherNeighbors])</div>
-                </details>
+            @if($otherCounts)
+                <div class="panel-footer text-muted">Also seen as LLDP/CDP neighbors and not monitored, counted but not listed: {{ implode(', ', $otherCounts) }}.</div>
             @endif
             @if($cut('neighbors', 'neighbors, network devices first'))
                 <div class="panel-footer text-muted">{{ $cut('neighbors', 'neighbors, network devices first') }}</div>

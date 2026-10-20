@@ -21,30 +21,38 @@ class NeighborReports
     private array $seenBy = [];
 
     /**
-     * @param  array<int, array>  $links  links rows (local_device_id, local_port_id, remote_device_id, remote_port_id)
+     * @param  iterable<array>  $links  links rows (local_device_id, local_port_id, remote_device_id, remote_port_id)
      * @param  array<int, mixed>  $devices  monitored devices, keyed by device_id: rows of other devices are ignored
      *                                      and neighbours outside count as unmanaged
      */
-    public function __construct(array $links, array $devices)
+    public function __construct(iterable $links, private array $devices)
     {
         foreach ($links as $link) {
-            $ld = (int) $link['local_device_id'];
-            $lp = (int) ($link['local_port_id'] ?? 0);
-            $rd = (int) ($link['remote_device_id'] ?? 0);
-            if (! isset($devices[$ld]) || $rd === $ld) {
-                continue;
-            }
-
-            $this->reporting[$ld] = true;
-            if (! $rd || ! isset($devices[$rd])) {
-                continue;
-            }
-            if ($lp) {
-                $this->reports[$ld][$lp][$rd] = true;
-            }
-            $rp = (int) ($link['remote_port_id'] ?? 0) ?: null;
-            $this->seenBy[$rd][$ld . '#' . $lp . '#' . $rp] = ['device_id' => $ld, 'port_id' => $lp ?: null, 'remote_port_id' => $rp];
+            $this->add($link);
         }
+    }
+
+    /**
+     * Take one more links row into account (for callers that stream the rows).
+     */
+    public function add(array $link): void
+    {
+        $ld = (int) $link['local_device_id'];
+        $lp = (int) ($link['local_port_id'] ?? 0);
+        $rd = (int) ($link['remote_device_id'] ?? 0);
+        if (! isset($this->devices[$ld]) || $rd === $ld) {
+            return;
+        }
+
+        $this->reporting[$ld] = true;
+        if (! $rd || ! isset($this->devices[$rd])) {
+            return;
+        }
+        if ($lp) {
+            $this->reports[$ld][$lp][$rd] = true;
+        }
+        $rp = (int) ($link['remote_port_id'] ?? 0) ?: null;
+        $this->seenBy[$rd][$ld . '#' . $lp . '#' . $rp] = ['device_id' => $ld, 'port_id' => $lp ?: null, 'remote_port_id' => $rp];
     }
 
     /**

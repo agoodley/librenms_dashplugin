@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\Coverage\CoverageAnalyzer;
 use App\Models\Device;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\LazyCollection;
 
 /**
  * Database access of the coverage report: the LLDP/CDP rows around the analyzed devices, the names of
@@ -25,47 +26,75 @@ class CoverageRepository extends ScopedRepository
 
     /**
      * LLDP/CDP rows reported by the given devices, and the rows of other devices the user may see that
-     * name them. A remote device the user may not see (or that no longer exists) loses its ids, so the
-     * neighbour is unmonitored for this user; a disabled device the user may see keeps its id.
+     * name them, streamed from the database in chunks every time they are read (a network can have tens
+     * of thousands, mostly phones). A remote device the user may not see (or that no longer exists) loses
+     * its ids, so the neighbour is unmonitored for this user; a disabled device the user may see keeps its id.
      *
      * @param  int[]  $ids
-     * @return array<int, array>
+     * @return LazyCollection<int, array>
      */
-    public function links(array $ids): array
+    public function links(array $ids): LazyCollection
     {
-        if (! $ids) {
-            return [];
-        }
-
         $accessible = $this->accessible();
+        $disabled = $this->disabledDevices();
         // when the scope is every device the user may see, its own rows already hold every reporter
         $everything = ! array_diff_key($accessible, array_flip($ids));
-        $rows = [];
-        foreach (array_chunk($ids, 5000) as $chunk) {
-            foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $chunk)->get(self::LINK_COLUMNS) as $row) {
-                $rows[(int) $row->id] = (array) $row;
-            }
-            if ($everything) {
-                continue;
-            }
-            foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('remote_device_id', $chunk)->get(self::LINK_COLUMNS) as $row) {
-                if (isset($accessible[(int) $row->local_device_id])) {
-                    $rows[(int) $row->id] = (array) $row;
-                }
-            }
-        }
-
-        $disabled = $this->disabledDevices();
-        foreach ($rows as &$row) {
+        $visible = function (object $row) use ($accessible, $disabled): array {
+            $row = (array) $row;
             $rd = (int) $row['remote_device_id'];
             if ($rd && ! isset($accessible[$rd]) && ! isset($disabled[$rd])) {
                 $row['remote_device_id'] = 0;
                 $row['remote_port_id'] = null;
             }
-        }
-        unset($row);
 
-        return array_values($rows);
+            return $row;
+        };
+
+        return LazyCollection::make(function () use ($ids, $accessible, $everything, $visible) {
+            foreach (array_chunk($ids, 10000) as $chunk) {
+                foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $chunk)
+                    ->select(self::LINK_COLUMNS)->lazyById(2000, 'id') as $row) {
+                    yield $visible($row);
+                }
+            }
+            if ($everything) {
+                return;
+            }
+            $scope = array_flip($ids);
+            foreach (array_chunk($ids, 10000) as $chunk) {
+                foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('remote_device_id', $chunk)
+                    ->select(self::LINK_COLUMNS)->lazyById(2000, 'id') as $row) {
+                    $ld = (int) $row->local_device_id;
+                    if (isset($accessible[$ld]) && ! isset($scope[$ld])) {
+                        yield $visible($row);
+                    }
+                }
+            }
+        });
+    }
+
+    /**
+     * Names of LLDP/CDP neighbours of the given devices that are IP addresses: a neighbour without a
+     * system name is known by its address, which may belong to a monitored device.
+     *
+     * @param  int[]  $ids
+     * @return string[]
+     */
+    public function addressNames(array $ids): array
+    {
+        $names = [];
+        foreach (array_chunk($ids, 10000) as $chunk) {
+            foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $chunk)
+                ->where(fn ($query) => $query->where('remote_hostname', 'like', '%.%.%.%')->orWhere('remote_hostname', 'like', '%:%'))
+                ->distinct()->pluck('remote_hostname') as $name) {
+                $name = trim((string) $name);
+                if (filter_var($name, FILTER_VALIDATE_IP)) {
+                    $names[$name] = true;
+                }
+            }
+        }
+
+        return array_keys($names);
     }
 
     /**
@@ -141,24 +170,8 @@ class CoverageRepository extends ScopedRepository
         }
 
         try {
-            // rows per port and discovery that found them last: a row is one address in one VLAN, so at least
-            // as many as the addresses; the ports that reach $min are counted exactly below
-            $groups = [];
-            $stamps = [];
-            foreach (array_chunk(array_keys($ports), 2000) as $chunk) {
-                foreach (DB::table('ports_fdb')->whereIntegerInRaw('port_id', $chunk)->whereNotNull('updated_at')
-                    ->groupBy('port_id', 'updated_at')->selectRaw('port_id, updated_at, COUNT(*) as macs')->get() as $row) {
-                    $groups[] = [
-                        'port_id' => (int) $row->port_id,
-                        'device_id' => $ports[(int) $row->port_id] ?? 0,
-                        'seen' => $stamps[$row->updated_at] ??= (int) strtotime((string) $row->updated_at),
-                        'macs' => (int) $row->macs,
-                    ];
-                }
-            }
-
             $discovered = [];
-            foreach (array_chunk(array_values(array_unique(array_column($groups, 'device_id'))), 5000) as $chunk) {
+            foreach (array_chunk(array_values(array_unique($ports)), 5000) as $chunk) {
                 foreach (DB::table('devices')->whereIntegerInRaw('device_id', $chunk)
                     ->get(['device_id', 'last_discovered', 'last_discovered_timetaken']) as $row) {
                     $discovered[(int) $row->device_id] = [
@@ -167,7 +180,24 @@ class CoverageRepository extends ScopedRepository
                     ];
                 }
             }
-            $current = CoverageAnalyzer::currentMacCounts($groups, $discovered, $min);
+
+            // rows per port and discovery that found them last, aggregated while they are read: a row is one address
+            // in one VLAN, so at least as many as the addresses; the ports that reach $min are counted exactly below
+            $stamps = [];
+            $groups = function () use ($ports, &$stamps) {
+                foreach (array_chunk(array_keys($ports), 2000) as $chunk) {
+                    foreach (DB::table('ports_fdb')->whereIntegerInRaw('port_id', $chunk)->whereNotNull('updated_at')
+                        ->groupBy('port_id', 'updated_at')->selectRaw('port_id, updated_at, COUNT(*) as macs')->get() as $row) {
+                        yield [
+                            'port_id' => (int) $row->port_id,
+                            'device_id' => $ports[(int) $row->port_id] ?? 0,
+                            'seen' => $stamps[$row->updated_at] ??= (int) strtotime((string) $row->updated_at),
+                            'macs' => (int) $row->macs,
+                        ];
+                    }
+                }
+            };
+            $current = CoverageAnalyzer::currentMacCounts($groups(), $discovered, $min);
 
             // the addresses of the last discovery and their VLANs: ports_fdb.vlan_id is the id of the device's vlans
             // row (0 without one; only the timos and edgeswitch discovery store the VLAN number itself)
