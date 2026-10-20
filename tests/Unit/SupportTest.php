@@ -121,6 +121,24 @@ class SupportTest extends TestCase
         $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromPlatform(''));
     }
 
+    public function testRolesOfLldpNeighborsComeFromTheirSystemDescription(): void
+    {
+        // LibreNMS stores no platform for LLDP neighbors, only the sysDescr (remote_version)
+        $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor(null, 'Juniper Networks, Inc. ex2300-48p Ethernet Switch, kernel JUNOS 21.4R3-S4', 'bldg2-idf3'));
+        $this->assertSame(DeviceRole::ROUTER, DeviceRole::fromNeighbor('', 'MikroTik RouterOS 7.12 (stable) CCR2004-1G-12S+2XS', 'edge-gw'));
+        $this->assertSame(DeviceRole::SERVER, DeviceRole::fromNeighbor('', 'VMware ESXi 8.0.2 build-22380479 VMware, Inc. VMware7,1', 'esx01'));
+        $this->assertSame(DeviceRole::SERVER, DeviceRole::fromNeighbor('', 'Linux srv1 5.15.0-91-generic #101-Ubuntu SMP x86_64', 'srv1'));
+        $this->assertSame(DeviceRole::PHONE, DeviceRole::fromNeighbor('', 'Cisco IP Phone CP-8845, V3, sip88xx.14-1-1-0001-136', 'SEP0011223344AB'));
+        $this->assertSame(DeviceRole::FIREWALL, DeviceRole::fromNeighbor('', 'pfSense fw1.example.net 2.7.2-RELEASE FreeBSD 14.0-CURRENT amd64', 'fw1'));
+        // network operating systems on Linux are not servers
+        $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor('', 'SONiC Software Version: SONiC.202305 - HwSku: Accton-AS7726-32X - Distribution: Debian 11.7 - Kernel: 5.10.0-18-2-amd64', 'leaf1'));
+        $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor('', 'Cumulus Linux version 5.4.0 running on Mellanox SN2010', 'leaf2'));
+        // a CDP platform wins over the description; nothing known stays unknown
+        $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor('cisco WS-C2960X-48FPD-L', 'Linux', 'sw1'));
+        $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromNeighbor(null, 'Cisco IOS Software, C2960X Software (C2960X-UNIVERSALK9-M)', 'sw2'));
+        $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromNeighbor(null, '', ''));
+    }
+
     public function testSettingsAndParams(): void
     {
         $settings = new PluginSettings(['max_nodes' => '50', 'stp_preferred_roots' => "core1, core2\ncore3", 'show_unmanaged' => '0']);
