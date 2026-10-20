@@ -343,13 +343,15 @@ class PathService
     private function l3Path(array $a, array $b, array $gateway): array
     {
         $this->gatewayNote($a, $gateway);
-        $trace = $this->l3For($b['ip'])->trace($gateway['device_id'], $gateway['port_id'] ?: null, $gateway['vrf'], $b['ip']);
+        // a router as A starts the path itself: the traffic does not come in on its interface
+        $itself = $a['kind'] === 'device' && $gateway['device_id'] === $a['device_id'];
+        $trace = $this->l3For($b['ip'])->trace($gateway['device_id'], $itself ? null : ($gateway['port_id'] ?: null), $gateway['vrf'], $b['ip']);
         $hops = $trace['hops'];
         $rows = $a['kind'] === 'host' ? [$this->hostRow($a)] : [];
         $complete = true;
 
         // A to its gateway
-        if ($a['kind'] === 'host' || $gateway['device_id'] !== $a['device_id']) {
+        if (! $itself) {
             [$arrive, $vlan] = $this->l2Port($gateway['device_id'], $gateway['port_id']);
             $ports = ['enter' => $a['port_id'], 'arrive' => $arrive];
             $segment = $this->segment($a['device_id'], $gateway['device_id'], $vlan ?? $a['vlan'], $ports);
@@ -678,9 +680,7 @@ class PathService
             }
         }
         $portIds = array_values(array_unique(array_filter($portIds)));
-        foreach ($portIds as $portId) {
-            $this->port($portId);
-        }
+        $this->loadPorts($portIds);
         $statistics = $this->topology->portStatistics($portIds);
 
         $hops = [];
@@ -1050,13 +1050,28 @@ class PathService
      */
     private function port(int $portId): ?array
     {
-        $this->network();
-        if (! array_key_exists($portId, $this->network['ports'])) {
-            $port = $this->topology->ports([$portId])[$portId] ?? null;
-            $this->network['ports'][$portId] = $port !== null && isset($this->network['devices'][(int) $port['device_id']]) ? $port : null;
-        }
+        $this->loadPorts([$portId]);
 
         return $this->network['ports'][$portId];
+    }
+
+    /**
+     * Read the ports not read yet in one query; a port of a device out of the user's sight is cached as null.
+     *
+     * @param  int[]  $portIds
+     */
+    private function loadPorts(array $portIds): void
+    {
+        $this->network();
+        $missing = array_values(array_filter($portIds, fn ($id) => ! array_key_exists($id, $this->network['ports'])));
+        if (! $missing) {
+            return;
+        }
+        $ports = $this->topology->ports($missing);
+        foreach ($missing as $portId) {
+            $port = $ports[$portId] ?? null;
+            $this->network['ports'][$portId] = $port !== null && isset($this->network['devices'][(int) $port['device_id']]) ? $port : null;
+        }
     }
 
     /**

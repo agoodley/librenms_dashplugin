@@ -132,6 +132,7 @@ class PathServiceTest extends TestCase
         $result = self::service()->trace(['a' => '10.90.0.7', 'b' => '10.90.130.31']);
         $this->assertSame(['device', 'rtr2', 'Gi0/0/0'], [$result['a']['kind'], $result['a']['device'], $result['a']['port']]);
         $this->assertSame(['rtr2', 'acc3'], array_slice(self::names($result), 0, 2), 'a router starts the routed path itself');
+        $this->assertNull($result['hops'][0]['in'], 'nothing comes in at the start');
 
         $result = self::service()->trace(['a' => '10.90.110.11', 'b' => '10.9.9.9']);
         $this->assertSame([], $result['hops']);
