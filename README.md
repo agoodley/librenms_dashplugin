@@ -90,7 +90,8 @@ VLANs that are local to each switch on purpose can be ignored, and every check c
 Every device should keep a path to **the core**: the core devices set in the settings, else the designated root
 bridges of the spanning tree settings, else the switches given the lowest spanning tree bridge priority (when it was
 lowered on purpose), else the most central switches. The page shows which one it used. Paths are followed through the
-whole network you can see; port-channels count as one link and their members back each other up.
+whole network you can see; port-channels count as one link and their members back each other up. Servers, access points
+and phones are never a path between two switches, even when they are cabled to both.
 
 | Check | Severity |
 |---|---|
@@ -161,8 +162,10 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 * The suggested configuration under a description finding is ready to paste; it names each port after its current
   LLDP/CDP neighbor (`core2 Te1/1/1`).
 * Before maintenance on a switch, open it on the L2 map and use **Simulate failure**: the box lists what loses its path
-  to the core, based on the links as they are right now (links and devices that are already down stay down). Add more
-  failures to check a pair, *Reset* to start over. `l2?fail=d:12` opens the map with device 12 failed.
+  to the core, computed on the whole network as it is right now (links and devices that are already down stay down),
+  including devices that are not on the map. Add more failures to check a pair, *Reset* to start over.
+  `l2?fail=d:12,p:345` opens the map with device 12 and the link of port 345 failed (`api/simulate?fail=...` returns the
+  same as JSON).
 * If the automatic core is not your core, set **Core devices** in the settings; the switches next to the LibreNMS
   poller are a good choice when you want "what can the poller still reach".
 * `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links` and `api/redundancy` return the same data as JSON (same
@@ -233,8 +236,9 @@ vendor/bin/phpunit
   at the next discovery, so "redundancy lost" covers failures since the last discovery run; a link that has been down
   for longer is simply missing (roadmap item 5 keeps a baseline). It looks at device and link failures, not at VLANs:
   a backup trunk that does not carry a VLAN is a link & VLAN finding.
-* The map's failure simulation uses the links drawn on the map; devices with links to devices that are not shown are
-  assumed to reach the core through them.
+* Servers, access points and phones are recognized by their LibreNMS device type, unmanaged neighbors by their LLDP/CDP
+  platform; an unmanaged neighbor without a platform counts as a switch. Down devices without any LLDP/CDP neighbor are
+  not listed as outages: nothing tells what they depend on.
 
 ## Roadmap
 

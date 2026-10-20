@@ -135,6 +135,7 @@
             'l3Page' => route('topology.l3'),
             'stpPage' => route('topology.stp'),
             'redundancyPage' => route('topology.redundancy'),
+            'simulate' => route('topology.api.simulate'),
         ],
     ];
 @endphp

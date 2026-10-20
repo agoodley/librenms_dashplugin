@@ -127,13 +127,14 @@ class L2BuilderTest extends TestCase
             'remote_port_id' => null, 'remote_hostname' => $host, 'remote_port' => 'Port 1', 'remote_platform' => '', 'protocol' => 'lldp'];
         $links = [
             $neighbour(3, 33, 'Switch'), $neighbour(4, 41, 'Switch'),                 // factory default name: two devices
+            $neighbour(3, 34, 'switch.local'), $neighbour(4, 42, 'switch.local'),     // default name with a domain
             $neighbour(1, 13, 'nas01.corp.example'), $neighbour(2, 23, 'nas01.corp.example'), // one dual-homed device
             $neighbour(1, 14, 'printer1.siteA.example'), $neighbour(2, 24, 'printer1.siteB.example'),
         ];
         $builder = new L2Builder(CampusFixture::devices(), $links, CampusFixture::ports(), [], [], new StpIndex());
         $unmanaged = array_column(array_filter($builder->build()['nodes'], fn ($n) => ! $n['managed']), 'name');
         sort($unmanaged);
-        $this->assertSame(['Switch', 'Switch', 'nas01.corp.example', 'printer1.siteA.example', 'printer1.siteB.example'], $unmanaged);
+        $this->assertSame(['Switch', 'Switch', 'nas01.corp.example', 'printer1.siteA.example', 'printer1.siteB.example', 'switch.local', 'switch.local'], $unmanaged);
     }
 
     public function testScopeAroundDevice(): void

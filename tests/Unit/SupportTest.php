@@ -13,6 +13,20 @@ use PHPUnit\Framework\TestCase;
 
 class SupportTest extends TestCase
 {
+    public function testDevicesNamedInASetting(): void
+    {
+        $settings = new PluginSettings(['stp_preferred_roots' => 'CORE1.example.net, 7 sw-old']);
+        $devices = [
+            1 => ['hostname' => 'core1.example.net', 'sysName' => 'core1', 'display' => 'core1'],
+            2 => ['hostname' => '10.0.0.2', 'sysName' => 'SW-OLD', 'display' => ''],
+            7 => ['hostname' => 'dist7', 'sysName' => '', 'display' => null],
+            8 => ['hostname' => 'acc8'],
+        ];
+
+        $this->assertSame([1 => true, 2 => true, 7 => true], $settings->devicesIn('stp_preferred_roots', $devices));
+        $this->assertSame([], $settings->devicesIn('redundancy_core', $devices));
+    }
+
     public function testInterfaceNamesAreAbbreviated(): void
     {
         $this->assertSame('Gi1/0/1', InterfaceName::short('GigabitEthernet1/0/1'));

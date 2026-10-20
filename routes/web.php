@@ -23,6 +23,7 @@ Route::middleware(['web', 'auth'])
         Route::get('api/stp', [ApiController::class, 'stp'])->name('api.stp');
         Route::get('api/links', [ApiController::class, 'links'])->name('api.links');
         Route::get('api/redundancy', [ApiController::class, 'redundancy'])->name('api.redundancy');
+        Route::get('api/simulate', [ApiController::class, 'simulate'])->name('api.simulate');
 
         Route::get('assets/{file}', AssetController::class)
             ->where('file', '[A-Za-z0-9_-]+\.(js|css)')

@@ -1286,25 +1286,7 @@ class StpAnalyzer
      */
     private function preferredRoots(): array
     {
-        $wanted = array_map('strtolower', $this->settings->list('stp_preferred_roots'));
-        if (! $wanted) {
-            return [];
-        }
-
-        $result = [];
-        foreach ($this->devices as $deviceId => $device) {
-            $names = array_map('strtolower', array_filter([
-                (string) $deviceId,
-                (string) ($device['hostname'] ?? ''),
-                (string) ($device['sysName'] ?? ''),
-                (string) ($device['display'] ?? ''),
-            ]));
-            if (array_intersect($names, $wanted)) {
-                $result[$deviceId] = true;
-            }
-        }
-
-        return $result;
+        return $this->settings->devicesIn('stp_preferred_roots', $this->devices);
     }
 
     /**

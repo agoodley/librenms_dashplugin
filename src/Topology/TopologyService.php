@@ -55,7 +55,6 @@ class TopologyService
 
         [$ids, $total, $truncated] = $this->limit($ids, $root, $linked);
         $idSet = array_flip($ids);
-        $scopeLinks = $links;
         $links = array_values(array_filter($links, fn ($l) => isset($idSet[(int) $l['local_device_id']])));
 
         $linkPorts = [];
@@ -89,41 +88,7 @@ class TopologyService
         ]);
         $result['scope'] = $this->scopeInfo($p, $root, $total, count($ids), $truncated);
 
-        // failure simulation: the core, and devices with links to monitored devices not on the map
-        $outside = [];
-        foreach ($scopeLinks as $link) {
-            $a = (int) $link['local_device_id'];
-            $b = (int) ($link['remote_device_id'] ?? 0);
-            if ($b && isset($idSet[$a]) !== isset($idSet[$b])) {
-                $outside[isset($idSet[$a]) ? $a : $b] = true;
-            }
-        }
-        foreach ($result['nodes'] as &$node) {
-            $node['outside'] = $node['device_id'] !== null && isset($outside[$node['device_id']]);
-        }
-        unset($node);
-        $result['core'] = $this->mapCore($scope, $scopeLinks);
-
         return $result;
-    }
-
-    /**
-     * Core devices for the failure simulation of the map, chosen as on the redundancy page from
-     * the whole network the user may see.
-     *
-     * @param  int[]  $scope  devices whose links are in $links
-     * @return array{nodes: string[], modes: string[]}
-     */
-    private function mapCore(array $scope, array $links): array
-    {
-        $all = $this->repo->deviceIds();
-        if (count($all) !== count($scope)) {
-            $links = $this->repo->links($all);
-        }
-        $core = (new RedundancyAnalyzer($this->repo->devices($all, roles: false), [], $links, [], [], $this->settings,
-            stpPriority: $this->repo->stpPriorities($all)))->coreNodes();
-
-        return ['nodes' => array_keys($core), 'modes' => array_values(array_unique($core))];
     }
 
     /**
@@ -331,6 +296,31 @@ class TopologyService
     public function redundancy(array $p): array
     {
         [$scope, $device] = $this->scope($p);
+        $result = $this->redundancyAnalyzer($scope, true)->analyze($device);
+        $result['filter'] = $p;
+
+        return $result;
+    }
+
+    /**
+     * Failure simulation of the L2 map: what the given devices and links cut off the core, on the
+     * whole network the user may see and as it is now.
+     *
+     * @param  string[]  $refs  see RedundancyAnalyzer::simulate()
+     */
+    public function simulate(array $refs): array
+    {
+        return $this->redundancyAnalyzer($this->repo->deviceIds(), false)->simulate($refs);
+    }
+
+    /**
+     * Redundancy analysis of every device the user may see, reporting on $scope.
+     *
+     * @param  int[]  $scope
+     * @param  bool  $details  also read stack members / line cards and outage start times
+     */
+    private function redundancyAnalyzer(array $scope, bool $details): RedundancyAnalyzer
+    {
         $all = $this->repo->deviceIds();
         $links = $this->repo->links($all);
 
@@ -346,49 +336,19 @@ class TopologyService
         $aggregates = array_values(array_unique(array_intersect_key($lag, array_flip($linkPorts))));
         $ports = $this->repo->ports(array_merge($linkPorts, $aggregates), self::REDUNDANCY_PORT_COLUMNS);
 
-        // stack member / line card of the link ports of devices with several links
-        $several = array_filter($perDevice, fn ($ports) => count($ports) >= 2);
-        $entityUnits = [];
-        foreach ($this->repo->portEntities(array_filter($ports, fn ($port) => isset($several[(int) $port['device_id']]))) as $deviceId => $rows) {
-            $entityUnits[$deviceId] = PortUnits::fromEntities($rows);
-        }
-
         $devices = $this->repo->devices($all, roles: false);
-        $down = array_keys(array_filter($devices, fn ($d) => empty($d['status'])));
-        $analyzer = new RedundancyAnalyzer(
-            $devices,
-            $scope,
-            $links,
-            $ports,
-            $lag,
-            $this->settings,
-            $entityUnits,
-            $this->repo->outageStarts($down),
-            $this->repo->stpPriorities($all),
-        );
-
-        $result = $analyzer->analyze();
-        if ($device) {
-            $result = self::filterRedundancyForDevice($result, $device);
+        $entityUnits = [];
+        $outageStarts = [];
+        if ($details) {
+            // stack member / line card of the link ports of devices with several links
+            $several = array_filter($perDevice, fn ($ports) => count($ports) >= 2);
+            foreach ($this->repo->portEntities(array_filter($ports, fn ($port) => isset($several[(int) $port['device_id']]))) as $deviceId => $rows) {
+                $entityUnits[$deviceId] = PortUnits::fromEntities($rows);
+            }
+            $outageStarts = $this->repo->outageStarts(array_keys(array_filter($devices, fn ($d) => empty($d['status']))));
         }
-        $result['filter'] = $p;
 
-        return $result;
-    }
-
-    /**
-     * Narrow a redundancy analysis to one device: what it depends on and what depends on it.
-     */
-    public static function filterRedundancyForDevice(array $result, int $deviceId): array
-    {
-        $result['findings'] = array_values(array_filter($result['findings'], fn ($f) => in_array($deviceId, $f['devices'], true)));
-        $result['impact'] = array_values(array_filter($result['impact'],
-            fn ($row) => in_array($deviceId, $row['element_devices'], true) || in_array($deviceId, $row['devices'], true)));
-        $result['outages'] = array_values(array_filter($result['outages'],
-            fn ($o) => $o['device_id'] === $deviceId || in_array($deviceId, $o['behind'], true) || in_array($deviceId, $o['shared'], true)));
-        $result['summary'] = RedundancyAnalyzer::summarize($result['findings'], $result['impact'], $result['outages'], 1);
-
-        return $result;
+        return new RedundancyAnalyzer($devices, $scope, $links, $ports, $lag, $this->settings, $entityUnits, $outageStarts, $this->repo->stpPriorities($all));
     }
 
     /**

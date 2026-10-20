@@ -5,7 +5,8 @@ namespace Agoodley\LibrenmsTopology\Redundancy;
 use Agoodley\LibrenmsTopology\Support\Graph;
 
 /**
- * The core of each part of the network: the reference that devices must keep a path to.
+ * The core of each part of the network (with at least one link): the reference that devices
+ * must keep a path to.
  *  1. the configured core devices of the part;
  *  2. else the switches given the lowest spanning tree bridge priority, when it was lowered
  *     below the default 32768 (the root bridge placed on purpose);
@@ -35,6 +36,9 @@ class CoreFinder
     {
         $core = [];
         foreach ($graph->components() as $component) {
+            if (count($component) < 2) {
+                continue; // a device without neighbours is nobody's core
+            }
             $members = array_values(array_filter($component, fn ($node) => isset($network[$node])));
             $chosen = array_values(array_filter($component, fn ($node) => isset($configured[$node])));
             $mode = 'configured';

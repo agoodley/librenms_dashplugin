@@ -68,9 +68,15 @@
         @php
             $summary = $result['summary'];
             $core = $result['core'];
-            $coreIds = array_column($core['devices'], 'device_id');
-            $modes = array_values(array_unique(array_column($core['devices'], 'mode')));
-            $coreText = implode('; ', array_map(fn ($mode) => $coreModes[$mode === 'configured' ? ($core['setting'] ?? 'redundancy_core') : $mode] ?? $mode, $modes));
+            // the chosen core first; parts of the network without one use their most central switch
+            $chosen = array_values(array_filter($core['devices'], fn ($c) => $c['mode'] !== 'automatic'));
+            $automatic = array_values(array_filter($core['devices'], fn ($c) => $c['mode'] === 'automatic'));
+            $coreIds = array_column($chosen ?: $automatic, 'device_id');
+            $mode = $chosen ? $chosen[0]['mode'] : 'automatic';
+            $coreText = $core['devices'] ? $coreModes[$mode === 'configured' ? ($core['setting'] ?? 'redundancy_core') : $mode] ?? $mode : '';
+            if ($chosen && $automatic) {
+                $coreText .= '; ' . count($automatic) . ' switch' . (count($automatic) === 1 ? '' : 'es') . ' in other parts of the network (automatic)';
+            }
         @endphp
         <div class="topo-cards">
             <div class="topo-card topo-{{ $summary['status'] }}">
@@ -179,7 +185,7 @@
         <div class="panel panel-default">
             <div class="panel-heading">
                 <strong>Failure impact</strong>
-                <span class="text-muted">({{ count($result['impact']) }} devices and links whose failure cuts monitored devices off the core, largest first)</span>
+                <span class="text-muted">({{ $result['impact_total'] }} devices and links whose failure cuts monitored devices off the core, largest first{{ $result['impact_total'] > count($result['impact']) ? ', showing the first ' . count($result['impact']) : '' }})</span>
             </div>
             <div class="table-responsive">
             <table class="table table-condensed table-hover topo-stp-table">

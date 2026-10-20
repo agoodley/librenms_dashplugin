@@ -98,6 +98,35 @@ class PluginSettings
     }
 
     /**
+     * Devices named in a list setting by id, hostname, sysName or display name (any case).
+     *
+     * @param  array<int, array>  $devices  device_id => device row
+     * @return array<int, true> device ids
+     */
+    public function devicesIn(string $key, array $devices): array
+    {
+        $wanted = array_map('strtolower', $this->list($key));
+        if (! $wanted) {
+            return [];
+        }
+
+        $result = [];
+        foreach ($devices as $deviceId => $device) {
+            $names = array_map('strtolower', array_filter([
+                (string) $deviceId,
+                (string) ($device['hostname'] ?? ''),
+                (string) ($device['sysName'] ?? ''),
+                (string) ($device['display'] ?? ''),
+            ]));
+            if (array_intersect($names, $wanted)) {
+                $result[(int) $deviceId] = true;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * Set of integers from a list setting that may contain ranges ("1002-1005, 999"); values
      * outside [$min, $max] are dropped.
      *

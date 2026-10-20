@@ -315,13 +315,13 @@ class L2Builder
 
     /**
      * Node id of an unmanaged neighbour: one node per advertised name, so a device seen by
-     * several switches is drawn once. Missing or factory default names ("Switch") would merge
-     * unrelated devices and get one node per local port instead.
+     * several switches is drawn once. Missing or factory default names ("Switch", also with a
+     * domain: "switch.local") would merge unrelated devices and get one node per local port instead.
      */
     public static function unmanagedNodeId(array $link): string
     {
         $host = strtolower(trim($link['b_host']));
-        if ($host === '' || in_array($host, self::GENERIC_HOSTNAMES, true)) {
+        if ($host === '' || in_array($host, self::GENERIC_HOSTNAMES, true) || in_array(self::shortHost($host), self::GENERIC_HOSTNAMES, true)) {
             return 'u:' . $link['a_device'] . ':' . ($link['a_port'] ?: InterfaceName::normalize($link['b_name']));
         }
 

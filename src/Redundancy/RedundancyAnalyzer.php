@@ -38,6 +38,9 @@ class RedundancyAnalyzer
     /** Roles that make up the network: the findings are about cutting these off. */
     public const NETWORK_ROLES = [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER, DeviceRole::FIREWALL];
 
+    /** Unmanaged neighbours that do not forward between their links, by the role of their LLDP/CDP platform. */
+    private const END_ROLES = [DeviceRole::SERVER, DeviceRole::PHONE, DeviceRole::WIRELESS];
+
     /** Roles whose interface names tell the stack member or slot (other devices name ports by type, e.g. NetScaler 10/1). */
     private const NAMED_UNIT_ROLES = [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER];
 
@@ -83,6 +86,15 @@ class RedundancyAnalyzer
     /** @var array<string, int[]> node => local port of each unmanaged neighbour that hangs off it alone (not graph nodes) */
     private array $leaves = [];
 
+    /** @var array<string, string[]> end device with several links => its copies in the graphs, one per link */
+    private array $copies = [];
+
+    /** @var array<string, string> copy => end device */
+    private array $copyOf = [];
+
+    /** @var array<int, string>|null port_id => key of the link it belongs to (built on demand) */
+    private ?array $portEdges = null;
+
     /** @var array<string, true> disabled check codes and categories */
     private array $disabled;
 
@@ -120,9 +132,10 @@ class RedundancyAnalyzer
 
     /**
      * Run every check and return the data of the redundancy page: core, summary, findings, the
-     * failure impact table and the current outages, limited to the reported devices.
+     * failure impact table and the current outages, limited to the reported devices (and, with
+     * $device, to what involves that device: what it depends on and what depends on it).
      */
-    public function analyze(): array
+    public function analyze(?int $device = null): array
     {
         $this->findings = [];
         $design = $this->design->cuts(self::CORE);
@@ -135,9 +148,10 @@ class RedundancyAnalyzer
         $this->checkLost($design, $current);
         $outages = $this->checkOutages();
 
+        $keep = fn (array $devices) => $this->inScope($devices) && ($device === null || in_array($device, $devices, true));
         $findings = [];
         foreach ($this->findings as $finding) {
-            if ($this->inScope($finding->devices)) {
+            if ($keep($finding->devices)) {
                 $findings[] = $finding->toArray() + ['category' => self::CHECKS[$finding->code] ?? 'other'];
             }
         }
@@ -147,13 +161,16 @@ class RedundancyAnalyzer
         $key = fn ($f) => [Finding::SEVERITY_ORDER[$f['severity']], $categoryOrder[$f['category']] ?? 99, -count($f['devices']), $codeOrder[$f['code']] ?? 99, $f['title']];
         usort($findings, fn ($a, $b) => $key($a) <=> $key($b));
 
-        $impact = array_values(array_filter($impact, fn ($row) => $this->inScope(array_merge($row['element_devices'], $row['devices']))));
+        $impact = array_values(array_filter($impact, fn ($row) => $keep(array_merge($row['element_devices'], $row['devices']))));
         $kindOrder = ['device' => 0, 'unmanaged' => 1, 'port-channel' => 2, 'link' => 3];
         $rank = fn ($row) => [-$row['network'], -count($row['devices']), -$row['unmanaged'], $kindOrder[$row['kind']] ?? 9, $row['label']];
         usort($impact, fn ($a, $b) => $rank($a) <=> $rank($b));
-        $impact = array_slice($impact, 0, self::IMPACT_ROWS);
 
-        $outages = array_values(array_filter($outages, fn ($o) => $this->inScope(array_merge([$o['device_id']], $o['behind'], $o['shared']))));
+        $outages = array_values(array_filter($outages, fn ($o) => $keep(array_merge([$o['device_id']], $o['behind'], $o['shared']))));
+        $devices = $device !== null ? 1 : count(array_filter($this->nodes, fn ($n) => $n['managed'] && ! isset($n['of']) && isset($this->scope[$n['device_id']])));
+        $summary = self::summarize($findings, $impact, $outages, $devices);
+        $impactTotal = count($impact);
+        $impact = array_slice($impact, 0, self::IMPACT_ROWS);
 
         $core = [];
         foreach ($this->core as $node => $mode) {
@@ -180,14 +197,13 @@ class RedundancyAnalyzer
             $names[$entry['device_id']] = $this->deviceName($entry['device_id']);
         }
 
-        $devices = count(array_filter($this->nodes, fn ($n) => $n['managed'] && isset($this->scope[$n['device_id']])));
-
         return [
             'device_names' => $names,
             'core' => ['devices' => $core, 'setting' => $this->coreSetting],
-            'summary' => self::summarize($findings, $impact, $outages, $devices),
+            'summary' => $summary,
             'findings' => $findings,
             'impact' => $impact,
+            'impact_total' => $impactTotal,
             'outages' => $outages,
         ];
     }
@@ -227,6 +243,231 @@ class RedundancyAnalyzer
     public function coreNodes(): array
     {
         return $this->core;
+    }
+
+    /**
+     * What the given failures cut off the core now, on top of what is down already: the failure
+     * simulation of the map, computed on the whole network. References: node ids of the map
+     * (d:<device_id>, u:<neighbour>), p:<port_id> for a link by one of its ports (a port-channel
+     * fails all its members, a member port only that member) and l:<node>|<node> for the links
+     * between two devices. Unknown references are ignored.
+     *
+     * @param  string[]  $refs
+     * @return array{failed: array<int, array{ref: string, label: string}>, lost: array<int, array{node: string, name: string,
+     *     device_id: ?int, network: bool}>, network: int, unmanaged: int, reference: string}
+     */
+    public function simulate(array $refs): array
+    {
+        $nodes = [];
+        $ports = [];
+        $pairs = [];
+        $failed = [];
+        foreach (array_unique($refs) as $ref) {
+            $ref = (string) $ref;
+            if (preg_match('/^p:(\d+)$/', $ref, $match)) {
+                $port = (int) $match[1];
+                $members = array_keys($this->lagParent, $port, true);
+                $keys = array_values(array_unique(array_filter(array_map(fn ($member) => $this->edgeOfPort($member), [...$members, $port]))));
+                if (! $keys) {
+                    continue;
+                }
+                $ports += array_fill_keys([...$members, $port], true);
+                $edge = $this->edges[$keys[0]];
+                $failed[] = ['ref' => $ref, 'label' => match (true) {
+                    count($keys) > 1 => $this->aggregateLabel($port, $keys),
+                    $members || count($edge['members']) === 1 => $this->edgeLabel($edge),
+                    default => $this->memberLabel($edge, $port) . ' (one link of ' . $this->edgeLabel($edge) . ')',
+                }];
+            } elseif (preg_match('/^l:(.+)\|(.+)$/', $ref, $match) && isset($this->nodes[$match[1]], $this->nodes[$match[2]])) {
+                $between = array_values(array_filter($this->edges, fn ($edge) => in_array($this->deviceOf($edge['from']) . '|' . $this->deviceOf($edge['to']),
+                    [$match[1] . '|' . $match[2], $match[2] . '|' . $match[1]], true)));
+                if (! $between) {
+                    continue;
+                }
+                $pairs[$match[1] . '|' . $match[2]] = $pairs[$match[2] . '|' . $match[1]] = true;
+                $first = $this->deviceOf($between[0]['to']) === $match[1] ? $between[0]['to'] : $between[0]['from'];
+                $failed[] = ['ref' => $ref, 'label' => count($between) === 1
+                    ? $this->edgeLabel($between[0], $first)
+                    : $this->nodeName($match[1]) . ' ↔ ' . $this->nodeName($match[2]) . ' (' . array_sum(array_map(fn ($edge) => count($edge['members']), $between)) . ' links)'];
+            } elseif (isset($this->nodes[$ref]) && ! isset($this->nodes[$ref]['of'])) {
+                foreach ($this->copies[$ref] ?? [$ref] as $node) {
+                    $nodes[$node] = true;
+                }
+                $failed[] = ['ref' => $ref, 'label' => $this->nodeName($ref)];
+            }
+        }
+
+        // a link fails with its devices, when both are named, or when every member still up fails
+        $edgeDown = function (string $key) use ($ports, $pairs): bool {
+            $edge = $this->edges[$key];
+            if (isset($pairs[$this->deviceOf($edge['from']) . '|' . $this->deviceOf($edge['to'])])) {
+                return true;
+            }
+            foreach ($edge['members'] as $member) {
+                if (! isset($ports[(int) $member['a_port']]) && ! isset($ports[(int) $member['b_port']])
+                    && L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port']))) {
+                    return false;
+                }
+            }
+
+            return true;
+        };
+
+        [$before] = $this->reachable([], null);
+        [$after, $coreLeft] = $this->reachable($nodes, $edgeDown);
+        $gone = [];
+        foreach (array_keys($nodes) as $node) {
+            $gone[$this->deviceOf($node)] = true;
+        }
+        $reachedBefore = [];
+        foreach (array_keys($before) as $node) {
+            $reachedBefore[$this->deviceOf((string) $node)] = true;
+        }
+        foreach (array_keys($after) as $node) {
+            unset($reachedBefore[$this->deviceOf((string) $node)]);
+        }
+        unset($reachedBefore[self::CORE]);
+        $lost = array_map('strval', array_keys(array_diff_key($reachedBefore, $gone)));
+        usort($lost, fn ($a, $b) => [! $this->nodes[$a]['network'], ! $this->nodes[$a]['managed'], $this->nodes[$a]['name']]
+            <=> [! $this->nodes[$b]['network'], ! $this->nodes[$b]['managed'], $this->nodes[$b]['name']]);
+
+        $unmanaged = 0;
+        foreach (array_keys($gone) as $device) {
+            $unmanaged += count($this->leaves[$device] ?? []);
+        }
+
+        return [
+            'failed' => $failed,
+            'lost' => array_map(fn ($node) => [
+                'node' => $node,
+                'name' => $this->nodes[$node]['name'],
+                'device_id' => $this->nodes[$node]['device_id'],
+                'network' => $this->nodes[$node]['managed'] && $this->nodes[$node]['network'],
+            ], $lost),
+            'network' => count(array_filter($lost, fn ($n) => $this->nodes[$n]['managed'] && $this->nodes[$n]['network'])),
+            'unmanaged' => $unmanaged + $this->unmanagedCount($lost),
+            'reference' => $coreLeft ? 'core' : 'largest part',
+        ];
+    }
+
+    /**
+     * Graph nodes that reach the core in the current graph without the given nodes and links. In
+     * a part whose core devices are all out, the largest remaining piece is what keeps working
+     * (none when several pieces are the largest).
+     *
+     * @param  array<string, true>  $skipNodes
+     * @param  (callable(string): bool)|null  $edgeDown  is this link out?
+     * @return array{0: array<string, true>, 1: bool} reached nodes, whether every part kept a core device
+     */
+    private function reachable(array $skipNodes, ?callable $edgeDown): array
+    {
+        $usable = fn (string $next, int|string $key) => ! isset($skipNodes[$next]) && ($edgeDown === null || ! isset($this->edges[$key]) || ! $edgeDown((string) $key));
+        $reached = [self::CORE => true];
+        $queue = [self::CORE];
+        for ($i = 0; $i < count($queue); $i++) {
+            foreach ($this->current->edgesOf($queue[$i]) as [$next, $key]) {
+                if (! isset($reached[$next]) && $usable((string) $next, $key)) {
+                    $reached[$next] = true;
+                    $queue[] = $next;
+                }
+            }
+        }
+
+        $parts = [];
+        foreach (array_keys($this->core) as $core) {
+            $parts[$this->part[$core]] = ($parts[$this->part[$core]] ?? false) || isset($reached[$core]);
+        }
+        $kept = true;
+        foreach (array_keys(array_filter($parts, fn ($alive) => ! $alive)) as $part) {
+            $kept = false;
+            $seen = [];
+            $best = null;
+            $tie = false;
+            foreach ($this->part as $node => $nodePart) {
+                if ($nodePart !== $part || isset($seen[$node]) || isset($skipNodes[$node]) || ! $this->current->hasNode($node)) {
+                    continue;
+                }
+                $seen[$node] = true;
+                $piece = [(string) $node];
+                for ($i = 0; $i < count($piece); $i++) {
+                    foreach ($this->current->edgesOf($piece[$i]) as [$next, $key]) {
+                        if ($next !== self::CORE && ! isset($seen[$next]) && $usable((string) $next, $key)) {
+                            $seen[$next] = true;
+                            $piece[] = (string) $next;
+                        }
+                    }
+                }
+                $order = $best === null ? 1 : $this->weight($piece) <=> $this->weight($best);
+                if ($order > 0) {
+                    [$best, $tie] = [$piece, false];
+                } elseif ($order === 0) {
+                    $tie = true;
+                }
+            }
+            if ($best !== null && ! $tie) {
+                $reached += array_fill_keys($best, true);
+            }
+        }
+
+        return [$reached, $kept];
+    }
+
+    /**
+     * Key of the link a port belongs to, null when it is on none.
+     */
+    private function edgeOfPort(int $portId): ?string
+    {
+        if ($this->portEdges === null) {
+            $this->portEdges = [];
+            foreach ($this->edges as $key => $edge) {
+                foreach ($edge['members'] as $member) {
+                    foreach ([$member['a_port'], $member['b_port']] as $port) {
+                        if ($port) {
+                            $this->portEdges[(int) $port] = $key;
+                        }
+                    }
+                }
+            }
+        }
+
+        return $this->portEdges[$portId] ?? null;
+    }
+
+    /**
+     * "acc1 Gi1/0/49 ↔ dist1 Gi1/0/1" for the member of a link that uses the port, that port first.
+     */
+    private function memberLabel(array $edge, int $portId): string
+    {
+        $end = fn (string $node, ?int $port, string $name) => $this->nodeName($node) . ' ' . ($port ? $this->portName($port) : InterfaceName::short($name));
+        foreach ($edge['members'] as $member) {
+            $a = $end($edge['from'], $member['a_port'], (string) ($member['a_name'] ?? ''));
+            $b = $end($edge['to'], $member['b_port'], (string) ($member['b_name'] ?? ''));
+            if ((int) $member['a_port'] === $portId) {
+                return "$a ↔ $b";
+            }
+            if ((int) $member['b_port'] === $portId) {
+                return "$b ↔ $a";
+            }
+        }
+
+        return $this->edgeLabel($edge);
+    }
+
+    /**
+     * "acc1 Po1 ↔ dist1, dist2" for a port-channel with links to several devices (MLAG).
+     *
+     * @param  string[]  $keys  its links
+     */
+    private function aggregateLabel(int $portId, array $keys): string
+    {
+        $node = 'd:' . (int) ($this->port($portId)['device_id'] ?? 0);
+        $far = [];
+        foreach ($keys as $key) {
+            $ends = [$this->deviceOf($this->edges[$key]['from']), $this->deviceOf($this->edges[$key]['to'])];
+            $far[] = $this->nodeName($ends[0] === $node ? $ends[1] : $ends[0]);
+        }
+
+        return $this->nodeName($node) . ' ' . $this->portName($portId) . ' ↔ ' . implode(', ', array_unique($far));
     }
 
     // ---------------------------------------------------------------- graph
@@ -337,7 +578,7 @@ class RedundancyAnalyzer
             }
             $degree[$group['to']] = ($degree[$group['to']] ?? 0) + 1;
         }
-        $this->deviceUnits = array_filter($seen, fn ($units) => count($units) >= 2);
+        $this->deviceUnits = array_filter($seen, fn ($units, $node) => count($units) >= 2 && $this->forwards($this->nodes[$node]), ARRAY_FILTER_USE_BOTH);
 
         // the same for unmanaged neighbours on a single link that two names or protocols reported
         foreach ($groups as $key => $group) {
@@ -347,9 +588,32 @@ class RedundancyAnalyzer
             }
         }
 
+        // servers, access points and phones do not forward between their links: each of their links
+        // gets its own copy of the device, so that they never join two switches
+        $incident = [];
+        foreach ($groups as $key => $group) {
+            $incident[$group['from']][] = $key;
+            $incident[$group['to']][] = $key;
+        }
+        foreach ($incident as $node => $keys) {
+            if (count($keys) < 2 || $this->forwards($this->nodes[$node])) {
+                continue;
+            }
+            foreach ($keys as $index => $key) {
+                $copy = "$node#$index";
+                $this->nodes[$copy] = ['of' => $node] + $this->nodes[$node];
+                $this->copies[$node][] = $copy;
+                $this->copyOf[$copy] = $node;
+                $groups[$key][$groups[$key]['from'] === $node ? 'from' : 'to'] = $copy;
+            }
+        }
+
         $this->design = new Graph;
         $this->current = new Graph;
         foreach ($this->nodes as $id => $node) {
+            if (isset($this->copies[$id])) {
+                continue; // in the graphs as its copies
+            }
             $this->design->addNode($id);
             if ($node['up']) {
                 $this->current->addNode($id);
@@ -395,6 +659,61 @@ class RedundancyAnalyzer
     }
 
     /**
+     * Does the node pass traffic between its links? Switches, routers and firewalls, and unmanaged
+     * neighbours unless their platform says server, phone or access point.
+     */
+    private function forwards(array $node): bool
+    {
+        if (isset($node['of'])) {
+            return false;
+        }
+
+        return $node['managed'] ? $node['network'] : ! in_array($node['role'], self::END_ROLES, true);
+    }
+
+    /**
+     * The device of a graph node (the end device of a copy).
+     */
+    private function deviceOf(string $node): string
+    {
+        return $this->copyOf[$node] ?? $node;
+    }
+
+    /**
+     * Graph nodes to devices. An end device split into copies is in the result when all its
+     * copies are in the list; with $cuts, copies out of reach in that graph count as gone already.
+     *
+     * @param  array<int, string>  $nodes
+     * @return array<int, string>
+     */
+    private function devicesOf(array $nodes, ?array $cuts = null): array
+    {
+        $result = [];
+        $copies = [];
+        foreach ($nodes as $node) {
+            if (isset($this->copyOf[$node])) {
+                $copies[$this->copyOf[$node]][$node] = true;
+            } else {
+                $result[] = $node;
+            }
+        }
+        foreach ($copies as $device => $present) {
+            $all = true;
+            foreach ($this->copies[$device] as $copy) {
+                if (! isset($present[$copy]) && ($cuts === null || isset($cuts['tin'][$copy]))) {
+                    $all = false;
+                    break;
+                }
+            }
+            if ($all) {
+                $result[] = $device;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * Unmanaged neighbour of a links row: its short name, or the local port for missing and
      * factory default names (as L2Builder::unmanagedNodeId() separates them).
      */
@@ -417,27 +736,11 @@ class RedundancyAnalyzer
     private function configuredCore(): array
     {
         foreach (['redundancy_core', 'stp_preferred_roots'] as $setting) {
-            $wanted = array_map('strtolower', $this->settings->list($setting));
-            if (! $wanted) {
-                continue;
-            }
-
-            $result = [];
-            foreach ($this->devices as $deviceId => $device) {
-                $names = array_map('strtolower', array_filter([
-                    (string) $deviceId,
-                    (string) ($device['hostname'] ?? ''),
-                    (string) ($device['sysName'] ?? ''),
-                    (string) ($device['display'] ?? ''),
-                ]));
-                if (array_intersect($names, $wanted)) {
-                    $result['d:' . $deviceId] = true;
-                }
-            }
-            if ($result) {
+            $devices = $this->settings->devicesIn($setting, $this->devices);
+            if ($devices) {
                 $this->coreSetting = $setting;
 
-                return $result;
+                return array_fill_keys(array_map(fn ($id) => 'd:' . $id, array_keys($devices)), true);
             }
         }
 
@@ -473,13 +776,13 @@ class RedundancyAnalyzer
      * row of the failure impact table; those that cut off switches, routers or firewalls are
      * findings too (a port-channel only when one of its cables is all that is left, see checkLost).
      *
-     * @param  array<string, array{0: array<int, string>, 1: int}>  $losses  see vertexLosses()
+     * @param  array<string, array{0: array<int, string>, 1: int, 2: bool}>  $losses  see vertexLosses()
      * @return array<int, array> impact rows
      */
     private function checkSinglePoints(array $design, array $losses): array
     {
         $rows = [];
-        foreach ($losses as $node => [$lost, $pieces]) {
+        foreach ($losses as $node => [$lost, $pieces, $tie]) {
             $onlyCore = $pieces > 0;
             $row = $this->impactRow($this->nodes[$node]['managed'] ? 'device' : 'unmanaged', $this->nodeName($node),
                 $this->nodes[$node]['managed'] ? [$this->nodes[$node]['device_id']] : [], $lost, $node);
@@ -498,9 +801,11 @@ class RedundancyAnalyzer
                 $this->severity($row['network']), 'spof_device',
                 'single point of failure: ' . $name . ($this->nodes[$node]['managed'] ? '' : ' (unmanaged neighbor)'),
                 ($chosen ? "$name is the only core device of this part of the network. " : '')
-                . ($onlyCore
-                    ? "If $name fails, the network splits into $pieces parts and " . $this->lostText($lost, $node) . ' are cut off from the largest of them: '
-                    : "If $name fails, " . $this->lostText($lost, $node) . ' ' . $this->lose($lost, $node) . ' path to the core: ')
+                . match (true) {
+                    $tie => "If $name fails, the network splits into $pieces parts of the same size and " . $this->lostText($lost, $node) . ' lose their connection: ',
+                    $onlyCore => "If $name fails, the network splits into $pieces parts and " . $this->lostText($lost, $node) . ' are cut off from the largest of them: ',
+                    default => "If $name fails, " . $this->lostText($lost, $node) . ' ' . $this->lose($lost, $node) . ' path to the core: ',
+                }
                 . $this->nameList($lost) . '.',
                 $chosen
                     ? 'Add a second core switch and connect the switches below to both, or set the core devices in the plugin settings if this is not the core.'
@@ -515,7 +820,7 @@ class RedundancyAnalyzer
                 continue; // link of the virtual core node
             }
             $edge = $this->edges[$edgeKey];
-            $lost = self::subtrees($design, [$child]);
+            $lost = $this->devicesOf(self::subtrees($design, [$child]), $design);
             $ends = $this->edgeDevices($edge);
             $row = $this->impactRow(count($edge['members']) > 1 ? 'port-channel' : 'link', $this->edgeLabel($edge, (string) $child), $ends, $lost);
             if (! $row) {
@@ -544,7 +849,8 @@ class RedundancyAnalyzer
      * Nodes that lose the core when a cut vertex fails. When the only core device of a part fails,
      * the largest remaining piece is what keeps working.
      *
-     * @return array<string, array{0: array<int, string>, 1: int}> node => [cut off nodes, pieces left (only core devices)]
+     * @return array<string, array{0: array<int, string>, 1: int, 2: bool}> node => [devices cut off, pieces left (only
+     *                                                                     core devices), whether no piece is the largest]
      */
     private function vertexLosses(array $design): array
     {
@@ -552,16 +858,19 @@ class RedundancyAnalyzer
         foreach ($design['vertices'] as $node => $children) {
             $onlyCore = isset($this->core[$node])
                 && count(array_filter(array_keys($this->core), fn ($core) => $this->part[$core] === $this->part[$node])) === 1;
-            $losses[(string) $node] = $onlyCore ? $this->outsideLargestPiece((string) $node) : [self::subtrees($design, $children), 0];
+            $losses[(string) $node] = $onlyCore
+                ? $this->outsideLargestPiece((string) $node)
+                : [$this->devicesOf(self::subtrees($design, $children), $design), 0, false];
         }
 
         return $losses;
     }
 
     /**
-     * Nodes outside the largest piece (most network devices) left when $node fails.
+     * Devices outside the largest piece (most network devices) left when $node fails; all of
+     * them when several pieces are the largest.
      *
-     * @return array{0: array<int, string>, 1: int} cut off nodes, number of pieces
+     * @return array{0: array<int, string>, 1: int, 2: bool} devices cut off, number of pieces, no single largest piece
      */
     private function outsideLargestPiece(string $node): array
     {
@@ -584,21 +893,35 @@ class RedundancyAnalyzer
             $pieces[] = $piece;
         }
 
-        $weight = fn (array $piece) => [
-            count(array_filter($piece, fn ($n) => $this->nodes[$n]['managed'] && $this->nodes[$n]['network'])),
-            count(array_filter($piece, fn ($n) => $this->nodes[$n]['managed'])),
-            count($piece),
-        ];
-        usort($pieces, fn ($a, $b) => $weight($b) <=> $weight($a));
+        usort($pieces, fn ($a, $b) => $this->weight($b) <=> $this->weight($a));
+        $tie = count($pieces) > 1 && $this->weight($pieces[0]) === $this->weight($pieces[1]);
+        $lost = array_merge(...($tie ? $pieces : array_slice($pieces, 1)));
 
-        return [array_map('strval', array_merge(...array_slice($pieces, 1))), count($pieces)];
+        return [$this->devicesOf(array_map('strval', $lost)), count($pieces), $tie];
+    }
+
+    /**
+     * Size of a piece of the network: switches, routers and firewalls first, then monitored devices.
+     *
+     * @param  array<int, string>  $piece  graph nodes
+     * @return array{0: int, 1: int, 2: int}
+     */
+    private function weight(array $piece): array
+    {
+        $devices = array_unique(array_map(fn ($n) => $this->deviceOf((string) $n), $piece));
+
+        return [
+            count(array_filter($devices, fn ($n) => $this->nodes[$n]['managed'] && $this->nodes[$n]['network'])),
+            count(array_filter($devices, fn ($n) => $this->nodes[$n]['managed'])),
+            count($devices),
+        ];
     }
 
     /**
      * Devices cut off by a cut vertex that reach it over several separate links: redundant
      * cabling to one switch protects against a cable or port failure, not against the switch.
      *
-     * @param  array<string, array{0: array<int, string>, 1: int}>  $losses  see vertexLosses()
+     * @param  array<string, array{0: array<int, string>, 1: int, 2: bool}>  $losses  see vertexLosses()
      */
     private function checkSameDevice(array $losses): void
     {
@@ -667,6 +990,7 @@ class RedundancyAnalyzer
                     $starts[] = $this->other($this->edges[$edgeKey], $node);
                 }
                 $explored = [];
+                $toCore = [];
                 $regions = [];
                 foreach ($starts as $start) {
                     if (isset($explored[$start])) {
@@ -674,12 +998,14 @@ class RedundancyAnalyzer
                     }
                     [$reached, $visited] = $this->reach($this->design, $start, $failing, []);
                     $explored += array_fill_keys($visited, true);
-                    if (! $reached) {
+                    if ($reached) {
+                        $toCore += array_fill_keys($visited, true);
+                    } else {
                         $regions[] = $visited;
                     }
                 }
 
-                $this->reportUnit($node, $unitKey, $label, $failing, $regions);
+                $this->reportUnit($node, $unitKey, $label, $failing, $regions, $toCore);
             }
         }
     }
@@ -705,8 +1031,9 @@ class RedundancyAnalyzer
      *
      * @param  array<string, true>  $failing  links that fail with the unit
      * @param  array<int, array<int, string>>  $regions  node sets that lose the core
+     * @param  array<string, true>  $toCore  nodes that still reach the core
      */
-    private function reportUnit(string $node, string $unitKey, string $label, array $failing, array $regions): void
+    private function reportUnit(string $node, string $unitKey, string $label, array $failing, array $regions, array $toCore): void
     {
         $name = $this->nodeName($node);
         $sentences = [];
@@ -716,10 +1043,14 @@ class RedundancyAnalyzer
         foreach ($regions as $region) {
             $in = array_flip($region);
             $boundary = array_values(array_filter(array_keys($failing), fn ($key) => isset($in[$this->edges[$key]['from']]) !== isset($in[$this->edges[$key]['to']])));
+            if (isset($in[$node])) {
+                // the device's own links toward the core, not those to devices further down
+                $boundary = array_values(array_filter($boundary, fn ($key) => isset($toCore[$this->other($this->edges[$key], $node)])));
+            }
             if (! $boundary || (count($boundary) === 1 && count($this->edges[$boundary[0]]['members']) === 1)) {
                 continue; // no path to the core anyway, or hangs off one cable: a single link finding already
             }
-            $others = array_values(array_filter($region, fn ($n) => $n !== $node));
+            $others = $this->devicesOf(array_values(array_filter($region, fn ($n) => $n !== $node)));
             if (! isset($in[$node]) && ! array_filter($others, fn ($n) => $this->nodes[$n]['managed'] && $this->nodes[$n]['network'])) {
                 continue; // only end devices
             }
@@ -773,7 +1104,7 @@ class RedundancyAnalyzer
         $groups = [];
         foreach ($current['vertices'] as $node => $children) {
             $island = self::subtrees($current, $children);
-            $exposed = array_values(array_filter($island, fn ($x) => $this->nodes[$x]['managed'] && ! $this->cutByDesign($design, $node, null, $x)));
+            $exposed = $this->exposed($island, $current, fn ($x) => $this->cutByDesign($design, $node, null, $x));
             if ($exposed) {
                 $this->lostGroup($groups, $island, $exposed, $node, null, $this->nodeName($node));
             }
@@ -785,11 +1116,11 @@ class RedundancyAnalyzer
             }
             $edge = $this->edges[$edgeKey];
             $island = self::subtrees($current, [$child]);
-            $exposed = array_values(array_filter($island, fn ($x) => $this->nodes[$x]['managed'] && ! $this->cutByDesign($design, null, $edgeKey, $x)));
+            $exposed = $this->exposed($island, $current, fn ($x) => $this->cutByDesign($design, null, $edgeKey, $x));
             if ($exposed) {
                 $this->lostGroup($groups, $island, $exposed, null, $edgeKey, 'the link ' . $this->edgeLabel($edge, (string) $child));
             } elseif (count($edge['members']) > 1 && $edge['up'] === 1) {
-                $this->lostMembers($edge, $island);
+                $this->lostMembers($edge, $this->devicesOf($island, $current));
             }
         }
 
@@ -813,33 +1144,63 @@ class RedundancyAnalyzer
     }
 
     /**
+     * Monitored devices of an island (cut off by a failure now) that the same failure does not
+     * cut off by design. An end device counts when all its copies are cut off now and one of them
+     * is not by design.
+     *
+     * @param  array<int, string>  $island  graph nodes cut off now
+     * @param  callable(string): bool  $byDesign  is a graph node cut off by the same failure by design?
+     * @return array<int, string> devices
+     */
+    private function exposed(array $island, array $current, callable $byDesign): array
+    {
+        $result = [];
+        foreach ($this->devicesOf($island, $current) as $device) {
+            if ($this->nodes[$device]['managed'] && array_filter($this->copies[$device] ?? [$device], fn ($node) => ! $byDesign($node))) {
+                $result[] = $device;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * Add exposed devices to the group of what is down on their other path: the links that
      * leave their island (the part cut off when the single point fails) toward the core.
      *
-     * @param  array<int, string>  $island  nodes that lose the core in the current graph
-     * @param  array<int, string>  $exposed  monitored nodes of the island that do not by design
+     * @param  array<int, string>  $island  graph nodes that lose the core in the current graph
+     * @param  array<int, string>  $exposed  monitored devices of the island that do not by design
      */
     private function lostGroup(array &$groups, array $island, array $exposed, ?string $node, ?string $edgeKey, string $point): void
     {
+        // the other copies of an end device on the island hold its other links
+        foreach ($island as $x) {
+            if (isset($this->copyOf[$x])) {
+                $island = array_merge($island, $this->copies[$this->copyOf[$x]]);
+            }
+        }
+        $island = array_values(array_unique($island));
         $in = array_flip($island);
         $blocked = $in + ($node !== null ? [$node => true] : []);
         $toCore = []; // nodes outside the island known to reach the core without it
+        $deadEnds = []; // nodes outside the island known not to
         $causes = []; // what is down: a device at the far end, or the link itself
         $ends = [];
         foreach ($island as $x) {
             foreach ($this->design->edgesOf($x) as [$y, $key]) {
-                if (isset($blocked[$y]) || $key === $edgeKey || ! isset($this->edges[$key])) {
+                if (isset($blocked[$y]) || isset($deadEnds[$y]) || $key === $edgeKey || ! isset($this->edges[$key])) {
                     continue;
                 }
                 if (! isset($toCore[$y])) {
                     [$reached, $visited] = $this->reach($this->design, $y, $edgeKey !== null ? [$edgeKey => true] : [], $blocked);
                     if (! $reached) {
+                        $deadEnds += array_fill_keys($visited, true);
                         continue; // leads into a dead end, not toward the core
                     }
                     $toCore += array_fill_keys($visited, true);
                 }
-                $causes[$this->nodes[$y]['up'] ? 'link ' . $key : 'device ' . $y] = [$key, $x];
-                $ends[$x] = true;
+                $causes[$this->nodes[$y]['up'] ? 'link ' . $key : 'device ' . $this->deviceOf($y)] = [$key, $x];
+                $ends[$this->deviceOf($x)] = true;
             }
         }
         ksort($causes);
@@ -873,7 +1234,7 @@ class RedundancyAnalyzer
     /**
      * A port-channel that is the only path of the devices behind it and runs on one cable.
      *
-     * @param  array<int, string>  $island  nodes behind it
+     * @param  array<int, string>  $island  devices behind it
      */
     private function lostMembers(array $edge, array $island): void
     {
@@ -926,42 +1287,42 @@ class RedundancyAnalyzer
     // ---------------------------------------------------------------- outages
 
     /**
-     * Current outages: the top-most down devices (with an up neighbour, possibly through an
-     * unmanaged switch, whatever the state of the port: a device that loses power takes its link
-     * down too) and the down devices only reachable through them.
+     * Current outages: the top-most down devices (next to an up switch, router or firewall,
+     * possibly through an unmanaged switch, whatever the state of the port: a device that loses
+     * power takes its link down too) and the down devices only reachable through them. Down
+     * devices without any link are left out: nothing tells what they depend on.
      *
      * @return array<int, array> outages, largest first
      */
     private function checkOutages(): array
     {
-        $up = [];
         $down = [];
+        $upSide = [];
         foreach ($this->nodes as $id => $node) {
-            if ($node['managed']) {
-                if ($node['up']) {
-                    $up[$id] = true;
-                } else {
-                    $down[$id] = true;
-                }
+            if (! $node['managed'] || isset($this->copies[$id])) {
+                continue; // graph nodes only: copies stand for their end device
+            }
+            if (! $node['up']) {
+                $down[$id] = true;
+            } elseif ($this->forwards($node)) {
+                $upSide[$id] = true;
             }
         }
         if (! $down) {
             return [];
         }
 
-        // what the poller still reaches: up devices and the unmanaged neighbours behind their up ports
-        $upSide = $up;
+        // what the poller still reaches: up switches, routers and firewalls, and unmanaged switches behind them
         $top = [];
-        $queue = array_keys($up);
+        $queue = array_keys($upSide);
         for ($i = 0; $i < count($queue); $i++) {
-            $node = $queue[$i];
-            foreach ($this->design->edgesOf($node) as [$next, $edgeKey]) {
+            foreach ($this->design->edgesOf($queue[$i]) as [$next, $edgeKey]) {
                 if (isset($upSide[$next]) || ! isset($this->edges[$edgeKey])) {
                     continue;
                 }
                 if (isset($down[$next])) {
                     $top[$next] = true;
-                } elseif (! $this->nodes[$next]['managed']) {
+                } elseif (! $this->nodes[$next]['managed'] && $this->forwards($this->nodes[$next])) {
                     $upSide[$next] = true;
                     $queue[] = $next;
                 }
@@ -970,15 +1331,17 @@ class RedundancyAnalyzer
 
         // devices behind each top-most failure, remembering up to three of them per device
         $sources = [];
-        $queue = [];
-        foreach (array_keys($top) as $node) {
+        $queue = array_keys($top);
+        foreach ($queue as $node) {
             $sources[$node] = [$node => true];
-            $queue[] = $node;
         }
         for ($i = 0; $i < count($queue); $i++) {
             $node = $queue[$i];
+            if (! $this->forwards($this->nodes[$node])) {
+                continue; // an end device passes nothing on
+            }
             foreach ($this->design->edgesOf($node) as [$next]) {
-                if ($next === self::CORE || isset($upSide[$next]) || isset($top[$next])) {
+                if ($next === self::CORE || isset($upSide[$next]) || isset($top[$next]) || ($this->nodes[$next]['managed'] && $this->nodes[$next]['up'])) {
                     continue;
                 }
                 $added = false;
@@ -994,14 +1357,29 @@ class RedundancyAnalyzer
             }
         }
 
-        $outages = [];
+        // devices: an end device is top-most when one of its copies is, else behind what its copies are behind
+        $topDevices = [];
         foreach (array_keys($top) as $node) {
+            $topDevices[$this->deviceOf($node)] = true;
+        }
+        $behindOf = [];
+        foreach ($sources as $node => $from) {
+            $device = $this->deviceOf($node);
+            if (! isset($topDevices[$device])) {
+                foreach (array_keys($from) as $source) {
+                    $behindOf[$device][$this->deviceOf($source)] = true;
+                }
+            }
+        }
+
+        $outages = [];
+        foreach (array_keys($topDevices) as $device) {
             $behind = [];
             $shared = [];
             $sharedWith = [];
-            $unmanaged = count($this->leaves[$node] ?? []);
-            foreach ($sources as $other => $from) {
-                if ($other === $node || ! isset($from[$node])) {
+            $unmanaged = count($this->leaves[$device] ?? []);
+            foreach ($behindOf as $other => $from) {
+                if (! isset($from[$device])) {
                     continue;
                 }
                 if (count($from) === 1) {
@@ -1014,32 +1392,49 @@ class RedundancyAnalyzer
                     $behind[] = $other;
                 } else {
                     $shared[] = $other;
-                    $sharedWith += array_diff_key($from, [$node => true]);
+                    $sharedWith += array_diff_key($from, [$device => true]);
                 }
             }
-            $outages[] = $this->outage($node, $behind, $shared, array_keys($sharedWith), $unmanaged, false);
+            $outages[] = $this->outage($device, $behind, $shared, array_keys($sharedWith), $unmanaged, false);
         }
 
         // down devices without any up device next to them: a whole part of the network is down
-        $rest = array_diff_key($down, $top, $sources);
+        $rest = [];
+        foreach ($this->nodes as $id => $node) {
+            if ($node['managed'] && ! $node['up'] && ! isset($node['of']) && ! isset($topDevices[$id]) && ! isset($behindOf[$id])) {
+                foreach ($this->copies[$id] ?? [$id] as $graphNode) {
+                    $rest[$graphNode] = true;
+                }
+            }
+        }
+        $degree = fn (string $device) => isset($this->copies[$device]) ? count($this->copies[$device]) : $this->design->degree($device);
         while ($rest) {
-            $group = [];
-            $queue = [array_key_first($rest)];
-            $seen = [$queue[0] => true];
+            $start = (string) array_key_first($rest);
+            $queue = [$start];
+            $seen = [$start => true];
+            $members = [];
             for ($i = 0; $i < count($queue); $i++) {
                 $node = $queue[$i];
-                if (isset($down[$node])) {
-                    $group[] = $node;
+                if (isset($rest[$node])) {
+                    $members[$this->deviceOf($node)] = true;
                     unset($rest[$node]);
                 }
-                foreach ($this->design->edgesOf($node) as [$next]) {
-                    if (! isset($seen[$next]) && $next !== self::CORE && (isset($rest[$next]) || (! $this->nodes[$next]['managed'] && ! isset($upSide[$next])))) {
-                        $seen[$next] = true;
-                        $queue[] = $next;
+                $next = array_column($this->design->edgesOf($node), 0);
+                if (isset($this->copyOf[$node])) {
+                    $next = array_merge($next, $this->copies[$this->copyOf[$node]]); // keep an end device in one group
+                }
+                foreach ($next as $other) {
+                    if (! isset($seen[$other]) && $other !== self::CORE && (isset($rest[$other]) || (! $this->nodes[$other]['managed'] && ! isset($upSide[$other])))) {
+                        $seen[$other] = true;
+                        $queue[] = $other;
                     }
                 }
             }
-            usort($group, fn ($a, $b) => [isset($this->core[$b]), $this->design->degree($b), $a] <=> [isset($this->core[$a]), $this->design->degree($a), $b]);
+            $group = array_map('strval', array_keys($members));
+            if (count($group) === 1 && $degree($group[0]) === 0) {
+                continue; // no link at all: LibreNMS shows it as down, the topology tells nothing more
+            }
+            usort($group, fn ($a, $b) => [isset($this->core[$b]), $degree($b), $a] <=> [isset($this->core[$a]), $degree($a), $b]);
             $outages[] = $this->outage($group[0], array_slice($group, 1), [], [], 0, true);
         }
 
@@ -1315,14 +1710,16 @@ class RedundancyAnalyzer
     }
 
     /**
-     * Reference of a link for the map's failure simulation: a port of it (p:<port_id>).
+     * Reference of a link for the failure simulation: its port (p:<port_id>) for a single cable,
+     * else its two devices (l:<node>|<node>: the cables between them). Not the aggregate port: a
+     * port-channel to an MLAG pair also has the cables to the other switch.
      */
     private function edgeRef(array $edge): string
     {
         $member = $edge['members'][0];
-        $port = $member['a_port'] ?: $member['b_port'];
+        $port = count($edge['members']) === 1 ? ($member['a_port'] ?: $member['b_port']) : null;
 
-        return $port ? 'p:' . $port : $edge['from'];
+        return $port ? 'p:' . $port : 'l:' . $this->deviceOf($edge['from']) . '|' . $this->deviceOf($edge['to']);
     }
 
     /**
