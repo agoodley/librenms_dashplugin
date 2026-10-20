@@ -81,7 +81,7 @@
 a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 178, 0.2); }
 .topo-card h4 { margin: 0 0 6px; font-size: 16px; }
 .topo-card .topo-card-value { font-size: 26px; font-weight: 600; }
-.topo-card p { margin: 0; color: #777; font-size: 12px; }
+.topo-card p { margin: 0; color: #666; font-size: 12px; }
 .topo-card.topo-critical { border-left: 5px solid #c0392b; }
 .topo-card.topo-warning { border-left: 5px solid #e67e22; }
 .topo-card.topo-ok { border-left: 5px solid #2e9e44; }
@@ -94,7 +94,7 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-sev-ok { background: #23803a; }
 .topo-sev-muted { background: #666f70; }
 .topo-rollout-hosts { margin-top: 3px; font-size: 12px; }
-.topo-rollout-hosts summary { cursor: pointer; color: #777; }
+.topo-rollout-hosts summary { cursor: pointer; color: #666; }
 .topo-rollout-hosts textarea { margin-top: 3px; font-family: monospace; font-size: 11px; }
 .topo-finding-detail { color: #555; }
 .topo-finding-rec { color: #2c6e49; font-size: 12px; margin-top: 3px; }
@@ -159,6 +159,11 @@ html.dark .topo-status-down, html.dark .topo-status-lowerLayerDown { color: #f08
 html.dark .topo-status-degraded, html.dark .topo-text-warning { color: #f0a35e; }
 html.dark .topo-status-up, html.dark .topo-sim .topo-sim-ok { color: #5cc26f; }
 html.dark .topo-nav-pages > li.active > a, html.dark .topo-nav-pages > li.active > a:hover, html.dark .topo-nav-pages > li.active > a:focus { color: #fff; }
+html.dark .topo-page .text-muted, html.dark .topo-port-tab .text-muted, html.dark .topo-device-panel .text-muted { color: #b0b8be; }
+html.dark .topo-rollout-hosts summary { color: #b0b8be; }
+html.dark .topo-page .alert-warning { color: #2b1a00; }
+html.dark .topo-page .alert-warning a { color: #2b1a00; text-decoration: underline; }
+.topo-page .text-muted, .topo-port-tab .text-muted, .topo-device-panel .text-muted { color: #666; }
 html.dark .topo-evidence-heading { border-color: #3a3f45; }
 html.dark .topo-evidence-note { color: #bbb; }
 

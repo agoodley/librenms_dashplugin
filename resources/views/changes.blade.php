@@ -254,7 +254,7 @@
             @if($baseline['saved'])
                 <div class="table-responsive">
                 <table class="table table-condensed table-hover topo-stp-table">
-                    <thead><tr><th>Missing</th><th>What</th><th>Missing since</th>@if($admin)<th><span class="sr-only">Action</span></th>@endif</tr></thead>
+                    <thead><tr><th>Missing</th><th>What</th><th>Missing since</th>@if($admin)<th style="position: relative"><span class="sr-only">Action</span></th>@endif</tr></thead>
                     <tbody>
                     @forelse($baseline['missing'] as $fact)
                         <tr>
