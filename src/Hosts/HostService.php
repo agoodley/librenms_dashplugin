@@ -26,10 +26,10 @@ class HostService
     public const DNS_BUDGET = 4.0;
 
     /**
-     * An 802.1X / MAB session is current when it was updated this close to its switch's last poll (two poll intervals
-     * and a minute): a switch whose NAC polling stopped never marks its sessions historical.
+     * Poll intervals within which a switch must have been polled for its 802.1X / MAB sessions to count (LibreNMS
+     * warns about devices not polled for as long).
      */
-    public const SESSION_FRESH = 660;
+    public const SESSION_POLLS = 3;
 
     /** LLDP/CDP hops followed from the switch a trail ends at to the switches behind it. */
     public const BEHIND_HOPS = 3;
@@ -42,6 +42,8 @@ class HostService
 
     private \Closure $urls;
 
+    private \Closure $clock;
+
     /** @var array<int, array> device_id => layer 3 addresses (routes lookup) */
     private array $layer3 = [];
 
@@ -49,6 +51,7 @@ class HostService
      * @param  (callable(string, float): (string[]|string))|null  $resolver  hostname and seconds left => IP addresses, or
      *                                                                      why it was not looked up (DnsResolver); none: no DNS
      * @param  (\Closure(string, array): string)|null  $urls  route name and parameters => URL (default: route())
+     * @param  (\Closure(): int)|null  $clock  the time now (default: time())
      */
     public function __construct(
         private readonly HostRepository $repo,
@@ -56,9 +59,11 @@ class HostService
         private readonly PluginSettings $settings,
         ?callable $resolver = null,
         ?\Closure $urls = null,
+        ?\Closure $clock = null,
     ) {
         $this->resolver = $resolver;
         $this->urls = $urls ?? fn (string $name, array $parameters = []) => route($name, $parameters);
+        $this->clock = $clock ?? fn (): int => time();
     }
 
     /**
@@ -341,11 +346,21 @@ class HostService
         foreach ($this->repo->nacByMacs($macs, $portIds) as $row) {
             $nac[$row['mac']][$row['id']] = $row;
         }
-        $devices = $this->repo->deviceRows(array_values(array_unique(array_column(array_filter(array_merge([], ...array_values($nac)), fn ($row) => ! $row['historical']), 'device_id'))));
-        $missing = array_values(array_filter($macs, fn ($mac) => ! array_filter($nac[$mac] ?? [], fn ($row) => self::currentSession($row, $devices))));
+        // a session that is not historical is current when its switch polls sessions (LibreNMS marks the ones it no
+        // longer sees historical at every poll and updates the others only when one of their values changes) and was
+        // polled recently
+        $devices = [];
+        $polled = [];
+        $recent = ($this->clock)() - self::SESSION_POLLS * $this->repo->pollInterval();
+        $current = function (array $row) use (&$devices, &$polled, $recent): bool {
+            return ! $row['historical'] && ! empty($polled[$row['device_id']]) && ($devices[$row['device_id']]['last_polled'] ?? 0) >= $recent;
+        };
+        $this->sessionSwitches($nac, $devices, $polled);
+        $missing = array_values(array_filter($macs, fn ($mac) => ! array_filter($nac[$mac] ?? [], $current)));
         foreach ($missing ? $this->repo->nacByMacs($missing) : [] as $row) {
             $nac[$row['mac']][$row['id']] = $row;
         }
+        $this->sessionSwitches($nac, $devices, $polled);
         $sessionPorts = [];
         $sessionDevices = [];
         foreach ($nac as $mac => $sessions) {
@@ -403,7 +418,7 @@ class HostService
         }
         foreach ($nac as $mac => $sessions) {
             foreach ($sessions as $i => $row) {
-                $nac[$mac][$i]['current'] = self::currentSession($row, $devices);
+                $nac[$mac][$i]['current'] = $current($row);
             }
         }
 
@@ -508,15 +523,27 @@ class HostService
     }
 
     /**
-     * Is an 802.1X / MAB session current: not historical, and updated at its switch's last polls?
+     * Reads what tells whether sessions are current about the switches of those that are not historical and were not
+     * read yet: their device row (last poll) and whether they poll sessions.
      *
-     * @param  array<int, array>  $devices  device rows with last_polled
+     * @param  array<string, array<int, array>>  $nac  MAC => sessions
+     * @param  array<int, array>  $devices  device rows read so far
+     * @param  array<int, bool>  $polled  device_id => polls sessions, of the switches read so far
      */
-    private static function currentSession(array $session, array $devices): bool
+    private function sessionSwitches(array $nac, array &$devices, array &$polled): void
     {
-        $polled = $devices[$session['device_id']]['last_polled'] ?? null;
-
-        return ! $session['historical'] && $polled !== null && $polled - $session['last_seen'] <= self::SESSION_FRESH;
+        $new = [];
+        foreach ($nac as $sessions) {
+            foreach ($sessions as $row) {
+                if (! $row['historical'] && ! isset($polled[$row['device_id']])) {
+                    $new[$row['device_id']] = false;
+                }
+            }
+        }
+        if ($new) {
+            $devices += $this->repo->deviceRows(array_keys($new));
+            $polled += $this->repo->nacPolled(array_intersect_key($devices, $new)) + $new;
+        }
     }
 
     /**

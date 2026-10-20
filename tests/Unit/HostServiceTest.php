@@ -133,7 +133,7 @@ class HostServiceTest extends TestCase
         $repo = new FakeHostRepository($data);
 
         return new $class($repo, new FakeTopologyRepository($data['lag']), new PluginSettings($settings), $resolver,
-            fn (string $name, array $parameters = []) => $name . '?' . http_build_query($parameters));
+            fn (string $name, array $parameters = []) => $name . '?' . http_build_query($parameters), fn (): int => self::NOW);
     }
 
     /**
@@ -309,26 +309,64 @@ class HostServiceTest extends TestCase
         $this->assertCount(1, $repo->calls['nacByMacs']);
     }
 
-    public function testASessionNotUpdatedAtItsSwitchsLastPollsIsNoLocation(): void
+    public function testASessionIsCurrentWhileItsSwitchPollsSessions(): void
     {
-        // acc-sw2 is polled (a minute ago) but its NAC polling stopped two days ago: the session was never marked historical
-        $stopped = function (array $data): array {
-            $data['nac'][0]['last_seen'] = self::NOW - 2 * 86400;
+        // a Cisco switch without reauthentication timer reports nothing that changes: LibreNMS has not updated the session
+        // since it started 2 hours ago, but it would have marked it historical at the last poll had it gone
+        $quiet = function (array $data): array {
+            $data['nac'][0]['started'] = $data['nac'][0]['first_seen'] = $data['nac'][0]['last_seen'] = self::NOW - 7200;
 
             return $data;
         };
-        $host = self::service(change: $stopped)->search('d4:be:d9:00:40:01')['hosts'][0];
+        $host = self::service(change: $quiet)->search('d4:be:d9:00:40:01')['hosts'][0];
+        $this->assertSame(['located', 4, 405, 'nac'], [$host['status'], $host['edge']['device_id'] ?? null, $host['edge']['port_id'] ?? null, $host['edge']['via'] ?? null]);
+        $this->assertSame([true], array_column($host['nac'], 'current'));
 
-        $this->assertSame('none', $host['status']);
-        $this->assertSame([false], array_column($host['nac'], 'current'));
+        // acc-sw2's nac poller module is off: its sessions are what LibreNMS saw before it was switched off
+        $off = function (array $data) use ($quiet): array {
+            $data = $quiet($data);
+            $data['devices'][4]['nac'] = false;
+
+            return $data;
+        };
+        $host = self::service(change: $off)->search('d4:be:d9:00:40:01')['hosts'][0];
+        $this->assertSame(['none', [false]], [$host['status'], array_column($host['nac'], 'current')]);
+
+        // acc-sw2 was last polled an hour ago (down, or its poller stopped): more than 3 poll intervals of 5 minutes
+        $unpolled = function (array $data) use ($quiet): array {
+            $data = $quiet($data);
+            $data['devices'][4]['last_polled'] = self::NOW - 3600;
+
+            return $data;
+        };
+        $host = self::service(change: $unpolled)->search('d4:be:d9:00:40:01')['hosts'][0];
+        $this->assertSame(['none', [false]], [$host['status'], array_column($host['nac'], 'current')]);
+
+        // polled every 30 minutes, it was polled within 3 intervals
+        $slow = fn (array $data): array => ['interval' => 1800] + $unpolled($data);
+        $this->assertSame('located', self::service(change: $slow)->search('d4:be:d9:00:40:01')['hosts'][0]['status']);
+    }
+
+    public function testTheNacModuleIsOnLikeLibreNMSDecides(): void
+    {
+        // global, OS and device setting (null: not set); the device's setting wins, then the OS setting
+        $this->assertFalse(HostRepository::moduleOn(false, null, null), 'off by default');
+        $this->assertTrue(HostRepository::moduleOn(true, null, null));
+        $this->assertTrue(HostRepository::moduleOn(false, true, null));
+        $this->assertFalse(HostRepository::moduleOn(true, false, null));
+        $this->assertTrue(HostRepository::moduleOn(false, false, '1'), 'devices_attribs poll_nac');
+        $this->assertFalse(HostRepository::moduleOn(true, true, '0'));
+        $this->assertFalse(HostRepository::moduleOn(null, true, '1'), 'no such module');
     }
 
     public function testAStoppedSessionOnTheLearnedPortDoesNotHideACurrentOneElsewhere(): void
     {
-        // the forwarding tables saw the PC on acc-sw1 Gi1/0/1 3 hours ago, where the session stays (acc-sw1's NAC polling
-        // stopped two days ago); 10 minutes ago it authenticated on acc-sw2 Gi1/0/5
+        // the forwarding tables saw the PC on acc-sw1 Gi1/0/1 3 hours ago, where its session stays: acc-sw1's nac poller
+        // module was switched off two days ago, so the session was never marked historical. 10 minutes ago the PC
+        // authenticated on acc-sw2 Gi1/0/5
         $moved = function (array $data): array {
             $data['since'][1] = $data['since'][3] = self::NOW - 4 * 3600;
+            $data['devices'][3]['nac'] = false;
             $data['fdb'][] = self::fdb('d4bed9004003', 3, 305, 10, self::NOW - 3 * 3600);
             $data['fdb'][] = self::fdb('d4bed9004003', 1, 104, 10, self::NOW - 3 * 3600);
             $data['nac'][] = ['started' => self::NOW - 3 * 86400, 'last_seen' => self::NOW - 2 * 86400] + self::session(5, 'd4bed9004003', 3, 305, 'lmoreau');
@@ -339,6 +377,7 @@ class HostServiceTest extends TestCase
         $host = self::service($repo, change: $moved)->search('d4:be:d9:00:40:03')['hosts'][0];
 
         $this->assertSame([[['d4bed9004003'], [305, 104]], [['d4bed9004003'], null]], $repo->calls['nacByMacs'], 'the session on the learned port is not current');
+        $this->assertSame([[3], [4]], $repo->calls['nacPolled'], 'the switches of the sessions, each once');
         $this->assertSame(['located', 4, 405, 'nac'], [$host['status'], $host['edge']['device_id'], $host['edge']['port_id'], $host['edge']['via']]);
         $this->assertStringContainsString('which started after the forwarding tables last saw the host on acc-sw1 Gi1/0/1: the host moved since.', implode(' ', array_column($host['notes'], 'text')));
     }
@@ -592,10 +631,25 @@ final class FakeHostRepository extends HostRepository
     {
         $devices = [];
         foreach (array_intersect_key($this->data['devices'], array_flip($deviceIds)) as $deviceId => $device) {
-            $devices[$deviceId] = $device + ['url' => 'device/' . $deviceId, 'status' => true, 'last_polled' => null];
+            $devices[$deviceId] = $device + ['os' => 'ios', 'url' => 'device/' . $deviceId, 'status' => true, 'last_polled' => null];
         }
 
         return $devices;
+    }
+
+    /**
+     * The nac poller module is on unless the device's test data says 'nac' => false.
+     */
+    public function nacPolled(array $devices): array
+    {
+        $this->calls['nacPolled'][] = array_keys($devices);
+
+        return array_map(fn ($device) => $device['nac'] ?? true, $devices);
+    }
+
+    public function pollInterval(): int
+    {
+        return $this->data['interval'] ?? 300;
     }
 }
 

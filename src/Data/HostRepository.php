@@ -625,10 +625,10 @@ class HostRepository extends ScopedRepository
     }
 
     /**
-     * Visible devices with display name, role (from the device type), URL and time of the last poll.
+     * Visible devices with display name, role (from the device type), OS, URL and time of the last poll.
      *
      * @param  int[]  $deviceIds
-     * @return array<int, array{name: string, role: string, url: string, status: bool, last_polled: ?int}>
+     * @return array<int, array{name: string, role: string, os: string, url: string, status: bool, last_polled: ?int}>
      */
     public function deviceRows(array $deviceIds): array
     {
@@ -645,6 +645,7 @@ class HostRepository extends ScopedRepository
             $devices[$deviceId] = [
                 'name' => (string) ($row['display'] ?: $row['hostname']),
                 'role' => DeviceRole::classify($row),
+                'os' => (string) $row['os'],
                 'url' => url('device/' . $deviceId),
                 'status' => (bool) $row['status'],
                 'last_polled' => self::time($row['last_polled']) ?: null,
@@ -652,6 +653,66 @@ class HostRepository extends ScopedRepository
         }
 
         return $devices;
+    }
+
+    /**
+     * Do the devices poll their 802.1X / MAB sessions: is LibreNMS' nac poller module (off by default) on for them?
+     * Decided like LibreNMS decides (Util\ModuleList), as CoverageRepository::protocolsModuleOff() does for
+     * discovery-protocols: the device's own setting, else the setting for its OS, else the global one.
+     *
+     * @param  array<int, array>  $devices  device_id => row with os
+     * @return array<int, bool> device_id => module on
+     */
+    public function nacPolled(array $devices): array
+    {
+        if (! $devices) {
+            return [];
+        }
+
+        $attributes = [];
+        try {
+            $attributes = DB::table('devices_attribs')->whereIntegerInRaw('device_id', array_keys($devices))
+                ->where('attrib_type', 'poll_nac')->pluck('attrib_value', 'device_id')->all();
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot read device module settings: ' . $e->getMessage());
+        }
+
+        $global = self::config('poller_modules.nac');
+        $byOs = [];
+        $polled = [];
+        foreach ($devices as $deviceId => $device) {
+            $os = (string) ($device['os'] ?? '');
+            $osSetting = $byOs[$os] ??= [self::config("os.$os.poller_modules.nac")];
+            $polled[(int) $deviceId] = self::moduleOn($global, $osSetting[0], $attributes[$deviceId] ?? null);
+        }
+
+        return $polled;
+    }
+
+    /**
+     * Is a LibreNMS module on, from its global, OS and device setting (null: not set)? The device's setting wins over
+     * the OS setting, which wins over the global one (Polling\ModuleStatus); a module without a global setting does not
+     * exist in this LibreNMS.
+     */
+    public static function moduleOn(mixed $global, mixed $os, mixed $device): bool
+    {
+        return match (true) {
+            $global === null => false,
+            $device !== null => (bool) $device,
+            $os !== null => (bool) $os,
+            default => (bool) $global,
+        };
+    }
+
+    /**
+     * Seconds from one poll of a device to the next: the dispatcher's poller frequency, else the RRD step (300 by
+     * default), as LibreNMS schedules polls.
+     */
+    public function pollInterval(): int
+    {
+        $interval = (int) (self::config('service_poller_frequency') ?? self::config('rrd.step', 300));
+
+        return $interval > 0 ? $interval : 300;
     }
 
     /**
@@ -848,5 +909,19 @@ class HostRepository extends ScopedRepository
     private static function date(int $time): string
     {
         return date('Y-m-d H:i:s', $time);
+    }
+
+    /**
+     * A LibreNMS setting, through the LibrenmsConfig facade (LibreNMS\Config on older versions).
+     */
+    private static function config(string $key, mixed $default = null): mixed
+    {
+        try {
+            return class_exists(\App\Facades\LibrenmsConfig::class)
+                ? \App\Facades\LibrenmsConfig::get($key, $default)
+                : \LibreNMS\Config::get($key, $default);
+        } catch (\Throwable) {
+            return $default;
+        }
     }
 }

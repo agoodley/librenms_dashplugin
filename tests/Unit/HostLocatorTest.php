@@ -424,7 +424,8 @@ class HostLocatorTest extends TestCase
     }
 
     /**
-     * An 802.1X / MAB session; current: not historical and updated at its switch's last polls (HostService decides).
+     * An 802.1X / MAB session; current: not historical, on a switch that polls sessions and was polled recently
+     * (HostService decides).
      */
     private static function session(int $deviceId, int $portId, int $lastSeen = self::NOW, bool $historical = false, ?int $started = null, ?bool $current = null): array
     {
@@ -524,7 +525,7 @@ class HostLocatorTest extends TestCase
         $this->assertStringNotContainsString('Located by its current 802.1X', self::texts($result));
         $this->assertStringContainsString('Not seen at the last forwarding table discovery', self::texts($result));
 
-        // a session the service did not find current (not updated at its switch's last polls) is no location at all
+        // a session the service did not find current (its switch does not poll sessions or was not polled recently) is no location at all
         $this->assertSame('none', self::locator()->locate('d4bed9010212', [], [], [self::session(3, 305, self::NOW - 2 * 86400, false, null, false)])['status']);
     }
 

@@ -502,12 +502,12 @@ vendor/bin/phpunit
   (`ports_fdb_purge`); the locator lists entries from before a switch's last discovery as old (the start of the
   device's last discovery, confirmed by one entry from it) and counts MACs on a port from that discovery only.
   Switches whose forwarding table LibreNMS does not read end the trail.
-* An 802.1X / MAB session counts while its switch updates it (within 11 minutes of the switch's last poll). LibreNMS
-  updates a session only when one of its values changes: the session time or the time to reauthentication does at every
-  poll (Huawei, ProCurve / ArubaOS-Switch, PowerConnect, Cisco with reauthentication), so on ArubaOS-CX and on Cisco
-  without reauthentication a session counts only in the 11 minutes after it starts or changes. A session starts at its
-  update time minus its session time, else when LibreNMS first saw it (Cisco reports no session time, and a host that
-  moves to another port of the same switch keeps its session's start).
+* An 802.1X / MAB session counts while LibreNMS polls it: at every poll of the `nac` module it marks the sessions a
+  switch no longer reports as historical (it updates the others only when one of their values changes), so a session
+  that is not historical is current if the switch's `nac` poller module is on (the device's setting, else its OS's, else
+  the global one, which is off by default) and the switch was polled within the last three poll intervals (15 minutes by
+  default). A session starts at its update time minus its session time, else when LibreNMS first saw it (Cisco reports
+  no session time, and a host that moves to another port of the same switch keeps its session's start).
 * Query cost: LibreNMS has no index on the address in the ARP table or on anything but port and device in the IPv6
   neighbor table, so an IPv4 search reads the whole ARP table once and every search the whole IPv6 neighbor table (twice
   for an IPv6 address); the port tab (on every port page) shows IPv4 addresses only and uses indexed lookups. 802.1X

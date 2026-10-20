@@ -98,7 +98,7 @@ class HostLocator
      * @param  array<int, array>  $rows  forwarding table entries of the MAC: device_id, port_id, vlan, first_seen, last_seen
      * @param  array<int, array>  $owners  interfaces of monitored devices with this MAC: device_id, port
      * @param  array<int, array>  $sessions  802.1X / MAB sessions of the MAC: device_id, port_id, vlan, started, last_seen,
-     *                                       current (not historical and updated at its switch's last polls)
+     *                                       current (not historical, on a switch that polls sessions and was polled recently)
      * @param  string[]  $ips  addresses of the MAC (ARP / IPv6 neighbor entries) in the answer's VLAN
      * @return array{status: string, stale: bool, edge: array|null, device: array|null, gateway: array|null,
      *               seen: array<int, array>, notes: array<int, array{level: string, text: string}>}
@@ -201,7 +201,7 @@ class HostLocator
             array_splice($notes, count($ownerPorts), 0, [self::note('info', $gatewayNote)]);
         }
 
-        // a current 802.1X / MAB session (updated at its switch's last polls) gives the port when the trail ends without one:
+        // a current 802.1X / MAB session (its switch polls sessions and was polled recently) gives the port when the trail ends without one:
         // on the switch the trail leads to or behind it, or among the switches of a trail that only finds uplinks; and it
         // replaces a forwarding table answer on another port when it started after that sighting (the host moved since)
         if ($session !== null && in_array($status, ['located', 'behind', 'uplinks'], true)) {
@@ -538,9 +538,8 @@ class HostLocator
     }
 
     /**
-     * The current 802.1X / MAB session (not historical, and updated at its switch's last polls: a switch whose NAC
-     * polling stopped never marks its sessions historical) that started last: a switch refreshes an old session that a
-     * phone keeps up as often as the one where the host is now.
+     * The current 802.1X / MAB session that started last (a switch keeps an old session that a phone keeps up next to
+     * the one where the host is now, and a session's update time only tells when one of its values last changed).
      */
     private static function currentSession(array $sessions): ?array
     {
