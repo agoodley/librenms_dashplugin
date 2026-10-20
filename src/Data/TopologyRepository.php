@@ -20,6 +20,7 @@ class TopologyRepository
         'port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifAlias', 'ifSpeed', 'ifOperStatus',
         'ifAdminStatus', 'ifType', 'ifVlan', 'ifTrunk', 'ifDuplex', 'ifMtu', 'ifPhysAddress',
         'ifInOctets_rate', 'ifOutOctets_rate', 'ifInErrors_rate', 'ifOutErrors_rate',
+        'ifInErrors_delta', 'ifOutErrors_delta', 'ifInUcastPkts_delta', 'ifOutUcastPkts_delta', 'poll_period',
     ];
 
     /** @var int[]|null */
@@ -277,6 +278,170 @@ class TopologyRepository
             foreach (DB::table('ports_vlans')->whereIntegerInRaw('port_id', $chunk)->get(['port_id', 'vlan', 'untagged']) as $row) {
                 $result[(int) $row->port_id][(int) $row->vlan] = (bool) $row->untagged;
             }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Number of ports_vlans rows of the ports (decides whether the link page can load them all).
+     *
+     * @param  int[]  $portIds
+     */
+    public function portVlanCount(array $portIds): int
+    {
+        $count = 0;
+        foreach (array_chunk(array_values(array_unique($portIds)), 5000) as $chunk) {
+            $count += DB::table('ports_vlans')->whereIntegerInRaw('port_id', $chunk)->count();
+        }
+
+        return $count;
+    }
+
+    /**
+     * VLANs in use on each device: carried by an up port that is not an inter-switch link (access
+     * ports, trunks to servers, APs or unmanaged switches), or by an up VLAN interface (SVI).
+     * Devices without per-port VLAN data use the access VLAN of their ports.
+     *
+     * @param  int[]  $ids
+     * @param  int[]  $interSwitchPorts  ports linking two monitored devices (and their aggregates / members)
+     * @return array<int, array<int, true>> device_id => [vlan => true]
+     */
+    public function activeVlans(array $ids, array $interSwitchPorts): array
+    {
+        if (! $ids) {
+            return [];
+        }
+
+        $exclude = array_values(array_unique(array_filter(array_map('intval', $interSwitchPorts))));
+        $result = [];
+
+        $withPortVlans = array_map('intval', DB::table('ports_vlans')->whereIntegerInRaw('device_id', $ids)->distinct()->pluck('device_id')->all());
+        if ($withPortVlans) {
+            $query = DB::table('ports_vlans as v')->join('ports as p', 'p.port_id', '=', 'v.port_id')
+                ->whereIntegerInRaw('v.device_id', $withPortVlans)->where('p.ifOperStatus', 'up')->where('p.deleted', 0);
+            if ($exclude) {
+                $query->whereIntegerNotInRaw('v.port_id', $exclude);
+            }
+            foreach ($query->groupBy('v.device_id', 'v.vlan')->get(['v.device_id', 'v.vlan']) as $row) {
+                $result[(int) $row->device_id][(int) $row->vlan] = true;
+            }
+        }
+
+        $others = array_values(array_diff($ids, $withPortVlans));
+        if ($others) {
+            $query = DB::table('ports')->whereIntegerInRaw('device_id', $others)->where('ifOperStatus', 'up')->where('deleted', 0)
+                ->whereNotNull('ifVlan')->where('ifVlan', '<>', '')
+                ->where(fn (Builder $q) => $q->whereNull('ifTrunk')->orWhere('ifTrunk', ''));
+            if ($exclude) {
+                $query->whereIntegerNotInRaw('port_id', $exclude);
+            }
+            foreach ($query->groupBy('device_id', 'ifVlan')->get(['device_id', 'ifVlan']) as $row) {
+                if (is_numeric($row->ifVlan) && (int) $row->ifVlan > 0) {
+                    $result[(int) $row->device_id][(int) $row->ifVlan] = true;
+                }
+            }
+        }
+
+        // VLAN interfaces: Vlan30, vlan30, Vlanif30 (Huawei), Vlan-interface30 (Comware)
+        foreach (DB::table('ports')->whereIntegerInRaw('device_id', $ids)->where('ifOperStatus', 'up')->where('deleted', 0)
+            ->where(fn (Builder $q) => $q->where('ifType', 'l3ipvlan')->orWhere('ifName', 'like', 'vlan%')->orWhere('ifDescr', 'like', 'vlan%'))
+            ->get(['device_id', 'ifName', 'ifDescr']) as $row) {
+            foreach ([$row->ifName, $row->ifDescr] as $name) {
+                if (preg_match('/^vlan(?:-interface|if)?\s*(\d{1,4})$/i', trim((string) $name), $matches) && (int) $matches[1] > 0) {
+                    $result[(int) $row->device_id][(int) $matches[1]] = true;
+                    break;
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Discard and non-unicast packet counters of the last poll (ports_statistics).
+     *
+     * @param  int[]  $portIds
+     * @return array<int, array> port_id => row
+     */
+    public function portStatistics(array $portIds): array
+    {
+        $result = [];
+        try {
+            foreach (array_chunk(array_values(array_unique($portIds)), 5000) as $chunk) {
+                foreach (DB::table('ports_statistics')->whereIntegerInRaw('port_id', $chunk)
+                    ->get(['port_id', 'ifInDiscards_delta', 'ifOutDiscards_delta', 'ifInNUcastPkts_delta', 'ifOutNUcastPkts_delta']) as $row) {
+                    $result[(int) $row->port_id] = (array) $row;
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot read ports_statistics: ' . $e->getMessage());
+        }
+
+        return $result;
+    }
+
+    /**
+     * Weakest optical receive level of each port (the worst lane of multi-lane optics) with the
+     * transceiver's low thresholds. Sensors are matched like LibreNMS does: through the
+     * transceiver's entity index, or as port sensors (entPhysicalIndex_measured = ports, index = ifIndex).
+     *
+     * @param  int[]  $portIds
+     * @return array<int, array{rx: float, low: ?float, low_warn: ?float, sensor: string}>
+     */
+    public function opticalRx(array $portIds): array
+    {
+        $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
+        if (! $portIds) {
+            return [];
+        }
+
+        $byIfIndex = [];
+        $deviceIds = [];
+        foreach (array_chunk($portIds, 5000) as $chunk) {
+            foreach (DB::table('ports')->whereIntegerInRaw('port_id', $chunk)->get(['port_id', 'device_id', 'ifIndex']) as $row) {
+                $byIfIndex[$row->device_id . '|' . $row->ifIndex] = (int) $row->port_id;
+                $deviceIds[(int) $row->device_id] = true;
+            }
+        }
+        $deviceIds = array_keys($deviceIds);
+        $wanted = array_flip($portIds);
+
+        $byEntity = [];
+        try {
+            foreach (DB::table('transceivers')->whereIntegerInRaw('device_id', $deviceIds)->whereNotNull('entity_physical_index')
+                ->get(['port_id', 'device_id', 'entity_physical_index']) as $row) {
+                if (isset($wanted[(int) $row->port_id])) {
+                    $byEntity[$row->device_id . '|' . $row->entity_physical_index] = (int) $row->port_id;
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot read transceivers: ' . $e->getMessage());
+        }
+
+        $result = [];
+        try {
+            foreach (DB::table('sensors')->whereIntegerInRaw('device_id', $deviceIds)->where('sensor_class', 'dbm')->where('sensor_deleted', 0)
+                ->whereNotNull('sensor_current')
+                ->get(['device_id', 'sensor_descr', 'sensor_current', 'sensor_limit_low', 'sensor_limit_low_warn', 'entPhysicalIndex', 'entPhysicalIndex_measured']) as $row) {
+                $descr = strtolower((string) $row->sensor_descr);
+                if (! str_contains($descr, 'rx') && ! str_contains($descr, 'receive')) {
+                    continue;
+                }
+                $key = $row->device_id . '|' . $row->entPhysicalIndex;
+                $portId = $byEntity[$key] ?? (in_array($row->entPhysicalIndex_measured, ['ports', 'port'], true) ? ($byIfIndex[$key] ?? null) : null);
+                if ($portId === null || (isset($result[$portId]) && $result[$portId]['rx'] <= (float) $row->sensor_current)) {
+                    continue;
+                }
+                $result[$portId] = [
+                    'rx' => (float) $row->sensor_current,
+                    'low' => $row->sensor_limit_low === null ? null : (float) $row->sensor_limit_low,
+                    'low_warn' => $row->sensor_limit_low_warn === null ? null : (float) $row->sensor_limit_low_warn,
+                    'sensor' => (string) $row->sensor_descr,
+                ];
+            }
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot read optical sensors: ' . $e->getMessage());
         }
 
         return $result;

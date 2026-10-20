@@ -3,7 +3,7 @@
 namespace Agoodley\LibrenmsTopology\Stp;
 
 /**
- * One diagnostic result of the spanning tree analysis.
+ * One diagnostic result of the spanning tree or link analysis.
  */
 class Finding
 {
@@ -16,6 +16,7 @@ class Finding
     /**
      * @param  int[]  $devices
      * @param  int[]  $ports
+     * @param  string  $config  suggested configuration lines (empty when there are none)
      */
     public function __construct(
         public readonly string $severity,
@@ -26,6 +27,7 @@ class Finding
         public readonly ?int $vlan = null,
         public readonly array $devices = [],
         public readonly array $ports = [],
+        public readonly string $config = '',
     ) {
     }
 
@@ -45,6 +47,7 @@ class Finding
             'vlan_label' => $this->vlan === null ? null : StpIndex::vlanLabel($this->vlan),
             'devices' => array_values(array_unique($this->devices)),
             'ports' => array_values(array_unique($this->ports)),
+            'config' => $this->config,
         ];
     }
 

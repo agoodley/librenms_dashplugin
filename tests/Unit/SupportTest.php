@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
+use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
 use Agoodley\LibrenmsTopology\Support\Cidr;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Agoodley\LibrenmsTopology\Support\Graph;
@@ -121,5 +122,21 @@ class SupportTest extends TestCase
         $this->assertFalse($params['lag']);
         $this->assertFalse($params['unmanaged']); // from settings
         $this->assertTrue($params['ospf']);
+    }
+
+    public function testIntegerSetsWithRanges(): void
+    {
+        $settings = new PluginSettings(['links_ignore_vlans' => '999 1002-1005, 4095 x 0']);
+        $this->assertSame([999, 1002, 1003, 1004, 1005], array_keys($settings->intSet('links_ignore_vlans', 1, 4094)));
+        $this->assertSame([], (new PluginSettings())->intSet('links_ignore_vlans', 1, 4094));
+    }
+
+    public function testLinkFormatting(): void
+    {
+        $this->assertSame('1,10-12,20', LinkAnalyzer::ranges([20, 10, 11, 1, 12, 11]));
+        $this->assertSame('', LinkAnalyzer::ranges([]));
+        $this->assertSame('100M', LinkAnalyzer::speed(100000000));
+        $this->assertSame('2.5G', LinkAnalyzer::speed(2500000000));
+        $this->assertSame('10G', LinkAnalyzer::speed(10000000000));
     }
 }

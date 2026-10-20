@@ -17,5 +17,9 @@
             <h4><i class="fa fa-stethoscope fa-fw"></i> Spanning Tree Diagnostics</h4>
             <p>Root bridge consistency, rogue roots, topology change storms, flapping and blocked ports, bridging loops, timer and protocol mismatches.</p>
         </a>
+        <a class="topo-card panel panel-default" style="flex: 1 1 260px; padding: 14px;" href="{{ route('topology.links') }}">
+            <h4><i class="fa fa-link fa-fw"></i> Link &amp; VLAN Diagnostics</h4>
+            <p>Both ends of every link compared: speed, duplex, MTU, trunk/native/allowed VLANs and port-channels, plus split VLANs, errors, optical levels and port descriptions.</p>
+        </a>
     </div>
 </div>

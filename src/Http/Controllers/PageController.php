@@ -11,7 +11,7 @@ use Illuminate\Routing\Controller;
 
 /**
  * Pages of the plugin. The map pages are shells filled by resources/assets/topology.js from the
- * JSON API; the STP diagnostics page is rendered on the server.
+ * JSON API; the STP and link diagnostics pages are rendered on the server.
  */
 class PageController extends Controller
 {
@@ -51,6 +51,33 @@ class PageController extends Controller
         }
 
         return view('topology::stp', [
+            'params' => $params,
+            'result' => $result,
+            'error' => $error,
+            'filters' => $repo->filterOptions(),
+            'deviceName' => $params['device'] ? $repo->deviceName($params['device']) : null,
+            'assetVersion' => self::assetVersion(),
+        ]);
+    }
+
+    /**
+     * plugin/topology/links: link and VLAN diagnostics.
+     */
+    public function links(Request $request): View
+    {
+        $settings = $this->settings();
+        $params = MapParams::parse($request->query(), $settings);
+        $repo = new TopologyRepository($request->user());
+
+        $result = null;
+        $error = null;
+        try {
+            $result = $this->service($request, $settings)->links($params);
+        } catch (\Throwable $e) {
+            $error = $this->failure('link analysis', $e);
+        }
+
+        return view('topology::links', [
             'params' => $params,
             'result' => $result,
             'error' => $error,

@@ -1,4 +1,4 @@
-{{-- Tabs between the L2 map, L3 map and STP diagnostics, keeping the current scope; topology.js updates the links when filters change. --}}
+{{-- Tabs between the maps and the diagnostics pages, keeping the current scope; topology.js updates the links when filters change. --}}
 @php
     $navQuery = array_filter([
         'device' => $params['device'] ?? null,
@@ -19,6 +19,9 @@
         </li>
         <li class="{{ $active === 'stp' ? 'active' : '' }}">
             <a href="{{ route('topology.stp') . $navSuffix }}" data-topo-nav data-base="{{ route('topology.stp') }}"><i class="fa fa-stethoscope fa-fw"></i> Spanning Tree Diagnostics</a>
+        </li>
+        <li class="{{ $active === 'links' ? 'active' : '' }}">
+            <a href="{{ route('topology.links') . $navSuffix }}" data-topo-nav data-base="{{ route('topology.links') }}"><i class="fa fa-link fa-fw"></i> Link &amp; VLAN Diagnostics</a>
         </li>
     </ul>
 </div>

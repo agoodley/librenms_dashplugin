@@ -1,8 +1,8 @@
 # LibreNMS Topology & Spanning Tree plugin
 
-NetBrain-style **Layer 2** and **Layer 3** network diagrams plus **spanning tree diagnostics** for
-[LibreNMS](https://www.librenms.org), built entirely from data LibreNMS already collects
-(LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, IP addresses, OSPF and BGP).
+NetBrain-style **Layer 2** and **Layer 3** network diagrams plus **spanning tree** and **link & VLAN diagnostics**
+for [LibreNMS](https://www.librenms.org), built entirely from data LibreNMS already collects
+(LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, IP addresses, OSPF, BGP and transceiver sensors).
 
 ![Layer 2 map](docs/images/l2-map.png)
 
@@ -57,6 +57,31 @@ last topology change), its issues and links to the maps centered on that device.
 
 ![Device panel](docs/images/device-panel.png)
 
+### Link & VLAN diagnostics
+
+Both ends of every LLDP/CDP link between two monitored devices are compared (a port-channel counts as one link) and
+every VLAN is followed across the trunks:
+
+| Check | Severity |
+|---|---|
+| Optical receive power below the transceiver's alarm threshold (the DOM thresholds the device reports) | critical |
+| Speed, duplex and MTU mismatches between the two ends, half-duplex links (MTU differences up to 22 bytes are header accounting) | warning |
+| Trunk facing an access port, native VLAN mismatch, access ports in different VLANs | warning |
+| **Split VLAN**: a VLAN in use (hosts or a VLAN interface) on switches of one L2 domain that no trunk path connects, naming the trunks that allow it on one end only | warning / info |
+| Allowed VLANs differ on a trunk although both switches use the VLAN (a redundant path that silently does not carry it) | warning |
+| Port-channel on one end only, members landing in different port-channels, degraded port-channel (members down), uneven load across members | warning |
+| Interface errors and packet discards in the last poll | warning |
+| Optical receive power below the warning threshold, or within a margin of the alarm threshold | warning / info |
+| Port descriptions naming the wrong neighbor (also ports that now face an unmanaged AP or phone), inter-switch ports without description – with the configuration lines that fix them (Cisco-style, Junos, ProCurve, RouterOS) | warning / info |
+| Neighbors listed by one end only (LLDP/CDP off on one side, or a unidirectional link), devices without neighbor data | info |
+
+The page also lists every link with both ends side by side (speed, duplex, MTU, mode and native VLAN, VLANs, errors,
+receive level) and highlights the values that differ. Links to monitored neighbors outside the selected group or location
+are compared too. A VLAN that is only allowed toward a switch without hosts in it (pruned by design) is not reported;
+VLANs that are local to each switch on purpose can be ignored, and every check can be switched off, in the settings.
+
+![Link & VLAN diagnostics](docs/images/link-diagnostics.png)
+
 *(Screenshots use a simulated demo network.)*
 
 ## Requirements
@@ -64,8 +89,8 @@ last topology change), its issues and links to the maps centered on that device.
 * LibreNMS 26.x (developed and tested against 26.9 / master of October 2026), PHP 8.2+
 * The LibreNMS modules that feed the plugin enabled for your devices:
   `discovery-protocols` (links), `ports`, `vlans`, `ports-stack`, `stp`, `ipv4-addresses`
-  (`ipv6-addresses`), `ospf`, `bgp-peers`, `fdb-table` (rogue root tracing). The maps work with whatever subset
-  is available.
+  (`ipv6-addresses`), `ospf`, `bgp-peers`, `fdb-table` (rogue root tracing), `transceivers` and `sensors`
+  (optical levels). The maps and checks work with whatever subset is available.
 
 ## Installation
 
@@ -94,8 +119,8 @@ composer config --global repositories.librenms-topology '{"type": "path", "url":
 ```
 
 The plugin is enabled automatically. Open **Overview → Plugins → L2 Topology Map / L3 Topology Map / STP
-Diagnostics**, or go to `/plugin/topology`. It can be disabled or configured in **Overview → Plugins →
-Plugin Admin → topology → Settings**.
+Diagnostics / Link & VLAN Diagnostics**, or go to `/plugin/topology`. It can be disabled or configured in
+**Overview → Plugins → Plugin Admin → topology → Settings**.
 
 To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 
@@ -106,8 +131,10 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 * Pick a **VLAN** on the L2 map to see which switches/trunks carry it and that VLAN's spanning tree
   (root bridge, port roles, blocked ports). Domain rows and findings on the STP page link straight to that view.
 * Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope).
-* `plugin/topology/api/l2`, `api/l3` and `api/stp` return the same data as JSON (same query parameters as the
-  pages, e.g. `api/stp?vlan=30&group=2`) for automation.
+* The suggested configuration under a description finding is ready to paste; it names each port after its current
+  LLDP/CDP neighbor (`core2 Te1/1/1`).
+* `plugin/topology/api/l2`, `api/l3`, `api/stp` and `api/links` return the same data as JSON (same query parameters
+  as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`) for automation.
 
 ## Settings
 
@@ -123,6 +150,12 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Flapping threshold | 100 | transitions to forwarding |
 | Maximum diameter | 7 | bridge hops from the root |
 | Event history | 7 days | STP eventlog entries analyzed |
+| Interface error threshold | 10 | errors per poll on an inter-switch port (0 disables) |
+| Discard threshold | 1 % | share of the packets discarded (0 disables) |
+| Port-channel imbalance | 40 % | a member above this utilization carrying 3x the traffic of another member (0 disables) |
+| Optical margin | 2 dB | receive power this close to the alarm threshold is reported (0 disables) |
+| Ignored VLANs | – | e.g. `999 1002-1005`: VLANs local to each switch by design |
+| Disabled checks | – | check codes or categories (`mismatch`, `vlans`, `lags`, `counters`, `optics`, `neighbors`, `descriptions`), e.g. `mtu_mismatch description_missing` |
 
 ## Permissions
 
@@ -137,6 +170,8 @@ root bridge on such a device is not reported as a rogue switch.
   LAG/MLAG handling, VLAN membership, subnet classification, routing overlays, hierarchy tiers).
 * `src/Stp/StpIndex.php`, `src/Stp/StpAnalyzer.php` – STP role derivation (BRIDGE-MIB has no port role) and
   the diagnostics.
+* `src/Links/LinkAnalyzer.php` – the link and VLAN checks (both ends of each link, port-channels, VLAN islands per
+  L2 domain, descriptions and their configuration lines).
 * `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
@@ -153,6 +188,9 @@ vendor/bin/phpunit
 * Stacks / virtual chassis that are not modelled as one device, and MLAG pairs without a detected
   port-channel, can produce a "possible bridging loop" warning – the finding says so.
 * Saved layouts live in the browser's local storage, they are not shared between users.
+* LibreNMS refreshes VLAN memberships at discovery (every 6 hours by default) and counters at every poll, so a
+  VLAN change can take until the next discovery to show up. The split VLAN check can only follow links that
+  LLDP/CDP reports; a VLAN that crosses a link without LLDP/CDP can be reported as split.
 
 ## License
 

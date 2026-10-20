@@ -18,6 +18,14 @@
             ['stp_max_diameter', 'number', 'Maximum bridge hops from the root', '802.1D default timers assume 7'],
             ['stp_event_days', 'number', 'Days of STP eventlog history to analyze', ''],
         ],
+        'Link & VLAN diagnostics' => [
+            ['links_error_threshold', 'number', 'Report interface errors from this many per poll on an inter-switch port', '0 disables the check'],
+            ['links_discard_percent', 'number', 'Report packet discards above this share of the packets (%)', '0 disables the check'],
+            ['links_lag_imbalance', 'number', 'Report uneven port-channel load when a member is above this utilization (%)', 'and carries 3x the traffic of another member; 0 disables the check'],
+            ['links_rx_margin', 'number', 'Report optical receive power within this many dB of the alarm threshold', 'below the warning / alarm thresholds is always reported; 0 disables the margin check'],
+            ['links_ignore_vlans', 'text', 'VLANs ignored by the VLAN checks', 'e.g. 999 1002-1005; VLANs that are local to each switch by design'],
+            ['links_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (mismatch, vlans, lags, counters, optics, neighbors, descriptions), e.g. mtu_mismatch description_missing'],
+        ],
     ];
 @endphp
 

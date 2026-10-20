@@ -481,7 +481,7 @@
     };
 
     /**
-     * Keep the scope (device, hops, group, location, VLAN) when switching between the L2, L3 and STP tabs.
+     * Keep the scope (device, hops, group, location, VLAN) when switching between the map and diagnostics tabs.
      */
     TopologyMap.prototype.updateNavLinks = function (params) {
         var keep = new URLSearchParams();
