@@ -120,6 +120,16 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-evidence-heading:first-of-type { border-top: 0; }
 .topo-evidence-heading .text-muted { font-weight: normal; }
 .topo-evidence-note { margin: 4px 10px 10px; color: #555; }
+.topo-custommap-preview .topo-kv th { width: 22%; }
+.topo-view-badge { padding: 2px 9px; border-radius: 10px; background: #e8f1fa; color: #1f6fb2; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.topo-view-badge.topo-view-left { opacity: 0.55; text-decoration: line-through; }
+.topo-views-menu { max-height: 70vh; overflow-y: auto; }
+.topo-views-menu small { margin-left: 4px; }
+.topo-views-menu .active small { color: rgba(255, 255, 255, 0.85); }
+.topo-views-table td { vertical-align: middle !important; }
+.topo-inline-form { display: inline-flex; align-items: center; gap: 4px; margin: 0 8px 0 0; }
+.topo-inline-form .form-control { width: 180px; height: 24px; padding: 1px 6px; }
+.topo-custommap-notices { margin: 0; padding-left: 18px; font-size: 12px; color: #8a6d3b; }
 
 /* host locator and port tab */
 .topo-host .panel-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
@@ -166,6 +176,8 @@ html.dark .topo-page .alert-warning a { color: #2b1a00; text-decoration: underli
 .topo-page .text-muted, .topo-port-tab .text-muted, .topo-device-panel .text-muted { color: #666; }
 html.dark .topo-evidence-heading { border-color: #3a3f45; }
 html.dark .topo-evidence-note { color: #bbb; }
+html.dark .topo-custommap-notices { color: #e0b562; }
+html.dark .topo-view-badge { background: #24364a; color: #8fc1ef; }
 
 @media (max-width: 991px) {
     .topo-body { flex-direction: column; height: auto; }

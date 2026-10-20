@@ -12,7 +12,7 @@ addresses, OSPF, BGP, forwarding, ARP and 802.1X tables, syslog, transceiver sen
 
 ## Maps
 
-*Overview → Plugins → Topology maps*: Layer 2 Map, Layer 3 Map and Site / WAN Map.
+*Overview → Plugins → Topology maps*: Layer 2 Map, Layer 3 Map, Site / WAN Map and Saved Views.
 
 | Layer 2 map | Layer 3 map |
 |---|---|
@@ -22,12 +22,13 @@ addresses, OSPF, BGP, forwarding, ARP and 802.1X tables, syslog, transceiver sen
 | VLAN filter dims switches/links that do not carry the VLAN and switches the STP overlay to that VLAN's instance | OSPF adjacencies and BGP sessions (iBGP/eBGP, external AS clouds), red when not full/established |
 | Unmanaged LLDP/CDP neighbors (APs, phones, servers, unknown switches); an unmanaged neighbor behind a root port is flagged `ROOT?` | OSPFv3, IS-IS, IPsec, MPLS LSP and pseudowire [overlays](#layer-3-map-overlays), with an MTU check of the pseudowires' attachment circuits |
 
-Both maps: center on any device with N hops, filter by device group or location, search, hierarchical or
-organic layout, drag-and-save layout (per browser), color links by speed / utilization / status,
-details panel for every device and link (speed, duplex, VLANs, traffic, STP state, port-channel members), export to
-PNG and CSV, full screen, and shareable URLs. On the L2 map, **Simulate failure** in the details of a device or link
-shows which devices would lose their path to the core (failures add up, so "what if both go down" works too), and
-the top-most down device of an outage is marked with the number of down devices behind it.
+Both maps: center on any device with N hops, filter by device group or location, search, hierarchical or organic layout,
+drag-and-save layout (per browser, or as [saved views](#sharing--export) shared with the team), color links by speed /
+utilization / status, details panel for every device and link (speed, duplex, VLANs, traffic, STP state, port-channel members),
+[export](#sharing--export) to draw.io (and from there Visio), yEd, PNG and CSV, full screen, and shareable URLs. On the
+L2 map, **Simulate failure** in the details of a device or link shows which devices would lose their path to the core
+(failures add up, so "what if both go down" works too), and the top-most down device of an outage is marked with the
+number of down devices behind it.
 
 ![Layer 3 map](docs/images/l3-map.png)
 
@@ -94,6 +95,60 @@ cloud VPN gateway) or on a tunnel subnet they join with addresses of their own (
   sites have none, the map is laid out without them).
 * Center on a site to see it with its neighbors within N hops, or filter by device group; double-click a site, or use
   the buttons in its details, to open its L2 or L3 map, redundancy page or device list.
+
+### Sharing & export
+
+**Saved views** (the bookmark button of the L2 and L3 maps, and **Maps → Saved Views**) keep a map under a name on the
+server: its scope, filters, device positions and display options (layout, *Color links by*, labels, STP overlay,
+outages). A view is personal or shared with everyone who can open the maps, and opens with a link (`l2?view=12`). Each
+user sees a shared view with their own permissions: the map is built for them, and only the positions of the nodes on
+their map are used (and sent to their browser); a node the view does not place, such as a device they see as an
+unmanaged neighbor, goes next to the nodes it is linked to; the view's scope names no device, group, location or VRF
+they may not see, but its name is shown as it was typed. The map leaves the view when its scope changes (device, hops,
+group, location, VRF); *Update* saves the map as it is now into the open view. Users change and delete their own views,
+LibreNMS admins also any shared view. *Saved Views* lists them (rename, share, delete) and the layouts saved in this
+browser with the save button, each of which becomes a view in one click.
+
+![Saved views](docs/images/saved-views.png)
+
+**Export** (the download button of a map) saves the map as it is drawn:
+
+| Format | |
+|---|---|
+| draw.io diagram (`.drawio`) | opens in [draw.io / diagrams.net](https://www.drawio.com) (web or desktop) with the positions of the map: devices as draw.io's Cisco shapes colored by status (red down, gray unmanaged), the sites of the site map as buildings, links with their color, width and dashes, the link label in the middle and the interface names at both ends. Each device keeps its name, hostname, hardware, OS and location as data (*Edit Data*) and links to its LibreNMS page. **Visio:** open the file in draw.io and use *File → Export as → VSDX* |
+| GraphML for yEd (`.graphml`) | opens in yEd Graph Editor with the same positions and labels, without a new layout; the properties are in each node's and link's description. A name that starts with `<html>` gets a zero-width space in front, so that yEd shows it as text |
+| PNG image, links as CSV | the picture of the map and one row per link |
+
+The files hold what the map shows: its scope and filters, port-channels collapsed or not, the L3 overlays that are on,
+*Color links by*, the STP overlay, VLAN dimming, the *Interface labels* / *Link labels* switches and a host the
+[host locator](#host-locator-and-port-tab) placed on the map (`host=`). A failure simulation is left out: the files
+show the network as it is.
+
+![Export menu](docs/images/export-menu.png)
+
+**LibreNMS Custom Map** (Export → *LibreNMS Custom Map…* of the L2 and L3 maps, LibreNMS admins) turns the map into a
+native LibreNMS Custom Map (*Maps → Custom Maps*): LibreNMS draws it with the status of the devices and the status and
+utilization of the links, it can be changed in LibreNMS' map editor and put on a dashboard with the Custom Map widget.
+The dialog previews what will be written (nodes, links, size) before anything is saved:
+
+* devices keep their positions and are drawn as the icon of their role, which LibreNMS colors by status (blue up, red
+  down); unmanaged neighbors are gray icons, subnets of the L3 map boxes. A new map takes LibreNMS' defaults for new
+  custom maps (the `custom_map` settings: fonts, legend colors, background);
+* each link takes its status and utilization from a port that is that link only: the port-channel of either end when all
+  of its members that are up (by the port stack, whether LLDP/CDP reports their cables or not) are this link's cables,
+  else the port of a link that is one cable. A port-channel split over two switches (MLAG) is used for neither of its
+  links, which then take the other end's port-channel; a link of several cables without one has no port. OSPF/BGP
+  adjacencies and the other L3 overlays have no port either and are drawn without utilization;
+* names are written with look-alikes for the characters HTML uses (`<` `>` `"` `'` `&` `` ` `` become ‹ › ″ ’ ＆ ˋ):
+  LibreNMS' map editor puts labels into HTML, and LLDP/CDP neighbors name themselves. The editor puts the map's name
+  into its script, so line breaks in the name and menu group become spaces and a backslash becomes ＼. The icons are
+  among those of the editor's node dialog, so a node edited there keeps its icon;
+* *Map* can replace a custom map this plugin made before: its nodes and links are written again (also changes made in
+  the editor), its id, menu group, settings, legend and background stay, so dashboards keep showing it. If it changed in
+  the editor after the preview, the export stops and shows a new preview. Maps made in LibreNMS are never changed. The
+  export is noted in the eventlog.
+
+![Custom map export](docs/images/custom-map-export.png)
 
 ## Diagnostics
 
@@ -463,8 +518,9 @@ it runs OSPF or BGP, and links to the maps, diagnostics and changes of that devi
   `ipv6-nd` (host locator), `nac` (802.1X sessions, off by default), `transceivers` and `sensors` (optical levels),
   `entity-physical` (stack members and line cards). The maps and checks work with whatever subset is available; the
   MAC vendors need LibreNMS' OUI table (`mac_oui.enabled`), DNS lookups of the host locator `getent` (glibc or musl).
-* The topology history adds four tables (`topology_*`) with a database migration of the plugin and runs through the
-  LibreNMS scheduler. `./validate.php` warns about that migration; read [Installation](#installation) before acting on it.
+* The plugin keeps its data in tables of its own (`topology_*`), created by database migrations of the plugin: the
+  topology history (four tables, recorded through the LibreNMS scheduler), the saved views and the list of the custom
+  maps it made. `./validate.php` warns about those migrations; read [Installation](#installation) before acting on them.
 
 ## Installation
 
@@ -497,19 +553,22 @@ The plugin is enabled automatically. Its pages (maps, diagnostics, tools and his
 `/plugin/topology` shows them all with a short description. It can be disabled or configured in
 **Overview → Plugins → Plugin Admin → topology → Settings**.
 
-The topology history keeps its data in tables of the plugin: create them once with `./lnms migrate` (LibreNMS updates run
-it too, so later versions of the plugin update them). The history is recorded by the LibreNMS scheduler, which LibreNMS
-needs anyway (`librenms-scheduler` timer or cron, see `./validate.php`): `topology:snapshot` every *History interval*,
-which records the snapshot and then runs `topology:checks stp|links|redundancy|routing` one after the other, each in a
-process of its own; the output goes to `logs/topology-snapshot.log`, a failure to the eventlog. `./lnms topology:snapshot` does the
+The plugin keeps its data in tables of its own: the topology history and the baseline (`topology_facts`,
+`topology_baseline`, `topology_runs`, `topology_findings`), the saved views (`topology_views`) and the custom maps it
+made (`topology_custom_maps`). Create them once with `./lnms migrate` (LibreNMS updates run it too, so later versions of
+the plugin update them). The history is recorded by the LibreNMS scheduler, which LibreNMS needs anyway
+(`librenms-scheduler` timer or cron, see `./validate.php`): `topology:snapshot` every *History interval*, which records
+the snapshot and then runs `topology:checks stp|links|redundancy|routing` one after the other, each in a process of its
+own; the output goes to `logs/topology-snapshot.log`, a failure to the eventlog. `./lnms topology:snapshot` does the
 same now.
 
 `./validate.php` then warns that the database schema "has extra migrations
-(2026_10_20_000000_create_topology_history_tables, 2026_10_21_000000_add_finding_subjects_to_topology_history)" and is
-"between releases": those are the plugin's migrations, and the warning stays while the plugin is installed. While it warns, validate.php skips its checks of LibreNMS' own schema
-(structure and collation). **Do not delete the plugin's row from the `migrations` table** to silence it: validate.php then
-lists the `topology_*` tables as extra tables and offers to drop them. **Never apply that fix**: it deletes the history and
-the baseline.
+(2026_10_20_000000_create_topology_history_tables, 2026_10_20_100000_create_topology_custom_maps_table,
+2026_10_20_100100_create_topology_views_table, 2026_10_21_000000_add_finding_subjects_to_topology_history)" and is
+"between releases": those are the plugin's migrations, and the warning stays while the plugin is installed. While it
+warns, validate.php skips its checks of LibreNMS' own schema (structure and collation). **Do not delete the plugin's
+rows from the `migrations` table** to silence it: validate.php then lists the `topology_*` tables as extra tables and
+offers to drop them. **Never apply that fix**: it deletes the history, the baseline and the saved views.
 
 To remove the plugin and its tables:
 
@@ -520,7 +579,8 @@ To remove the plugin and its tables:
 ./lnms plugin:remove agoodley/librenms-topology-plugin
 ```
 
-`./lnms plugin:remove` alone keeps the tables, so a reinstall keeps the history.
+`./lnms plugin:remove` alone keeps the tables, so a reinstall keeps the history, the baseline and the saved views.
+Custom maps the plugin made are LibreNMS' own: they stay either way.
 
 ## Usage tips
 
@@ -528,7 +588,8 @@ To remove the plugin and its tables:
   default 400). Double-click any device to re-center on it.
 * Pick a **VLAN** on the L2 map to see which switches/trunks carry it and that VLAN's spanning tree
   (root bridge, port roles, blocked ports). Domain rows and findings on the STP page link straight to that view.
-* Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope).
+* Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope), or save the map as a
+  **view** to keep it on the server and share it with a link.
 * On the L3 map, click a router and pick an overlay under *Connections* to list its LSPs, tunnels or pseudowires;
   `l3?isis=0&mpls=1` (and `api/l3`) switches IS-IS off and the MPLS LSPs on. A faded device is outside the map:
   double-click it to follow the tunnel or LSP there.
@@ -566,10 +627,11 @@ To remove the plugin and its tables:
 * `plugin/topology/api/l2`, `api/l3`, `api/sites`, `api/stp`, `api/links`, `api/routing`, `api/redundancy`,
   `api/coverage`, `api/rollout`, `api/dependencies` and `api/changes` return the same data as JSON (same query
   parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`, `api/routing?vrf=PROD`,
-  `api/changes?window=7d` or `api/changes?from=2026-10-01&to=2026-10-07`) for automation, and `api/hosts?q=...` the
-  host locator's answer. `api/coverage` cuts each list at the same 500 rows as the page and returns the full counts as
-  `findings_total`, `neighbors_total`, `devices_total` and `ports_total`: narrow it with `device`, `group` or
-  `location` for the rest. Phones and servers among the neighbors are only counted, in `summary.other_neighbors`.
+  `api/changes?window=7d` or `api/changes?from=2026-10-01&to=2026-10-07`) for automation, `api/hosts?q=...` the host
+  locator's answer and `api/views` the saved views (`api/l2?view=12` adds a view's positions). `api/coverage` cuts each
+  list at the same 500 rows as the page and returns the full counts as `findings_total`, `neighbors_total`,
+  `devices_total` and `ports_total`: narrow it with `device`, `group` or `location` for the rest. Phones and servers
+  among the neighbors are only counted, in `summary.other_neighbors`.
 
 ## Settings
 
@@ -627,6 +689,11 @@ lists background findings about their devices alone. Only LibreNMS admins can ap
 save, clear or accept items of the baseline; other users see those pages read only. A baseline change for a device, group
 or location that no longer resolves (disabled, deleted or not permitted) is refused rather than applied to everything.
 
+Only LibreNMS admins who may create custom maps can export a map to a LibreNMS Custom Map; the map is built with their
+permissions. Everyone who can open the maps may save views and share their own; they change and delete their own views,
+LibreNMS admins any shared view. A shared view is built with the permissions of whoever opens it: its positions are only
+sent for the nodes of their map, and it names no device, group, location or VRF they may not see.
+
 Besides the devices a user may see, LibreNMS checks a role permission for each kind of data (`port.view` for ports and
 their forwarding, ARP, IPv6 neighbor, 802.1X and spanning tree rows, `link.view` for LLDP/CDP links, `routing.view` for
 OSPF, BGP, IS-IS, MPLS and pseudowires, `outage.view`, `eventlog.view`, `syslog.view` ...), and admins can give custom
@@ -681,8 +748,14 @@ parents.
   member, root bridge a switch sees and blocked port, the last two with their VLANs), `FactDiff` (what it writes),
   `ChangeReport` (moved cables, root bridge moves, lost adjacencies), `Baseline`, `FindingHistory` (findings confirmed
   by two runs, eventlog entries); `HistoryService` runs them, `Console/` holds the scheduled `topology:snapshot` and
-  `topology:checks` and `database/migrations` creates the tables.
-* `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
+  `topology:checks`.
+* `src/Sharing/SavedView.php` – what a saved view keeps and which of its positions a viewer gets (`Data\ViewRepository`
+  stores the views and checks who may open and change them).
+* `src/Sharing/CustomMapLayout.php` – the custom map of an L2 or L3 map (nodes, icons, positions, the port of each
+  link); `Data\CustomMapRepository` checks LibreNMS' custom map schema and writes it.
+* `database/migrations` – the plugin's tables: the topology history, the saved views and the custom maps it made.
+* `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS. It also
+  writes the draw.io and GraphML files, in the browser, from the map as drawn.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
 
@@ -695,7 +768,17 @@ vendor/bin/phpunit
 
 **Maps**
 
-* Saved layouts live in the browser's local storage, they are not shared between users.
+* Saved views and the Custom Map export cover the L2 and L3 maps; the site map has the file exports only.
+* Layouts saved with the save button live in the browser's local storage; save them as views to share them. A view keeps
+  the positions of its nodes by their map id: a device that is renamed keeps its place, an unmanaged neighbor that gets
+  a new name moves next to its links.
+* The custom map export is verified against LibreNMS 26.10, whose custom map tables have not changed since November
+  2024. On other versions it writes only the columns that exist, and refuses with a message when a column it needs is
+  missing or one it does not know must be filled. The custom map shows the map as the admin who exported it sees it;
+  LibreNMS shows a custom map to the users who may see all of its devices.
+* The draw.io file uses draw.io's Cisco shapes, which draw.io loads from its own shape library (built into draw.io
+  desktop). yEd has no Cisco icons: the GraphML file draws the roles as basic shapes (rectangle for a switch, ellipse
+  for a router, octagon for a firewall, triangle for an access point), colored like the map.
 * L3 overlays: a far end found on several devices (a duplicated address or router ID) is not guessed: it is an external
   node, like an unknown peer or one on a device you may not see, which shows only the address. Pseudowires whose peers
   LibreNMS lost on several PEs with the same VC ID stay unpaired, and their state is unknown; the MTU check assumes one
@@ -827,7 +910,7 @@ vendor/bin/phpunit
 
 **Installation**
 
-* `./validate.php` warns about the plugin's migration while the plugin is installed and then skips its checks of
+* `./validate.php` warns about the plugin's migrations while the plugin is installed and then skips its checks of
   LibreNMS' own schema (see [Installation](#installation)).
 
 ## Roadmap
