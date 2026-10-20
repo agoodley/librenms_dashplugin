@@ -107,6 +107,25 @@ class PathTracerTest extends TestCase
         $this->assertSame([null, null], [$trace['hops'][1]['in_port'], $trace['hops'][1]['out_port']], 'no ports of it');
     }
 
+    public function testAnUnmanagedSwitchIsAHopButAnAccessPointIsNot(): void
+    {
+        $net = PathFixture::campus();
+        $net->instances = [];
+        $net->stpPorts = [];
+        // acc1 and acc2 also meet through a desk switch nobody monitors, and both see the same access point
+        $net->port(310, self::A1, 'Gi1/0/10', 1)->port(410, self::A2, 'Gi1/0/10', 1)->port(311, self::A1, 'Gi1/0/11', 1)->port(411, self::A2, 'Gi1/0/11', 1);
+        $net->neighbor(310, 'desk-sw.example.net', 'port 1', 'Netgear GS108')->neighbor(410, 'desk-sw.example.net', 'port 2', 'Netgear GS108');
+        $net->neighbor(311, 'ap-7', 'eth0', 'Cisco AIR-AP2802I')->neighbor(411, 'ap-7', 'eth1', 'Cisco AIR-AP2802I');
+        foreach ([301, 302, 400, 403] as $uplink) {
+            $net->ports[$uplink]['ifOperStatus'] = 'down';
+        }
+
+        $trace = $net->l2(110)->trace(self::A1, self::A2, 110);
+        $this->assertSame(['acc1', 'desk-sw.example.net', 'acc2'], PathFixture::names($trace), 'through the desk switch, never the access point');
+        $this->assertSame(['device', 'unmanaged', 'device'], array_column($trace['hops'], 'kind'));
+        $this->assertSame([310, 410], [$trace['hops'][0]['out_port'], $trace['hops'][2]['in_port']]);
+    }
+
     public function testAPortChannelAcrossASwitchPairIsReported(): void
     {
         $net = PathFixture::campus();
