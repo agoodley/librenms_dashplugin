@@ -246,6 +246,68 @@ class RedundancyAnalyzer
     }
 
     /**
+     * Nodes of the graphs and the devices they stand for: node id => device_id (null for unmanaged
+     * neighbours), name, role, managed, network, up; the copies of an end device (see build()) also
+     * carry 'of', the node id of their device, which is kept here for its name but is no graph node.
+     *
+     * @return array<string, array>
+     */
+    public function nodes(): array
+    {
+        return $this->nodes;
+    }
+
+    /**
+     * Copy of the design graph (every device and link) or of the current one (only what is up),
+     * both with the CORE node joined to the core devices.
+     */
+    public function graph(bool $current = false): Graph
+    {
+        return clone ($current ? $this->current : $this->design);
+    }
+
+    /**
+     * End devices with several links => their copies in the graphs (one per link).
+     *
+     * @return array<string, string[]>
+     */
+    public function copies(): array
+    {
+        return $this->copies;
+    }
+
+    /**
+     * Unmanaged neighbours that hang off a node alone (phones, PCs, access points): node => their local
+     * ports; they are no graph nodes and go down with that node.
+     *
+     * @return array<string, int[]>
+     */
+    public function leaves(): array
+    {
+        return $this->leaves;
+    }
+
+    /**
+     * Part of the network (connected component of the design graph) of every graph node.
+     *
+     * @return array<string, int>
+     */
+    public function parts(): array
+    {
+        return $this->part;
+    }
+
+    /**
+     * Bridge priority of the default spanning tree instance of the devices that report one.
+     *
+     * @return array<int, int> device_id => priority
+     */
+    public function bridgePriorities(): array
+    {
+        return $this->stpPriority;
+    }
+
+    /**
      * What the given failures cut off the core now, on top of what is down already: the failure
      * simulation of the map, computed on the whole network. References: node ids of the map
      * (d:<device_id>, u:<neighbour>), p:<port_id> for a link by one of its ports (a port-channel
@@ -530,7 +592,7 @@ class RedundancyAnalyzer
                 $this->nodes[$to] ??= [
                     'device_id' => null,
                     'name' => $link['b_host'] !== '' ? $link['b_host'] : 'unknown neighbor of ' . $this->nodes[$from]['name'] . ' ' . $this->portName((int) $link['a_port']),
-                    'role' => DeviceRole::fromPlatform($link['b_platform'], $link['b_host']),
+                    'role' => DeviceRole::fromNeighbor($link['b_platform'], $link['b_version'], $link['b_host']),
                     'managed' => false,
                     'network' => false,
                     'up' => true,

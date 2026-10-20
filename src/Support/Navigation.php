@@ -46,6 +46,14 @@ class Navigation
             'route' => 'topology.changes', 'group' => 'history', 'tab' => 'Changes', 'title' => 'Topology Changes', 'icon' => 'fa-history',
             'description' => 'What changed over the last day or week (moved cables, new neighbors, root bridge moves, lost adjacencies), what is missing compared with a saved baseline, and findings that came or went.',
         ],
+        'rollout' => [
+            'route' => 'topology.rollout', 'group' => 'tools', 'tab' => 'Rollout Planner', 'title' => 'Rollout Planner', 'icon' => 'fa-layer-group',
+            'description' => 'Batches for a firmware upgrade, reboot or configuration change of many devices: farthest from the core first, never two devices that back each other up at once, and what each batch takes down.',
+        ],
+        'dependencies' => [
+            'route' => 'topology.dependencies', 'group' => 'tools', 'tab' => 'Dependencies', 'title' => 'Device Dependencies', 'icon' => 'fa-sort-amount-down',
+            'description' => 'LibreNMS parent devices derived from the topology toward the core (both uplinks of dual-homed devices), compared with the current ones and checked against past outages.',
+        ],
     ];
 
     /**

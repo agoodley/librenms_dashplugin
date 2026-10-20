@@ -92,6 +92,10 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-sev-warning { background: #e67e22; }
 .topo-sev-info { background: #1f6fb2; }
 .topo-sev-ok { background: #2e9e44; }
+.topo-sev-muted { background: #95a5a6; }
+.topo-rollout-hosts { margin-top: 3px; font-size: 12px; }
+.topo-rollout-hosts summary { cursor: pointer; color: #777; }
+.topo-rollout-hosts textarea { margin-top: 3px; font-family: monospace; font-size: 11px; }
 .topo-finding-detail { color: #555; }
 .topo-finding-rec { color: #2c6e49; font-size: 12px; margin-top: 3px; }
 .topo-stp-table td, .topo-stp-table th { font-size: 12px; white-space: nowrap; }
@@ -108,6 +112,12 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-filterbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 10px; }
 .topo-filterbar .form-control { display: inline-block; width: auto; height: 30px; }
 .topo-device-panel .topo-kv th { width: auto; }
+.topo-layer-list th { width: auto; }
+.topo-layer-list td:last-child, .topo-layer-list th:last-child { white-space: nowrap; }
+.topo-evidence-heading { padding: 8px 10px 4px; font-weight: 600; border-top: 1px solid #ddd; }
+.topo-evidence-heading:first-of-type { border-top: 0; }
+.topo-evidence-heading .text-muted { font-weight: normal; }
+.topo-evidence-note { margin: 4px 10px 10px; color: #555; }
 
 /* dark mode (LibreNMS toggles html.dark) */
 html.dark .topo-toolbar, html.dark .topo-viewbar { background: #24272c; border-color: #3a3f45; }
@@ -123,6 +133,8 @@ html.dark .topo-subnet { background: #3b3524; }
 html.dark .topo-config pre { background: #24272c; border-color: #3a3f45; color: #ddd; }
 html.dark .topo-config summary { color: #6ea8de; }
 html.dark .topo-stp-table td.topo-mismatch { background: rgba(230, 126, 34, 0.28); }
+html.dark .topo-evidence-heading { border-color: #3a3f45; }
+html.dark .topo-evidence-note { color: #bbb; }
 
 @media (max-width: 991px) {
     .topo-body { flex-direction: column; height: auto; }
