@@ -27,6 +27,9 @@ class PluginSettings
         'links_rx_margin' => '2',
         'links_ignore_vlans' => '',
         'links_disabled_checks' => '',
+        'redundancy_core' => '',
+        'redundancy_warn_devices' => '2',
+        'redundancy_disabled_checks' => '',
     ];
 
     /** @var array<string, string> */
@@ -92,6 +95,35 @@ class PluginSettings
         $parts = preg_split('/[\s,;]+/', $this->values[$key] ?? '') ?: [];
 
         return array_values(array_filter(array_map('trim', $parts), fn ($part) => $part !== ''));
+    }
+
+    /**
+     * Devices named in a list setting by id, hostname, sysName or display name (any case).
+     *
+     * @param  array<int, array>  $devices  device_id => device row
+     * @return array<int, true> device ids
+     */
+    public function devicesIn(string $key, array $devices): array
+    {
+        $wanted = array_map('strtolower', $this->list($key));
+        if (! $wanted) {
+            return [];
+        }
+
+        $result = [];
+        foreach ($devices as $deviceId => $device) {
+            $names = array_map('strtolower', array_filter([
+                (string) $deviceId,
+                (string) ($device['hostname'] ?? ''),
+                (string) ($device['sysName'] ?? ''),
+                (string) ($device['display'] ?? ''),
+            ]));
+            if (array_intersect($names, $wanted)) {
+                $result[(int) $deviceId] = true;
+            }
+        }
+
+        return $result;
     }
 
     /**

@@ -218,6 +218,12 @@
 
     var STP_TAGS = {root: 'R', designated: 'D', alternate: 'ALT', backup: 'BK', nondesignated: 'FWD?', broken: 'BRK', disabled: 'DIS'};
 
+    /** Roles that pass traffic between their links (monitored devices). */
+    var NETWORK_ROLES = ['switch', 'l3switch', 'router', 'firewall'];
+
+    /** Unmanaged neighbors that do not pass traffic between their links, by the role of their platform. */
+    var END_ROLES = ['server', 'phone', 'wireless'];
+
     // ------------------------------------------------------------------ the map
 
     function TopologyMap(config) {
@@ -232,8 +238,15 @@
             interfaceLabels: true,
             linkLabels: true,
             colorBy: 'speed',
-            stp: true
+            stp: true,
+            outages: true
         };
+        // failure simulation: references of the failed devices / links (d:12, u:name, p:345, l:a|b, also from
+        // the URL: fail=...), what of them is on the map, and the server's answer
+        this.sim = {refs: (new URLSearchParams(window.location.search).get('fail') || '').split(',').filter(Boolean)};
+        this.simMap = {nodes: {}, edges: {}};
+        this.simResult = null;
+        this.outages = {top: {}, behind: {}};
         this.container = document.getElementById('topo-canvas');
         this.panel = document.getElementById('topo-details');
         this.status = document.getElementById('topo-status');
@@ -461,6 +474,7 @@
                 return;
             }
             self.data = data;
+            self.prepareRedundancy();
             self.populateSelects(data);
             self.render(false);
         }).catch(function (error) {
@@ -647,6 +661,7 @@
         this.updateStatus();
         this.showLegend();
         this.updateSearchList();
+        this.updateSimBox();
     };
 
     /**
@@ -761,6 +776,15 @@
 
         if (this.mode === 'l2' && this.data && this.isVlanFiltered() && edge.carriesVlan === false) {
             visEdge.color.opacity = 0.15;
+        }
+        if (this.mode === 'l2') {
+            if (this.simMap.edges[edge.id]) {
+                visEdge.color.color = visEdge.color.hover = '#c0392b';
+                visEdge.dashes = [3, 5];
+                visEdge.width = width + 1;
+            } else if (this.simMap.nodes[edge.from] || this.simMap.nodes[edge.to]) {
+                visEdge.color.opacity = 0.25;
+            }
         }
 
         var parallel = edge.parallel || {index: 0, count: 1};
@@ -903,7 +927,93 @@
                 }
             });
         }
+
+        if (this.mode === 'l2') {
+            if (this.view.outages) {
+                Object.keys(this.outages.top).forEach(function (id) {
+                    var behind = self.outages.top[id].length;
+                    if (positions[id]) {
+                        self.drawBadge(ctx, positions[id], behind ? '\u25BC ' + behind + ' behind' : '\u25BC down');
+                    }
+                });
+            }
+            this.drawSimulation(ctx, positions);
+        }
         ctx.restore();
+    };
+
+    /**
+     * Red label under a node (top-most down device of an outage).
+     */
+    TopologyMap.prototype.drawBadge = function (ctx, position, text) {
+        ctx.font = 'bold 10px Arial';
+        var width = ctx.measureText(text).width + 10;
+        var x = position.x + 14, y = position.y + 14;
+        ctx.fillStyle = '#c0392b';
+        ctx.beginPath();
+        if (ctx.roundRect) {
+            ctx.roundRect(x, y, width, 15, 7);
+        } else {
+            ctx.rect(x, y, width, 15);
+        }
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(text, x + 5, y + 8);
+    };
+
+    /**
+     * Failure simulation: a red cross on every failed device and link, a dashed red ring around the
+     * devices it cuts off the core.
+     */
+    TopologyMap.prototype.drawSimulation = function (ctx, positions) {
+        var self = this;
+        ((this.simResult && this.simResult.lost) || []).forEach(function (lost) {
+            var position = positions[lost.node];
+            if (!position) {
+                return;
+            }
+            ctx.beginPath();
+            ctx.arc(position.x, position.y, self.nodeIndex[lost.node].managed ? 30 : 22, 0, Math.PI * 2);
+            ctx.strokeStyle = 'rgba(192, 57, 43, 0.9)';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([5, 4]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        });
+        Object.keys(this.simMap.nodes).forEach(function (id) {
+            if (positions[id]) {
+                self.drawCross(ctx, positions[id], 13);
+            }
+        });
+        Object.keys(this.simMap.edges).forEach(function (id) {
+            var visEdge = self.edges.get(id);
+            var from = visEdge && positions[visEdge.from];
+            var to = visEdge && positions[visEdge.to];
+            if (from && to) {
+                self.drawCross(ctx, self.edgePoint(id, from, to, 0.5), 8);
+            }
+        });
+    };
+
+    /**
+     * Red disc with a white cross.
+     */
+    TopologyMap.prototype.drawCross = function (ctx, point, radius) {
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(192, 57, 43, 0.92)';
+        ctx.fill();
+        var arm = radius * 0.5;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = Math.max(2, radius / 4);
+        ctx.beginPath();
+        ctx.moveTo(point.x - arm, point.y - arm);
+        ctx.lineTo(point.x + arm, point.y + arm);
+        ctx.moveTo(point.x + arm, point.y - arm);
+        ctx.lineTo(point.x - arm, point.y + arm);
+        ctx.stroke();
     };
 
     /**
@@ -1011,6 +1121,321 @@
         ctx.fillText(suspected ? 'ROOT? (unmanaged)' : 'ROOT', cx + 11, cy);
     };
 
+    // ------------------------------------------------------------------ failure simulation & outages
+
+    /**
+     * Does a map node pass traffic between its links? Switches, routers and firewalls, and unmanaged
+     * neighbors unless their platform says server, phone or access point.
+     */
+    TopologyMap.prototype.forwards = function (node) {
+        return !!node && (node.managed ? NETWORK_ROLES.indexOf(node.role) !== -1 : END_ROLES.indexOf(node.role) === -1);
+    };
+
+    /**
+     * Index a freshly loaded L2 map: node lookup, current outages, and the simulated failures (kept
+     * from the previous view or requested in the URL) placed on this map and computed again.
+     */
+    TopologyMap.prototype.prepareRedundancy = function () {
+        var self = this;
+        this.nodeIndex = {};
+        this.data.nodes.forEach(function (node) {
+            self.nodeIndex[node.id] = node;
+        });
+        this.outages = this.mode === 'l2' ? this.computeOutages() : {top: {}, behind: {}};
+        this.placeFailures();
+        if (this.mode === 'l2' && this.sim.refs.length) {
+            this.runSimulation();
+        }
+    };
+
+    /**
+     * Reference of a map edge for the server: its port for a single cable, else its two devices
+     * (the cables between them). Not the aggregate port: a port-channel to an MLAG pair also has
+     * the cables to the other switch.
+     */
+    TopologyMap.prototype.edgeRef = function (edge) {
+        var members = edge.members || [];
+        var port = members.length === 1 && (members[0].a_port_id || members[0].b_port_id);
+        return port ? 'p:' + port : 'l:' + edge.from + '|' + edge.to;
+    };
+
+    /**
+     * Does a link reference (p:<port>, l:<node>|<node>) name this map edge?
+     */
+    TopologyMap.prototype.refHitsEdge = function (ref, edge) {
+        var port = /^p:(\d+)$/.exec(ref);
+        var pair = /^l:(.+)\|(.+)$/.exec(ref);
+        if (port) {
+            var id = Number(port[1]);
+            return (edge.a && edge.a.port_id === id) || (edge.b && edge.b.port_id === id) || (edge.members || []).some(function (member) {
+                return member.a_port_id === id || member.b_port_id === id;
+            });
+        }
+        return !!pair && ((edge.from === pair[1] && edge.to === pair[2]) || (edge.from === pair[2] && edge.to === pair[1]));
+    };
+
+    /**
+     * The failure that put a map edge down (it can be another of its ports, e.g. from the URL).
+     */
+    TopologyMap.prototype.failureOf = function (edge) {
+        var self = this;
+        return this.sim.refs.find(function (ref) {
+            return self.refHitsEdge(ref, edge);
+        }) || this.edgeRef(edge);
+    };
+
+    /**
+     * Find the failed devices and links on the map (to draw them); a failure can be off the map.
+     */
+    TopologyMap.prototype.placeFailures = function () {
+        var self = this;
+        this.simMap = {nodes: {}, edges: {}};
+        this.sim.refs.forEach(function (ref) {
+            if (self.nodeIndex[ref]) {
+                self.simMap.nodes[ref] = true;
+            }
+            self.data.edges.forEach(function (edge) {
+                if (self.refHitsEdge(ref, edge)) {
+                    self.simMap.edges[edge.id] = true;
+                }
+            });
+        });
+    };
+
+    /**
+     * Fail or restore a device / link and ask the server what that cuts off.
+     * @param {string} ref  d:<id> / u:<name> node id, p:<port>, l:<node>|<node>
+     */
+    TopologyMap.prototype.toggleFailure = function (ref) {
+        var index = this.sim.refs.indexOf(ref);
+        if (index === -1) {
+            this.sim.refs.push(ref);
+        } else {
+            this.sim.refs.splice(index, 1);
+        }
+        this.placeFailures();
+        this.runSimulation();
+    };
+
+    TopologyMap.prototype.isFailed = function (kind, id) {
+        return kind === 'edge' ? !!this.simMap.edges[id] : this.sim.refs.indexOf(id) !== -1;
+    };
+
+    TopologyMap.prototype.resetSimulation = function () {
+        this.sim.refs = [];
+        this.placeFailures();
+        this.runSimulation();
+    };
+
+    /**
+     * The simulation is computed by the server on the whole network as it is now (api/simulate), so
+     * it does not depend on what this map shows.
+     */
+    TopologyMap.prototype.runSimulation = function () {
+        var self = this;
+        var requestId = this.simRequest = (this.simRequest || 0) + 1;
+        var refresh = function () {
+            self.edges.update(self.data.edges.map(function (edge) {
+                return self.visEdge(edge);
+            }));
+            self.network && self.network.redraw();
+            self.updateSimBox();
+        };
+        if (!this.sim.refs.length) {
+            this.simResult = null;
+            refresh();
+            return;
+        }
+        this.simResult = {loading: true, lost: (this.simResult && this.simResult.lost) || []};
+        refresh();
+        fetch(this.config.urls.simulate + '?fail=' + encodeURIComponent(this.sim.refs.join(',')), {
+            credentials: 'same-origin',
+            headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+        }).then(function (response) {
+            return response.json().catch(function () {
+                return null;
+            }).then(function (body) {
+                if (!response.ok || body === null) {
+                    throw new Error(body && body.error ? body.error : 'HTTP ' + response.status);
+                }
+                return body;
+            });
+        }).then(function (result) {
+            if (requestId === self.simRequest) {
+                self.simResult = result;
+                refresh();
+            }
+        }).catch(function (error) {
+            if (requestId === self.simRequest) {
+                self.simResult = {error: error.message, lost: []};
+                refresh();
+            }
+        });
+    };
+
+    /**
+     * Current outages on this map: the top-most down devices (next to an up switch, router or
+     * firewall, possibly through unmanaged switches) and the down devices only reachable through
+     * them. Same rules as the redundancy page, limited to what the map shows.
+     * @return {{top: Object<string, string[]>, behind: Object<string, string[]>}}
+     */
+    TopologyMap.prototype.computeOutages = function () {
+        var self = this;
+        var incident = {};
+        this.data.edges.forEach(function (edge) {
+            (incident[edge.from] = incident[edge.from] || []).push(edge);
+            (incident[edge.to] = incident[edge.to] || []).push(edge);
+        });
+
+        var upSide = {};
+        var top = {};
+        var queue = [];
+        this.data.nodes.forEach(function (node) {
+            if (node.managed && node.status === 'up' && self.forwards(node)) {
+                upSide[node.id] = true;
+                queue.push(node.id);
+            }
+        });
+        for (var i = 0; i < queue.length; i++) {
+            var id = queue[i];
+            (incident[id] || []).forEach(function (edge) {
+                var next = edge.from === id ? edge.to : edge.from;
+                var other = self.nodeIndex[next];
+                if (!other || upSide[next]) {
+                    return;
+                }
+                if (other.managed && other.status === 'down') {
+                    top[next] = true;
+                } else if (!other.managed && self.forwards(other)) {
+                    upSide[next] = true;
+                    queue.push(next);
+                }
+            });
+        }
+
+        // devices behind each top-most failure (up to three per device); an end device passes nothing on
+        var sources = {};
+        queue = Object.keys(top);
+        queue.forEach(function (id) {
+            sources[id] = {};
+            sources[id][id] = true;
+        });
+        for (i = 0; i < queue.length; i++) {
+            id = queue[i];
+            if (!self.forwards(self.nodeIndex[id])) {
+                continue;
+            }
+            (incident[id] || []).forEach(function (edge) {
+                var next = edge.from === id ? edge.to : edge.from;
+                var other = self.nodeIndex[next];
+                if (!other || upSide[next] || top[next] || (other.managed && other.status !== 'down')) {
+                    return;
+                }
+                var added = false;
+                sources[next] = sources[next] || {};
+                Object.keys(sources[id]).forEach(function (source) {
+                    if (!sources[next][source] && Object.keys(sources[next]).length < 3) {
+                        sources[next][source] = true;
+                        added = true;
+                    }
+                });
+                if (added) {
+                    queue.push(next);
+                }
+            });
+        }
+
+        var result = {top: {}, behind: {}};
+        Object.keys(top).forEach(function (id) {
+            result.top[id] = [];
+        });
+        Object.keys(sources).forEach(function (id) {
+            if (top[id] || !self.nodeIndex[id].managed) {
+                return;
+            }
+            result.behind[id] = Object.keys(sources[id]);
+            result.behind[id].forEach(function (source) {
+                result.top[source].push(id);
+            });
+        });
+        return result;
+    };
+
+    /**
+     * Box over the map: the simulated failures and every device they cut off the core (also those
+     * not on this map).
+     */
+    TopologyMap.prototype.updateSimBox = function () {
+        var self = this;
+        var box = document.getElementById('topo-sim');
+        if (!box) {
+            return;
+        }
+        if (!this.sim.refs.length) {
+            box.style.display = 'none';
+            box.innerHTML = '';
+            return;
+        }
+
+        var result = this.simResult || {};
+        var labels = {};
+        (result.failed || []).forEach(function (item) {
+            labels[item.ref] = item.label;
+        });
+        var html = '<div class="topo-sim-title"><i class="fa fa-bolt"></i> Simulated failure</div><div>' + this.sim.refs.map(function (ref) {
+            var label = labels[ref] || (self.nodeIndex[ref] ? self.nodeIndex[ref].name : ref);
+            return esc(label) + '<span class="topo-sim-remove" title="Restore" data-sim-remove="' + esc(ref) + '">&times;</span>';
+        }).join(', ') + '</div>';
+
+        if (result.loading) {
+            html += '<div class="text-muted" style="margin: 4px 0"><i class="fa fa-spinner fa-spin"></i> Calculating&hellip;</div>';
+        } else if (result.error) {
+            html += '<div class="text-danger" style="margin: 4px 0">' + esc(result.error) + '</div>';
+        } else if (result.lost && result.lost.length) {
+            var managed = result.lost.filter(function (lost) {
+                return lost.device_id !== null;
+            });
+            var unmanaged = result.unmanaged || 0;
+            html += '<div style="margin-top: 4px"><b>' + managed.length + ' monitored device' + (managed.length === 1 ? '' : 's') +
+                (result.network ? ' (' + result.network + (result.network === 1 ? ' switch or router)' : ' switches or routers)') : '') +
+                (managed.length === 1 ? ' loses its' : ' lose their') + ' path to the core</b>' +
+                (unmanaged ? ', and ' + unmanaged + ' unmanaged neighbor' + (unmanaged === 1 ? '' : 's') : '') + ':</div><ul>';
+            managed.slice(0, 40).forEach(function (lost) {
+                html += '<li>' + (self.nodeIndex[lost.node]
+                    ? '<a data-sim-focus="' + esc(lost.node) + '">' + esc(lost.name) + '</a>'
+                    : esc(lost.name) + ' <span class="text-muted">(not on this map)</span>') + '</li>';
+            });
+            html += managed.length > 40 ? '<li>&hellip;</li></ul>' : '</ul>';
+        } else if (result.lost) {
+            html += '<div class="topo-sim-ok" style="margin: 4px 0"><i class="fa fa-check"></i> Every device keeps a path to the core.</div>';
+        }
+
+        if (result.reference) {
+            html += '<div class="text-muted">' + (result.reference === 'core' ? '' : 'No core device is left: the largest remaining part counts as the core. ') +
+                'Computed on the whole network as it is now: links and devices that are down already stay down.</div>';
+        }
+        html += '<div style="margin-top: 6px"><button type="button" class="btn btn-xs btn-default" data-sim-reset><i class="fa fa-undo"></i> Reset</button></div>';
+
+        box.innerHTML = html;
+        box.style.display = '';
+        box.querySelectorAll('[data-sim-remove]').forEach(function (element) {
+            element.addEventListener('click', function () {
+                self.toggleFailure(element.getAttribute('data-sim-remove'));
+            });
+        });
+        box.querySelectorAll('[data-sim-focus]').forEach(function (element) {
+            element.addEventListener('click', function () {
+                var id = element.getAttribute('data-sim-focus');
+                self.network.selectNodes([id]);
+                self.network.focus(id, {scale: Math.max(1, self.network.getScale()), animation: {duration: 400}});
+                self.showNode(id);
+            });
+        });
+        box.querySelector('[data-sim-reset]').addEventListener('click', function () {
+            self.resetSimulation();
+        });
+    };
+
     // ------------------------------------------------------------------ tooltips & details
 
     TopologyMap.prototype.nodeTooltip = function (node) {
@@ -1098,6 +1523,19 @@
         }
         html += '</table>';
 
+        if (this.mode === 'l2' && this.outages.top[id]) {
+            var behind = this.outages.top[id];
+            html += '<div class="text-danger"><i class="fa fa-arrow-down"></i> <b>Top-most down device of an outage</b>' + (behind.length
+                ? ': ' + behind.length + ' down device' + (behind.length === 1 ? '' : 's') + ' behind it (' + esc(behind.map(function (other) {
+                    return self.nodeName(other);
+                }).join(', ')) + ').'
+                : '.') + '</div>';
+        } else if (this.mode === 'l2' && this.outages.behind[id]) {
+            html += '<div class="text-danger"><i class="fa fa-arrow-down"></i> Down behind ' + esc(this.outages.behind[id].map(function (other) {
+                return self.nodeName(other);
+            }).join(' and ')) + ': probably fine, only unreachable.</div>';
+        }
+
         // neighbor list
         var connected = this.network.getConnectedEdges(id).map(function (edgeId) {
             return self.edges.get(edgeId);
@@ -1116,15 +1554,29 @@
             html += '</table>';
         }
 
+        var actions = '';
         if (node.device_id) {
-            html += '<div class="topo-actions">' +
-                '<button class="btn btn-xs btn-primary" data-recenter="' + node.device_id + '"><i class="fa fa-crosshairs"></i> Center map here</button> ' +
+            actions += '<button class="btn btn-xs btn-primary" data-recenter="' + node.device_id + '"><i class="fa fa-crosshairs"></i> Center map here</button> ' +
                 '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.l2Page + '?device=' + node.device_id) + '">L2 map</a> ' +
                 '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.l3Page + '?device=' + node.device_id) + '">L3 map</a> ' +
-                '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.stpPage + '?device=' + node.device_id) + '">STP</a></div>';
+                '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.stpPage + '?device=' + node.device_id) + '">STP</a> ' +
+                '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.redundancyPage + '?device=' + node.device_id) + '">Redundancy</a> ';
+        }
+        if (this.mode === 'l2' && node.type !== 'subnet') {
+            actions += '<button class="btn btn-xs btn-danger" data-sim-node="' + esc(id) + '"><i class="fa fa-bolt"></i> ' +
+                (this.isFailed('node', id) ? 'Undo simulated failure' : 'Simulate failure') + '</button>';
+        }
+        if (actions) {
+            html += '<div class="topo-actions">' + actions + '</div>';
         }
 
         this.panel.innerHTML = html;
+        this.panel.querySelectorAll('[data-sim-node]').forEach(function (button) {
+            button.addEventListener('click', function () {
+                self.toggleFailure(id);
+                self.showNode(id);
+            });
+        });
         this.panel.querySelectorAll('[data-recenter]').forEach(function (button) {
             button.addEventListener('click', function () {
                 self.recenter(node.device_id, node.name);
@@ -1219,8 +1671,18 @@
             });
             html += '</table>';
         }
+        if (this.mode === 'l2') {
+            html += '<div class="topo-actions"><button class="btn btn-xs btn-danger" data-sim-edge="' + esc(id) + '"><i class="fa fa-bolt"></i> ' +
+                (this.isFailed('edge', id) ? 'Undo simulated failure' : 'Simulate failure of this link') + '</button></div>';
+        }
 
         this.panel.innerHTML = html;
+        this.panel.querySelectorAll('[data-sim-edge]').forEach(function (button) {
+            button.addEventListener('click', function () {
+                self.toggleFailure(self.isFailed('edge', id) ? self.failureOf(edge) : self.edgeRef(edge));
+                self.showEdge(id);
+            });
+        });
     };
 
     /**
@@ -1248,7 +1710,10 @@
             html += '<div><span class="topo-line topo-line-dashed" style="border-color:#c0392b"></span> Link down</div>' +
                 '<div><span class="topo-line topo-line-dashed" style="border-color:#e67e22"></span> STP blocked</div>' +
                 '<div><span class="topo-marker">&#9733;</span> STP root bridge</div>' +
-                '<div><small>[R] root port, [D] designated, [ALT] alternate/blocking, [FWD?] forwarding but not designated</small></div>';
+                '<div><small>[R] root port, [D] designated, [ALT] alternate/blocking, [FWD?] forwarding but not designated</small></div>' +
+                '<div><span class="topo-legend-badge">&#9660; 3 behind</span> Top-most down device of an outage</div>' +
+                '<div><span class="topo-legend-cross">&times;</span> Simulated failure</div>' +
+                '<div><span class="topo-legend-ring"></span> Cut off from the core by it</div>';
         } else {
             html += '<div><span class="topo-line" style="background:#1f6fb2"></span> Point-to-point subnet</div>' +
                 '<div><span class="topo-subnet">10.0.0.0/24</span> Multi-access subnet</div>' +
@@ -1256,7 +1721,8 @@
                 '<div><span class="topo-line topo-line-dashed" style="border-color:#8e44ad"></span> BGP session</div>' +
                 '<div><span class="topo-line topo-line-dashed" style="border-color:#c0392b"></span> Down / not established</div>';
         }
-        html += '</div><p class="text-muted topo-hint">Click a device or link for details. Double-click a device to center the map on it. Drag devices to arrange, then <i>Save layout</i>.</p>';
+        html += '</div><p class="text-muted topo-hint">Click a device or link for details. Double-click a device to center the map on it. Drag devices to arrange, then <i>Save layout</i>.' +
+            (this.mode === 'l2' ? ' <i>Simulate failure</i> in the details shows which devices would lose their path to the core.' : '') + '</p>';
         this.panel.innerHTML = html;
     };
 
@@ -1271,6 +1737,8 @@
             parts.push(stats.devices + ' devices', stats.unmanaged + ' unmanaged neighbors', stats.links + ' links');
             if (stats.down) parts.push('<span class="text-danger">' + stats.down + ' down</span>');
             if (stats.blocked) parts.push('<span class="topo-text-warning">' + stats.blocked + ' STP blocked</span>');
+            var outages = Object.keys(this.outages.top).length;
+            if (outages) parts.push('<span class="text-danger">' + outages + ' outage' + (outages === 1 ? '' : 's') + '</span>');
         } else {
             parts.push(stats.devices + ' L3 devices', stats.subnets + ' subnets', stats.p2p + ' point-to-point links');
             if (stats.ospf) parts.push(stats.ospf + ' OSPF adjacencies');

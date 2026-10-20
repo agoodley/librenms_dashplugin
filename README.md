@@ -1,8 +1,9 @@
 # LibreNMS Topology & Spanning Tree plugin
 
-NetBrain-style **Layer 2** and **Layer 3** network diagrams plus **spanning tree** and **link & VLAN diagnostics**
-for [LibreNMS](https://www.librenms.org), built entirely from data LibreNMS already collects
-(LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, IP addresses, OSPF, BGP and transceiver sensors).
+NetBrain-style **Layer 2** and **Layer 3** network diagrams plus **spanning tree**, **link & VLAN** and
+**redundancy & failure impact** diagnostics for [LibreNMS](https://www.librenms.org), built entirely from data LibreNMS
+already collects (LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, IP addresses, OSPF, BGP,
+transceiver sensors and the hardware inventory).
 
 ![Layer 2 map](docs/images/l2-map.png)
 
@@ -17,7 +18,9 @@ for [LibreNMS](https://www.librenms.org), built entirely from data LibreNMS alre
 Both maps: center on any device with N hops, filter by device group or location, search, hierarchical or
 organic layout, drag-and-save layout (per browser), color links by speed / utilization / status,
 details panel for every device and link (speed, duplex, VLANs, traffic, STP state, LAG members), export to
-PNG and CSV, full screen, and shareable URLs.
+PNG and CSV, full screen, and shareable URLs. On the L2 map, **Simulate failure** in the details of a device or link
+shows which devices would lose their path to the core (failures add up, so "what if both go down" works too), and
+the top-most down device of an outage is marked with the number of down devices behind it.
 
 ### Spanning tree diagnostics
 
@@ -82,6 +85,30 @@ VLANs that are local to each switch on purpose can be ignored, and every check c
 
 ![Link & VLAN diagnostics](docs/images/link-diagnostics.png)
 
+### Redundancy & failure impact
+
+Every device should keep a path to **the core**: the core devices set in the settings, else the designated root
+bridges of the spanning tree settings, else the switches given the lowest spanning tree bridge priority (when it was
+lowered on purpose), else the most central switches. The page shows which one it used. Paths are followed through the
+whole network you can see; port-channels count as one link and their members back each other up. Servers, access points
+and phones are never a path between two switches, even when they are cabled to both.
+
+| Check | Severity |
+|---|---|
+| **Outage**: the top-most down device, with the down devices that are only reachable through it ("acc-sw3 is down, 14 devices behind it") – start there, the others are probably fine | critical |
+| **Redundancy lost**: devices that normally have a second path, but it is down (link down, shut down, or the device at its end down), with the single points of failure they depend on now; a single uplink port-channel running on one cable | warning |
+| **Fake redundancy – stack member / line card**: all uplinks of a device, or all members of a port-channel, on one stack member or line card of a device that has several (from the hardware inventory, else from interface names such as `Gi2/0/1` or `xe-1/0/0`) | warning |
+| **Single point of failure**: a device or a single cable whose failure cuts switches, routers or firewalls off the core, with what it cuts off | warning from 2 switches cut off, else info |
+| **Fake redundancy – same switch**: several separate links to the same switch, which only protect against a cable failure | info |
+
+Below the findings, the **failure impact** table lists every device and link whose failure cuts monitored devices off
+the core, largest first (including what only takes access points or servers with it), each with a *Simulate* button that
+opens the L2 map with that failure applied.
+
+![Redundancy & failure impact](docs/images/redundancy.png)
+
+![Failure simulation on the L2 map](docs/images/failure-simulation.png)
+
 *(Screenshots use a simulated demo network.)*
 
 ## Requirements
@@ -90,7 +117,8 @@ VLANs that are local to each switch on purpose can be ignored, and every check c
 * The LibreNMS modules that feed the plugin enabled for your devices:
   `discovery-protocols` (links), `ports`, `vlans`, `ports-stack`, `stp`, `ipv4-addresses`
   (`ipv6-addresses`), `ospf`, `bgp-peers`, `fdb-table` (rogue root tracing), `transceivers` and `sensors`
-  (optical levels). The maps and checks work with whatever subset is available.
+  (optical levels), `entity-physical` (stack members and line cards). The maps and checks work with whatever subset
+  is available.
 
 ## Installation
 
@@ -119,7 +147,7 @@ composer config --global repositories.librenms-topology '{"type": "path", "url":
 ```
 
 The plugin is enabled automatically. Open **Overview → Plugins → L2 Topology Map / L3 Topology Map / STP
-Diagnostics / Link & VLAN Diagnostics**, or go to `/plugin/topology`. It can be disabled or configured in
+Diagnostics / Link & VLAN Diagnostics / Redundancy & Failure Impact**, or go to `/plugin/topology`. It can be disabled or configured in
 **Overview → Plugins → Plugin Admin → topology → Settings**.
 
 To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
@@ -133,8 +161,15 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 * Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope).
 * The suggested configuration under a description finding is ready to paste; it names each port after its current
   LLDP/CDP neighbor (`core2 Te1/1/1`).
-* `plugin/topology/api/l2`, `api/l3`, `api/stp` and `api/links` return the same data as JSON (same query parameters
-  as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`) for automation.
+* Before maintenance on a switch, open it on the L2 map and use **Simulate failure**: the box lists what loses its path
+  to the core, computed on the whole network as it is right now (links and devices that are already down stay down),
+  including devices that are not on the map. Add more failures to check a pair, *Reset* to start over.
+  `l2?fail=d:12,p:345` opens the map with device 12 and the link of port 345 failed (`api/simulate?fail=...` returns the
+  same as JSON).
+* If the automatic core is not your core, set **Core devices** in the settings; the switches next to the LibreNMS
+  poller are a good choice when you want "what can the poller still reach".
+* `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links` and `api/redundancy` return the same data as JSON (same
+  query parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`) for automation.
 
 ## Settings
 
@@ -156,6 +191,9 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Optical margin | 2 dB | receive power this close to the alarm threshold is reported (0 disables) |
 | Ignored VLANs | – | e.g. `999 1002-1005`: VLANs local to each switch by design |
 | Disabled checks | – | check codes or categories (`mismatch`, `vlans`, `lags`, `counters`, `optics`, `neighbors`, `descriptions`), e.g. `mtu_mismatch description_missing` |
+| Core devices | – | hostnames/sysNames/ids every device should keep a path to; empty: designated root bridges, else automatic |
+| Warn from | 2 | switches, routers or firewalls cut off by one failure before a single point of failure is a warning |
+| Disabled redundancy checks | – | check codes or categories (`outages`, `lost`, `fake`, `spof`), e.g. `spof_link uplinks_same_device` |
 
 ## Permissions
 
@@ -172,6 +210,9 @@ root bridge on such a device is not reported as a rogue switch.
   the diagnostics.
 * `src/Links/LinkAnalyzer.php` – the link and VLAN checks (both ends of each link, port-channels, VLAN islands per
   L2 domain, descriptions and their configuration lines).
+* `src/Redundancy/RedundancyAnalyzer.php` – single points of failure (cut vertices and bridges toward the core,
+  `Support\Graph::cuts()`), fake and lost redundancy and outages; `CoreFinder` picks the core, `PortUnits` reads stack
+  members and line cards from the hardware inventory.
 * `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
@@ -191,11 +232,18 @@ vendor/bin/phpunit
 * LibreNMS refreshes VLAN memberships at discovery (every 6 hours by default) and counters at every poll, so a
   VLAN change can take until the next discovery to show up. The split VLAN check can only follow links that
   LLDP/CDP reports; a VLAN that crosses a link without LLDP/CDP can be reported as split.
+* The redundancy analysis only knows links that LLDP/CDP reports. LibreNMS removes a link that LLDP/CDP no longer sees
+  at the next discovery, so "redundancy lost" covers failures since the last discovery run; a link that has been down
+  for longer is simply missing (roadmap item 5 keeps a baseline). It looks at device and link failures, not at VLANs:
+  a backup trunk that does not carry a VLAN is a link & VLAN finding.
+* Servers, access points and phones are recognized by their LibreNMS device type, unmanaged neighbors by their LLDP/CDP
+  platform; an unmanaged neighbor without a platform counts as a switch. Down devices without any LLDP/CDP neighbor are
+  not listed as outages: nothing tells what they depend on.
 
 ## Roadmap
 
-Planned tools (redundancy analysis, host locator, topology history, routing diagnostics and more) are listed in
-[ROADMAP.md](ROADMAP.md).
+Planned tools (host locator, topology history, routing diagnostics, automatic device dependencies and more) are
+listed in [ROADMAP.md](ROADMAP.md).
 
 ## License
 

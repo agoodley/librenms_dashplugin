@@ -4,6 +4,8 @@ namespace Agoodley\LibrenmsTopology\Topology;
 
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
+use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
+use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
@@ -21,6 +23,9 @@ class TopologyService
     private const LINK_VLAN_LIMIT = 1000000;
 
     private const L3_ROLES = [DeviceRole::ROUTER, DeviceRole::L3SWITCH, DeviceRole::FIREWALL];
+
+    /** Port columns the redundancy analysis needs (it loads every link port of the network). */
+    private const REDUNDANCY_PORT_COLUMNS = ['port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifOperStatus', 'ifAdminStatus'];
 
     public function __construct(
         private readonly TopologyRepository $repo,
@@ -280,6 +285,70 @@ class TopologyService
         $result['filter'] = $p;
 
         return $result;
+    }
+
+    /**
+     * Redundancy and failure impact. Paths are followed through the whole network the user may
+     * see; the findings are limited to the group / location filter.
+     *
+     * @param  array{device: ?int, group: ?int, location: ?int}  $p
+     */
+    public function redundancy(array $p): array
+    {
+        [$scope, $device] = $this->scope($p);
+        $result = $this->redundancyAnalyzer($scope, true)->analyze($device);
+        $result['filter'] = $p;
+
+        return $result;
+    }
+
+    /**
+     * Failure simulation of the L2 map: what the given devices and links cut off the core, on the
+     * whole network the user may see and as it is now.
+     *
+     * @param  string[]  $refs  see RedundancyAnalyzer::simulate()
+     */
+    public function simulate(array $refs): array
+    {
+        return $this->redundancyAnalyzer($this->repo->deviceIds(), false)->simulate($refs);
+    }
+
+    /**
+     * Redundancy analysis of every device the user may see, reporting on $scope.
+     *
+     * @param  int[]  $scope
+     * @param  bool  $details  also read stack members / line cards and outage start times
+     */
+    private function redundancyAnalyzer(array $scope, bool $details): RedundancyAnalyzer
+    {
+        $all = $this->repo->deviceIds();
+        $links = $this->repo->links($all);
+
+        $linkPorts = [];
+        $perDevice = [];
+        foreach ($links as $link) {
+            $linkPorts[] = (int) $link['local_port_id'];
+            $linkPorts[] = (int) $link['remote_port_id'];
+            $perDevice[(int) $link['local_device_id']][(int) $link['local_port_id']] = true;
+        }
+        $linkPorts = array_values(array_unique(array_filter($linkPorts)));
+        $lag = $this->repo->lagParents($all);
+        $aggregates = array_values(array_unique(array_intersect_key($lag, array_flip($linkPorts))));
+        $ports = $this->repo->ports(array_merge($linkPorts, $aggregates), self::REDUNDANCY_PORT_COLUMNS);
+
+        $devices = $this->repo->devices($all, roles: false);
+        $entityUnits = [];
+        $outageStarts = [];
+        if ($details) {
+            // stack member / line card of the link ports of devices with several links
+            $several = array_filter($perDevice, fn ($ports) => count($ports) >= 2);
+            foreach ($this->repo->portEntities(array_filter($ports, fn ($port) => isset($several[(int) $port['device_id']]))) as $deviceId => $rows) {
+                $entityUnits[$deviceId] = PortUnits::fromEntities($rows);
+            }
+            $outageStarts = $this->repo->outageStarts(array_keys(array_filter($devices, fn ($d) => empty($d['status']))));
+        }
+
+        return new RedundancyAnalyzer($devices, $scope, $links, $ports, $lag, $this->settings, $entityUnits, $outageStarts, $this->repo->stpPriorities($all));
     }
 
     /**

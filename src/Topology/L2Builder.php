@@ -94,7 +94,7 @@ class L2Builder
         }
 
         $groups = [];
-        foreach ($this->uniqueLinks() as $index => $link) {
+        foreach (self::uniqueLinks($this->links, $this->devices, $this->ports) as $index => $link) {
             $aNode = 'd:' . $link['a_device'];
             if ($link['b_device']) {
                 $bNode = 'd:' . $link['b_device'];
@@ -102,7 +102,7 @@ class L2Builder
                 if (! $showUnmanaged) {
                     continue;
                 }
-                $bNode = $this->unmanagedNodeId($link);
+                $bNode = self::unmanagedNodeId($link);
                 $nodes[$bNode] ??= $this->unmanagedNode($bNode, $link);
             }
 
@@ -163,23 +163,29 @@ class L2Builder
     }
 
     /**
-     * Collapse the links table into one entry per physical link:
-     * both neighbours usually report the same link and LLDP + CDP may both be present.
+     * Collapse the links table into one entry per physical link: both neighbours usually report
+     * the same link and LLDP + CDP may both be present. Also used by the redundancy analysis, so
+     * the map and the analysis agree on links and unmanaged neighbours.
+     *
+     * @param  array<int, array>  $links  rows of the links table
+     * @param  array<int, mixed>  $devices  device_id => row; links of other devices are skipped
+     * @param  array<int, array>  $ports  port_id => port row (local port names)
+     * @return array<int, array> normalized links, see rawLink()
      */
-    private function uniqueLinks(): array
+    public static function uniqueLinks(array $links, array $devices, array $ports): array
     {
         $result = [];
         $byPortPair = [];
         $portToDevice = [];
         $partial = [];
 
-        foreach ($this->links as $link) {
+        foreach ($links as $link) {
             $ld = (int) $link['local_device_id'];
             $lp = (int) ($link['local_port_id'] ?? 0);
             $rd = (int) ($link['remote_device_id'] ?? 0);
             $rp = (int) ($link['remote_port_id'] ?? 0);
 
-            if (! isset($this->devices[$ld]) || ($rd && ! isset($this->devices[$rd]))) {
+            if (! isset($devices[$ld]) || ($rd && ! isset($devices[$rd]))) {
                 continue; // local or remote device outside the map scope
             }
 
@@ -189,13 +195,13 @@ class L2Builder
                 }
                 $key = min($lp, $rp) . '-' . max($lp, $rp);
                 if (isset($byPortPair[$key])) {
-                    $this->addProtocol($result[$byPortPair[$key]], $link);
+                    self::addProtocol($result[$byPortPair[$key]], $link);
                     continue;
                 }
                 $byPortPair[$key] = count($result);
                 $portToDevice[$lp][$rd] = $byPortPair[$key];
                 $portToDevice[$rp][$ld] = $byPortPair[$key];
-                $result[] = $this->rawLink($link, $ld, $lp, $rd, $rp);
+                $result[] = self::rawLink($link, $ld, $lp, $rd, $rp);
             } else {
                 $partial[] = $link;
             }
@@ -208,11 +214,11 @@ class L2Builder
             $lp = (int) ($link['local_port_id'] ?? 0);
             $rd = (int) ($link['remote_device_id'] ?? 0);
             $remoteName = InterfaceName::normalize($link['remote_port'] ?? '');
-            $localName = InterfaceName::normalize($lp ? InterfaceName::label($this->ports[$lp] ?? []) : '');
+            $localName = InterfaceName::normalize($lp ? InterfaceName::label($ports[$lp] ?? []) : '');
 
             if ($rd) {
                 if ($lp && isset($portToDevice[$lp][$rd])) {
-                    $this->addProtocol($result[$portToDevice[$lp][$rd]], $link);
+                    self::addProtocol($result[$portToDevice[$lp][$rd]], $link);
                     continue; // the neighbour already reported this link with full detail
                 }
 
@@ -222,7 +228,7 @@ class L2Builder
                         if (! $result[$index]['b_port'] && $lp) {
                             $result[$index]['b_port'] = $lp;
                         }
-                        $this->addProtocol($result[$index], $link);
+                        self::addProtocol($result[$index], $link);
                         continue 2;
                     }
                 }
@@ -233,7 +239,7 @@ class L2Builder
             }
 
             if (isset($partialSeen[$key])) {
-                $this->addProtocol($result[$partialSeen[$key]], $link);
+                self::addProtocol($result[$partialSeen[$key]], $link);
                 continue;
             }
 
@@ -241,7 +247,7 @@ class L2Builder
             if ($rd) {
                 $partialByPair["$ld>$rd"][] = [count($result), $localName, $remoteName];
             }
-            $result[] = $this->rawLink($link, $ld, $lp, $rd, 0);
+            $result[] = self::rawLink($link, $ld, $lp, $rd, 0);
         }
 
         return $result;
@@ -251,7 +257,7 @@ class L2Builder
      * Normalized link: side a is the reporting (local) device, side b the neighbour; b_device is
      * null for unmanaged neighbours.
      */
-    private function rawLink(array $link, int $ld, int $lp, int $rd, int $rp): array
+    private static function rawLink(array $link, int $ld, int $lp, int $rd, int $rp): array
     {
         return [
             'a_device' => $ld,
@@ -270,7 +276,7 @@ class L2Builder
     /**
      * Remember every discovery protocol (lldp, cdp...) that reported the link.
      */
-    private function addProtocol(array &$raw, array $link): void
+    private static function addProtocol(array &$raw, array $link): void
     {
         $protocol = strtolower((string) ($link['protocol'] ?? ''));
         if ($protocol !== '' && ! in_array($protocol, $raw['protocols'], true)) {
@@ -281,7 +287,7 @@ class L2Builder
     /**
      * Same link seen from the other side (a and b exchanged).
      */
-    private static function swap(array $link): array
+    public static function swap(array $link): array
     {
         return array_merge($link, [
             'a_device' => $link['b_device'],
@@ -309,13 +315,13 @@ class L2Builder
 
     /**
      * Node id of an unmanaged neighbour: one node per advertised name, so a device seen by
-     * several switches is drawn once. Missing or factory default names ("Switch") would merge
-     * unrelated devices and get one node per local port instead.
+     * several switches is drawn once. Missing or factory default names ("Switch", also with a
+     * domain: "switch.local") would merge unrelated devices and get one node per local port instead.
      */
-    private function unmanagedNodeId(array $link): string
+    public static function unmanagedNodeId(array $link): string
     {
         $host = strtolower(trim($link['b_host']));
-        if ($host === '' || in_array($host, self::GENERIC_HOSTNAMES, true)) {
+        if ($host === '' || in_array($host, self::GENERIC_HOSTNAMES, true) || in_array(self::shortHost($host), self::GENERIC_HOSTNAMES, true)) {
             return 'u:' . $link['a_device'] . ':' . ($link['a_port'] ?: InterfaceName::normalize($link['b_name']));
         }
 
@@ -666,7 +672,7 @@ class L2Builder
     /**
      * A link is up when every end with known status is up.
      */
-    private static function isUp(?array $a, ?array $b): bool
+    public static function isUp(?array $a, ?array $b): bool
     {
         $states = array_filter([$a['ifOperStatus'] ?? null, $b['ifOperStatus'] ?? null]);
         if (! $states) {

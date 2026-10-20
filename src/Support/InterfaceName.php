@@ -88,6 +88,37 @@ class InterfaceName
     }
 
     /**
+     * Stack member, line card or module of a port taken from its name, for devices whose
+     * inventory (ENTITY-MIB) does not map ports to modules:
+     *  - Juniper xe-1/0/2: FPC 1 (virtual chassis member or line card);
+     *  - three or more numbers (Gi2/0/1, 1/1/1, Ten-GigabitEthernet2/0/1): the first one;
+     *  - two numbers without a type prefix (2/1, 2:1): the first one (ProCurve stacks, VOSS, EXOS);
+     *  - ProCurve 1/A1 (member 1) and A1 (module A).
+     * Two numbers with a type prefix (Gi0/1, Ethernet49/1) are ambiguous and give null.
+     *
+     * @param  string  $os  LibreNMS os of the device
+     * @return array{key: string, label: string}|null
+     */
+    public static function unit(?string $name, string $os = ''): ?array
+    {
+        $name = trim((string) $name);
+        if (preg_match('#^(?:ge|xe|et|mge|fe|xle|fte)-(\d+)/\d+/\d+(?::\d+)?$#i', $name, $match)) {
+            return ['key' => 'fpc' . (int) $match[1], 'label' => 'FPC ' . (int) $match[1]];
+        }
+        if (preg_match('#^(?:[a-z][a-z -]*?)?(\d+)/\d+/\d+(?:/\d+)*(?::\d+)?$#i', $name, $match)
+            || preg_match('#^(\d+)[/:]\d+$#', $name, $match)) {
+            return ['key' => 'unit' . (int) $match[1], 'label' => 'member/slot ' . (int) $match[1]];
+        }
+        if ($os === 'procurve' && preg_match('#^(?:(\d+)/)?([A-Z])\d+$#', $name, $match)) {
+            return $match[1] !== ''
+                ? ['key' => 'unit' . (int) $match[1], 'label' => 'member ' . (int) $match[1]]
+                : ['key' => 'module' . $match[2], 'label' => 'module ' . $match[2]];
+        }
+
+        return null;
+    }
+
+    /**
      * Does the name look like an aggregate (Port-channel, ae, bond, Bundle-Ether, Eth-Trunk...)?
      */
     public static function isLagName(?string $name): bool

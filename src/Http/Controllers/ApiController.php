@@ -10,8 +10,8 @@ use Illuminate\Routing\Controller;
 
 /**
  * JSON API behind the map pages, also usable for automation:
- * GET plugin/topology/api/{l2,l3,stp,links} with the same query parameters as the pages
- * (device, depth, group, location, vlan, vrf and the map toggles).
+ * GET plugin/topology/api/{l2,l3,stp,links,redundancy} with the same query parameters as the pages
+ * (device, depth, group, location, vlan, vrf and the map toggles), and api/simulate?fail=...
  */
 class ApiController extends Controller
 {
@@ -47,6 +47,30 @@ class ApiController extends Controller
     public function links(Request $request): JsonResponse
     {
         return $this->respond($request, 'links');
+    }
+
+    /**
+     * Redundancy and failure impact (core, findings, failure impact table, outages).
+     */
+    public function redundancy(Request $request): JsonResponse
+    {
+        return $this->respond($request, 'redundancy');
+    }
+
+    /**
+     * Failure simulation of the L2 map: GET api/simulate?fail=d:12,p:345 (devices by map node id,
+     * links by one of their ports, see RedundancyAnalyzer::simulate()).
+     */
+    public function simulate(Request $request): JsonResponse
+    {
+        $refs = array_slice(array_values(array_filter(array_map('trim', explode(',', (string) $request->query('fail', ''))),
+            fn ($ref) => $ref !== '' && strlen($ref) <= 300)), 0, 50);
+
+        try {
+            return response()->json($this->service($request)->simulate($refs));
+        } catch (\Throwable $e) {
+            return response()->json(['error' => $this->failure('failure simulation', $e)], 500);
+        }
     }
 
     /**

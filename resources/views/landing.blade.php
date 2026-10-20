@@ -21,5 +21,9 @@
             <h4><i class="fa fa-link fa-fw"></i> Link &amp; VLAN Diagnostics</h4>
             <p>Both ends of every link compared: speed, duplex, MTU, trunk/native/allowed VLANs and port-channels, plus split VLANs, errors, optical levels and port descriptions.</p>
         </a>
+        <a class="topo-card panel panel-default" style="flex: 1 1 260px; padding: 14px;" href="{{ route('topology.redundancy') }}">
+            <h4><i class="fa fa-code-branch fa-fw"></i> Redundancy &amp; Failure Impact</h4>
+            <p>Single points of failure, uplinks that only look redundant (same switch, same stack member), redundancy lost right now, and outages with the devices behind them.</p>
+        </a>
     </div>
 </div>
