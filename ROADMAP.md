@@ -26,12 +26,12 @@ The plugin's conventions apply to all of them:
 | 9 | [More L3 map layers](README.md#layer-3-map-overlays) | **done** | – |
 | 10 | [Loop evidence on the STP page](README.md#spanning-tree-diagnostics) | **done** | – |
 | 12 | [Coverage report](README.md#coverage-report) | **done** | – |
+| 13 | [A→B path trace](README.md#path-trace) | **done** | – |
 | 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
 | 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
 | 4 | [Routing & IP diagnostics](#4-routing--ip-diagnostics) | planned | M |
 | 8 | [Site / WAN view](#8-site--wan-view) | later | M |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
-| 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
 
 Effort: S = new checks or an overlay on data the plugin already loads; M = new queries plus a page or tab;
 L = several new parts (tables, jobs, UI).
@@ -108,13 +108,6 @@ The L3 counterpart of the spanning tree page.
 * **Export to a LibreNMS Custom Map** (`custom_maps`, `custom_map_nodes`, `custom_map_edges`): a native, editable map
   with live utilization that can go on a dashboard through the Custom Map widget. The schema changes between LibreNMS
   versions, so guard it by version.
-
-### 13. A→B path trace
-
-* **L2:** between two hosts located with 2, follow the forwarding ports of the spanning tree (the active tree has a
-  single path) and show every hop's ports, speed, utilization and errors.
-* **L3:** hop-by-hop lookups in the `route` table (the `route` discovery module is off by default and heavy), falling
-  back to connected subnets and OSPF/BGP adjacencies.
 
 ## Ideas for separate plugins
 

@@ -235,8 +235,9 @@
                             <td class="topo-wrap">
                                 @switch($hop['type'])
                                     @case('host')
+                                        @php $ips = array_values(array_filter($hop['ips'] ?? [], fn ($ip) => ! str_contains($hop['name'], $ip))); @endphp
                                         <i class="fa fa-desktop fa-fw"></i> <strong class="topo-mono">{{ $hop['name'] }}</strong>
-                                        @if(! empty($hop['ips']))<br><small class="topo-mono">{{ implode(', ', array_slice($hop['ips'], 0, 3)) }}</small>@endif
+                                        @if($ips)<br><small class="topo-mono">{{ implode(', ', array_slice($ips, 0, 3)) }}</small>@endif
                                         @if(! empty($hop['vendor']))<br><small class="text-muted">{{ $hop['vendor'] }}</small>@endif
                                         @break
                                     @case('device')
@@ -264,8 +265,10 @@
                             </td>
                             <td class="topo-wrap">
                                 @if($hop['type'] === 'device' && $hop['layer'] === 'l3')
-                                    @if($hop['route'])
-                                        <span class="topo-mono">{{ $hop['route']['prefix'] ?? '' }}</span>
+                                    @if($hop['route'] && $hop['route']['prefix'] === null)
+                                        next hop <span class="topo-mono">{{ $hop['route']['next_hop'] }}</span>
+                                    @elseif($hop['route'])
+                                        <span class="topo-mono">{{ $hop['route']['prefix'] }}</span>
                                         @if($hop['route']['next_hop']) via <span class="topo-mono">{{ $hop['route']['next_hop'] }}</span>@endif
                                         @if($hop['route']['protocol'])<small class="text-muted">({{ $hop['route']['protocol'] }})</small>@endif
                                         @if(count($hop['route']['next_hops']) > 1)<br><small>one of {{ count($hop['route']['next_hops']) }} equal cost next hops: <span class="topo-mono">{{ implode(', ', $hop['route']['next_hops']) }}</span></small>@endif

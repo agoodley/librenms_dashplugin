@@ -102,6 +102,7 @@ class PathService
             return $result;
         }
 
+        $this->network['stp_ports'] = array_merge($this->network()['stp_ports'], array_filter([$a['port_id'], $b['port_id']]));
         [$mode, $rows, $complete, $vlan] = $this->path($a, $b, $query['vlan'] ? (int) $query['vlan'] : null);
         $hops = $this->describe($rows);
         $this->check($hops);
@@ -1038,8 +1039,9 @@ class PathService
             'port_vlans' => $portVlans,
             'routed' => $routed,
             'addresses' => $this->topology->addresses($ids, true),
-            'stp_instances' => $this->topology->stpInstances($ids),
             'stp' => [],
+            // ports whose spanning tree state the path can need: the links' and the ends'
+            'stp_ports' => array_merge($linkPorts, $aggregates, $members),
         ];
     }
 
@@ -1083,13 +1085,13 @@ class PathService
         $key = (string) ($vlan ?? 'default');
         $this->network();
         if (! isset($this->network['stp'][$key])) {
-            $instances = $this->network['stp_instances'];
+            $instances = $this->repo->stpInstances(array_keys($this->network['devices']), $vlan);
             $selector = new StpIndex($instances);
             $keys = [];
             foreach ($selector->deviceIds() as $deviceId) {
                 $keys[$deviceId] = $selector->keyFor($deviceId, $vlan);
             }
-            $this->network['stp'][$key] = new StpIndex($instances, $this->topology->stpPorts(array_keys($keys), $keys), $this->network['lag']);
+            $this->network['stp'][$key] = new StpIndex($instances, $this->repo->stpPorts($keys, $this->network['stp_ports']), $this->network['lag']);
         }
 
         return $this->network['stp'][$key];

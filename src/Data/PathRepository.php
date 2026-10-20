@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsTopology\Data;
 
 use Agoodley\LibrenmsTopology\Hosts\HostQuery;
 use Agoodley\LibrenmsTopology\Path\L2Tracer;
+use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\Cidr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -48,6 +49,93 @@ class PathRepository extends ScopedRepository
         }
 
         return $links;
+    }
+
+    /**
+     * The spanning tree instance of each device that carries the VLAN (StpIndex::keyFor() on every instance), read
+     * without loading every VLAN's row of a PVST network: the rows of that VLAN and of the default instance, the default
+     * instance only for bridges that run a single one.
+     *
+     * @param  int[]  $ids
+     * @return array<int, array> rows of the stp table
+     */
+    public function stpInstances(array $ids, ?int $vlan): array
+    {
+        $ids = $this->visible($ids);
+        if (! $ids) {
+            return [];
+        }
+
+        $key = StpIndex::vlanKey($vlan);
+        $rows = [];
+        $instances = [];
+        try {
+            foreach (array_chunk($ids, 5000) as $chunk) {
+                foreach (DB::table('stp')->whereIntegerInRaw('device_id', $chunk)->groupBy('device_id')->selectRaw('device_id, COUNT(*) as c')->get() as $row) {
+                    $instances[(int) $row->device_id] = (int) $row->c;
+                }
+                foreach (DB::table('stp')->whereIntegerInRaw('device_id', $chunk)
+                    ->where(fn ($query) => $query->whereNull('vlan')->orWhereIn('vlan', array_values(array_unique([0, 1, max(1, $key)]))))->get() as $row) {
+                    $rows[] = (array) $row;
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot read stp: ' . $e->getMessage());
+
+            return [];
+        }
+
+        // a PVST bridge without an instance for the VLAN does not run spanning tree in it: not its VLAN 1 instance
+        $hasKey = [];
+        foreach ($rows as $row) {
+            if (StpIndex::vlanKey($row['vlan']) === $key) {
+                $hasKey[(int) $row['device_id']] = true;
+            }
+        }
+
+        return array_values(array_filter($rows, fn ($row) => StpIndex::vlanKey($row['vlan']) === $key
+            || (! isset($hasKey[(int) $row['device_id']]) && ($instances[(int) $row['device_id']] ?? 0) <= 1)));
+    }
+
+    /**
+     * Rows of ports_stp for the given ports, in the instance of each device (key: StpIndex::vlanKey()).
+     *
+     * @param  array<int, int|null>  $keys  device_id => instance key
+     * @param  int[]  $portIds
+     * @return array<int, array>
+     */
+    public function stpPorts(array $keys, array $portIds): array
+    {
+        $byKey = [];
+        foreach ($keys as $deviceId => $key) {
+            if ($key !== null && $this->canSee((int) $deviceId)) {
+                $byKey[$key][] = (int) $deviceId;
+            }
+        }
+        $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
+        if (! $byKey || ! $portIds) {
+            return [];
+        }
+
+        $rows = [];
+        try {
+            foreach ($byKey as $key => $deviceIds) {
+                foreach (array_chunk($portIds, 5000) as $chunk) {
+                    $query = DB::table('ports_stp')->whereIntegerInRaw('device_id', $deviceIds)->whereIntegerInRaw('port_id', $chunk);
+                    // LibreNMS stores the default instance (and Cisco PVST VLAN 1) with vlan NULL
+                    $key === 0 ? $query->where(fn ($q) => $q->whereNull('vlan')->orWhereIn('vlan', [0, 1])) : $query->where('vlan', $key);
+                    foreach ($query->get() as $row) {
+                        $rows[] = (array) $row;
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot read ports_stp: ' . $e->getMessage());
+
+            return [];
+        }
+
+        return $rows;
     }
 
     /**

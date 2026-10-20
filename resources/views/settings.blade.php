@@ -52,6 +52,10 @@
             ['hosts_shared_port_macs', 'number', 'Flag an access port without LLDP/CDP neighbor from this many MACs', 'an unmanaged switch, hub or virtualization host is probably connected to it'],
             ['hosts_dns', 'bool', 'Look up hostnames that are not LibreNMS devices in DNS', 'with the server\'s resolver (getent), 2 seconds per name and 4 per search, cached for 5 minutes, 20 lookups per user and minute'],
         ],
+        'Path trace' => [
+            ['path_util_percent', 'number', 'Report a port on a traced path from this utilization (%)', 'in or out; critical from 95 %'],
+            ['path_route_rows', 'number', 'Route table limit', 'read LibreNMS\' route table (two full reads per trace) only while it holds fewer routes than this; larger, routers are estimated from their neighbors (0: no limit)'],
+        ],
         'Monitoring coverage' => [
             ['coverage_mac_threshold', 'number', 'Report access ports without LLDP/CDP neighbor from this many MAC addresses', 'in the last discovery: a likely unmanaged switch or hub (a phone on the port does not count as a neighbor); 0 disables the count'],
             ['coverage_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (unmonitored, devices, ports), e.g. not_linked hub_suspected'],

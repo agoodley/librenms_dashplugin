@@ -15,7 +15,8 @@ use Agoodley\LibrenmsTopology\Stp\StpIndex;
  * rtr1 hangs off dist1 Te1/0/48 by a routed /31. Hosts: acc1 Gi1/0/5 and acc2 Gi1/0/6 in VLAN 110.
  *
  * Layer 3: dist1 Vlan110 10.90.110.2/24, dist2 Vlan110 10.90.110.3/24, the /31s dist1-rtr1 10.90.0.0/31 and
- * dist2-rtr1 10.90.0.2/31, rtr1-rtr3 10.90.0.4/31, rtr3-rtr2 10.90.0.6/31, rtr2 Gi0/0/1.130 10.90.130.1/24.
+ * dist2-rtr1 10.90.0.2/31, rtr1-rtr3 10.90.0.4/31, rtr3-rtr2 10.90.0.6/31, rtr2 Gi0/0/1.130 10.90.130.1/24 on the trunk to acc3
+ * (host port Gi1/0/3), and "remote" (198.51.100.10) behind rtr1's default route to the internet (203.0.113.1).
  */
 class PathFixture
 {
@@ -32,6 +33,10 @@ class PathFixture
     public const RTR2 = 6;
 
     public const RTR3 = 7;
+
+    public const ACC3 = 8;
+
+    public const REMOTE = 9;
 
     public const NOW = 1_800_000_000;
 
@@ -120,6 +125,12 @@ class PathFixture
             ->route(self::RTR1, '10.90.110.0', 24, '10.90.0.3', 502, 'ospf', 20)->route(self::RTR1, '10.90.110.0', 24, '10.90.0.1', 501, 'ospf', 20)
             ->route(self::RTR1, '0.0.0.0', 0, '203.0.113.1', 504, 'static')
             ->route(self::RTR2, '0.0.0.0', 0, '10.90.0.6', 601, 'static')->route(self::RTR2, '10.90.130.0', 24, '0.0.0.0', 6130, 'local', 0, null, 3);
+        // acc3 on rtr2's trunk Gi0/0/1 (VLAN 130 on its sub-interface), and a router behind the internet
+        $net->device(self::ACC3, 'acc3', 'switch')->device(self::REMOTE, 'remote', 'router');
+        $net->port(610, PathFixture::RTR2, 'Gi0/0/1', 1)->port(801, self::ACC3, 'Gi1/0/49', 1)->port(803, self::ACC3, 'Gi1/0/3', 1, 'ethernetCsmacd', '130');
+        $net->link(610, 801);
+        $net->portVlans += [610 => [1 => true, 130 => false], 801 => [1 => true, 130 => false], 803 => [130 => true]];
+        $net->address(self::REMOTE, 901, 'Gi0/0/0', '198.51.100.1', 30)->address(self::REMOTE, 999, 'Lo0', '198.51.100.10', 32);
         $net->adjacencies[] = ['device_id' => self::RTR3, 'port_id' => 702, 'local_ip' => null, 'neighbor_ip' => '10.90.0.7', 'kind' => 'ospf', 'vrf' => ''];
         $net->adjacencies[] = ['device_id' => self::RTR3, 'port_id' => 701, 'local_ip' => null, 'neighbor_ip' => '10.90.0.4', 'kind' => 'ospf', 'vrf' => ''];
 
