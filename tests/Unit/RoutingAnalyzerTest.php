@@ -1160,10 +1160,17 @@ class RoutingAnalyzerTest extends TestCase
         // switches have their management addresses in their one global table: a subnet in VRFs of different names is
         // evidence of a boundary only between devices that both have VRFs of their own, so the access trunks join
         // every table and two access switches with one management address is a warning; a VRF only defined on the
-        // access switches does not count, one with addresses does
+        // access switches does not count, nor does out-of-band management, a VRF with other addresses does
+        $outOfBand = fn (string $port, string $vrf) => function (RoutingFixture $n) use ($port, $vrf) {
+            $n->address(43, $port, '192.168.250.21/24', $vrf);
+            $n->address(44, $port, '192.168.250.22/24', $vrf);
+        };
         $variants = [
             'access switches with the global table only' => [null, 'warning'],
             'a management VRF only defined on them' => [fn (RoutingFixture $n) => $n->vrfs[43]['Mgmt-vrf'] = $n->vrfs[44]['Mgmt-vrf'] = null, 'warning'],
+            'an out-of-band port in Mgmt-intf' => [$outOfBand('Gi0/0', 'Mgmt-intf'), 'warning'],
+            'another port in Mgmt-vrf' => [$outOfBand('Gi1/0/48', 'Mgmt-vrf'), 'warning'],
+            'Management1 in a VRF of the operator' => [$outOfBand('Management1', 'OOB'), 'warning'],
             'a VRF of their own with addresses' => [function (RoutingFixture $n) {
                 $n->address(43, 'Vlan50', '10.50.0.11/24', 'VOICE');
                 $n->address(44, 'Vlan50', '10.50.0.12/24', 'VOICE');
@@ -1188,6 +1195,60 @@ class RoutingAnalyzerTest extends TestCase
             }
 
             $this->assertSame($severity, self::find($net->analyzer()->analyze(), 'ip_duplicate', '10.99.0.11')['severity'] ?? null, $how);
+        }
+    }
+
+    public function testOutOfBandManagementIsNoBoundaryEvidence(): void
+    {
+        // two core switches of different vendors on a LAG (LLDP on the members) agree on the global table (the /30
+        // transfer net) and DMZ; their out-of-band management shares a subnet that never crosses the trunk (vendor
+        // management VRFs, dedicated management ports), so it is no evidence of a boundary and the firewalls behind
+        // each core reusing an address in DMZ2 is a warning; ordinary ports in VRFs of the operator still count
+        $variants = [
+            'Gi0 in Mgmt-intf, mgmt0 in management' => [['Gi0', 'Mgmt-intf', ''], ['mgmt0', 'management', ''], 'warning'],
+            'Management1 in VRFs of the operator' => [['Management1', 'MGMT', ''], ['Management1', 'OOB', ''], 'warning'],
+            'fxp0 of Junos in the global table' => [['fxp0', '', 'junos'], ['Eth1/48', 'OOB', ''], 'warning'],
+            'em0 of Junos in the global table' => [['em0.0', '', 'junos'], ['Eth1/48', 'OOB', ''], 'warning'],
+            'another port in a management VRF' => [['Te1/1/9', 'Mgmt-vrf', ''], ['Eth1/48', 'OOB', ''], 'warning'],
+            'the same on the other core' => [['Eth1/48', 'OOB', ''], ['Te1/1/9', 'Mgmt-vrf', ''], 'warning'],
+            'em0 of another system' => [['em0', '', 'pfsense'], ['Eth1/48', 'OOB', ''], 'info'],
+            'Gi0/0 in a VRF of the operator' => [['Gi0/0', 'MGMT', ''], ['Eth1/48', 'OOB', ''], 'info'],
+        ];
+        foreach ($variants as $how => [[$portA, $vrfA, $osA], [$portB, $vrfB, $osB], $severity]) {
+            $net = new RoutingFixture;
+            $net->router(61, 'core-a', 65000, ['os' => $osA])->router(62, 'core-b', 65000, ['os' => $osB])->router(63, 'fw-a')->router(64, 'fw-b');
+            $net->address(61, 'Port-channel1', '10.0.12.1/30');
+            $net->address(62, 'port-channel1', '10.0.12.2/30');
+            $net->address(61, 'Vlan50', '10.50.0.2/24', 'DMZ');
+            $net->address(62, 'Vlan50', '10.50.0.3/24', 'DMZ');
+            $net->address(61, $portA, '10.10.10.1/24', $vrfA);
+            $net->address(62, $portB, '10.10.10.2/24', $vrfB);
+            $net->link(61, 961, 62, 962, 'Te1/0/1', 'Eth1/1');
+            $net->link(63, $net->address(63, 'eth0', '10.60.0.10/24', 'DMZ2'), 61, 963, null, 'Gi1/0/5');
+            $net->link(64, $net->address(64, 'eth0', '10.61.0.10/24', 'DMZ2'), 62, 964, null, 'Eth1/5');
+            $net->address(63, 'eth1', '10.62.0.9/24', 'DMZ2');
+            $net->address(64, 'eth1', '10.62.0.9/24', 'DMZ2');
+
+            $this->assertSame($severity, self::find($net->analyzer()->analyze(), 'ip_duplicate', '10.62.0.9')['severity'] ?? null, $how);
+        }
+    }
+
+    public function testOutOfBandPortInTheSubnetOfALinkedRouter(): void
+    {
+        // a site router is the gateway of the out-of-band VLAN on an access port of sw1, whose own out-of-band port is
+        // in that subnet: Gi0/0 says nothing about the access port in Mgmt-vrf, only an ordinary port in another VRF
+        // does, so the router reaches a server behind sw1 in the global table and their reusing an address is a warning
+        foreach (['Mgmt-vrf' => 'warning', 'OOB' => 'info'] as $vrf => $severity) {
+            $net = new RoutingFixture;
+            $net->router(81, 'site-rtr')->router(82, 'sw1', null)->router(83, 'srv1', null);
+            $net->address(82, 'Vlan1', '10.10.10.11/24');
+            $net->address(82, 'Gi0/0', '192.168.250.21/24', $vrf);
+            $net->link(81, $net->address(81, 'Gi0/1', '192.168.250.1/24'), 82, 981, null, 'Gi1/0/1');
+            $net->link(83, $net->address(83, 'eth0', '10.10.10.50/24'), 82, 982, null, 'Gi1/0/2');
+            $net->address(81, 'Gi0/2', '172.20.0.1/24');
+            $net->address(83, 'eth1', '172.20.0.1/24');
+
+            $this->assertSame($severity, self::find($net->analyzer()->analyze(), 'ip_duplicate', '172.20.0.1')['severity'] ?? null, $vrf);
         }
     }
 
