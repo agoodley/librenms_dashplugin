@@ -31,22 +31,28 @@ shown only when the devices drawn have such data:
 |---|---|---|
 | OSPFv3 adjacencies | `ospfv3` (on by default) | neighbors are found by router ID within their context (VRF): their address is usually link-local |
 | IS-IS adjacencies | `isis` discovery and poller modules (off by default) | by the neighbor's address (never a link-local one), else its system ID: as learnt from the other adjacencies, or a loopback it encodes (`0100.0000.0001` = 10.0.0.1) |
-| IPsec tunnels | `cipsec-tunnels` poller module: Cisco (off by default) and Firebrick (on for that OS) | to the device owning the peer address |
+| IPsec tunnels | `cipsec-tunnels` poller module: off by default, on in the OS definitions of Cisco IOS, IOS XE, IOS XR, NX-OS, ASA and most other Cisco OSes, and of Firebrick | to the device owning the peer address |
 | MPLS LSPs | `mpls` (Nokia SR OS) | **toggle off by default**; arrow toward the tail, red when an LSP that is in service is down. Past 500 pairs of devices (an RSVP full mesh) the pairs with LSPs down and then the busiest are drawn, and the status line says so |
-| Pseudowires | `cisco-pw` discovery module (off by default) | orange with both MTUs when the attachment circuits disagree (see below) |
+| Pseudowires | `cisco-pw` discovery module: off by default, on in the OS definitions of Cisco IOS, IOS XE, IOS XR and NX-OS | orange with both MTUs when the attachment circuits disagree (see below) |
 
 Both ends of an adjacency, tunnel, LSP or pseudowire are merged into one link per pair of devices, and its details
 list them all (LSP states and paths, tunnel names, pseudowire VC IDs, ports and MTUs). A far end that is a device you
 may see but that is not on the map (beyond the hops, in another location or group, not an L3 device) is drawn faded,
-with its name: double-click it to center the map on it. OSPF and BGP do the same. An unmonitored peer is one external
+with its name: double-click it to center the map on it. OSPF and BGP do the same. Such a device beyond the hops adds
+its own side of the adjacency, session or tunnel; one in another location or group has no data on the map, so its
+edge says the state is seen from the drawn side only. At most 100 of these devices are drawn, within the map's device
+limit; the others appear as their address or AS, and the status line says so. An unmonitored peer is one external
 node per address, whatever saw it (a router can be OSPF neighbor, LSP tail and IPsec peer at once); BGP peers that no
-device owns still go to the cloud of their AS.
+device owns still go to the cloud of their AS. Addresses are looked up in the global table first, so a customer VRF
+that reuses a loopback range does not hide the router.
 
 LibreNMS keeps no pseudowire state and loses most peers: it never sets `peer_device_id`, and `peer_ldp_id` is a signed
-INT that holds 2147483647 for every LDP ID from 128.0.0.0 on. Such a pseudowire is paired with the one other device that
-has its VC ID; one that cannot be paired goes to an "unknown peers" node of its PE. The MTU check compares the interface
-MTUs of the two attachment circuits, which must match for a pseudowire to come up (RFC 4447); one Ethernet header more
-or less between two operating systems (IOS XR counts it: 1514, IOS XE does not: 1500) is not flagged.
+INT that holds 2147483647 for every LDP ID from 128.0.0.0 on. When both ends lost it, a pseudowire is paired with the
+one other device that has its VC ID, unless a device you may not see has that VC ID too, and its details say "paired
+by VC ID (LDP id not stored)": PEs whose real peers are unmonitored and reuse the VC ID can still be paired wrongly.
+One that cannot be paired goes to an "unknown peers" node of its PE. The MTU check compares the MTUs the two attachment
+circuits signal, which must match for a pseudowire to come up (RFC 4447): the interface MTU, less the Ethernet header on
+IOS XR, which counts it (and the VLAN tag of a subinterface): XR 1514, or 1518 on a dot1q subinterface, is IOS XE 1500.
 
 ![L3 map overlays](docs/images/l3-layers.png)
 
@@ -267,9 +273,10 @@ vendor/bin/phpunit
 * Saved layouts live in the browser's local storage, they are not shared between users.
 * L3 overlays: a far end found on several devices (a duplicated address or router ID) is not guessed: it is an
   external node, like an unknown peer or one on a device you may not see, which shows only the address. Pseudowires
-  whose peers LibreNMS lost on several PEs with the same VC ID stay unpaired, and their state is unknown. Far ends
-  that are not on the map are looked up in `ipv4_addresses` / `ipv6_addresses`, which have no index on the address:
-  one table scan per map load for up to 5,000 addresses.
+  whose peers LibreNMS lost on several PEs with the same VC ID stay unpaired, and their state is unknown; the MTU check
+  assumes one VLAN tag on an IOS XR subinterface (a QinQ one is flagged). Far ends that are not on the map are looked
+  up in `ipv4_addresses` / `ipv6_addresses`, which have no index on the address: one table scan per map load for up to
+  5,000 addresses.
 * LibreNMS refreshes VLAN memberships at discovery (every 6 hours by default) and counters at every poll, so a
   VLAN change can take until the next discovery to show up. The split VLAN check can only follow links that
   LLDP/CDP reports; a VLAN that crosses a link without LLDP/CDP can be reported as split.

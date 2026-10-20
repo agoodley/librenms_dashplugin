@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
 use Agoodley\LibrenmsTopology\Support\Cidr;
 use Agoodley\LibrenmsTopology\Topology\L3Builder;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -117,9 +118,9 @@ class L3LayersTest extends TestCase
      * A pseudowire row as LibreNMS stores it: peer_device_id 0 and peer_ldp_id capped at 2147483647 from 128.0.0.0 on,
      * pw_local_mtu / pw_peer_mtu never filled; ifMtu is the attachment circuit's (joined from ports).
      */
-    private static function pw(int $device, int $vc, int $ifMtu, string|int $peer = 2147483647): array
+    private static function pw(int $device, int $vc, int $ifMtu, string|int $peer = 2147483647, ?string $port = null): array
     {
-        return ['device_id' => $device, 'port_id' => $device * 100 + $vc % 100, 'ifName' => 'GigabitEthernet0/0/0/9.' . $vc, 'ifMtu' => $ifMtu,
+        return ['device_id' => $device, 'port_id' => $device * 100 + $vc % 100, 'ifName' => $port ?? 'GigabitEthernet0/0/0/9.' . $vc, 'ifMtu' => $ifMtu,
             'peer_device_id' => 0, 'peer_ldp_id' => is_string($peer) ? ip2long($peer) : $peer, 'cpwVcID' => $vc, 'pw_type' => 'ethernet',
             'pw_psntype' => 'mpls', 'pw_local_mtu' => 0, 'pw_peer_mtu' => 0, 'pw_descr' => "customer $vc"];
     }
@@ -335,34 +336,69 @@ class L3LayersTest extends TestCase
         $unknown = self::nodes($result)['xu:pw:1'];
         $this->assertSame(['external', 'Unknown pseudowire peers of pe1'], [$unknown['type'], $unknown['name']]);
         $this->assertNotContains('x:127.255.255.255', array_keys(self::nodes($result)));
+
+        // only VC 100 and 200 are inferred from the VC ID; pe1's usable LDP ID confirms VC 400
+        $this->assertSame([100 => true, 200 => true, 400 => false], array_column($edges['d:1-d:5']['vcs'], 'inferred', 'vc'));
     }
 
-    public function testPseudowireAttachmentCircuitMtusAreCompared(): void
+    public function testVcIdsOnDevicesTheUserMayNotSeeStopThePairing(): void
+    {
+        $layers = ['pw' => [self::pw(1, 100, 1500), self::pw(5, 100, 1500)]];
+
+        // a third device the user may not see has VC 100: pe1 and pe3 may each be paired with it
+        $result = self::build($layers, ['vcDevices' => [100 => 3]]);
+        $this->assertSame(['d:1-xu:pw:1', 'd:5-xu:pw:5'], array_keys(self::pairs($result, 'pw')));
+        $this->assertFalse(self::pairs($result, 'pw')['d:1-xu:pw:1']['vcs'][0]['inferred']);
+
+        $this->assertSame(['d:1-d:5'], array_keys(self::pairs(self::build($layers, ['vcDevices' => [100 => 2]]), 'pw')));
+    }
+
+    /**
+     * @return array<string, array{string, int, string, int, string, bool}> OS and ifMtu of each end, interface, mismatch
+     */
+    public static function attachmentCircuits(): array
+    {
+        $port = 'GigabitEthernet0/0/0/9';
+        $sub = 'GigabitEthernet0/0/0/9.100';
+
+        return [
+            'XR 1514 / XE 1500: the header IOS XR counts' => ['iosxr', 1514, 'iosxe', 1500, $port, false],
+            'XR 1500 / XE 1500' => ['iosxr', 1500, 'iosxe', 1500, $port, true],
+            'XR 1514 / XE 1514' => ['iosxr', 1514, 'iosxe', 1514, $port, true],
+            'XR 1500 / XE 1514' => ['iosxr', 1500, 'iosxe', 1514, $port, true],
+            'XR 9014 / XE 9000' => ['iosxr', 9014, 'iosxe', 9000, $port, false],
+            'XR 1518 / XE 1500 on dot1q subinterfaces: the header and tag' => ['iosxr', 1518, 'iosxe', 1500, $sub, false],
+            'XR 1514 / XE 1500 on dot1q subinterfaces' => ['iosxr', 1514, 'iosxe', 1500, $sub, true],
+            'XE 1500 / XE 1500' => ['iosxe', 1500, 'iosxe', 1500, $sub, false],
+            'XE 1500 / XE 9000' => ['iosxe', 1500, 'iosxe', 9000, $port, true],
+            'XR 1514 / XR 1514' => ['iosxr', 1514, 'iosxr', 1514, $sub, false],
+            'IOS 1500 / NX-OS 1500' => ['ios', 1500, 'nxos', 1500, $port, false],
+            'unknown MTU' => ['iosxr', 0, 'iosxe', 1500, $port, false],
+        ];
+    }
+
+    #[DataProvider('attachmentCircuits')]
+    public function testPseudowireAttachmentCircuitMtusAreCompared(string $osA, int $mtuA, string $osB, int $mtuB, string $port, bool $mismatch): void
     {
         $devices = self::devices();
-        $devices[5]['os'] = 'iosxe';
-        $layers = ['pw' => [
-            // VC 100 agrees; VC 200: 9000 against 1500; VC 300: 1514 on IOS XR is 1500 on IOS XE (header counted)
-            self::pw(1, 100, 1500), self::pw(5, 100, 1500),
-            self::pw(1, 200, 9000), self::pw(5, 200, 1500),
-            self::pw(1, 300, 1514), self::pw(5, 300, 1500),
-            // a VC to an unmonitored PE: one end only; an AC whose MTU is unknown
-            self::pw(2, 500, 1500, '10.66.0.1'),
-            self::pw(2, 501, 0, '10.66.0.1'),
-        ]];
-        $result = (new L3Builder($devices, self::addresses(), [], [], $layers))->build();
+        $devices[1]['os'] = $osA;
+        $devices[5]['os'] = $osB;
+        $layers = ['pw' => [self::pw(1, 100, $mtuA, '10.255.0.5', $port), self::pw(5, 100, $mtuB, '10.255.0.1', $port)]];
+        $edge = self::edges((new L3Builder($devices, self::addresses(), [], [], $layers))->build(), 'pw')[0];
 
-        $edges = self::pairs($result, 'pw');
-        $this->assertSame(['d:1-d:5', 'd:2-x:10.66.0.1'], array_keys($edges));
-        $pe1pe3 = $edges['d:1-d:5'];
-        $this->assertSame(['MTU mismatch', 'warning', 1], [$pe1pe3['state'], $pe1pe3['status'], $pe1pe3['mtu_mismatch']]);
-        $this->assertSame([[1500, 1500, false], [9000, 1500, true], [1514, 1500, false]],
-            array_map(fn ($vc) => [$vc['mtu_a'], $vc['mtu_b'], $vc['mismatch']], $pe1pe3['vcs']));
+        $this->assertSame([$mtuA ?: null, $mtuB ?: null, $mismatch], [$edge['vcs'][0]['mtu_a'], $edge['vcs'][0]['mtu_b'], $edge['vcs'][0]['mismatch']]);
+        $this->assertSame($mismatch ? ['MTU mismatch', 'warning', 1] : ['not polled', 'unknown', 0], [$edge['state'], $edge['status'], $edge['mtu_mismatch']],
+            'LibreNMS keeps no pseudowire state');
+    }
 
-        $far = $edges['d:2-x:10.66.0.1'];
-        $this->assertSame(['not polled', 'unknown'], [$far['state'], $far['status']], 'LibreNMS keeps no pseudowire state');
+    public function testPseudowireToAnUnmonitoredPeHasOneEnd(): void
+    {
+        $result = self::build(['pw' => [self::pw(2, 500, 1500, '10.66.0.1'), self::pw(2, 501, 0, '10.66.0.1')]]);
+
+        $far = self::pairs($result, 'pw')['d:2-x:10.66.0.1'];
+        $this->assertSame(['not polled', 'unknown'], [$far['state'], $far['status']]);
         $this->assertSame([[1500, null, false], [null, null, false]], array_map(fn ($vc) => [$vc['mtu_a'], $vc['mtu_b'], $vc['mismatch']], $far['vcs']));
-        $this->assertSame(['pw' => 5, 'mtu' => 1], array_intersect_key($result['stats'], ['pw' => 0, 'mtu' => 0]));
+        $this->assertSame(1482, $far['vcs'][0]['payload_a'], 'IOS XR: 1500 less the header and the tag of the subinterface');
     }
 
     public function testPseudowireEndOutsideTheMapComesFromItsOwnRow(): void
@@ -431,9 +467,75 @@ class L3LayersTest extends TestCase
         $this->assertArrayNotHasKey('outside', $nodes['d:3']);
         $this->assertSame([2, 2], [$result['stats']['devices'], $result['stats']['outside']]);
 
-        // rows of a device off the map are not drawn; a layer can be switched off
-        $this->assertSame([], self::edges(self::build(['isis' => [self::isis(1, '', '10.0.13.2')]], [], ['root' => 2, 'depth' => 1]), 'isis'));
+        // edges to pe8, in another location, only have p1's side; a layer can be switched off
+        $this->assertTrue(self::pairs($result, 'mpls')['d:3-d:8']['arrows'] === 'to');
+        $this->assertTrue(self::pairs($result, 'bgp')['d:3-d:8']['oneSide']);
+        $this->assertArrayNotHasKey('oneSide', self::pairs($result, 'bgp')['d:3-d:1'], 'pe1 is beyond the hops: its rows are here');
         $this->assertSame([], self::edges(self::build(['ipsec' => [self::tunnel(4, '203.0.113.1', 'active')]], [], ['ipsec' => false]), 'ipsec'));
+    }
+
+    public function testRowsOfDevicesBeyondTheHopsGiveTheStubsSide(): void
+    {
+        // p1 sees pe2 full, pe2 sees p1 in exchangeStart: centered on p1 without hops, the edge to pe2's stub is down too
+        $ospf = [
+            ['device_id' => 3, 'ospfNbrIpAddr' => '10.0.23.1', 'ospfNbrRtrId' => '10.255.0.2', 'ospfNbrState' => 'full', 'context_name' => ''],
+            ['device_id' => 2, 'ospfNbrIpAddr' => '10.0.23.2', 'ospfNbrRtrId' => '10.255.0.3', 'ospfNbrState' => 'exchangeStart', 'context_name' => ''],
+            // pe2 - pe1: both beyond the hops, not drawn
+            ['device_id' => 2, 'ospfNbrIpAddr' => '10.0.13.1', 'ospfNbrRtrId' => '10.255.0.1', 'ospfNbrState' => 'full', 'context_name' => ''],
+        ];
+        $layers = [
+            'isis' => [self::isis(2, '', '10.0.23.2', 'initializing')],
+            'ipsec' => [self::tunnel(2, '10.255.0.3', 'destroy')],
+        ];
+        $bgp = [['device_id' => 2, 'bgpPeerIdentifier' => '10.255.0.3', 'bgpPeerRemoteAs' => 65000, 'bgpPeerState' => 'active', 'context_name' => '']];
+
+        foreach ([[], ['root' => 3, 'depth' => 0]] as $options) {
+            $result = self::build($layers, [], $options, $ospf, $bgp);
+            foreach (['ospf' => 'exchangestart', 'isis' => 'initializing', 'ipsec' => 'destroy', 'bgp' => 'active'] as $kind => $state) {
+                $edge = self::pairs($result, $kind)['d:3-d:2'] ?? self::pairs($result, $kind)['d:2-d:3'] ?? null;
+                $this->assertSame([$state, 'down'], [$edge['state'] ?? null, $edge['status'] ?? null], $kind . ' ' . json_encode($options));
+            }
+        }
+        $this->assertTrue(self::nodes($result)['d:2']['outside']);
+        $this->assertSame(['d:3-d:2'], array_keys(self::pairs($result, 'ospf')));
+    }
+
+    public function testStubsAreCapped(): void
+    {
+        // a route reflector with 150 clients outside the map
+        $bgp = [];
+        $known = ['addresses' => [], 'devices' => []];
+        for ($i = 1; $i <= 150; $i++) {
+            $bgp[] = ['device_id' => 3, 'bgpPeerIdentifier' => "172.20.0.$i", 'bgpPeerRemoteAs' => 65000, 'bgpPeerState' => 'established', 'context_name' => ''];
+            $known['addresses']["172.20.0.$i"] = 100 + $i;
+            $known['devices'][100 + $i] = self::other(100 + $i, "client$i");
+        }
+        $devices = [3 => self::devices()[3] + ['bgpLocalAs' => 65000]];
+
+        $result = (new L3Builder($devices, self::addresses(), [], $bgp, [], $known))->build();
+        $this->assertSame(['shown' => L3Builder::MAX_STUBS, 'total' => 150], $result['limits']['outside']);
+        $this->assertSame(L3Builder::MAX_STUBS, $result['stats']['outside']);
+        $this->assertCount(50, self::nodes($result)['as:65000']['peers'], 'the others are in the cloud of their AS');
+
+        // maxNodes counts the stubs too
+        $result = (new L3Builder($devices, self::addresses(), [], $bgp, [], $known))->build(['maxNodes' => 4]);
+        $this->assertSame(['shown' => 3, 'total' => 150], $result['limits']['outside']);
+    }
+
+    public function testAnAddressInACustomerVrfHidesNoGlobalOwner(): void
+    {
+        // pe1's LSP to pe2's loopback, while pe3 has 10.255.0.2/24 in VRF CUST
+        $addresses = array_merge(self::addresses(), [['vrf' => 'CUST'] + self::address(5, 59, 'cust-lan', '10.255.0.2', 24)]);
+        $result = (new L3Builder(self::devices(), $addresses, [], [], ['mpls' => [self::lsp(1, 'pe1-pe2', '10.255.0.2')]]))->build();
+        $this->assertSame(['d:1-d:2'], array_keys(self::pairs($result, 'mpls')));
+
+        // fw2's tunnel peer 192.0.2.10 is in VRF CUST on pe3 here, and in the global table of a device outside the map
+        $addresses[] = ['vrf' => 'CUST'] + self::address(5, 58, 'cust-wan', '192.0.2.10', 29);
+        $builder = new L3Builder(self::devices(), $addresses, [], [], ['ipsec' => [self::tunnel(6, '192.0.2.10', 'active')]]);
+        $this->assertContains('192.0.2.10', $builder->lookups()['addresses']);
+        $result = $builder->withKnown(['addresses' => ['192.0.2.10' => 9], 'devices' => [9 => self::other(9, 'fw-branch', 'firewall')]])->build();
+        $this->assertSame(['d:6-d:9'], array_keys(self::pairs($result, 'ipsec')));
+        $this->assertSame(['d:6-d:5'], array_keys(self::pairs($builder->build(), 'ipsec')), 'without another owner: the VRF one');
     }
 
     public function testLookupsCollectFarEndsNotOnTheMap(): void

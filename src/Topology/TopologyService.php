@@ -151,6 +151,7 @@ class TopologyService
             'bgp' => $p['bgp'],
             'root' => $root,
             'depth' => $root ? $p['depth'] : null,
+            'maxNodes' => $this->maxNodes(),
         ] + array_fill_keys(L3Builder::LAYERS, true));
 
         $drawn = [];

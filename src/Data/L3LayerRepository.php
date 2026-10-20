@@ -124,14 +124,15 @@ class L3LayerRepository extends ScopedRepository
 
     /**
      * Recognize far ends among the devices the user may see (see L3Builder::lookups()): the owner of each
-     * address (and of each loopback / host route), the device of each router ID in its context, the
-     * pseudowire rows with the VC IDs (the other ends) and the devices involved. Addresses and router IDs
-     * found on several devices stay unresolved rather than picking one at random; such router IDs are
-     * listed so that their address is not tried instead.
+     * address (and of each loopback / host route; in the global table first, then in any VRF), the device of
+     * each router ID in its context, the pseudowire rows with the VC IDs (the other ends), how many devices
+     * have each VC ID (all devices: a count only) and the devices involved. Addresses and router IDs found on
+     * several devices stay unresolved rather than picking one at random; such router IDs are listed so that
+     * their address is not tried instead.
      *
      * @param  array{addresses?: string[], routerIds?: string[], vcs?: int[], devices?: int[]}  $lookups
      * @return array{addresses: array<string, int>, loopbacks: array<string, int>, routerIds: array<string, int>,
-     *     ambiguousRouterIds: array<string, true>, pseudowires: array<int, array>, deviceIds: int[]}
+     *     ambiguousRouterIds: array<string, true>, pseudowires: array<int, array>, vcDevices: array<int, int>, deviceIds: int[]}
      */
     public function resolve(array $lookups): array
     {
@@ -144,16 +145,18 @@ class L3LayerRepository extends ScopedRepository
             ['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen', 32, array_filter($addresses, fn ($a) => ! str_contains($a, ':'))],
             ['ipv6_addresses', 'ipv6_compressed', 'ipv6_prefixlen', 128, array_filter($addresses, fn ($a) => str_contains($a, ':'))],
         ] as [$table, $column, $prefix, $host, $values]) {
-            $this->each("$table as a", "a.$column", $values, ["a.$column as address", "a.$prefix as prefixlen", 'p.device_id', 'p.ifType'],
+            $this->each("$table as a", "a.$column", $values, ["a.$column as address", "a.$prefix as prefixlen", 'a.context_name', 'p.device_id', 'p.ifType', 'p.ifVrf'],
                 function ($row) use (&$owners, &$loopbacks, $visible, $host) {
                     $deviceId = (int) $row->device_id;
                     if (! isset($visible[$deviceId])) {
                         return;
                     }
                     $address = Cidr::canonical((string) $row->address) ?? (string) $row->address;
-                    $owners[$address][$deviceId] = true;
+                    // device => in the global table (rather than in a VRF only)
+                    $global = ! (int) $row->ifVrf && (string) $row->context_name === '';
+                    $owners[$address][$deviceId] = ($owners[$address][$deviceId] ?? false) || $global;
                     if ((int) $row->prefixlen >= $host || strtolower((string) $row->ifType) === 'softwareloopback') {
-                        $loopbacks[$address][$deviceId] = true;
+                        $loopbacks[$address][$deviceId] = ($loopbacks[$address][$deviceId] ?? false) || $global;
                     }
                 }, false, fn ($query) => $query->join('ports as p', 'p.port_id', '=', 'a.port_id')->where('p.deleted', 0), self::ADDRESS_CHUNK);
         }
@@ -185,23 +188,34 @@ class L3LayerRepository extends ScopedRepository
         }
 
         $pseudowires = [];
+        $vcDevices = [];
         $vcs = array_values(array_unique(array_map('intval', $lookups['vcs'] ?? [])));
         if ($vcs && $this->columns('pw') !== null) {
             $this->each('pseudowires as l', 'l.cpwVcID', $vcs, ['l.device_id', 'l.port_id', 'l.peer_device_id', 'l.peer_ldp_id', 'l.cpwVcID', 'p.ifName', 'p.ifDescr', 'p.ifMtu'],
-                function ($row) use (&$pseudowires, $visible) {
+                function ($row) use (&$pseudowires, &$vcDevices, $visible) {
+                    $vcDevices[(int) $row->cpwVcID][(int) $row->device_id] = true;
                     if (isset($visible[(int) $row->device_id])) {
                         $pseudowires[] = (array) $row;
                     }
                 }, true, fn ($query) => $query->leftJoin('ports as p', 'p.port_id', '=', 'l.port_id'));
         }
 
-        $unique = fn (array $sets) => array_map(fn ($set) => (int) array_key_first($set), array_filter($sets, fn ($set) => count($set) === 1));
+        // the only owner, else the only one in the global table
+        $owner = function (array $set): ?int {
+            if (count($set) === 1) {
+                return (int) array_key_first($set);
+            }
+            $global = array_keys(array_filter($set));
+
+            return count($global) === 1 ? (int) $global[0] : null;
+        };
         $result = [
-            'addresses' => $unique($owners),
-            'loopbacks' => $unique($loopbacks),
-            'routerIds' => $unique($routers),
+            'addresses' => array_filter(array_map($owner, $owners), fn ($id) => $id !== null),
+            'loopbacks' => array_filter(array_map($owner, $loopbacks), fn ($id) => $id !== null),
+            'routerIds' => array_map(fn ($set) => (int) array_key_first($set), array_filter($routers, fn ($set) => count($set) === 1)),
             'ambiguousRouterIds' => array_fill_keys(array_keys(array_filter($routers, fn ($set) => count($set) > 1)), true),
             'pseudowires' => $pseudowires,
+            'vcDevices' => array_map('count', $vcDevices),
         ];
         $peers = array_filter(array_map('intval', $lookups['devices'] ?? []), fn ($id) => isset($visible[$id]));
         $result['deviceIds'] = array_values(array_unique(array_merge(array_values($result['addresses']), array_values($result['loopbacks']),

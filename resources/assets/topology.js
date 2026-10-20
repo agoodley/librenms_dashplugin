@@ -1228,7 +1228,8 @@
             return '<span class="topo-status-' + esc(status === 'warning' ? 'degraded' : status) + '">' + esc(text) + '</span>';
         };
         var html = '<table class="table table-condensed topo-kv">' + this.row('Layer', esc(L3_LAYERS[edge.kind].name)) +
-            this.row('State', state(edge.status, edge.state) + (edge.kind === 'pw' && !edge.mtu_mismatch ? ' <small>(LibreNMS keeps no pseudowire state)</small>' : ''));
+            this.row('State', state(edge.status, edge.state) + (edge.kind === 'pw' && !edge.mtu_mismatch ? ' <small>(LibreNMS keeps no pseudowire state)</small>' : '') +
+                this.layerSideNote(edge));
 
         if (edge.kind === 'ospfv3') {
             html += this.row('Router IDs', esc(edge.routerIds.join(', '))) + this.row('Neighbor addresses', esc(edge.addresses.join(', ')));
@@ -1263,11 +1264,14 @@
                 esc(this.nodeName(edge.to)) + '</th><th>MTU</th></tr>';
             edge.vcs.forEach(function (vc) {
                 var mtu = (vc.mtu_a || '?') + ' / ' + (vc.mtu_b || '?');
-                html += '<tr><td title="' + esc(vc.type + ' over ' + vc.psn) + '">' + esc(vc.vc) + (vc.description ? ' <small>' + esc(vc.description) + '</small>' : '') + '</td><td>' +
-                    esc(vc.a ? vc.a.port : '') + '</td><td>' + esc(vc.b ? vc.b.port : '') + '</td><td>' + (vc.mismatch ? '<b class="text-danger">' + esc(mtu) + '</b>' : esc(mtu)) + '</td></tr>';
+                var signalled = vc.payload_a !== vc.mtu_a || vc.payload_b !== vc.mtu_b ? '<br><small>signals ' + esc((vc.payload_a || '?') + ' / ' + (vc.payload_b || '?')) + '</small>' : '';
+                html += '<tr><td title="' + esc(vc.type + ' over ' + vc.psn) + '">' + esc(vc.vc) + (vc.description ? ' <small>' + esc(vc.description) + '</small>' : '') +
+                    (vc.inferred ? '<br><small class="text-muted">paired by VC ID (LDP id not stored)</small>' : '') + '</td><td>' +
+                    esc(vc.a ? vc.a.port : '') + '</td><td>' + esc(vc.b ? vc.b.port : '') + '</td><td>' + (vc.mismatch ? '<b class="text-danger">' + esc(mtu) + '</b>' : esc(mtu)) + signalled + '</td></tr>';
             });
-            html += '</table><p class="text-muted topo-hint">LibreNMS keeps no pseudowire state. MTU: of the two attachment circuits, which must match for a pseudowire ' +
-                'to come up (one Ethernet header more or less between two operating systems is not flagged). Peers that LibreNMS lost are paired by VC ID.</p>';
+            html += '</table><p class="text-muted topo-hint">LibreNMS keeps no pseudowire state. MTU: of the two attachment circuits, which must signal the same ' +
+                'MTU for a pseudowire to come up; IOS XR counts the Ethernet header in it, and the VLAN tag of a subinterface (1518 there signals 1500). ' +
+                'When LibreNMS lost the LDP IDs of both ends, the pseudowire is paired with the one other device that has its VC ID.</p>';
         }
         return html;
     };
@@ -1311,7 +1315,20 @@
             parts.push('<span class="topo-text-warning"><i class="fa fa-exclamation-triangle"></i> LSPs of ' + limits.mpls.shown + ' of ' + limits.mpls.total +
                 ' device pairs drawn (those with LSPs down first). Pick a device, group or location to see the others.</span>');
         }
+        if (limits.outside) {
+            parts.push('<span class="topo-text-warning"><i class="fa fa-exclamation-triangle"></i> ' + limits.outside.shown + ' of ' + limits.outside.total +
+                ' devices outside the map drawn (node limit); the others appear as their address or AS.</span>');
+        }
         return parts;
+    };
+
+    /**
+     * State note of an edge to a device outside the map whose own rows were not read (another location or group):
+     * only the drawn side reported it.
+     */
+    TopologyMap.prototype.layerSideNote = function (edge) {
+        return edge.oneSide ? ' <small class="text-muted">(as seen from ' + esc(this.nodeName(edge.from)) + ' only: ' + esc(this.nodeName(edge.to)) +
+            ' is outside this map)</small>' : '';
     };
 
     /**
@@ -1860,7 +1877,7 @@
         if (edge.kind === 'ospf' || edge.kind === 'bgp') {
             html += '<table class="table table-condensed topo-kv">' +
                 this.row('Protocol', esc(edge.kind === 'ospf' ? 'OSPF' : edge.type)) +
-                this.row('State', esc(edge.state)) +
+                this.row('State', esc(edge.state) + this.layerSideNote(edge)) +
                 this.row('Remote AS', esc(edge.remote_as)) +
                 this.row('Peer addresses', esc((edge.peers || edge.addresses || []).join(', '))) +
                 this.row('Description', esc(edge.description)) + '</table>';
