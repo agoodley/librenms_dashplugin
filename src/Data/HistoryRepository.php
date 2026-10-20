@@ -40,6 +40,9 @@ class HistoryRepository extends ScopedRepository
     /** @var bool|null whether the history tables exist (migrations run) */
     private static ?bool $available = null;
 
+    /** @var bool|null whether topology_findings has the vlan and subjects columns (the second migration ran) */
+    private static ?bool $subjectColumns = null;
+
     /**
      * Have the plugin's migrations been run? Everything else returns nothing until they have.
      */
@@ -795,19 +798,42 @@ class HistoryRepository extends ScopedRepository
     // ---------------------------------------------------------------- findings history
 
     /**
-     * Open findings of an analysis (not resolved), oldest first.
+     * Open findings of an analysis (not resolved), oldest first; with their VLAN and the devices
+     * their title named when recorded (null when unknown: recorded before that was kept).
      *
      * @return array<int, array{id: int, hash: string, code: string, severity: string, title: string, devices: int[],
-     *     confirmed: bool, missed_at: ?string, first_seen: string}>
+     *     vlan: ?int, subjects: ?int[], confirmed: bool, missed_at: ?string, first_seen: string}>
      */
     public function openFindings(string $analysis): array
     {
+        $columns = ['id', 'hash', 'code', 'severity', 'title', 'devices', 'confirmed', 'missed_at', 'first_seen'];
+
         return DB::table('topology_findings')->where('analysis', $analysis)->whereNull('resolved_at')->orderBy('id')
-            ->get(['id', 'hash', 'code', 'severity', 'title', 'devices', 'confirmed', 'missed_at', 'first_seen'])
+            ->get($this->subjectColumns() ? array_merge($columns, ['vlan', 'subjects']) : $columns)
             ->map(fn ($r) => ['id' => (int) $r->id, 'hash' => $r->hash, 'code' => $r->code, 'severity' => $r->severity, 'title' => $r->title,
-                'devices' => array_map('intval', json_decode((string) $r->devices, true) ?: []), 'confirmed' => (bool) $r->confirmed,
-                'missed_at' => $r->missed_at !== null ? (string) $r->missed_at : null, 'first_seen' => (string) $r->first_seen])
+                'devices' => array_map('intval', json_decode((string) $r->devices, true) ?: []),
+                'vlan' => isset($r->vlan) ? (int) $r->vlan : null,
+                'subjects' => isset($r->subjects) && is_array($subjects = json_decode((string) $r->subjects, true)) ? array_map('intval', $subjects) : null,
+                'confirmed' => (bool) $r->confirmed, 'missed_at' => $r->missed_at !== null ? (string) $r->missed_at : null, 'first_seen' => (string) $r->first_seen])
             ->all();
+    }
+
+    /**
+     * Has topology_findings the vlan and subjects columns? Until the plugin's second migration ran
+     * they are left out (a finding's subjects then come from its title).
+     */
+    private function subjectColumns(): bool
+    {
+        if (self::$subjectColumns === null) {
+            try {
+                self::$subjectColumns = Schema::hasColumn('topology_findings', 'vlan') && Schema::hasColumn('topology_findings', 'subjects');
+            } catch (\Throwable $e) {
+                Log::debug('topology plugin: cannot check the findings columns: ' . $e->getMessage());
+                self::$subjectColumns = false;
+            }
+        }
+
+        return self::$subjectColumns;
     }
 
     /**
@@ -817,6 +843,7 @@ class HistoryRepository extends ScopedRepository
     {
         $rows = [];
         $confirmed = array_fill_keys($run['confirmed'], true);
+        $subjects = $this->subjectColumns();
         foreach ($run['insert'] as $hash => $finding) {
             $rows[] = [
                 'analysis' => $analysis,
@@ -830,7 +857,7 @@ class HistoryRepository extends ScopedRepository
                 'first_seen' => $time,
                 'missed_at' => null,
                 'resolved_at' => null,
-            ];
+            ] + ($subjects ? ['vlan' => $finding['vlan'] ?? null, 'subjects' => json_encode($finding['subjects'] ?? [])] : []);
         }
         foreach (array_chunk($rows, self::CHUNK) as $chunk) {
             DB::table('topology_findings')->insert($chunk);
@@ -847,7 +874,8 @@ class HistoryRepository extends ScopedRepository
         $this->updateFindingRows($run['unmiss'], ['missed_at' => null]);
         $this->updateFindingRows($run['confirm'], ['confirmed' => true]);
         foreach ($run['update'] as $id => $finding) {
-            DB::table('topology_findings')->where('id', $id)->update(['severity' => $finding['severity'], 'title' => FindingHistory::title($finding)]);
+            DB::table('topology_findings')->where('id', $id)->update(['severity' => $finding['severity'], 'title' => FindingHistory::title($finding)]
+                + ($subjects ? ['subjects' => json_encode($finding['subjects'] ?? [])] : []));
         }
     }
 

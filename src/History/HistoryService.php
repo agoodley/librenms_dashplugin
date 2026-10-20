@@ -6,8 +6,12 @@ use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\LoopEvidenceRepository;
 use Agoodley\LibrenmsTopology\Data\RoutingRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
+use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
+use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
+use Agoodley\LibrenmsTopology\Routing\RoutingAnalyzer;
 use Agoodley\LibrenmsTopology\Routing\RoutingService;
 use Agoodley\LibrenmsTopology\Stp\LoopEvidence;
+use Agoodley\LibrenmsTopology\Stp\StpAnalyzer;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use Agoodley\LibrenmsTopology\Topology\TopologyService;
@@ -30,10 +34,14 @@ class HistoryService
     /** Missing and new baseline facts listed on the Changes page (the counts are complete). */
     private const LISTED = 200;
 
+    /**
+     * @param  RoutingRepository|null  $routing  data of the routing check (default: TopologyRepository's scope)
+     */
     public function __construct(
         private readonly HistoryRepository $history,
         private readonly TopologyRepository $topology,
         private readonly PluginSettings $settings,
+        private readonly ?RoutingRepository $routing = null,
     ) {
     }
 
@@ -130,7 +138,7 @@ class HistoryService
         $changes = FindingHistory::run($analysis, $open, $findings, $started->toDateTimeString(), $initial, $this->history->names(array_keys($devices)));
         $this->history->applyFindings($analysis, $changes, $started, $initial);
         $entries = $initial ? [] : FindingHistory::eventlog($analysis, $changes['before'], $changes['after'],
-            strtolower($this->settings->all()['history_eventlog_severity'] ?? 'warning'), array_map('strtolower', $this->settings->list('history_eventlog_skip')));
+            strtolower($this->settings->all()['history_eventlog_severity'] ?? 'warning'), FindingHistory::skipList($this->settings->all()['history_eventlog_skip'] ?? ''));
         $eventlog ??= self::eventlog(...);
         foreach ($entries as $entry) {
             $eventlog($entry['message'], $entry['device_id'], $entry['severity'], $entry['reference']);
@@ -145,6 +153,16 @@ class HistoryService
     }
 
     /**
+     * Check codes of the background checks (those the eventlog setting can name).
+     *
+     * @return string[]
+     */
+    public static function checkCodes(): array
+    {
+        return array_keys(StpAnalyzer::CHECKS + LoopEvidence::CHECKS + LinkAnalyzer::CHECKS + RedundancyAnalyzer::CHECKS + RoutingAnalyzer::CHECKS);
+    }
+
+    /**
      * Findings of one analysis over all devices (MapParams defaults: no device, group or location):
      * the spanning tree one VLAN at a time (a PVST network has an instance per VLAN), routing & IP
      * from the routing service, the others from the topology service.
@@ -154,7 +172,10 @@ class HistoryService
     private function findings(string $analysis, array $params): array
     {
         if ($analysis === 'routing') {
-            return (new RoutingService($this->topology->sibling(RoutingRepository::class), $this->settings))->analyze($params)['findings'] ?? [];
+            // strict: a table that cannot be read fails the run instead of becoming findings
+            $routing = ($this->routing ?? $this->topology->sibling(RoutingRepository::class))->strict();
+
+            return (new RoutingService($routing, $this->settings))->analyze($params)['findings'] ?? [];
         }
         $service = new TopologyService($this->topology, $this->settings, $this->history);
 
