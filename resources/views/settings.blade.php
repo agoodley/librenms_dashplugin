@@ -23,7 +23,7 @@
             ['stp_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (root, config, changes, ports, loops, storms, syslog), e.g. timers_non_default multicast_storm'],
         ],
         'Loop evidence: syslog patterns' => [
-            ['stp_syslog_loop_detected', 'text', 'Loop detected', 'regular expressions, case-insensitive, matched against the program and text of each message; checked in this order and the first match counts; empty switches a check off'],
+            ['stp_syslog_loop_detected', 'text', 'Loop detected', 'regular expressions, case-insensitive, matched against the program and text of each message; checked in this order and the first match counts; to switch one off, add its check code to Checks to skip above'],
             ['stp_syslog_udld', 'text', 'Unidirectional link (UDLD)', ''],
             ['stp_syslog_bpdu_guard', 'text', 'BPDU guard', ''],
             ['stp_syslog_loop_guard', 'text', 'Loop guard', ''],

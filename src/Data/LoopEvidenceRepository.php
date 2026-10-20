@@ -14,11 +14,11 @@ use Illuminate\Support\Facades\Log;
  */
 class LoopEvidenceRepository extends ScopedRepository
 {
-    /** Matching syslog messages read at most (newest first). */
-    public const SYSLOG_LIMIT = 5000;
+    /** Matching syslog messages kept at most (the newest). */
+    public const SYSLOG_MATCHES = 5000;
 
-    /** Messages read at most when the database cannot filter them with the pattern. */
-    private const SYSLOG_SCAN_LIMIT = 20000;
+    /** Messages searched at most per page view (the newest of the window), which bounds the time on busy logs. */
+    public const SYSLOG_SCAN = 100000;
 
     /**
      * Port rows of the given ports with their unicast, broadcast and multicast packet rates of the
@@ -50,47 +50,46 @@ class LoopEvidenceRepository extends ScopedRepository
     }
 
     /**
-     * Syslog messages of these devices since $since, newest first. With a pattern the database only
-     * returns matching messages (at most SYSLOG_LIMIT); a database whose REGEXP does not understand
-     * the pattern returns the newest messages unfiltered instead and the caller matches them.
+     * Syslog messages of these devices since $since that match $regex, newest first. The messages are
+     * matched here rather than with the database's REGEXP, which is several times slower on large
+     * syslog tables and differs between MySQL and MariaDB.
      *
      * @param  int[]  $deviceIds
-     * @return array{rows: array<int, array>, truncated: bool}
+     * @param  string  $regex  PCRE of every enabled check (LoopEvidence::scanPattern())
+     * @return array{rows: array<int, array>, truncated: bool, scan_limited: bool}
+     *     truncated: more matches than kept; scan_limited: the window has more messages than were searched
      */
-    public function syslog(array $deviceIds, int $since, ?string $pattern): array
+    public function syslog(array $deviceIds, int $since, string $regex): array
     {
+        $result = ['rows' => [], 'truncated' => false, 'scan_limited' => false];
         if (! $deviceIds) {
-            return ['rows' => [], 'truncated' => false];
+            return $result;
         }
 
-        $query = fn (int $limit) => DB::table('syslog')->whereIntegerInRaw('device_id', $deviceIds)
-            ->where('timestamp', '>=', date('Y-m-d H:i:s', $since))
-            ->orderByDesc('timestamp')->orderByDesc('seq')->limit($limit + 1);
-        $columns = ['seq', 'device_id', 'timestamp', 'program', 'msg'];
-
-        $rows = null;
-        $limit = self::SYSLOG_LIMIT;
-        if ($pattern !== null) {
-            try {
-                $rows = $query($limit)->whereRaw("CONCAT_WS(' ', program, msg) REGEXP ?", [$pattern])->get($columns);
-            } catch (\Throwable $e) {
-                Log::debug('topology plugin: the database cannot filter syslog with the loop patterns: ' . $e->getMessage());
+        try {
+            $scanned = 0;
+            foreach (DB::table('syslog')->whereIntegerInRaw('device_id', $deviceIds)
+                ->where('timestamp', '>=', date('Y-m-d H:i:s', $since))
+                ->orderByDesc('timestamp')->orderByDesc('seq')->limit(self::SYSLOG_SCAN + 1)
+                ->select(['seq', 'device_id', 'timestamp', 'program', 'msg'])->cursor() as $row) {
+                if (++$scanned > self::SYSLOG_SCAN) {
+                    $result['scan_limited'] = true;
+                    break;
+                }
+                if (preg_match($regex, trim($row->program . ' ' . $row->msg)) !== 1) {
+                    continue;
+                }
+                if (count($result['rows']) >= self::SYSLOG_MATCHES) {
+                    $result['truncated'] = true;
+                    continue;
+                }
+                $result['rows'][] = (array) $row;
             }
-        }
-        if ($rows === null) {
-            $limit = self::SYSLOG_SCAN_LIMIT;
-            try {
-                $rows = $query($limit)->get($columns);
-            } catch (\Throwable $e) {
-                Log::debug('topology plugin: cannot read syslog: ' . $e->getMessage());
-
-                return ['rows' => [], 'truncated' => false];
-            }
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot read syslog: ' . $e->getMessage());
         }
 
-        $rows = $rows->map(fn ($row) => (array) $row)->all();
-
-        return ['rows' => array_slice($rows, 0, $limit), 'truncated' => count($rows) > $limit];
+        return $result;
     }
 
     /**

@@ -217,9 +217,9 @@ class TopologyService
 
         $senders = array_keys(array_filter($devices, fn ($d) => in_array($d['role'] ?? '', [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER], true)));
         $since = time() - $this->settings->int('stp_syslog_hours', 1, 720) * 3600;
-        $pattern = LoopEvidence::databasePattern($this->settings);
+        $pattern = LoopEvidence::scanPattern($this->settings);
         $hidden = ! $repo->canViewSyslog();
-        $syslog = ['rows' => [], 'truncated' => false];
+        $syslog = ['rows' => [], 'truncated' => false, 'scan_limited' => false];
         $sent = 0;
         if (! $hidden && $pattern !== null && $senders) {
             $syslog = $repo->syslog($senders, $since, $pattern);
@@ -230,6 +230,7 @@ class TopologyService
             $repo->portNames(array_column($syslog['rows'], 'device_id')), $this->settings))->analyze([
                 'syslog_hidden' => $hidden,
                 'syslog_truncated' => $syslog['truncated'],
+                'syslog_scan_limited' => $syslog['scan_limited'] ? LoopEvidenceRepository::SYSLOG_SCAN : 0,
                 'syslog_devices' => $sent,
                 'syslog_scope' => count($senders),
             ]);

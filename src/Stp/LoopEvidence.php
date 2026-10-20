@@ -119,8 +119,8 @@ class LoopEvidence
     /** @var string[] problems with the settings, shown on the page */
     private array $notices = [];
 
-    /** @var array<int, array<string, int>> device_id => normalized port name => port_id (built on demand) */
-    private array $portIndex = [];
+    /** @var array<int, array<string, int>>|null device_id => normalized port name => port_id (built on demand) */
+    private ?array $portIndex = null;
 
     /**
      * @param  array<int, array>  $devices  device_id => device row (display, hostname, role, status)
@@ -145,9 +145,9 @@ class LoopEvidence
     /**
      * Run the storm and syslog checks.
      *
-     * @param  array{syslog_hidden?: bool, syslog_truncated?: bool, syslog_devices?: int, syslog_scope?: int}  $context
-     *     what the caller could read: syslog hidden from this user, more messages than were read, devices that
-     *     sent syslog in the window and devices asked for
+     * @param  array{syslog_hidden?: bool, syslog_truncated?: bool, syslog_scan_limited?: int, syslog_devices?: int, syslog_scope?: int}  $context
+     *     what the caller could read: syslog hidden from this user, more matches than were kept, the number of
+     *     messages searched when the window held more, devices that sent syslog in the window and devices asked for
      * @return array{findings: array, device_names: array<int, string>, evidence: array}
      */
     public function analyze(array $context = []): array
@@ -158,6 +158,10 @@ class LoopEvidence
 
         $storms = $this->checkStorms();
         $syslog = empty($context['syslog_hidden']) ? $this->checkSyslog($hours) : [];
+        if (! empty($context['syslog_scan_limited'])) {
+            $this->notices[] = 'Only the newest ' . number_format((int) $context['syslog_scan_limited']) . " syslog messages of the last $hours hours were searched; "
+                . 'shorten the syslog window in the settings to cover it all.';
+        }
         if (! empty($context['syslog_truncated'])) {
             $this->notices[] = 'Only the newest ' . number_format(count($this->syslog)) . " matching syslog messages of the last $hours hours were analyzed.";
         }
@@ -261,20 +265,21 @@ class LoopEvidence
     }
 
     /**
-     * The syslog patterns as one regular expression for the database (REGEXP), so it only returns
-     * candidate messages; null when every syslog check is off or empty.
+     * The patterns of the enabled syslog checks as one regular expression, to pick the candidate
+     * messages while reading the syslog; null when every syslog check is off or empty.
      */
-    public static function databasePattern(PluginSettings $settings): ?string
+    public static function scanPattern(PluginSettings $settings): ?string
     {
+        $disabled = array_fill_keys(array_map('strtolower', $settings->list('stp_disabled_checks')), true);
         $parts = [];
-        foreach (self::SYSLOG as $check) {
+        foreach (self::SYSLOG as $code => $check) {
             $pattern = trim((string) ($settings->all()[$check['setting']] ?? ''));
-            if ($pattern !== '' && self::compile($pattern) !== null) {
-                $parts[] = '(?:' . $pattern . ')';
+            if ($pattern !== '' && ! isset($disabled[$code]) && ! isset($disabled['syslog']) && self::compile($pattern) !== null) {
+                $parts[] = '(?:' . str_replace('~', '\~', $pattern) . ')';
             }
         }
 
-        return $parts ? '(?i)' . implode('|', $parts) : null;
+        return $parts ? '~' . implode('|', $parts) . '~i' : null;
     }
 
     // ---------------------------------------------------------------- storms
@@ -480,6 +485,8 @@ class LoopEvidence
                 $rows[] = $this->evidenceRow($code, $check, $severity, $row);
             }
         }
+        // critical first; within a severity the matching order and the busiest devices (stable sort)
+        usort($rows, fn ($a, $b) => Finding::SEVERITY_ORDER[$a['severity']] <=> Finding::SEVERITY_ORDER[$b['severity']]);
 
         return $rows;
     }
@@ -588,7 +595,8 @@ class LoopEvidence
 
         $this->add(new Finding(
             $severity, $code, $check['title'],
-            number_format($total) . " {$check['messages']} in the last $hours hours: " . implode('; ', $parts) . $more
+            number_format($total) . ' ' . ($total === 1 ? substr($check['messages'], 0, -1) : $check['messages'])
+            . " in the last $hours hours: " . implode('; ', $parts) . $more
             . '. The messages are listed under Loop evidence.',
             $check['fix'], null, array_column($group, 'device_id'), $ports,
         ));
@@ -680,28 +688,31 @@ class LoopEvidence
     }
 
     /**
-     * Normalized ifName / ifDescr => port_id of a device's ports.
+     * Normalized ifName / ifDescr => port_id of a device's ports (every device with messages, in one pass).
      *
      * @return array<string, int>
      */
     private function portIndex(int $deviceId): array
     {
-        if (! isset($this->portIndex[$deviceId])) {
-            $this->portIndex[$deviceId] = [];
-            foreach ($this->syslogPorts + $this->ports as $portId => $port) {
-                if ((int) ($port['device_id'] ?? 0) !== $deviceId) {
-                    continue;
-                }
-                foreach (['ifName', 'ifDescr'] as $field) {
-                    $name = InterfaceName::normalize((string) ($port[$field] ?? ''));
-                    if ($name !== '') {
-                        $this->portIndex[$deviceId][$name] ??= (int) $portId;
+        if ($this->portIndex === null) {
+            $this->portIndex = [];
+            $logging = array_flip(array_map('intval', array_column($this->syslog, 'device_id')));
+            foreach ([$this->syslogPorts, $this->ports] as $ports) {
+                foreach ($ports as $portId => $port) {
+                    if (! isset($logging[(int) ($port['device_id'] ?? 0)])) {
+                        continue;
+                    }
+                    foreach (['ifName', 'ifDescr'] as $field) {
+                        $name = InterfaceName::normalize((string) ($port[$field] ?? ''));
+                        if ($name !== '') {
+                            $this->portIndex[(int) ($port['device_id'] ?? 0)][$name] ??= (int) $portId;
+                        }
                     }
                 }
             }
         }
 
-        return $this->portIndex[$deviceId];
+        return $this->portIndex[$deviceId] ?? [];
     }
 
     /**

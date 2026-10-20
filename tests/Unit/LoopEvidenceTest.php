@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
+use Agoodley\LibrenmsTopology\Stp\Finding;
 use Agoodley\LibrenmsTopology\Stp\LoopEvidence;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use PHPUnit\Framework\TestCase;
@@ -220,6 +221,11 @@ class LoopEvidenceTest extends TestCase
             'err_disabled' => 'warning',
         ], self::codes($result));
         $this->assertCount(10, $result['findings']);
+        $order = array_map(fn ($row) => Finding::SEVERITY_ORDER[$row['severity']], $result['evidence']['syslog']);
+        $sorted = $order;
+        sort($sorted);
+        $this->assertSame($sorted, $order, 'critical evidence first');
+        $this->assertSame(['loop_detected', 'loop_detected', 'storm_control'], array_slice(array_column($result['evidence']['syslog'], 'code'), 0, 3));
 
         $ports = fn (string $code, int $device) => array_column(self::rows($result, $code)[$device]['ports'], 'name');
         $this->assertSame([2, 6], self::find($result, 'loop_detected')['devices']);
@@ -254,6 +260,8 @@ class LoopEvidenceTest extends TestCase
         $finding = self::find($result, 'storm_control');
         $this->assertStringStartsWith('2 storm control messages in the last 24 hours: sw-a (1 message, port Gi1/0/49, latest 13m ago); sw-b', $finding['detail']);
         $this->assertSame('syslog', $finding['category']);
+        $this->assertStringStartsWith('1 err-disable message in the last 24 hours: sw-a (1 message, port Gi1/0/20, latest 8m ago).',
+            self::find($result, 'err_disabled')['detail']);
     }
 
     public function testMacFlappingOfManyAddressesIsALoop(): void
@@ -306,15 +314,21 @@ class LoopEvidenceTest extends TestCase
             fn ($category) => $category === 'syslog'));
     }
 
-    public function testDatabasePattern(): void
+    public function testScanPattern(): void
     {
-        $pattern = LoopEvidence::databasePattern(new PluginSettings);
-        $this->assertStringStartsWith('(?i)(?:loop[ _-]?back[ _-]?detected|loopback error|loop[ _-]?detect)|(?:udld|unidirectional link)|', $pattern);
+        $pattern = LoopEvidence::scanPattern(new PluginSettings);
+        $this->assertStringStartsWith('~(?:loop[ _-]?back[ _-]?detected|loopback error|loop[ _-]?detect)|(?:udld|unidirectional link)|', $pattern);
+        $this->assertStringEndsWith('~i', $pattern);
         $this->assertSame(10, substr_count($pattern, '(?:'));
+        $this->assertSame(1, preg_match($pattern, '%SW_MATM-4-MACFLAP_NOTIF Host 0050.56a1.0001 in vlan 10 is flapping between port Gi1/0/49 and port Gi1/0/50'));
+        $this->assertSame(0, preg_match($pattern, '%LINK-3-UPDOWN Interface GigabitEthernet1/0/49, changed state to up'));
 
         $settings = array_fill_keys(array_column(LoopEvidence::SYSLOG, 'setting'), '');
-        $this->assertNull(LoopEvidence::databasePattern(new PluginSettings($settings)));
-        $this->assertSame('(?i)(?:udld)', LoopEvidence::databasePattern(new PluginSettings(['stp_syslog_udld' => 'udld', 'stp_syslog_duplex' => 'dup(lex'] + $settings)));
+        $this->assertNull(LoopEvidence::scanPattern(new PluginSettings($settings)));
+        $this->assertSame('~(?:udld)~i', LoopEvidence::scanPattern(new PluginSettings(['stp_syslog_udld' => 'udld', 'stp_syslog_duplex' => 'dup(lex'] + $settings)));
+        $this->assertSame('~(?:a\~b)~i', LoopEvidence::scanPattern(new PluginSettings(['stp_syslog_udld' => 'a~b'] + $settings)));
+        $this->assertNull(LoopEvidence::scanPattern(new PluginSettings(['stp_disabled_checks' => 'syslog'])));
+        $this->assertSame(9, substr_count(LoopEvidence::scanPattern(new PluginSettings(['stp_disabled_checks' => 'udld'])), '(?:'));
     }
 
     public function testHiddenAndTruncatedSyslog(): void
@@ -326,8 +340,11 @@ class LoopEvidenceTest extends TestCase
         $this->assertSame([], $hidden['evidence']['syslog']);
         $this->assertTrue($hidden['evidence']['syslog_hidden']);
 
-        $truncated = $net->evidence([], ['syslog_truncated' => true, 'syslog_devices' => 4, 'syslog_scope' => 5]);
-        $this->assertSame('Only the newest 23 matching syslog messages of the last 24 hours were analyzed.', $truncated['evidence']['notices'][0]);
+        $truncated = $net->evidence([], ['syslog_truncated' => true, 'syslog_scan_limited' => 100000, 'syslog_devices' => 4, 'syslog_scope' => 5]);
+        $this->assertSame([
+            'Only the newest 100,000 syslog messages of the last 24 hours were searched; shorten the syslog window in the settings to cover it all.',
+            'Only the newest 23 matching syslog messages of the last 24 hours were analyzed.',
+        ], $truncated['evidence']['notices']);
         $this->assertSame(4, $truncated['evidence']['syslog_devices']);
         $this->assertSame(5, $truncated['evidence']['syslog_scope']);
     }
