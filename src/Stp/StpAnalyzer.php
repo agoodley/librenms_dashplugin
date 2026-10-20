@@ -15,6 +15,37 @@ class StpAnalyzer
 {
     private const DEFAULT_PRIORITY = 32768;
 
+    /**
+     * Check codes and their category; the "disabled checks" setting accepts either (the loop
+     * evidence checks are in LoopEvidence::CHECKS).
+     */
+    public const CHECKS = [
+        'root_mismatch' => 'root',
+        'root_not_polled' => 'root',
+        'root_unmanaged' => 'root',
+        'root_default_priority' => 'root',
+        'root_not_preferred' => 'root',
+        'root_at_edge' => 'root',
+        'root_changed' => 'root',
+        'timers_non_default' => 'config',
+        'timer_relation' => 'config',
+        'timer_mismatch' => 'config',
+        'protocol_mix' => 'config',
+        'diameter' => 'config',
+        'tc_rate' => 'changes',
+        'tc_recent' => 'changes',
+        'root_port_changed' => 'changes',
+        'port_broken' => 'ports',
+        'port_flapping' => 'ports',
+        'nondesignated_forwarding' => 'ports',
+        'port_transitioning' => 'ports',
+        'no_root_port' => 'ports',
+        'stp_disabled_port' => 'ports',
+        'forwarding_loop' => 'loops',
+        'loop_without_stp' => 'loops',
+        'no_stp_data' => 'loops',
+    ];
+
     /** @var array<int, array{a_dev: int, a_port: int, b_dev: int, b_port: int}> */
     private array $physLinks = [];
 
@@ -28,6 +59,9 @@ class StpAnalyzer
 
     /** @var Finding[] */
     private array $findings = [];
+
+    /** @var array<string, true> disabled check codes and categories */
+    private array $disabled;
 
     /** @var array<string, array> root bridge MAC lookups (owners, FDB sightings, vendor) */
     private array $rootLookups = [];
@@ -50,6 +84,7 @@ class StpAnalyzer
         private ?int $now = null,
     ) {
         $this->now ??= time();
+        $this->disabled = array_fill_keys(array_map('strtolower', $settings->list('stp_disabled_checks')), true);
         foreach ($this->lagParent as $member => $parent) {
             $this->lagMembers[$parent][] = $member;
         }
@@ -106,7 +141,7 @@ class StpAnalyzer
         $this->checkLoopsWithoutStp();
         $this->checkEvents();
 
-        $findings = self::mergeAcrossVlans(array_map(fn (Finding $f) => $f->toArray(), $this->findings));
+        $findings = self::mergeAcrossVlans(array_map(fn (Finding $f) => $f->toArray() + ['category' => self::CHECKS[$f->code] ?? 'other'], $this->findings));
         usort($findings, fn ($a, $b) => [Finding::SEVERITY_ORDER[$a['severity']], $a['vlan'] ?? -1, $a['title']]
             <=> [Finding::SEVERITY_ORDER[$b['severity']], $b['vlan'] ?? -1, $b['title']]);
 
@@ -202,37 +237,41 @@ class StpAnalyzer
             $instances[] = $row;
         }
 
-        // the same issue usually shows in every PVST instance: list it once with its VLANs
+        // the same issue usually shows in every PVST instance: list it once with its VLANs; the disabled
+        // checks of the STP page are left out here too
         $issues = [];
-        $add = function (string $severity, string $text, array $row) use (&$issues): void {
+        $add = function (string $code, string $severity, string $text, array $row) use (&$issues): void {
+            if (! $this->enabled($code)) {
+                return;
+            }
             $issues[$severity . '|' . $text]['severity'] = $severity;
             $issues[$severity . '|' . $text]['text'] = $text;
             $issues[$severity . '|' . $text]['vlans'][] = $row['label'];
         };
         foreach ($instances as $row) {
             if ($row['is_root'] && $this->isDefaultPriority($row['priority'], $row['vlan'])) {
-                $add(Finding::WARNING, 'root bridge with default priority', $row);
+                $add('root_default_priority', Finding::WARNING, 'root bridge with default priority', $row);
             }
             if ($row['last_tc'] !== null && $row['last_tc'] < $this->tcRecentSeconds()) {
-                $add(Finding::INFO, 'topology change ' . self::duration($row['last_tc']) . ' ago', $row);
+                $add('tc_recent', Finding::INFO, 'topology change ' . self::duration($row['last_tc']) . ' ago', $row);
             }
             if ($row['tc_rate'] !== null && $row['tc_rate'] > $this->settings->int('stp_tc_rate_per_day', 1)) {
-                $add(Finding::WARNING, $row['tc_rate'] . ' topology changes per day', $row);
+                $add('tc_rate', Finding::WARNING, $row['tc_rate'] . ' topology changes per day', $row);
             }
             foreach ($row['blocked_ports'] as $port) {
                 if ($port['state'] === 'broken') {
-                    $add(Finding::CRITICAL, 'port ' . $port['port'] . ' is in broken state', $row);
+                    $add('port_broken', Finding::CRITICAL, 'port ' . $port['port'] . ' is in broken state', $row);
                 }
             }
             foreach ($this->stp->portsFor($deviceId, $row['vlan']) as $port) {
                 if ($port['forwardTransitions'] >= $this->settings->int('stp_flap_transitions', 1)) {
-                    $add(Finding::WARNING, $this->portName($port['port_id']) . ' changed to forwarding ' . $port['forwardTransitions'] . ' times', $row);
+                    $add('port_flapping', Finding::WARNING, $this->portName($port['port_id']) . ' changed to forwarding ' . $port['forwardTransitions'] . ' times', $row);
                 }
             }
             // only bridge addresses are looked up here (cheap); the STP page also checks interface MACs
             $rootMac = $this->stp->instance($deviceId, $row['vlan'])['designatedRoot'] ?? '';
             if (! $row['is_root'] && $rootMac !== '' && $this->stp->bridgeOwner($rootMac) === null && empty($rootLookups[$rootMac]['owners']) && empty($rootLookups[$rootMac]['hidden'])) {
-                $add(Finding::WARNING, 'root bridge ' . $row['root_id'] . ' is not a monitored bridge (possible rogue switch, see STP diagnostics)', $row);
+                $add('root_unmanaged', Finding::WARNING, 'root bridge ' . $row['root_id'] . ' is not a monitored bridge (possible rogue switch, see STP diagnostics)', $row);
             }
         }
 
@@ -1412,7 +1451,17 @@ class StpAnalyzer
 
     private function add(Finding $finding): void
     {
-        $this->findings[] = $finding;
+        if ($this->enabled($finding->code)) {
+            $this->findings[] = $finding;
+        }
+    }
+
+    /**
+     * Neither the check nor its category is in the disabled checks setting.
+     */
+    private function enabled(string $code): bool
+    {
+        return ! isset($this->disabled[$code]) && ! isset($this->disabled[self::CHECKS[$code] ?? '']);
     }
 
     /**
