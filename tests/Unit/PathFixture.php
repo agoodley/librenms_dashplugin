@@ -3,8 +3,10 @@
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
 use Agoodley\LibrenmsTopology\Path\L2Tracer;
+use Agoodley\LibrenmsTopology\Path\L3Data;
 use Agoodley\LibrenmsTopology\Path\L3Tracer;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
+use Agoodley\LibrenmsTopology\Support\Cidr;
 
 /**
  * A routed campus for the path tracers, built up in plain arrays like the repositories return them.
@@ -227,13 +229,11 @@ class PathFixture
         return new L2Tracer($this->devices, $this->links, $this->ports, $this->lag, $this->stp($vlan), $this->portVlans, $this->routed);
     }
 
-    public function l3(bool $skipped = false): L3Tracer
+    public function l3(bool $skipped = false, ?FixtureL3Data &$data = null): L3Tracer
     {
-        $routing = array_filter($this->devices, fn ($device) => in_array($device['role'], ['router', 'l3switch', 'firewall'], true));
+        $data = new FixtureL3Data($this, $skipped);
 
-        return new L3Tracer(array_values(array_filter($this->interfaces, fn ($interface) => isset($routing[$interface['device_id']]))), $this->routes, $this->routeData,
-            $this->adjacencies, array_map(fn ($device) => $device['role'], $this->devices), array_map(fn ($device) => $device['display'], $this->devices),
-            $this->linked(), fn (string $address) => array_values(array_filter($this->interfaces, fn ($interface) => $interface['address'] === $address)), $skipped);
+        return new L3Tracer($data);
     }
 
     /**
@@ -260,5 +260,94 @@ class PathFixture
     public static function names(array $trace): array
     {
         return array_map(fn ($hop) => $hop['name'], $trace['hops']);
+    }
+}
+
+/**
+ * L3Data on PathFixture's arrays, recording what the tracer asks.
+ */
+final class FixtureL3Data implements L3Data
+{
+    /** @var array<int, int[]> devices whose interfaces each read asked for */
+    public array $interfaceReads = [];
+
+    /** @var string[] addresses whose subnets were asked for */
+    public array $subnetReads = [];
+
+    public function __construct(private readonly PathFixture $net, private readonly bool $skipped = false)
+    {
+    }
+
+    public function interfaces(array $deviceIds): array
+    {
+        $this->interfaceReads[] = $deviceIds;
+
+        return array_values(array_filter($this->net->interfaces, fn ($interface) => in_array($interface['device_id'], $deviceIds, true)));
+    }
+
+    public function owners(array $addresses): array
+    {
+        $addresses = array_map(fn ($address) => Cidr::canonical($address), $addresses);
+
+        return array_values(array_filter($this->net->interfaces, fn ($interface) => ! str_starts_with($interface['address'], 'fe80')
+            && in_array(Cidr::canonical($interface['address']), $addresses, true)));
+    }
+
+    public function subnets(string $address): array
+    {
+        $this->subnetReads[] = $address;
+
+        return array_values(array_filter($this->net->interfaces, fn ($interface) => ! str_starts_with($interface['address'], 'fe80')
+            && Cidr::family($interface['address']) === Cidr::family($address) && Cidr::contains((string) Cidr::network($interface['address'], $interface['prefixlen']), $address)));
+    }
+
+    public function peers(array $interfaces): array
+    {
+        $networks = array_map(fn ($interface) => Cidr::network($interface['address'], $interface['prefixlen']), $interfaces);
+
+        return array_values(array_filter($this->net->interfaces, fn ($interface) => ! str_starts_with($interface['address'], 'fe80')
+            && in_array(Cidr::network($interface['address'], $interface['prefixlen']), $networks, true)));
+    }
+
+    public function adjacencies(array $deviceIds): array
+    {
+        return array_values(array_filter($this->net->adjacencies, fn ($row) => in_array($row['device_id'], $deviceIds, true)));
+    }
+
+    public function roles(array $deviceIds): array
+    {
+        $roles = [];
+        foreach ($deviceIds as $id) {
+            if (isset($this->net->devices[$id])) {
+                $roles[$id] = $this->net->devices[$id]['role'];
+            }
+        }
+
+        return $roles;
+    }
+
+    public function name(int $deviceId): string
+    {
+        return $this->net->devices[$deviceId]['display'] ?? 'device #' . $deviceId;
+    }
+
+    public function linked(int $deviceId, int $portId): array
+    {
+        return ($this->net->linked())($deviceId, $portId);
+    }
+
+    public function routes(string $address): ?array
+    {
+        return $this->net->routes;
+    }
+
+    public function routeData(): array
+    {
+        return $this->net->routeData;
+    }
+
+    public function skipped(): bool
+    {
+        return $this->skipped;
     }
 }

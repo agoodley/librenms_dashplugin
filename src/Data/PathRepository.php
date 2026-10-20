@@ -6,7 +6,6 @@ use Agoodley\LibrenmsTopology\Hosts\HostQuery;
 use Agoodley\LibrenmsTopology\Path\L2Tracer;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\Cidr;
-use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -22,7 +21,7 @@ class PathRepository extends ScopedRepository
     /** Seconds the per-device summary of the route table is kept (it changes at discovery only). */
     public const ROUTE_DATA_SECONDS = 300;
 
-    private const ROUTE_DATA_KEY = 'topology-plugin.path.route-data';
+    private const ROUTE_DATA_KEY = 'topology-plugin.path.route-summary';
 
     /** @var array<int, int> device_id of a device out of the user's sight => its number in this request */
     private array $hiddenNumber = [];
@@ -221,47 +220,10 @@ class PathRepository extends ScopedRepository
     }
 
     /**
-     * Devices among $ids that may route (DeviceRole::classify() decides): firewalls, router operating systems and
-     * hardware, devices with two or more interface subnets, and those with OSPF neighbors or BGP peers. Read without
-     * classifying every device.
-     *
-     * @param  int[]  $ids
-     * @return int[]
-     */
-    public function routerCandidates(array $ids): array
-    {
-        $ids = $this->visible($ids);
-        $found = [];
-        try {
-            foreach (array_chunk($ids, 5000) as $chunk) {
-                foreach (DB::table('devices')->whereIntegerInRaw('device_id', $chunk)->get(['device_id', 'type', 'os', 'hardware']) as $row) {
-                    if (DeviceRole::mayRoute((array) $row)) {
-                        $found[(int) $row->device_id] = true;
-                    }
-                }
-                foreach (DB::table('ipv4_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')->whereIntegerInRaw('p.device_id', $chunk)
-                    ->where('p.deleted', 0)->where('a.ipv4_prefixlen', '<', 32)->groupBy('p.device_id')->havingRaw('COUNT(DISTINCT a.port_id) >= 2')
-                    ->pluck('p.device_id') as $id) {
-                    $found[(int) $id] = true;
-                }
-                foreach (['ospf_nbrs', 'bgpPeers'] as $table) {
-                    foreach (DB::table($table)->whereIntegerInRaw('device_id', $chunk)->distinct()->pluck('device_id') as $id) {
-                        $found[(int) $id] = true;
-                    }
-                }
-            }
-        } catch (\Throwable $e) {
-            Log::debug('topology plugin: cannot find the routing devices: ' . $e->getMessage());
-        }
-
-        return array_keys($found);
-    }
-
-    /**
      * IPv4 and IPv6 interface addresses (link-local ones included) of devices the user may see.
      *
      * @param  int[]  $deviceIds
-     * @return array<int, array{device_id: int, port_id: int, address: string, prefixlen: int, vrf: string, up: bool}>
+     * @return array<int, array{device_id: int, port_id: int, address: string, prefixlen: int, vrf: string, up: bool, network_id: int}>
      */
     public function interfaces(array $deviceIds): array
     {
@@ -270,27 +232,83 @@ class PathRepository extends ScopedRepository
             return [];
         }
 
-        return $this->interfaceRows(fn ($query, string $table) => $query->whereIntegerInRaw('p.device_id', $deviceIds), $deviceIds);
+        return $this->interfaceRows(fn ($query, int $family) => $query->whereIntegerInRaw('p.device_id', $deviceIds));
     }
 
     /**
-     * Interfaces with the address on devices the user may see (any role).
+     * Interfaces with one of the addresses, on devices the user may see (any role). LibreNMS has no index on the
+     * address: one read of each address table.
      *
-     * @return array<int, array{device_id: int, port_id: int, address: string, prefixlen: int, vrf: string, up: bool}>
+     * @param  string[]  $addresses
+     * @return array<int, array{device_id: int, port_id: int, address: string, prefixlen: int, vrf: string, up: bool, network_id: int}>
      */
-    public function owners(string $address): array
+    public function ownersOf(array $addresses): array
+    {
+        $v4 = [];
+        $v6 = [];
+        foreach ($addresses as $address) {
+            $canonical = Cidr::canonical((string) $address);
+            if ($canonical !== null && str_contains($canonical, ':')) {
+                $v6[$canonical] = HostQuery::ipv6Full($canonical);
+            } elseif ($canonical !== null) {
+                $v4[$canonical] = true;
+            }
+        }
+        if (! $v4 && ! $v6) {
+            return [];
+        }
+
+        return $this->interfaceRows(fn ($query, int $family) => $family === 4
+            ? ($v4 ? $query->whereIn('a.ipv4_address', array_keys($v4)) : null)
+            : ($v6 ? $query->where(fn ($q) => $q->whereIn('a.ipv6_compressed', array_keys($v6))->orWhereIn('a.ipv6_address', array_values($v6))) : null));
+    }
+
+    /**
+     * Interfaces on the subnets that hold an address, on devices the user may see: the networks LibreNMS keeps of every
+     * prefix length of the address (ipv4_networks / ipv6_networks), and the addresses on them (indexed by network for
+     * IPv4).
+     *
+     * @return array<int, array{device_id: int, port_id: int, address: string, prefixlen: int, vrf: string, up: bool, network_id: int}>
+     */
+    public function subnets(string $address): array
     {
         $canonical = Cidr::canonical($address);
         if ($canonical === null) {
             return [];
         }
-        $v6 = str_contains($canonical, ':');
-        $rows = $this->interfaceRows(fn ($query, string $table) => $table === ($v6 ? 'ipv6_addresses' : 'ipv4_addresses')
-            ? ($v6 ? $query->where(fn ($q) => $q->where('a.ipv6_compressed', $canonical)->orWhere('a.ipv6_address', HostQuery::ipv6Full($canonical)))
-                : $query->where('a.ipv4_address', $canonical))
-            : $query->whereRaw('1 = 0'), null);
+        $family = Cidr::family($canonical);
+        $networks = [];
+        for ($length = 1; $length < ($family === 4 ? 32 : 128); $length++) {
+            $networks[] = (string) Cidr::network($canonical, $length);
+        }
+        [$table, $column, $id] = $family === 4 ? ['ipv4_networks', 'ipv4_network', 'ipv4_network_id'] : ['ipv6_networks', 'ipv6_network', 'ipv6_network_id'];
+        try {
+            $ids = array_map('intval', DB::table($table)->whereIn($column, $networks)->pluck($id)->all());
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot read ' . $table . ': ' . $e->getMessage());
 
-        return array_values(array_filter($rows, fn ($row) => $this->canSee($row['device_id'])));
+            return [];
+        }
+
+        return $ids ? $this->onNetworks([$family => $ids]) : [];
+    }
+
+    /**
+     * Interfaces on the same subnets (networks) as these, on devices the user may see.
+     *
+     * @param  array<int, array>  $interfaces  with network_id
+     * @return array<int, array{device_id: int, port_id: int, address: string, prefixlen: int, vrf: string, up: bool, network_id: int}>
+     */
+    public function peers(array $interfaces): array
+    {
+        $ids = [];
+        foreach ($interfaces as $interface) {
+            if ((int) ($interface['network_id'] ?? 0) > 0) {
+                $ids[Cidr::family((string) $interface['address'])][(int) $interface['network_id']] = (int) $interface['network_id'];
+            }
+        }
+
+        return $ids ? $this->onNetworks(array_map('array_values', $ids)) : [];
     }
 
     /**
@@ -315,7 +333,7 @@ class PathRepository extends ScopedRepository
      * routes than routes_max_number). The summary of the whole table is cached for ROUTE_DATA_SECONDS.
      *
      * @param  int[]  $deviceIds
-     * @return array<int, array{count: int, newest: int, contexts: array<string, int>, discovered: int}>
+     * @return array<int, array{count: int, newest: int, contexts: array<string, int>, built: int, discovered: int, finished: int}>
      */
     public function routeData(array $deviceIds): array
     {
@@ -327,22 +345,26 @@ class PathRepository extends ScopedRepository
         $summary = null;
         try {
             // per database: installs that share a cache store keep their own
-            $summary = Cache::remember(self::ROUTE_DATA_KEY . '.' . DB::connection()->getDatabaseName(), self::ROUTE_DATA_SECONDS, fn () => self::routeSummary());
+            $summary = Cache::remember(self::ROUTE_DATA_KEY . '.' . DB::connection()->getDatabaseName(), self::ROUTE_DATA_SECONDS,
+                fn () => ['built' => time(), 'devices' => self::routeSummary()]);
         } catch (\Throwable $e) {
             Log::debug('topology plugin: route table summary not cached: ' . $e->getMessage());
         }
         try {
-            $summary ??= self::routeSummary();
+            $summary ??= ['built' => time(), 'devices' => self::routeSummary()];
         } catch (\Throwable $e) {
             Log::debug('topology plugin: cannot read the route table: ' . $e->getMessage());
 
             return [];
         }
 
-        $data = array_intersect_key($summary, array_flip($deviceIds));
+        // when the summary was read, and when each device's last discovery started and ended: a discovery that ended after
+        // the summary was read may have read the device's routes again (L3Tracer::routeState())
+        $data = array_map(fn ($device) => $device + ['built' => (int) $summary['built']], array_intersect_key($summary['devices'], array_flip($deviceIds)));
         if ($data) {
             foreach (DB::table('devices')->whereIntegerInRaw('device_id', array_keys($data))->get(['device_id', 'last_discovered', 'last_discovered_timetaken']) as $row) {
                 $last = self::time($row->last_discovered);
+                $data[(int) $row->device_id]['finished'] = $last;
                 $data[(int) $row->device_id]['discovered'] = $last > 0 ? $last - (int) round((float) $row->last_discovered_timetaken) : 0;
             }
         }
@@ -493,20 +515,37 @@ class PathRepository extends ScopedRepository
     }
 
     /**
-     * Interface rows of both address tables, the query narrowed by $where.
+     * Interfaces on networks (family => network ids).
      *
-     * @param  \Closure(\Illuminate\Database\Query\Builder, string): mixed  $where
-     * @param  int[]|null  $deviceIds  the devices (for their VRF names), null: those of the rows
+     * @param  array<int, int[]>  $ids
      */
-    private function interfaceRows(\Closure $where, ?array $deviceIds): array
+    private function onNetworks(array $ids): array
+    {
+        return $this->interfaceRows(fn ($query, int $family) => isset($ids[$family])
+            ? $query->whereIntegerInRaw($family === 4 ? 'a.ipv4_network_id' : 'a.ipv6_network_id', $ids[$family]) : null);
+    }
+
+    /**
+     * Interface rows of both address tables of devices the user may see, the query of each narrowed by $where (null:
+     * that table is not read).
+     *
+     * @param  \Closure(\Illuminate\Database\Query\Builder, int): mixed  $where  query and address family
+     */
+    private function interfaceRows(\Closure $where): array
     {
         $rows = [];
         try {
-            foreach ([['ipv4_addresses', 'a.ipv4_address', 'a.ipv4_prefixlen'], ['ipv6_addresses', 'a.ipv6_compressed', 'a.ipv6_prefixlen']] as [$table, $address, $prefixlen]) {
+            foreach ([4 => ['ipv4_addresses', 'a.ipv4_address', 'a.ipv4_prefixlen', 'a.ipv4_network_id'], 6 => ['ipv6_addresses', 'a.ipv6_compressed', 'a.ipv6_prefixlen', 'a.ipv6_network_id']]
+                as $family => [$table, $address, $prefixlen, $network]) {
                 $query = DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')->where('p.deleted', 0);
-                $where($query, $table);
-                foreach ($query->get(['p.device_id', 'p.port_id', 'p.ifOperStatus', 'p.ifAdminStatus', 'p.ifVrf', $address . ' as address', $prefixlen . ' as prefixlen', 'a.context_name']) as $row) {
-                    $rows[] = (array) $row;
+                if ($where($query, $family) === null) {
+                    continue;
+                }
+                foreach ($query->get(['p.device_id', 'p.port_id', 'p.ifOperStatus', 'p.ifAdminStatus', 'p.ifVrf', $address . ' as address', $prefixlen . ' as prefixlen',
+                    $network . ' as network_id', 'a.context_name']) as $row) {
+                    if ($this->canSee((int) $row->device_id)) {
+                        $rows[] = (array) $row;
+                    }
                 }
             }
         } catch (\Throwable $e) {
@@ -514,9 +553,8 @@ class PathRepository extends ScopedRepository
 
             return [];
         }
-        $deviceIds ??= array_values(array_unique(array_map(fn ($row) => (int) $row['device_id'], $rows)));
         $vrfs = [];
-        foreach (array_chunk($deviceIds, 5000) as $chunk) {
+        foreach (array_chunk(array_values(array_unique(array_map(fn ($row) => (int) $row['device_id'], $rows))), 5000) as $chunk) {
             $vrfs += DB::table('vrfs')->whereIntegerInRaw('device_id', $chunk)->pluck('vrf_name', 'vrf_id')->all();
         }
 
@@ -527,6 +565,7 @@ class PathRepository extends ScopedRepository
             'prefixlen' => (int) $row['prefixlen'],
             'vrf' => (string) (($row['ifVrf'] ? ($vrfs[$row['ifVrf']] ?? '') : '') ?: ($row['context_name'] ?? '')),
             'up' => self::isUp($row['ifOperStatus'], $row['ifAdminStatus']),
+            'network_id' => (int) ($row['network_id'] ?? 0),
         ], $rows);
     }
 

@@ -13,13 +13,14 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
 /**
  * What a path trace reads of the network the user may see, and no more: for each Layer 2 segment, the LLDP/CDP links
  * outward from both of its ends until its shortest forwarding path is certain (L2Tracer::horizon()), with the few port
- * columns, the VLAN rows of the traced VLAN and the spanning tree rows of its instance on those links; the interfaces and
- * OSPF / BGP neighbors of the routing devices; the routes toward each address routed to. Per-hop details (counters,
- * URLs) are read for the hops of the answer only. Kept for the traces of one request.
+ * columns, the VLAN rows of the traced VLAN and the spanning tree rows of its instance on those links; for the routed path
+ * what L3Tracer asks as it walks (L3Data): the interfaces of the routers it reaches, the owners and subnets of an address
+ * by indexed lookups, the neighbors of the routers an estimate looks at, the routes toward each address routed to.
+ * Per-hop details (counters, URLs) are read for the hops of the answer only. Kept for the traces of one request.
  */
-class PathNetwork
+class PathNetwork implements L3Data
 {
-    public const ROUTING_ROLES = [DeviceRole::ROUTER, DeviceRole::L3SWITCH, DeviceRole::FIREWALL];
+    public const ROUTING_ROLES = L3Tracer::ROUTING_ROLES;
 
     /** Port columns of the Layer 2 graph (L2Tracer, L2Builder::uniqueLinks()). */
     public const GRAPH_COLUMNS = ['port_id', 'device_id', 'ifName', 'ifDescr', 'ifType', 'ifSpeed', 'ifOperStatus', 'ifVlan', 'ifTrunk'];
@@ -81,16 +82,13 @@ class PathNetwork
     /** @var array<int, array|null> port_id => full row (counters, url), null when not visible */
     private array $ports = [];
 
-    /** @var array<int, array> device_id => its interface addresses */
+    /** @var array<int, array> device_id => its interface addresses (link-local ones included) */
     private array $interfaces = [];
 
     /** @var array<int, string[]> device_id => addresses LibreNMS polls it on */
     private array $polled = [];
 
     private ?L3Tracer $l3 = null;
-
-    /** @var array<int, string> routing device_id => role */
-    private ?array $routers = null;
 
     private ?array $routeData = null;
 
@@ -520,47 +518,120 @@ class PathNetwork
         return $stp['index'];
     }
 
-    // ------------------------------------------------------------------ Layer 3
+    // ------------------------------------------------------------------ Layer 3 (L3Data)
 
     /**
-     * Owners of addresses, gateways and the routed path: the interfaces and neighbors of the routing devices, the
-     * routes read when a trace needs them.
+     * Owners of addresses, gateways and the routed path, on what L3Tracer asks of this network when it needs it.
      */
     public function l3(): L3Tracer
     {
-        if ($this->l3 === null) {
-            $routers = $this->routers();
-            $adjacencies = [];
-            $ids = array_keys($routers);
-            foreach ($this->topology->ospfNeighbors($ids) as $row) {
-                if (strtolower((string) $row['ospfNbrState']) === 'full') {
-                    $adjacencies[] = ['device_id' => (int) $row['device_id'], 'port_id' => (int) ($row['port_id'] ?? 0) ?: null, 'local_ip' => null,
-                        'neighbor_ip' => (string) $row['ospfNbrIpAddr'], 'kind' => 'ospf', 'vrf' => (string) ($row['context_name'] ?? '')];
-                }
+        return $this->l3 ??= new L3Tracer($this);
+    }
+
+    public function interfaces(array $deviceIds): array
+    {
+        $missing = array_values(array_diff(array_unique(array_map('intval', $deviceIds)), array_keys($this->interfaces)));
+        if ($missing) {
+            $rows = $this->repo->interfaces($missing);
+            $this->interfaces += array_fill_keys($missing, []);
+            foreach ($rows as $row) {
+                $this->interfaces[$row['device_id']][] = $row;
             }
-            foreach ($this->topology->bgpPeers($ids) as $row) {
-                if (strtolower((string) $row['bgpPeerState']) === 'established') {
-                    $adjacencies[] = ['device_id' => (int) $row['device_id'], 'port_id' => null, 'local_ip' => (string) ($row['bgpLocalAddr'] ?? ''),
-                        'neighbor_ip' => (string) $row['bgpPeerIdentifier'], 'kind' => 'bgp', 'vrf' => (string) ($row['context_name'] ?? '')];
-                }
-            }
-            $table = $this->routeTable();
-            $this->l3 = new L3Tracer($this->repo->interfaces($ids), fn (string $address) => $this->routesToward($address), fn () => $this->routeData(), $adjacencies,
-                $routers, array_map(fn ($id) => $this->name($id), array_combine($ids, $ids) ?: []),
-                fn (int $deviceId, int $portId) => $this->linkedDevices($deviceId, $portId), fn (string $address) => $this->repo->owners($address), $table['skipped']);
         }
 
-        return $this->l3;
+        return array_merge([], ...array_values(array_intersect_key($this->interfaces, array_flip($deviceIds))));
+    }
+
+    public function owners(array $addresses): array
+    {
+        return $this->repo->ownersOf($addresses);
+    }
+
+    public function subnets(string $address): array
+    {
+        return $this->repo->subnets($address);
+    }
+
+    public function peers(array $interfaces): array
+    {
+        return $this->repo->peers($interfaces);
+    }
+
+    public function adjacencies(array $deviceIds): array
+    {
+        $deviceIds = array_values(array_filter(array_unique(array_map('intval', $deviceIds)), fn ($id) => $this->repo->canSee($id)));
+        if (! $deviceIds) {
+            return [];
+        }
+        $rows = [];
+        foreach ($this->topology->ospfNeighbors($deviceIds) as $row) {
+            if (strtolower((string) $row['ospfNbrState']) === 'full') {
+                $rows[] = ['device_id' => (int) $row['device_id'], 'port_id' => (int) ($row['port_id'] ?? 0) ?: null, 'local_ip' => null,
+                    'neighbor_ip' => (string) $row['ospfNbrIpAddr'], 'kind' => 'ospf', 'vrf' => (string) ($row['context_name'] ?? '')];
+            }
+        }
+        foreach ($this->topology->bgpPeers($deviceIds) as $row) {
+            if (strtolower((string) $row['bgpPeerState']) === 'established') {
+                $rows[] = ['device_id' => (int) $row['device_id'], 'port_id' => null, 'local_ip' => (string) ($row['bgpLocalAddr'] ?? ''),
+                    'neighbor_ip' => (string) $row['bgpPeerIdentifier'], 'kind' => 'bgp', 'vrf' => (string) ($row['context_name'] ?? '')];
+            }
+        }
+
+        return $rows;
+    }
+
+    public function roles(array $deviceIds): array
+    {
+        $this->loadDevices($deviceIds);
+        $roles = [];
+        foreach ($deviceIds as $id) {
+            if (($this->devices[(int) $id] ?? null) !== null) {
+                $roles[(int) $id] = (string) ($this->devices[(int) $id]['role'] ?? DeviceRole::UNKNOWN);
+            }
+        }
+
+        return $roles;
+    }
+
+    public function linked(int $deviceId, int $portId): array
+    {
+        return $this->linkedDevices($deviceId, $portId);
+    }
+
+    /**
+     * Routes of the devices with route data that cover an address (null once ROUTE_READS addresses were read).
+     */
+    public function routes(string $address): ?array
+    {
+        if (! array_key_exists($address, $this->routes)) {
+            $data = $this->routeData();
+            $this->routes[$address] = count($this->routes) >= self::ROUTE_READS ? null : ($data ? $this->repo->routesToward($address, array_keys($data)) : []);
+        }
+
+        return $this->routes[$address];
+    }
+
+    /**
+     * Devices with routes in LibreNMS (see PathRepository::routeData()), none when the table is not read.
+     */
+    public function routeData(): array
+    {
+        return $this->routeData ??= $this->routeTable()['skipped'] ? [] : $this->repo->routeData($this->topology->deviceIds());
+    }
+
+    public function skipped(): bool
+    {
+        return $this->routeTable()['skipped'];
     }
 
     /**
      * Interface addresses of a device (any role).
      *
-     * @return array<int, array{device_id: int, port_id: int, address: string, prefixlen: int, vrf: string, up: bool}>
+     * @return array<int, array{device_id: int, port_id: int, address: string, prefixlen: int, vrf: string, up: bool, network_id: int}>
      */
     public function interfacesOf(int $deviceId): array
     {
-        return $this->interfaces[$deviceId] ??= $this->repo->interfaces([$deviceId]);
+        return $this->interfaces([$deviceId]);
     }
 
     /**
@@ -571,28 +642,6 @@ class PathNetwork
     public function pollAddresses(int $deviceId): array
     {
         return $this->polled[$deviceId] ??= $this->repo->device($deviceId)['ips'] ?? [];
-    }
-
-    /**
-     * Routing devices the user may see: device_id => role.
-     *
-     * @return array<int, string>
-     */
-    public function routers(): array
-    {
-        if ($this->routers === null) {
-            $candidates = $this->repo->routerCandidates($this->topology->deviceIds());
-            $this->loadDevices($candidates);
-            $this->routers = [];
-            foreach ($candidates as $id) {
-                $role = $this->devices[$id]['role'] ?? null;
-                if (in_array($role, self::ROUTING_ROLES, true)) {
-                    $this->routers[$id] = $role;
-                }
-            }
-        }
-
-        return $this->routers;
     }
 
     /**
@@ -609,26 +658,5 @@ class PathNetwork
         }
 
         return $this->routeTable;
-    }
-
-    /**
-     * Devices with routes in LibreNMS (see PathRepository::routeData()), none when the table is not read.
-     */
-    private function routeData(): array
-    {
-        return $this->routeData ??= $this->routeTable()['skipped'] ? [] : $this->repo->routeData($this->topology->deviceIds());
-    }
-
-    /**
-     * Routes of the devices with route data that cover an address (null once ROUTE_READS addresses were read).
-     */
-    private function routesToward(string $address): ?array
-    {
-        if (! array_key_exists($address, $this->routes)) {
-            $data = $this->routeData();
-            $this->routes[$address] = count($this->routes) >= self::ROUTE_READS ? null : ($data ? $this->repo->routesToward($address, array_keys($data)) : []);
-        }
-
-        return $this->routes[$address];
     }
 }

@@ -262,7 +262,7 @@ class PathTracerTest extends TestCase
         // a real route back closes a loop through the estimate: the way is not known, it is not a routing loop
         $net->route(6, '192.0.2.0', 24, '10.0.32.1', 61, 'static');
         $trace = $net->l3()->trace(5, null, '', '192.0.2.10');
-        $this->assertSame(['loop', 1, true], [$trace['end'], $trace['loop'], $trace['estimated_loop']]);
+        $this->assertSame(['loop', 1, true], [$trace['end'], $trace['loop'], $trace['uncertain_loop']]);
     }
 
     public function testAConnectedSubnetOnADownInterfaceDoesNotCount(): void
@@ -373,6 +373,114 @@ class PathTracerTest extends TestCase
         $trace = $net->l3()->trace(self::D1, 1110, '', '10.90.130.31');
         $this->assertSame([self::D1, PathFixture::RTR1, PathFixture::RTR2], array_column($trace['hops'], 'device_id'));
         $this->assertTrue($trace['hops'][1]['recursive']);
+    }
+
+    public function testOnlyTheRoutersTheWalkReachesAreRead(): void
+    {
+        // a router far from the path, with many interfaces
+        $net = PathFixture::campus();
+        $net->device(30, 'far', 'router');
+        for ($i = 0; $i < 20; $i++) {
+            $net->address(30, 3000 + $i, 'Gi0/' . $i, '10.30.' . $i . '.1', 24);
+        }
+
+        $trace = $net->l3(false, $data)->trace(self::D1, 1110, '', '10.90.130.31');
+        $this->assertSame('connected', $trace['end']);
+        $read = array_values(array_unique(array_merge(...$data->interfaceReads)));
+        sort($read);
+        $this->assertSame([self::D1, PathFixture::RTR1, PathFixture::RTR2, PathFixture::RTR3], $read, 'the routers on the path, not far');
+        $this->assertSame(['10.90.130.31'], $data->subnetReads, 'the gateways of the destination, for the estimate at rtr3');
+    }
+
+    public function testARouterWithARouteToTheDestinationRoutesItOnARecursiveWay(): void
+    {
+        // rtr1 learns 172.30.0.0/24 by iBGP from rtr2's loopback, resolved via rtr3; rtr3 routes 172.30.0.0/24 itself, without a route to the loopback
+        $net = self::bgp();
+        $net->route(PathFixture::RTR3, '172.30.0.0', 24, '10.90.0.7', 702, 'static');
+
+        $trace = $net->l3()->trace(PathFixture::RTR1, null, '', '172.30.0.9');
+        $this->assertSame(['connected', [PathFixture::RTR1, PathFixture::RTR3, PathFixture::RTR2]], [$trace['end'], array_column($trace['hops'], 'device_id')]);
+        [$rtr1, $rtr3] = $trace['hops'];
+        $this->assertSame(['10.255.0.2', '10.90.0.5'], [$rtr1['next_hop'], $rtr1['via']]);
+        $this->assertSame([null, '172.30.0.0/24', '10.90.0.7'], [$rtr3['toward'], $rtr3['route']['prefix'], $rtr3['next_hop']], 'plain IP: its own route');
+
+        // a BGP-free core: rtr3 has no route to the destination, but one to the loopback: toward it
+        $net = self::bgp();
+        $net->route(PathFixture::RTR3, '10.255.0.2', 32, '10.90.0.7', 702, 'ospf');
+        $trace = $net->l3()->trace(PathFixture::RTR1, null, '', '172.30.0.9');
+        $this->assertSame(['connected', [PathFixture::RTR1, PathFixture::RTR3, PathFixture::RTR2]], [$trace['end'], array_column($trace['hops'], 'device_id')]);
+        $this->assertSame(['10.255.0.2', PathFixture::RTR1, '10.255.0.2/32'], [$trace['hops'][1]['toward'], $trace['hops'][1]['toward_from'], $trace['hops'][1]['route']['prefix']]);
+
+        // neither: no route there, toward the next hop of rtr1's route
+        $net = self::bgp();
+        $net->route(PathFixture::RTR3, '10.99.0.0', 16, '10.90.0.7', 702, 'static');
+        $trace = $net->l3()->trace(PathFixture::RTR1, null, '', '172.30.0.9');
+        $this->assertSame(['no_route', '10.255.0.2', PathFixture::RTR1], [$trace['end'], end($trace['hops'])['toward'], end($trace['hops'])['toward_from']]);
+    }
+
+    public function testANextHopSeveralDevicesHaveIsNotTheOneThatLeadsBack(): void
+    {
+        // dist2 has rtr3's address 10.90.0.5 on the same /31, and rtr1's Gi0/0/2 has no LLDP neighbor: dist2 (the lower id) routes back to rtr1
+        $net = PathFixture::campus();
+        $net->address(PathFixture::DIST2, 249, 'Te1/0/49', '10.90.0.5', 31);
+        $trace = $net->l3()->trace(PathFixture::RTR1, null, '', '10.90.130.31');
+        $this->assertSame([PathFixture::RTR1, PathFixture::RTR3, PathFixture::RTR2], array_column($trace['hops'], 'device_id'));
+        $this->assertSame([PathFixture::DIST2], $trace['hops'][0]['ambiguous'], 'still a guess');
+        $this->assertSame('connected', $trace['end']);
+
+        // both lead back: the walk on from the guess loops, and that loop is uncertain
+        $net->route(PathFixture::RTR3, '10.90.130.0', 24, '10.90.0.4', 701, 'static');
+        $trace = $net->l3()->trace(PathFixture::RTR1, null, '', '10.90.130.31');
+        $this->assertSame(['loop', true], [$trace['end'], $trace['uncertain_loop']]);
+        $this->assertSame([PathFixture::RTR1, PathFixture::DIST2], array_column($trace['hops'], 'device_id'));
+    }
+
+    public function testARouteTableReadAgainAfterTheSummaryIsNotStale(): void
+    {
+        // rtr1's newest route in the summary is two days older than its last discovery
+        $net = PathFixture::campus();
+        $net->routeData[PathFixture::RTR1]['discovered'] = PathFixture::NOW + 2 * 86400;
+        $net->routeData[PathFixture::RTR1]['finished'] = PathFixture::NOW + 2 * 86400 + 60;
+
+        // the summary was read before that discovery ended: it may have read the routes again
+        $net->routeData[PathFixture::RTR1]['built'] = PathFixture::NOW + 2 * 86400 - 10;
+        $this->assertSame(L3Tracer::ROUTES_OK, $net->l3()->routeState(PathFixture::RTR1, ''));
+        // read after it: the routes were not read again
+        $net->routeData[PathFixture::RTR1]['built'] = PathFixture::NOW + 2 * 86400 + 120;
+        $this->assertSame(L3Tracer::ROUTES_STALE, $net->l3()->routeState(PathFixture::RTR1, ''));
+    }
+
+    public function testAnIpv6NeighborOnTheLinkMustRoute(): void
+    {
+        // rtr1 routes 2001:db8:130::/64 via fe80::2 out of Gi0/0/6, where LLDP sees acc1 (a switch between rtr1 and rtr3 Gi0/0/6); no link-local addresses in LibreNMS
+        $net = PathFixture::campus();
+        $net->address(PathFixture::RTR3, 703, 'Gi0/0/2', '2001:db8:130::1', 64);
+        $net->port(506, PathFixture::RTR1, 'Gi0/0/6', 1)->port(706, PathFixture::RTR3, 'Gi0/0/6', 1)->port(390, self::A1, 'Gi1/0/40', 1)->port(391, self::A1, 'Gi1/0/41', 1);
+        $net->link(506, 390)->link(706, 391);
+        $net->route(PathFixture::RTR1, '2001:db8:130::', 64, 'fe80::2', 506, 'ospf', 10);
+
+        $trace = $net->l3()->trace(PathFixture::RTR1, null, '', '2001:db8:130::25');
+        $this->assertSame(['outside', [PathFixture::RTR1]], [$trace['end'], array_column($trace['hops'], 'device_id')], 'not the switch: no router on that link is known');
+
+        // rtr1 and rtr3 share a subnet on that link: rtr3 is the router there
+        $net->address(PathFixture::RTR1, 506, 'Gi0/0/6', '2001:db8:4::1', 64)->address(PathFixture::RTR3, 706, 'Gi0/0/6', '2001:db8:4::2', 64);
+        $trace = $net->l3()->trace(PathFixture::RTR1, null, '', '2001:db8:130::25');
+        $this->assertSame(['connected', [PathFixture::RTR1, PathFixture::RTR3]], [$trace['end'], array_column($trace['hops'], 'device_id')]);
+        $this->assertSame([506, 706], [$trace['hops'][0]['out_port'], $trace['hops'][1]['in_port']]);
+    }
+
+    /**
+     * The campus with 172.30.0.0/24 on rtr2 (Gi0/0/3) and rtr2's loopback 10.255.0.2, which rtr1 learns 172.30.0.0/24 by
+     * iBGP from and reaches by OSPF via rtr3; rtr3 has a route table in LibreNMS.
+     */
+    private static function bgp(): PathFixture
+    {
+        $net = PathFixture::campus();
+        $net->address(PathFixture::RTR2, 699, 'Lo0', '10.255.0.2', 32)->address(PathFixture::RTR2, 620, 'Gi0/0/3', '172.30.0.1', 24);
+        $net->route(PathFixture::RTR1, '172.30.0.0', 24, '10.255.0.2', 0, 'bgp', 200)->route(PathFixture::RTR1, '10.255.0.2', 32, '10.90.0.5', 503, 'ospf', 30);
+        $net->route(PathFixture::RTR3, '10.90.0.4', 31, '0.0.0.0', 701, 'local', 0, null, 3);
+
+        return $net;
     }
 
     /**

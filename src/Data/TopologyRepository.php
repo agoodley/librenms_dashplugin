@@ -81,8 +81,11 @@ class TopologyRepository extends ScopedRepository
             $facts[$id]['bridge'] = true;
         }
 
+        // routed interfaces on ports LibreNMS still has (a deleted port no longer routes). HostService::routes() counts the
+        // addresses of deleted ports too, on purpose (decided in the host locator's review): the two can differ for a device
+        // with a deleted routed port
         foreach (DB::table('ipv4_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
-            ->whereIntegerInRaw('p.device_id', $ids)->where('a.ipv4_prefixlen', '<', 32)
+            ->whereIntegerInRaw('p.device_id', $ids)->where('p.deleted', 0)->where('a.ipv4_prefixlen', '<', 32)
             ->groupBy('p.device_id')->selectRaw('p.device_id, COUNT(DISTINCT a.port_id) as c')
             ->pluck('c', 'device_id') as $id => $count) {
             $facts[$id] = ($facts[$id] ?? $default);

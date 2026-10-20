@@ -20,20 +20,6 @@ class DeviceRole
 
     private const ROUTER_OS = ['iosxr', 'junos', 'vrp', 'routeros', 'vyos', 'edgeos', 'timos', 'ironware', 'xos-router', 'iosxe-router'];
 
-    private const ROUTER_HARDWARE = '/\b(isr|asr|router|mx\d|srx|ptx|ncs)/';
-
-    /**
-     * Can the device route, judged from its row alone (a firewall, a router operating system or router hardware)? The
-     * facts classify() also counts (interface subnets, routing protocols) are looked up by the caller.
-     *
-     * @param  array  $device  devices row (type, os, hardware)
-     */
-    public static function mayRoute(array $device): bool
-    {
-        return strtolower((string) ($device['type'] ?? '')) === 'firewall' || in_array(strtolower((string) ($device['os'] ?? '')), self::ROUTER_OS, true)
-            || (bool) preg_match(self::ROUTER_HARDWARE, strtolower((string) ($device['hardware'] ?? '')));
-    }
-
     /**
      * @param  array  $device  devices row (type, os, hardware)
      * @param  array{bridge?: bool, l3_interfaces?: int, routing?: bool, vlans?: int}  $facts
@@ -76,7 +62,7 @@ class DeviceRole
             return self::SWITCH;
         }
 
-        if ($l3 || in_array($os, self::ROUTER_OS, true) || preg_match(self::ROUTER_HARDWARE, $hardware)) {
+        if ($l3 || in_array($os, self::ROUTER_OS, true) || preg_match('/\b(isr|asr|router|mx\d|srx|ptx|ncs)/', $hardware)) {
             return self::ROUTER;
         }
 

@@ -201,7 +201,8 @@ class PathAssembler
             $address = PathService::display((string) ($hop['via'] ?? $hop['next_hop']));
             $this->log->note('warning', $address . ', the next hop of ' . $name . ', is an address of ' . (count($hop['ambiguous']) + 1) . ' devices you can see ('
                 . implode(', ', array_map(fn ($id) => $this->network->name((int) $id), array_slice($hop['ambiguous'], 0, 3))) . (count($hop['ambiguous']) > 3 ? ', ...' : '')
-                . ' as well): neither the LLDP/CDP neighbors of its egress port nor the subnet tell which, so the path takes the first.');
+                . ' as well): neither the LLDP/CDP neighbors of its egress port nor the subnet tell which, so the path goes on at the first whose own route'
+                . ' does not lead back, a guess.');
         }
     }
 
@@ -320,22 +321,35 @@ class PathAssembler
         $id = (int) $last['device_id'];
         $name = $this->network->name($id);
         $to = PathService::display((string) $b['ip']);
+        $devices = array_map(fn ($hop) => (int) $hop['device_id'], $trace['hops']);
         $loopNames = fn () => implode(' → ', array_map(fn ($hop) => $this->network->name((int) $hop['device_id']), array_slice($trace['hops'], (int) $trace['loop'])))
             . ' → ' . $this->network->name((int) $trace['hops'][(int) $trace['loop']]['device_id']);
+        // a router forwarding toward a recursive next hop, as it has no route to B itself
+        $toward = $last['toward'] !== null ? ' nor ' . PathService::display((string) $last['toward']) . ' (the next hop the route of '
+            . $this->network->name((int) $last['toward_from']) . ' points at)' : '';
+        // reached through an estimated or guessed next hop: it may not be on the real path
+        $uncertain = ' It was reached through an estimated or guessed next hop (see the notes and the hops), so the real path may not cross it.';
+        $missing = "The route table of $name in LibreNMS has no prefix that covers $to$toward and no default route";
         match (true) {
-            $trace['end'] === 'no_route' => $this->log->add(Finding::CRITICAL, 'no_route', "$name has no route to $to",
-                "The route table of $name in LibreNMS has no prefix that covers $to and no default route, so it drops the traffic.",
+            $trace['end'] === 'no_route' && $trace['uncertain'] => $this->log->add(Finding::WARNING, 'path_unknown', "the way on from $name toward $to is not known",
+                $missing . '.' . $uncertain, 'Let LibreNMS read the route tables of the routers before it, or tell the routers with the next hop\'s address apart, to follow the real path.', $devices),
+            $trace['end'] === 'no_route' => $this->log->add(Finding::CRITICAL, 'no_route', "$name has no route to $to" . ($toward !== '' ? ' nor to its next hop ' . PathService::display((string) $last['toward']) : ''),
+                $missing . ', so it drops the traffic.',
                 'Add a route (or a default route) toward the destination, or check the routing protocol that should provide it.', [$id]),
+            $trace['end'] === 'blackhole' && $trace['uncertain'] => $this->log->add(Finding::WARNING, 'path_unknown', "the way on from $name toward $to is not known",
+                "The best route of $name toward " . ($last['toward'] !== null ? PathService::display((string) $last['toward']) : $to) . ' (' . ($last['route']['prefix'] ?? '?') . ') is a reject / null route.' . $uncertain,
+                'Let LibreNMS read the route tables of the routers before it, or tell the routers with the next hop\'s address apart, to follow the real path.', $devices),
             $trace['end'] === 'blackhole' => $this->log->add(Finding::CRITICAL, 'blackhole_route', "$name discards traffic to $to",
-                "The best route of $name toward $to (" . ($last['route']['prefix'] ?? '?') . ') is a reject / null route.',
+                "The best route of $name toward " . ($last['toward'] !== null ? PathService::display((string) $last['toward']) . ' (the next hop the route of '
+                    . $this->network->name((int) $last['toward_from']) . ' points at)' : $to) . ' (' . ($last['route']['prefix'] ?? '?') . ') is a reject / null route.',
                 'Remove the null route, or add a more specific route if the destination should be reachable.', [$id]),
-            $trace['end'] === 'loop' && $trace['estimated_loop'] => $this->log->add(Finding::WARNING, 'path_unknown', "the way on toward $to is not known",
-                'Following the routes leads back to ' . $this->network->name((int) $trace['hops'][(int) $trace['loop']]['device_id']) . ' (' . $loopNames() . '), but an estimated next hop is'
-                . ' part of that way: the router without routes in LibreNMS may forward elsewhere.',
-                'Let LibreNMS read the route tables of the estimated routers (see their estimates) to follow the real path.', array_map(fn ($hop) => (int) $hop['device_id'], $trace['hops'])),
+            $trace['end'] === 'loop' && $trace['uncertain_loop'] => $this->log->add(Finding::WARNING, 'path_unknown', "the way on toward $to is not known",
+                'Following the routes leads back to ' . $this->network->name((int) $trace['hops'][(int) $trace['loop']]['device_id']) . ' (' . $loopNames() . '), but an estimated'
+                . ' or guessed next hop is part of that way: the router without routes in LibreNMS, or the one with the next hop\'s address, may be another.',
+                'Let LibreNMS read the route tables of the estimated routers, or tell the routers with the next hop\'s address apart, to follow the real path.', $devices),
             $trace['end'] === 'loop' => $this->log->add(Finding::CRITICAL, 'routing_loop', "routing loop toward $to",
                 'The next hops lead back to ' . $this->network->name((int) $trace['hops'][(int) $trace['loop']]['device_id']) . ': ' . $loopNames() . '.',
-                'Check the routes of these routers toward the destination: they point at each other.', array_map(fn ($hop) => (int) $hop['device_id'], $trace['hops'])),
+                'Check the routes of these routers toward the destination: they point at each other.', $devices),
             $trace['end'] === 'limit' => $this->log->add(Finding::WARNING, 'hop_limit', 'more than ' . L3Tracer::MAX_HOPS . ' routers toward ' . $to,
                 'The path was followed for ' . L3Tracer::MAX_HOPS . ' routers without reaching the destination.', 'Check for a routing loop through devices you cannot see.', []),
             default => $this->log->add(Finding::WARNING, 'path_unknown', "the way on from $name toward $to is not known",

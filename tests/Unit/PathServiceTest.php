@@ -262,7 +262,7 @@ class PathServiceTest extends TestCase
         $this->assertNotContains('routing_loop', self::codes($result));
         $finding = array_column($result['findings'], null, 'code')['path_unknown'];
         $this->assertSame('warning', $finding['severity']);
-        $this->assertStringContainsString('an estimated next hop is part of that way', $finding['detail']);
+        $this->assertStringContainsString('an estimated or guessed next hop is part of that way', $finding['detail']);
     }
 
     public function testAnAddressOfSeveralDevicesIsTheOneThePathReaches(): void
@@ -301,6 +301,43 @@ class PathServiceTest extends TestCase
         $this->assertTrue($result['complete'], 'still traced from where it was seen');
     }
 
+    public function testATraceWithinASubnetReadsNoRouterInterfaces(): void
+    {
+        $result = self::service(null, null, [], $repo)->trace(['a' => '10.90.110.11', 'b' => '10.90.110.12']);
+
+        $this->assertSame(['l2', true], [$result['mode'], $result['complete']]);
+        $this->assertSame([], $repo->interfaceReads, 'the gateway is found by the subnet of A');
+        $this->assertSame(['10.90.110.11'], $repo->subnetReads);
+    }
+
+    public function testNoRouteTowardARecursiveNextHopNamesIt(): void
+    {
+        // rtr1 learns 172.30.0.0/24 by iBGP from rtr2's loopback via rtr3, which has routes but neither one to it nor to the loopback
+        $net = PathFixture::campus();
+        $net->address(PathFixture::RTR2, 699, 'Lo0', '10.255.0.2', 32)->address(PathFixture::RTR2, 620, 'Gi0/0/3', '172.30.0.1', 24);
+        $net->route(PathFixture::RTR1, '172.30.0.0', 24, '10.255.0.2', 0, 'bgp', 200)->route(PathFixture::RTR1, '10.255.0.2', 32, '10.90.0.5', 503, 'ospf', 30)
+            ->route(PathFixture::RTR3, '10.99.0.0', 16, '10.90.0.7', 702, 'static');
+
+        $result = self::service($net)->trace(['a' => '10.90.110.11', 'b' => '172.30.0.1']);
+        $finding = array_column($result['findings'], null, 'code')['no_route'];
+        $this->assertSame('rtr3 has no route to 172.30.0.1 nor to its next hop 10.255.0.2', $finding['title']);
+        $this->assertStringContainsString('no prefix that covers 172.30.0.1 nor 10.255.0.2 (the next hop the route of rtr1 points at)', $finding['detail']);
+        $this->assertSame('10.255.0.2', array_column($result['hops'], null, 'name')['rtr3']['toward']);
+    }
+
+    public function testAWalkOnFromAGuessedNextHopIsNotCritical(): void
+    {
+        // dist2 has rtr3's address 10.90.0.5 too and rtr1's Gi0/0/2 has no LLDP neighbor; both of them route the branch back to rtr1
+        $net = PathFixture::campus();
+        $net->address(PathFixture::DIST2, 249, 'Te1/0/49', '10.90.0.5', 31);
+        $net->route(PathFixture::RTR3, '10.90.130.0', 24, '10.90.0.4', 701, 'static');
+
+        $result = self::service($net)->trace(['a' => '10.90.110.11', 'b' => '10.90.130.31']);
+        $this->assertNotContains('routing_loop', self::codes($result));
+        $this->assertSame('warning', array_column($result['findings'], null, 'code')['path_unknown']['severity']);
+        $this->assertStringContainsString('10.90.0.5, the next hop of rtr1, is an address of 2 devices you can see (rtr3 as well)', implode(' ', array_column($result['notes'], 'text')));
+    }
+
     public function testASingleSpanningTreeInstanceForAVlanIsSaidSo(): void
     {
         // acc1 runs one RSTP / MSTP instance: LibreNMS has it as the common instance
@@ -330,6 +367,12 @@ final class FakePathRepository extends PathRepository
 
     /** @var array<int, int[]> devices whose links each read asked for */
     public array $linkReads = [];
+
+    /** @var array<int, int[]> devices whose interfaces each read asked for */
+    public array $interfaceReads = [];
+
+    /** @var string[] addresses whose subnets were asked for */
+    public array $subnetReads = [];
 
     /**
      * @param  int[]  $visible
@@ -405,20 +448,42 @@ final class FakePathRepository extends PathRepository
             && ($keys[$row['device_id']] ?? null) === StpIndex::vlanKey($row['vlan'])));
     }
 
-    public function routerCandidates(array $ids): array
-    {
-        return array_values(array_filter($ids, fn ($id) => $this->canSee($id) && in_array($this->net->devices[$id]['role'] ?? '', ['router', 'l3switch', 'firewall'], true)));
-    }
-
     public function interfaces(array $deviceIds): array
     {
-        return array_values(array_filter($this->net->interfaces, fn ($interface) => in_array($interface['device_id'], $deviceIds, true) && $this->canSee($interface['device_id'])));
+        $this->interfaceReads[] = $deviceIds;
+
+        return $this->visibleRows(fn ($interface) => in_array($interface['device_id'], $deviceIds, true));
     }
 
-    public function owners(string $address): array
+    public function ownersOf(array $addresses): array
     {
-        return array_values(array_filter($this->net->interfaces, fn ($interface) => Cidr::canonical($interface['address']) === Cidr::canonical($address)
-            && $this->canSee($interface['device_id'])));
+        $addresses = array_map(fn ($address) => Cidr::canonical($address), $addresses);
+
+        return $this->visibleRows(fn ($interface) => in_array(Cidr::canonical($interface['address']), $addresses, true));
+    }
+
+    public function subnets(string $address): array
+    {
+        $this->subnetReads[] = $address;
+
+        return $this->visibleRows(fn ($interface) => $interface['prefixlen'] < (str_contains($address, ':') ? 128 : 32) && ! str_starts_with($interface['address'], 'fe80')
+            && Cidr::family($interface['address']) === Cidr::family($address) && Cidr::contains((string) Cidr::network($interface['address'], $interface['prefixlen']), $address));
+    }
+
+    public function peers(array $interfaces): array
+    {
+        $networks = array_map(fn ($interface) => Cidr::network($interface['address'], $interface['prefixlen']), $interfaces);
+
+        return $this->visibleRows(fn ($interface) => ! str_starts_with($interface['address'], 'fe80') && in_array(Cidr::network($interface['address'], $interface['prefixlen']), $networks, true));
+    }
+
+    /**
+     * Interface rows (with a network id, as LibreNMS has them) of devices the user may see.
+     */
+    private function visibleRows(\Closure $filter): array
+    {
+        return array_values(array_map(fn ($interface) => $interface + ['network_id' => 0, 'up' => true],
+            array_filter($this->net->interfaces, fn ($interface) => $this->canSee($interface['device_id']) && $filter($interface))));
     }
 
     public function routeData(array $deviceIds): array
