@@ -598,6 +598,28 @@
     };
 
     /**
+     * vis-network 9 turns a link label along its link (font.align 'middle') by moving the canvas to the label and
+     * rotating it, but skips that when the angle is 0: the label of a horizontal link drawn right to left (two
+     * devices on one level of the hierarchical layout) then lands on the canvas origin. A full turn draws it in place.
+     */
+    function fixEdgeLabelRotation(network) {
+        var ids = Object.keys(network.body.edges);
+        var proto = ids.length ? Object.getPrototypeOf(network.body.edges[ids[0]]) : null;
+        if (!proto || typeof proto._getRotation !== 'function' || proto._getRotation.topologyFixed) {
+            return;
+        }
+        var getRotation = proto._getRotation;
+        proto._getRotation = function (ctx) {
+            var rotation = getRotation.call(this, ctx);
+            if (rotation && rotation.angle === 0 && this.options.font.align !== 'horizontal') {
+                rotation.angle = 2 * Math.PI;
+            }
+            return rotation;
+        };
+        proto._getRotation.topologyFixed = true;
+    }
+
+    /**
      * (Re)create the vis-network from the loaded data: saved positions win over the hierarchical
      * or organic layout; organic layouts are frozen once stabilized so devices stay where dragged.
      * @param {boolean} relayout  ignore saved positions
@@ -669,6 +691,7 @@
         };
 
         this.network = new window.vis.Network(this.container, {nodes: this.nodes, edges: this.edges}, options);
+        fixEdgeLabelRotation(this.network);
         this.network.on('beforeDrawing', function (ctx) {
             self.drawBackground(ctx);
         });
