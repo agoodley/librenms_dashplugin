@@ -117,8 +117,18 @@
             <button id="topo-fit" type="button" class="btn btn-default" title="Fit to screen"><i class="fa fa-expand"></i></button>
             <button id="topo-save-layout" type="button" class="btn btn-default" title="Save device positions (this browser)"><i class="fa fa-save"></i></button>
             <button id="topo-reset-layout" type="button" class="btn btn-default" title="Reset layout"><i class="fa fa-undo"></i></button>
-            <button id="topo-export-png" type="button" class="btn btn-default" title="Export PNG"><i class="fa fa-image"></i></button>
-            <button id="topo-export-csv" type="button" class="btn btn-default" title="Export links as CSV"><i class="fa fa-table"></i></button>
+            <div class="btn-group" id="topo-export">
+                <button type="button" class="btn btn-default dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" title="Export">
+                    <i class="fa fa-download"></i> <span class="caret"></span>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-right">
+                    <li class="dropdown-header">This map as drawn</li>
+                    <li><a href="#" id="topo-export-png"><i class="fa fa-image fa-fw"></i> PNG image</a></li>
+                    <li><a href="#" id="topo-export-drawio" title="Opens in draw.io (diagrams.net), which also exports it to Visio"><i class="fa fa-diagram-project fa-fw"></i> draw.io diagram (.drawio)</a></li>
+                    <li><a href="#" id="topo-export-graphml" title="Opens in yEd with the positions and labels of this map"><i class="fa fa-share-nodes fa-fw"></i> GraphML for yEd (.graphml)</a></li>
+                    <li><a href="#" id="topo-export-csv"><i class="fa fa-table fa-fw"></i> Links as CSV</a></li>
+                </ul>
+            </div>
             <button id="topo-fullscreen" type="button" class="btn btn-default" title="Full screen"><i class="fa fa-arrows-alt"></i></button>
         </div>
     </div>

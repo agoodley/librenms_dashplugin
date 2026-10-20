@@ -364,6 +364,7 @@
         this.on('topo-export-csv', function () {
             self.exportCsv();
         });
+        this.bindExports();
         this.on('topo-fullscreen', function () {
             var wrapper = document.getElementById('topo-app');
             wrapper.classList.toggle('topo-fullscreen');
@@ -2159,13 +2160,423 @@
         this.download('data:text/csv;charset=utf-8,' + encodeURIComponent(csv), this.fileBase() + '.csv');
     };
 
+    // ------------------------------------------------------------------ diagram files (draw.io, GraphML for yEd)
+
+    /**
+     * Text without what XML 1.0 does not allow: control characters other than tab and line breaks,
+     * lone surrogates and U+FFFE / U+FFFF.
+     */
+    function xmlClean(value) {
+        var text = String(value === null || value === undefined ? '' : value);
+        var clean = '';
+        for (var i = 0; i < text.length; i++) {
+            var code = text.charCodeAt(i);
+            if (code >= 0xD800 && code <= 0xDBFF) {
+                var next = text.charCodeAt(i + 1);
+                if (next >= 0xDC00 && next <= 0xDFFF) {
+                    clean += text.charAt(i) + text.charAt(i + 1);
+                    i++;
+                }
+                continue;
+            }
+            if ((code < 0x20 && code !== 0x09 && code !== 0x0A && code !== 0x0D) || (code >= 0xDC00 && code <= 0xDFFF) || code === 0xFFFE || code === 0xFFFF) {
+                continue;
+            }
+            clean += text.charAt(i);
+        }
+        return clean;
+    }
+
+    /**
+     * XML attribute value; line breaks become character references, which a parser keeps (it turns
+     * literal ones into spaces).
+     */
+    function xmlAttr(value) {
+        return xmlClean(value).replace(/[&<>"'\t\n\r]/g, function (c) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;', '\t': '&#x9;', '\n': '&#xa;', '\r': '&#xd;'}[c];
+        });
+    }
+
+    function xmlText(value) {
+        return xmlClean(value).replace(/[&<>]/g, function (c) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c];
+        });
+    }
+
+    /**
+     * Coordinate or size for the files, two decimals.
+     */
+    function coordinate(value) {
+        return String(Math.round(Number(value) * 100) / 100);
+    }
+
+    /**
+     * Mix a #rrggbb color with white: what it looks like at this opacity on a white page.
+     */
+    function faded(hex, opacity) {
+        if (opacity >= 1 || !/^#[0-9a-f]{6}$/i.test(hex)) {
+            return hex;
+        }
+        var num = parseInt(hex.slice(1), 16);
+        var mix = function (channel) {
+            return Math.round(channel * opacity + 255 * (1 - opacity));
+        };
+        return '#' + ((1 << 24) + (mix(num >> 16) << 16) + (mix((num >> 8) & 0xff) << 8) + mix(num & 0xff)).toString(16).slice(1);
+    }
+
+    /**
+     * Shape of a role in the files: draw.io's Cisco stencil (null: a basic shape), the yEd shape, and
+     * width and height (the stencil's proportions) for a monitored device.
+     */
+    var DIAGRAM_SHAPES = {
+        switch: {drawio: 'mxgraph.cisco.switches.workgroup_switch', yed: 'rectangle', w: 50, h: 25},
+        l3switch: {drawio: 'mxgraph.cisco.switches.layer_3_switch', yed: 'rectangle3d', w: 44, h: 44},
+        router: {drawio: 'mxgraph.cisco.routers.router', yed: 'ellipse', w: 50, h: 34},
+        firewall: {drawio: 'mxgraph.cisco.security.firewall', yed: 'octagon', w: 22, h: 50},
+        wireless: {drawio: 'mxgraph.cisco.misc.access_point', yed: 'triangle', w: 50, h: 23},
+        server: {drawio: 'mxgraph.cisco.servers.fileserver', yed: 'rectangle', w: 34, h: 50},
+        phone: {drawio: 'mxgraph.cisco.modems_and_phones.ip_phone', yed: 'roundrectangle', w: 50, h: 28},
+        cloud: {drawio: 'mxgraph.cisco.storage.cloud', yed: 'hexagon', w: 70, h: 40},
+        other: {drawio: null, yed: 'roundrectangle', w: 40, h: 30},
+        unknown: {drawio: null, yed: 'ellipse', w: 32, h: 32}
+    };
+
+    /**
+     * Wire the diagram exports of the Export menu.
+     */
+    TopologyMap.prototype.bindExports = function () {
+        var self = this;
+        this.on('topo-export-drawio', function () {
+            self.exportDiagram('drawio');
+        });
+        this.on('topo-export-graphml', function () {
+            self.exportDiagram('graphml');
+        });
+    };
+
+    /**
+     * Download the map as a draw.io or GraphML (yEd) file.
+     */
+    TopologyMap.prototype.exportDiagram = function (format) {
+        if (!this.network || !this.data) {
+            return;
+        }
+        if (format === 'drawio') {
+            this.downloadText(this.drawioXml(), 'application/vnd.jgraph.mxfile', this.fileBase() + '.drawio');
+        } else {
+            this.downloadText(this.graphmlXml(), 'application/graphml+xml', this.fileBase() + '.graphml');
+        }
+    };
+
+    /**
+     * Let the browser save text as a file (a Blob: large maps exceed what a data URI may hold).
+     */
+    TopologyMap.prototype.downloadText = function (text, type, filename) {
+        var url = window.URL.createObjectURL(new Blob([text], {type: type + ';charset=utf-8'}));
+        this.download(url, filename);
+        setTimeout(function () {
+            window.URL.revokeObjectURL(url);
+        }, 30000);
+    };
+
+    /**
+     * The map as drawn, for the diagram files: each node at its position on the canvas, each link with
+     * the color, width, dashes and label it is drawn with (color by, link labels, STP overlay, VLAN
+     * dimming as chosen) and the interface labels at its ends when they are on. A failure simulation
+     * is left out: the files show the network as it is.
+     *
+     * @return {{nodes: Array, edges: Array}}
+     */
+    TopologyMap.prototype.diagram = function () {
+        var self = this;
+        var positions = this.network.getPositions();
+        var slots = this.labelSlots(positions);
+        var simMap = this.simMap;
+        var nodes = [];
+        var edges = [];
+        this.simMap = {nodes: {}, edges: {}};
+        try {
+            this.nodes.forEach(function (visNode) {
+                var position = positions[visNode.id];
+                if (position) {
+                    nodes.push({id: visNode.id, x: position.x, y: position.y, label: String(visNode.label === undefined ? '' : visNode.label),
+                        opacity: visNode.opacity === undefined ? 1 : visNode.opacity, data: visNode.data});
+                }
+            });
+            this.edges.forEach(function (drawn) {
+                var from = positions[drawn.from];
+                var to = positions[drawn.to];
+                if (!from || !to) {
+                    return;
+                }
+                var edge = drawn.data;
+                var style = self.visEdge(edge);
+                var length = Math.sqrt((to.x - from.x) * (to.x - from.x) + (to.y - from.y) * (to.y - from.y)) || 1;
+                var ends = [];
+                if (self.view.interfaceLabels) {
+                    ['a', 'b'].forEach(function (side) {
+                        var label = self.endLabel(edge[side]);
+                        if (label) {
+                            var t = Math.min(0.45, Math.max(0.1, (slots[drawn.id + '|' + side] || 56) / length));
+                            ends.push({side: side, t: side === 'a' ? t : 1 - t, text: label.lines.join('\n'), accent: label.accent});
+                        }
+                    });
+                }
+                edges.push({
+                    id: drawn.id, from: drawn.from, to: drawn.to, data: edge, ends: ends,
+                    color: style.color.color, opacity: style.color.opacity === undefined ? 1 : style.color.opacity,
+                    width: style.width, dashes: style.dashes || null, label: style.label === undefined ? '' : String(style.label),
+                    arrows: String(style.arrows || ''),
+                    bend: style.smooth && style.smooth.enabled ? self.edgePoint(drawn.id, from, to, 0.5) : null
+                });
+            });
+        } finally {
+            this.simMap = simMap;
+        }
+        return {nodes: nodes, edges: edges};
+    };
+
+    /**
+     * Interface label of a link end, as drawOverlays() draws it: the interface with its STP port role
+     * (STP overlay on) and, on the L3 map, its first address; accent marks a blocking port role.
+     */
+    TopologyMap.prototype.endLabel = function (endpoint) {
+        if (!endpoint) {
+            return null;
+        }
+        var stp = this.mode === 'l2' && this.view.stp ? endpoint.stp : null;
+        var lines = [];
+        var name = endpoint.short || endpoint.name;
+        if (name) {
+            lines.push(name + (stp && STP_TAGS[stp.role] ? ' [' + STP_TAGS[stp.role] + ']' : ''));
+        }
+        if (this.mode === 'l3' && endpoint.ips && endpoint.ips.length) {
+            lines.push(endpoint.ips[0] + (endpoint.ips.length > 1 ? ' +' + (endpoint.ips.length - 1) : ''));
+        }
+        return lines.length ? {lines: lines, accent: stp && (stp.role === 'alternate' || stp.role === 'backup' || stp.role === 'broken') ? '#d35400' : null} : null;
+    };
+
+    /**
+     * Shape of a diagram node: role, fill color as on the map (status, unmanaged), size and label.
+     */
+    TopologyMap.prototype.diagramShape = function (node) {
+        var data = node.data;
+        if (data.type === 'subnet') {
+            var lines = node.label.split('\n');
+            var longest = Math.max.apply(null, lines.map(function (line) {
+                return line.length;
+            }));
+            return {role: 'subnet', w: Math.max(70, longest * 7 + 14), h: lines.length * 15 + 9, color: '#fff6d5', border: '#c9a227'};
+        }
+        var role = data.type === 'as' ? 'cloud' : (DIAGRAM_SHAPES[data.role] ? data.role : 'unknown');
+        var color = STATUS_COLORS[data.status] || STATUS_COLORS.unknown;
+        if (data.managed === false && data.status === 'unknown') {
+            color = '#8b9cad';
+        }
+        if (role === 'firewall' && color === STATUS_COLORS.up) {
+            color = '#c0562b';
+        }
+        var scale = data.managed || role === 'cloud' ? 1 : 0.68;
+        return {role: role, w: DIAGRAM_SHAPES[role].w * scale, h: DIAGRAM_SHAPES[role].h * scale, color: color, border: shade(color, -45)};
+    };
+
+    /**
+     * Properties of a node or link kept in the files (draw.io "Edit Data", yEd description): what
+     * identifies it in LibreNMS.
+     *
+     * @return {Array<Array<string>>} [name, value] pairs with a value
+     */
+    TopologyMap.prototype.diagramProperties = function (item, isEdge) {
+        var data = item.data;
+        var pairs;
+        if (!isEdge) {
+            pairs = data.type === 'subnet'
+                ? [['network', data.network], ['vrf', data.vrf], ['devices', data.devices]]
+                : [['name', data.name], ['device_id', data.device_id], ['hostname', data.hostname], ['role', data.role], ['status', data.status],
+                    ['hardware', data.hardware], ['os', data.os], ['version', data.managed ? data.version : ''], ['location', data.location],
+                    ['platform', data.platform], ['peers', (data.peers || []).join(', ')]];
+        } else {
+            var lag = data.lag ? (data.lag.a || '-') + ' / ' + (data.lag.b || '-') + ' (' + data.lag.members + ' members)' : '';
+            pairs = [['from', this.nodeName(data.from)], ['port_a', data.a ? data.a.name : ''], ['to', this.nodeName(data.to)], ['port_b', data.b ? data.b.name : ''],
+                ['kind', data.kind], ['speed', data.speed ? formatSpeed(data.speed) + 'bps' : ''], ['aggregate', lag], ['status', data.status],
+                ['state', data.state], ['network', data.network], ['vrf', data.vrf]];
+        }
+        return pairs.filter(function (pair) {
+            return pair[1] !== null && pair[1] !== undefined && pair[1] !== '';
+        }).map(function (pair) {
+            return [pair[0], String(pair[1])];
+        });
+    };
+
+    /**
+     * Absolute URL of a device page, or ''.
+     */
+    function absoluteUrl(url) {
+        if (!url) {
+            return '';
+        }
+        try {
+            return new URL(url, window.location.href).href;
+        } catch (e) {
+            return '';
+        }
+    }
+
+    /**
+     * draw.io (diagrams.net) file of the map, uncompressed: devices as draw.io's Cisco shapes colored
+     * by status, links with their style and labels, and the interface names as labels at both ends.
+     * Links come first so the devices are drawn over them, as on the map.
+     */
+    TopologyMap.prototype.drawioXml = function () {
+        var self = this;
+        var diagram = this.diagram();
+        var ids = {};
+        var cells = [];
+        diagram.nodes.forEach(function (node, index) {
+            ids[node.id] = 'n' + index;
+        });
+
+        diagram.edges.forEach(function (edge, index) {
+            var id = 'e' + index;
+            var style = ['endArrow=' + (/\bto\b/.test(edge.arrows) ? 'classic' : 'none'), 'startArrow=' + (/\bfrom\b/.test(edge.arrows) ? 'classic' : 'none'),
+                'html=0', 'rounded=0', 'strokeColor=' + edge.color, 'strokeWidth=' + coordinate(edge.width), 'fontSize=10', 'fontColor=#333333', 'labelBackgroundColor=#ffffff'];
+            if (edge.dashes) {
+                style.push('dashed=1', 'dashPattern=' + edge.dashes.join(' '));
+            }
+            if (edge.opacity < 1) {
+                style.push('opacity=' + Math.round(edge.opacity * 100));
+            }
+            if (edge.bend) {
+                style.push('curved=1');
+            }
+            cells.push('<object id="' + id + '" label="' + xmlAttr(edge.label) + '"' + self.drawioAttributes(edge, true) + '>' +
+                '<mxCell style="' + xmlAttr(style.join(';') + ';') + '" edge="1" parent="1" source="' + ids[edge.from] + '" target="' + ids[edge.to] + '">' +
+                '<mxGeometry relative="1" as="geometry">' +
+                (edge.bend ? '<Array as="points"><mxPoint x="' + coordinate(edge.bend.x) + '" y="' + coordinate(edge.bend.y) + '"/></Array>' : '') +
+                '</mxGeometry></mxCell></object>');
+            edge.ends.forEach(function (end) {
+                var color = end.accent || '#333333';
+                cells.push('<mxCell id="' + id + end.side + '" value="' + xmlAttr(end.text) + '" style="' +
+                    xmlAttr('edgeLabel;html=0;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;fontColor=' + color +
+                        ';labelBackgroundColor=#ffffff;labelBorderColor=' + (end.accent || '#a0a0a0') + ';') +
+                    '" vertex="1" connectable="0" parent="' + id + '"><mxGeometry x="' + coordinate(end.t * 2 - 1) + '" relative="1" as="geometry">' +
+                    '<mxPoint as="offset"/></mxGeometry></mxCell>');
+            });
+        });
+
+        diagram.nodes.forEach(function (node) {
+            var shape = self.diagramShape(node);
+            var style;
+            if (shape.role === 'subnet') {
+                style = 'rounded=1;arcSize=12;whiteSpace=wrap;html=0;fillColor=' + shape.color + ';strokeColor=' + shape.border +
+                    ';strokeWidth=1.5;fontFamily=Courier New;fontSize=11;fontColor=#222222;';
+            } else {
+                var stencil = DIAGRAM_SHAPES[shape.role].drawio;
+                style = (stencil ? 'shape=' + stencil + ';sketch=0;pointerEvents=1;dashed=0;outlineConnect=0;strokeColor=#ffffff;strokeWidth=2;'
+                    : (shape.role === 'unknown' ? 'ellipse;' : 'rounded=1;') + 'strokeColor=' + shape.border + ';strokeWidth=1;') +
+                    'html=0;fillColor=' + shape.color + ';verticalLabelPosition=bottom;verticalAlign=top;align=center;' +
+                    'fontSize=' + (node.data.managed ? 12 : 11) + ';fontColor=#222222;';
+            }
+            if (node.opacity < 1) {
+                style += 'opacity=' + Math.round(node.opacity * 100) + ';textOpacity=' + Math.round(Math.max(node.opacity, 0.5) * 100) + ';';
+            }
+            var link = absoluteUrl(node.data.url);
+            cells.push('<object id="' + ids[node.id] + '" label="' + xmlAttr(node.label) + '" node="' + xmlAttr(node.id) + '"' +
+                (link ? ' link="' + xmlAttr(link) + '"' : '') + self.drawioAttributes(node, false) + '>' +
+                '<mxCell style="' + xmlAttr(style) + '" vertex="1" parent="1">' +
+                '<mxGeometry x="' + coordinate(node.x - shape.w / 2) + '" y="' + coordinate(node.y - shape.h / 2) + '" width="' + coordinate(shape.w) +
+                '" height="' + coordinate(shape.h) + '" as="geometry"/></mxCell></object>');
+        });
+
+        var name = this.mode === 'l2' ? 'Layer 2 map' : 'Layer 3 map';
+        return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+            '<mxfile host="LibreNMS" agent="LibreNMS topology plugin" modified="' + new Date().toISOString() + '" type="device">' +
+            '<diagram id="topology-' + this.mode + '" name="' + xmlAttr(name) + '">' +
+            '<mxGraphModel grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" math="0" shadow="0">' +
+            '<root><mxCell id="0"/><mxCell id="1" parent="0"/>' + cells.join('') + '</root></mxGraphModel></diagram></mxfile>\n';
+    };
+
+    /**
+     * Properties as attributes of a draw.io <object> (shown by "Edit Data").
+     */
+    TopologyMap.prototype.drawioAttributes = function (item, isEdge) {
+        return this.diagramProperties(item, isEdge).filter(function (pair) {
+            return ['id', 'label', 'link', 'node', 'placeholders', 'tooltip'].indexOf(pair[0]) === -1;
+        }).map(function (pair) {
+            return ' ' + pair[0] + '="' + xmlAttr(pair[1]) + '"';
+        }).join('');
+    };
+
+    /**
+     * GraphML file of the map with yEd's graphics: shapes by role colored by status, positions and
+     * labels as on the map, links with their color, width, dashes, arrows and labels (center and both
+     * ends), so yEd opens it without a new layout. The properties go into the descriptions.
+     */
+    TopologyMap.prototype.graphmlXml = function () {
+        var self = this;
+        var diagram = this.diagram();
+        var ids = {};
+        var out = [];
+        var label = function (text, attributes, border) {
+            return '<y:EdgeLabel alignment="center" fontFamily="Dialog" fontSize="10" fontStyle="plain" hasBackgroundColor="true" backgroundColor="#FFFFFF" ' +
+                (border ? 'hasLineColor="true" lineColor="' + border + '"' : 'hasLineColor="false"') + ' visible="true" ' + attributes + '>' + xmlText(text) + '</y:EdgeLabel>';
+        };
+        var description = function (item, isEdge) {
+            return self.diagramProperties(item, isEdge).map(function (pair) {
+                return pair[0] + ': ' + pair[1];
+            }).join('\n');
+        };
+
+        diagram.nodes.forEach(function (node, index) {
+            var id = ids[node.id] = 'n' + index;
+            var shape = self.diagramShape(node);
+            var subnet = shape.role === 'subnet';
+            var link = absoluteUrl(node.data.url);
+            out.push('<node id="' + id + '"><data key="d5">' + xmlText(node.id) + '</data>' + (link ? '<data key="d1">' + xmlText(link) + '</data>' : '') +
+                '<data key="d2">' + xmlText(description(node, false)) + '</data><data key="d0"><y:ShapeNode>' +
+                '<y:Geometry height="' + coordinate(shape.h) + '" width="' + coordinate(shape.w) + '" x="' + coordinate(node.x - shape.w / 2) + '" y="' + coordinate(node.y - shape.h / 2) + '"/>' +
+                '<y:Fill color="' + faded(shape.color, node.opacity).toUpperCase() + '" transparent="false"/>' +
+                '<y:BorderStyle color="' + faded(shape.border, node.opacity).toUpperCase() + '" type="line" width="' + (subnet ? '1.5' : '1.0') + '"/>' +
+                '<y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="' + (subnet ? 'Monospaced' : 'Dialog') + '" fontSize="' + (subnet ? 11 : (node.data.managed ? 12 : 11)) +
+                '" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" textColor="' + faded('#222222', Math.max(node.opacity, 0.5)).toUpperCase() + '" visible="true" ' +
+                (subnet ? 'modelName="internal" modelPosition="c"' : 'modelName="sides" modelPosition="s"') + '>' + xmlText(node.label) + '</y:NodeLabel>' +
+                '<y:Shape type="' + (subnet ? 'roundrectangle' : DIAGRAM_SHAPES[shape.role].yed) + '"/></y:ShapeNode></data></node>');
+        });
+
+        diagram.edges.forEach(function (edge, index) {
+            var dashes = edge.dashes;
+            var type = !dashes ? 'line' : (dashes.length > 2 ? 'dashed_dotted' : (Math.max.apply(null, dashes) <= 3 ? 'dotted' : 'dashed'));
+            var labels = edge.label ? label(edge.label, 'distance="2.0" modelName="centered" modelPosition="center" preferredPlacement="anywhere" ratio="0.5" textColor="#333333"') : '';
+            edge.ends.forEach(function (end) {
+                labels += label(end.text, 'distance="2.0" modelName="six_pos" modelPosition="' + (end.side === 'a' ? 'tail' : 'head') + '" preferredPlacement="anywhere" ratio="0.5" ' +
+                    'textColor="' + (end.accent || '#333333').toUpperCase() + '"', (end.accent || '#A0A0A0').toUpperCase());
+            });
+            out.push('<edge id="e' + index + '" source="' + ids[edge.from] + '" target="' + ids[edge.to] + '">' +
+                '<data key="d4">' + xmlText(description(edge, true)) + '</data><data key="d3"><y:PolyLineEdge>' +
+                '<y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0">' + (edge.bend ? '<y:Point x="' + coordinate(edge.bend.x) + '" y="' + coordinate(edge.bend.y) + '"/>' : '') + '</y:Path>' +
+                '<y:LineStyle color="' + faded(edge.color, edge.opacity).toUpperCase() + '" type="' + type + '" width="' + coordinate(edge.width) + '"/>' +
+                '<y:Arrows source="' + (/\bfrom\b/.test(edge.arrows) ? 'standard' : 'none') + '" target="' + (/\bto\b/.test(edge.arrows) ? 'standard' : 'none') + '"/>' +
+                labels + '<y:BendStyle smoothed="' + (edge.bend ? 'true' : 'false') + '"/></y:PolyLineEdge></data></edge>');
+        });
+
+        return '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n' +
+            '<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:y="http://www.yworks.com/xml/graphml" ' +
+            'xmlns:yed="http://www.yworks.com/xml/yed/3" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://www.yworks.com/xml/schema/graphml/1.1/ygraphml.xsd">' +
+            '<key for="node" id="d0" yfiles.type="nodegraphics"/><key attr.name="url" attr.type="string" for="node" id="d1"/>' +
+            '<key attr.name="description" attr.type="string" for="node" id="d2"/><key for="edge" id="d3" yfiles.type="edgegraphics"/>' +
+            '<key attr.name="description" attr.type="string" for="edge" id="d4"/><key attr.name="node" attr.type="string" for="node" id="d5"/>' +
+            '<graph edgedefault="undirected" id="G">' + out.join('') + '</graph></graphml>\n';
+    };
+
     window.TopologyMap = {
         init: function (config) {
             if (!window.vis || !window.vis.Network) {
                 document.getElementById('topo-status').innerHTML = '<span class="text-danger">vis-network library is not available.</span>';
                 return null;
             }
-            return new TopologyMap(config);
+            // the map of this page, also for browser tests
+            window.TopologyMap.current = new TopologyMap(config);
+            return window.TopologyMap.current;
         },
         // exposed for tests
         _formatSpeed: formatSpeed,

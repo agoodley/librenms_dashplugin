@@ -17,8 +17,8 @@ transceiver sensors and the hardware inventory).
 
 Both maps: center on any device with N hops, filter by device group or location, search, hierarchical or
 organic layout, drag-and-save layout (per browser), color links by speed / utilization / status,
-details panel for every device and link (speed, duplex, VLANs, traffic, STP state, LAG members), export to
-PNG and CSV, full screen, and shareable URLs. On the L2 map, **Simulate failure** in the details of a device or link
+details panel for every device and link (speed, duplex, VLANs, traffic, STP state, LAG members), [export](#sharing--export)
+to draw.io (and from there Visio), yEd, PNG and CSV, full screen, and shareable URLs. On the L2 map, **Simulate failure** in the details of a device or link
 shows which devices would lose their path to the core (failures add up, so "what if both go down" works too), and
 the top-most down device of an outage is marked with the number of down devices behind it.
 
@@ -56,6 +56,22 @@ circuits signal, which must match for a pseudowire to come up (RFC 4447): the in
 IOS XR, which counts it (and the VLAN tag of a subinterface): XR 1514, or 1518 on a dot1q subinterface, is IOS XE 1500.
 
 ![L3 map overlays](docs/images/l3-layers.png)
+
+### Sharing & export
+
+**Export** (the download button of a map) saves the map as it is drawn:
+
+| Format | |
+|---|---|
+| draw.io diagram (`.drawio`) | opens in [draw.io / diagrams.net](https://www.drawio.com) (web or desktop) with the positions of the map: devices as draw.io's Cisco shapes colored by status (red down, grey unmanaged), links with their color, width and dashes, the link label in the middle and the interface names at both ends. Each device keeps its name, hostname, hardware, OS and location as data (*Edit Data*) and links to its LibreNMS page. **Visio:** open the file in draw.io and use *File → Export as → VSDX* |
+| GraphML for yEd (`.graphml`) | opens in yEd Graph Editor with the same positions and labels, without a new layout; the properties are in each node's and link's description |
+| PNG image, links as CSV | the picture of the map and one row per link |
+
+The files hold what the map shows: its scope and filters, port-channels collapsed or not, the L3 overlays that are on,
+*Color links by*, the STP overlay, VLAN dimming and the *Interface labels* / *Link labels* switches. A failure
+simulation is left out: the files show the network as it is.
+
+![Export menu](docs/images/export-menu.png)
 
 ### Spanning tree diagnostics
 
@@ -346,7 +362,8 @@ whose LibreNMS role may view syslog.
 * `src/Redundancy/RolloutPlanner.php`, `src/Redundancy/DependencyPlanner.php` – rollout batches and device dependencies
   on the graphs of the redundancy analysis (`Topology\PlanningService`, `Data\DependencyRepository`); `CoreAdvice` names
   a switch cabled like a second core switch.
-* `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
+* `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS. It also
+  writes the draw.io and GraphML files, in the browser, from the map as drawn.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
 
@@ -369,6 +386,9 @@ vendor/bin/phpunit
 * Stacks / virtual chassis that are not modelled as one device, and MLAG pairs without a detected
   port-channel, can produce a "possible bridging loop" warning – the finding says so.
 * Saved layouts live in the browser's local storage, they are not shared between users.
+* The draw.io file uses draw.io's Cisco shapes, which draw.io loads from its own shape library (built into draw.io
+  desktop). yEd has no Cisco icons: the GraphML file draws the roles as basic shapes (rectangle for a switch, ellipse for
+  a router, octagon for a firewall, triangle for an access point), colored like the map.
 * L3 overlays: a far end found on several devices (a duplicated address or router ID) is not guessed: it is an
   external node, like an unknown peer or one on a device you may not see, which shows only the address. Pseudowires
   whose peers LibreNMS lost on several PEs with the same VC ID stay unpaired, and their state is unknown; the MTU check
