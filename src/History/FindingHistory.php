@@ -7,13 +7,13 @@ use Agoodley\LibrenmsTopology\Stp\Finding;
 /**
  * Findings history of the background checks. A finding is the same finding while its code,
  * devices, ports and VLAN stay the same; its wording and severity may change. A finding is
- * confirmed once two runs in a row reported it, or when it succeeds a confirmed finding of the
- * same check on one of its devices that this run no longer reports (a finding whose ports change
- * from run to run goes on), and resolved once two runs in a row did not report it, so a check that
- * flickers from run to run (error counters of the last poll) does not fill the eventlog; a finding
- * that was never confirmed ends at its first absence. If it comes back later it starts a new
- * period. Another finding of the same check that stays on a shared device (a core switch with
- * several lost uplinks) confirms nothing.
+ * confirmed once two runs in a row reported it, or when the previous run reported a finding of the
+ * same check on one of its devices that this run no longer reports (it takes its place: a finding
+ * whose ports change from run to run is confirmed on its second run like any other), and resolved
+ * once two runs in a row did not report it, so a check that flickers from run to run (error
+ * counters of the last poll) does not fill the eventlog; a finding that was never confirmed ends at
+ * its first absence. If it comes back later it starts a new period. Another finding of the same
+ * check that stays on a shared device (a core switch with several lost uplinks) confirms nothing.
  *
  * The eventlog of a device gets an entry when the device gets its first confirmed finding of a
  * check or loses its last one. The entry names the check only: findings are computed over the
@@ -114,11 +114,11 @@ class FindingHistory
             $current[self::hash($analysis, $finding)] ??= $finding;
         }
 
-        // check and device of every confirmed finding this run no longer reports: a finding of the same check on one of
-        // its devices succeeds it
+        // check and device of every finding the previous run reported (open, not missed by it) that this run no longer
+        // reports: a finding of the same check on one of its devices takes its place
         $gone = [];
         foreach ($open as $row) {
-            if ($row['confirmed'] && ! isset($current[$row['hash']])) {
+            if ($row['missed_at'] === null && ! isset($current[$row['hash']])) {
                 foreach ($row['devices'] as $device) {
                     $gone[$row['code'] . '|' . $device] = true;
                 }

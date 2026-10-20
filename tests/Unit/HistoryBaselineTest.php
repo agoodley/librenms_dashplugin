@@ -331,9 +331,18 @@ class HistoryBaselineTest extends TestCase
         $runs[] = [];
 
         $this->assertSame(['r7 3 ok'], self::flatten(self::simulate($runs)), 'no false "resolved" while another port has it, resolved after two runs without it');
+    }
 
-        // without a confirmed predecessor a finding that changes every run is never confirmed
-        $this->assertSame([], self::flatten(self::simulate(array_merge([[]], $runs))));
+    public function testChurningFindingIsConfirmedOnItsSecondRunAndLoggedOnce(): void
+    {
+        // a persistent problem on switch 3 whose ports change every run, from before the history knew it
+        $runs = [[]];
+        foreach ([31, 32, 33, 34, 35, 36] as $port) {
+            $runs[] = [self::finding('speed_mismatch', [3], [$port])];
+        }
+
+        $this->assertSame(['r2 3 warning'], self::flatten(self::simulate($runs)), 'confirmed on its second run, logged once');
+        $this->assertSame(['r2 3 warning', 'r8 3 ok'], self::flatten(self::simulate(array_merge($runs, [[], []]))), 'resolved after two runs without it');
     }
 
     public function testOtherFindingsOfTheCheckOnASharedDeviceConfirmNothing(): void
