@@ -13,6 +13,7 @@ class Navigation
         'maps' => ['label' => 'Maps', 'icon' => 'fa-map'],
         'diagnostics' => ['label' => 'Diagnostics', 'icon' => 'fa-heartbeat'],
         'tools' => ['label' => 'Tools', 'icon' => 'fa-wrench'],
+        'history' => ['label' => 'History', 'icon' => 'fa-history'],
     ];
 
     /**
