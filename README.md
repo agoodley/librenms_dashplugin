@@ -192,6 +192,11 @@ vendor/bin/phpunit
   VLAN change can take until the next discovery to show up. The split VLAN check can only follow links that
   LLDP/CDP reports; a VLAN that crosses a link without LLDP/CDP can be reported as split.
 
+## Roadmap
+
+Planned tools (redundancy analysis, host locator, topology history, routing diagnostics and more) are listed in
+[ROADMAP.md](ROADMAP.md).
+
 ## License
 
 GPL-3.0-or-later, like LibreNMS.
