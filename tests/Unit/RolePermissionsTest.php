@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
 use Agoodley\LibrenmsTopology\Data\ScopedRepository;
+use Agoodley\LibrenmsTopology\Sharing\SavedView;
 use Agoodley\LibrenmsTopology\Support\RoleData;
 use PHPUnit\Framework\TestCase;
 
@@ -59,5 +60,12 @@ class RolePermissionsTest extends TestCase
             }
         }
         $this->assertSame([], self::repository([])->hiddenKinds(array_merge(...array_values(RoleData::PAGES))), 'the built-in user role sees everything');
+    }
+
+    public function testTheSavedViewsPageNamesWhatTheMapsOfItsViewsHide(): void
+    {
+        foreach (array_keys(SavedView::PAGES) as $page) {
+            $this->assertSame([], array_diff(RoleData::PAGES[$page], RoleData::PAGES['views']), "a saved view opens the $page map");
+        }
     }
 }

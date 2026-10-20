@@ -169,11 +169,12 @@ html.dark .topo-status-down, html.dark .topo-status-lowerLayerDown { color: #f08
 html.dark .topo-status-degraded, html.dark .topo-text-warning { color: #f0a35e; }
 html.dark .topo-status-up, html.dark .topo-sim .topo-sim-ok { color: #5cc26f; }
 html.dark .topo-nav-pages > li.active > a, html.dark .topo-nav-pages > li.active > a:hover, html.dark .topo-nav-pages > li.active > a:focus { color: #fff; }
-html.dark .topo-page .text-muted, html.dark .topo-port-tab .text-muted, html.dark .topo-device-panel .text-muted { color: #b0b8be; }
+html.dark .topo-page .text-muted, html.dark .topo-modal .text-muted, html.dark .topo-port-tab .text-muted, html.dark .topo-device-panel .text-muted,
+html.dark .topo-page .dropdown-header { color: #b0b8be; }
 html.dark .topo-rollout-hosts summary { color: #b0b8be; }
 html.dark .topo-page .alert-warning { color: #2b1a00; }
 html.dark .topo-page .alert-warning a { color: #2b1a00; text-decoration: underline; }
-.topo-page .text-muted, .topo-port-tab .text-muted, .topo-device-panel .text-muted { color: #666; }
+.topo-page .text-muted, .topo-modal .text-muted, .topo-port-tab .text-muted, .topo-device-panel .text-muted, .topo-page .dropdown-header { color: #666; }
 html.dark .topo-evidence-heading { border-color: #3a3f45; }
 html.dark .topo-evidence-note { color: #bbb; }
 html.dark .topo-custommap-notices { color: #e0b562; }

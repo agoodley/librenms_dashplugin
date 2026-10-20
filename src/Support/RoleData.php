@@ -9,10 +9,14 @@ namespace Agoodley\LibrenmsTopology\Support;
  */
 class RoleData
 {
+    private const L2 = ['links', 'device_outages', 'stp', 'ports_stp'];
+
+    private const L3 = ['ospf_nbrs', 'bgpPeers', 'ospfv3_nbrs', 'isis_adjacencies', 'ipsec_tunnels', 'mpls_lsps', 'pseudowires'];
+
     /** Navigation key => LibreNMS tables. */
     public const PAGES = [
-        'l2' => ['links', 'device_outages', 'stp', 'ports_stp'],
-        'l3' => ['ospf_nbrs', 'bgpPeers', 'ospfv3_nbrs', 'isis_adjacencies', 'ipsec_tunnels', 'mpls_lsps', 'pseudowires'],
+        'l2' => self::L2,
+        'l3' => self::L3,
         'sites' => ['links', 'ospf_nbrs', 'bgpPeers', 'device_outages'],
         'stp' => ['stp', 'ports_stp', 'links', 'eventlog', 'ports_fdb'],
         'links' => ['links'],
@@ -23,5 +27,7 @@ class RoleData
         'rollout' => ['links'],
         'dependencies' => ['links', 'device_outages'],
         'changes' => ['links', 'ports', 'stp', 'ports_stp', 'ospf_nbrs', 'bgpPeers'],
+        // saved views open the L2 and L3 maps
+        'views' => [...self::L2, ...self::L3],
     ];
 }

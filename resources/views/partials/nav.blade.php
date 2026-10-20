@@ -1,5 +1,6 @@
 {{-- Navigation of every page (Support\Navigation): the groups, then the pages of the current group. Links keep the
-     current scope; topology.js updates the [data-topo-nav] links when the map filters change. --}}
+     current scope; topology.js updates the [data-topo-nav] links when the map filters change. Below it, what the user's
+     role may not view of the page's data (Support\RoleData), with $roleNote saying where it is left out. --}}
 @php
     $navQuery = array_filter([
         'device' => $params['device'] ?? null,
@@ -43,6 +44,6 @@
 </div>
 @if($navRoleHidden)
     <div class="alert alert-info topo-role-hidden" style="margin: 8px 0">
-        <i class="fa fa-lock"></i> Your LibreNMS role may not view {{ implode(', ', $navRoleHidden) }}: this page leaves them out.
+        <i class="fa fa-lock"></i> Your LibreNMS role may not view {{ implode(', ', $navRoleHidden) }}: {{ $roleNote ?? 'this page leaves them out' }}.
     </div>
 @endif

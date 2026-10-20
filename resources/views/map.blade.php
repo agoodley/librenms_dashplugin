@@ -232,7 +232,7 @@
 @if($views !== null)
 {{-- Save the map as a view (ViewController). Like the dialog below, outside #topo-app, whose full screen mode would put it
      under its backdrop. --}}
-<div class="modal fade" id="topo-view-modal" tabindex="-1" role="dialog" aria-labelledby="topo-view-title">
+<div class="modal fade topo-modal" id="topo-view-modal" tabindex="-1" role="dialog" aria-labelledby="topo-view-title">
     <div class="modal-dialog modal-sm" role="document">
         <div class="modal-content">
             <div class="modal-header">
@@ -264,7 +264,7 @@
 @if($canExportCustomMap)
     {{-- Export to a LibreNMS Custom Map (ExportController): preview first, then create or replace. Outside #topo-app,
          whose full screen mode would put the dialog under its backdrop. --}}
-    <div class="modal fade" id="topo-custommap-modal" tabindex="-1" role="dialog" aria-labelledby="topo-custommap-title">
+    <div class="modal fade topo-modal" id="topo-custommap-modal" tabindex="-1" role="dialog" aria-labelledby="topo-custommap-title">
         <div class="modal-dialog" role="document">
             <div class="modal-content">
                 <div class="modal-header">

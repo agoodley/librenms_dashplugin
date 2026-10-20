@@ -689,26 +689,28 @@ lists background findings about their devices alone. Only LibreNMS admins can ap
 save, clear or accept items of the baseline; other users see those pages read only. A baseline change for a device, group
 or location that no longer resolves (disabled, deleted or not permitted) is refused rather than applied to everything.
 
-Only LibreNMS admins who may create custom maps can export a map to a LibreNMS Custom Map; the map is built with their
-permissions. Everyone who can open the maps may save views and share their own; they change and delete their own views,
-LibreNMS admins any shared view. A shared view is built with the permissions of whoever opens it: its positions are only
-sent for the nodes of their map, and it names no device, group, location or VRF they may not see.
+Only LibreNMS admins who may create custom maps (and update them, to replace one) can export a map to a LibreNMS Custom
+Map; the map is built with their permissions. Everyone who can open the maps may save views and share their own; they
+change and delete their own views, LibreNMS admins any shared view. A shared view is built with the permissions of
+whoever opens it: its positions are only sent for the nodes of their map, and it names no device, group, location or VRF
+they may not see.
 
 Besides the devices a user may see, LibreNMS checks a role permission for each kind of data (`port.view` for ports and
 their forwarding, ARP, IPv6 neighbor, 802.1X and spanning tree rows, `link.view` for LLDP/CDP links, `routing.view` for
 OSPF, BGP, IS-IS, MPLS and pseudowires, `outage.view`, `eventlog.view`, `syslog.view` ...), and admins can give custom
-roles only some of them (the built-in user role has them all). The plugin leaves out what a user's role may not view, as LibreNMS' own pages do: LLDP/CDP links on the maps
-and the link based pages, spanning tree data, OSPF / BGP / OSPFv3 / IS-IS / IPsec / MPLS / pseudowire data on the L3
-map, routing and site pages, outages, STP eventlog entries, forwarding / ARP / IPv6 neighbor tables and 802.1X sessions
-in the host locator and the port tab (which also need the permission to view ports), and the matching facts and findings
-on the Changes page. Each page says what its user's role hides ("Your LibreNMS role may not view BGP sessions"), so an
-empty answer is not taken for "nothing found"; the JSON API returns the same reduced data. The syslog evidence of the
-spanning tree page, and the findings of its syslog based checks on the Changes page, are only shown to users whose role
-may view syslog (the eventlog entries of the spanning tree check name those checks to everyone who may see the device).
-The background checks run without a user and read everything; their eventlog entries name the check only, and an entry
-capped at the first devices says "and on other devices" without a count. Applying device dependencies writes the number
-of parents to the device's eventlog (the names go to the LibreNMS log), as users who may see the device may not see its
-parents.
+roles only some of them (the built-in user role has them all). The plugin leaves out what a user's role may not view, as
+LibreNMS' own pages do: LLDP/CDP links on the maps and the link based pages, spanning tree data, OSPF / BGP / OSPFv3 /
+IS-IS / IPsec / MPLS / pseudowire data on the L3 map, routing and site pages, outages, STP eventlog entries, forwarding
+/ ARP / IPv6 neighbor tables and 802.1X sessions in the host locator and the port tab (which also need the permission to
+view ports), and the matching facts and findings on the Changes page. Each page says what its user's role hides ("Your
+LibreNMS role may not view BGP sessions"), so an empty answer is not taken for "nothing found"; the JSON API, saved
+views and the file and Custom Map exports hold the same reduced data, and the Saved Views page marks with a lock the
+views whose map leaves something out. The syslog evidence of the spanning tree page, and the findings of its syslog
+based checks on the Changes page, are only shown to users whose role may view syslog (the eventlog entries of the
+spanning tree check name those checks to everyone who may see the device). The background checks run without a user and
+read everything; their eventlog entries name the check only, and an entry capped at the first devices says "and on other
+devices" without a count. Applying device dependencies writes the number of parents to the device's eventlog (the names
+go to the LibreNMS log), as users who may see the device may not see its parents.
 
 ## How it works
 
