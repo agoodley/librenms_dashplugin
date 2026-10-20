@@ -47,6 +47,12 @@ class HostService
     /** @var array<int, array> device_id => layer 3 addresses (routes lookup) */
     private array $layer3 = [];
 
+    /** @var array<int, bool> device_id => has OSPF neighbors or BGP peers (routes lookup) */
+    private array $routers = [];
+
+    /** @var array<int, int[]> device_id => linked device ids (behind lookup) */
+    private array $links = [];
+
     /**
      * @param  (callable(string, float): (string[]|string))|null  $resolver  hostname and seconds left => IP addresses, or
      *                                                                      why it was not looked up (DnsResolver); none: no DNS
@@ -215,6 +221,10 @@ class HostService
                 'locate_url' => ($this->urls)('topology.hosts', ['q' => Mac::readable($row['mac'])]),
             ];
         }
+        $sessions = $this->repo->nacByPort($portId);
+        $devices = [];
+        $polled = [];
+        $this->sessionSwitches([$sessions], $devices, $polled);
 
         return [
             'visible' => true,
@@ -228,7 +238,7 @@ class HostService
             'fdb_port' => $fdbPort === $portId ? null : ['label' => self::portLabel($related[$fdbPort] ?? null, $fdbPort), 'url' => $related[$fdbPort]['url'] ?? null],
             'mac_count' => $this->repo->macCounts([$fdbPort], $since)[$fdbPort] ?? 0,
             'macs' => $learned,
-            'nac' => array_map(fn ($row) => $row + ['readable' => Mac::readable($row['mac'])], $this->repo->nacByPort($portId)),
+            'nac' => array_map(fn ($row) => $row + ['readable' => Mac::readable($row['mac'])], $this->markSessions($sessions, $devices, $polled)),
             // when the switch's forwarding table was read: its current entries carry the time, else the start of the discovery
             'last_discovery' => $start === null ? null : max($start, $fdb ? max(array_column($fdb, 'last_seen')) : 0),
             'map_url' => ($this->urls)('topology.l2', ['device' => $deviceId, 'depth' => 1]),
@@ -346,17 +356,10 @@ class HostService
         foreach ($this->repo->nacByMacs($macs, $portIds) as $row) {
             $nac[$row['mac']][$row['id']] = $row;
         }
-        // a session that is not historical is current when its switch polls sessions (LibreNMS marks the ones it no
-        // longer sees historical at every poll and updates the others only when one of their values changes) and was
-        // polled recently
         $devices = [];
         $polled = [];
-        $recent = ($this->clock)() - self::SESSION_POLLS * $this->repo->pollInterval();
-        $current = function (array $row) use (&$devices, &$polled, $recent): bool {
-            return ! $row['historical'] && ! empty($polled[$row['device_id']]) && ($devices[$row['device_id']]['last_polled'] ?? 0) >= $recent;
-        };
         $this->sessionSwitches($nac, $devices, $polled);
-        $missing = array_values(array_filter($macs, fn ($mac) => ! array_filter($nac[$mac] ?? [], $current)));
+        $missing = array_values(array_filter($macs, fn ($mac) => ! array_filter(array_column($this->markSessions($nac[$mac] ?? [], $devices, $polled), 'current'))));
         foreach ($missing ? $this->repo->nacByMacs($missing) : [] as $row) {
             $nac[$row['mac']][$row['id']] = $row;
         }
@@ -417,9 +420,7 @@ class HostService
             ];
         }
         foreach ($nac as $mac => $sessions) {
-            foreach ($sessions as $i => $row) {
-                $nac[$mac][$i]['current'] = $current($row);
-            }
+            $nac[$mac] = $this->markSessions($sessions, $devices, $polled);
         }
 
         $locator = new HostLocator($locatorPorts, $neighbors, $lag, $since,
@@ -547,6 +548,35 @@ class HostService
     }
 
     /**
+     * Marks the sessions current or not, and tells why one that is not historical does not count. LibreNMS marks the
+     * sessions a switch no longer reports historical at every poll of its nac module and updates the others only when
+     * one of their values changes, so a session that is not historical is current when its switch polls sessions and
+     * was polled within SESSION_POLLS poll intervals.
+     *
+     * @param  array<int, array>  $sessions
+     * @param  array<int, array>  $devices  device rows (last_polled) of their switches
+     * @param  array<int, bool>  $polled  device_id => the switch polls sessions
+     * @return array<int, array> the sessions with current (bool) and inactive (why not, or null)
+     */
+    private function markSessions(array $sessions, array $devices, array $polled): array
+    {
+        $recent = ($this->clock)() - self::SESSION_POLLS * $this->repo->pollInterval();
+        foreach ($sessions as $i => $row) {
+            $last = $devices[$row['device_id']]['last_polled'] ?? null;
+            $sessions[$i]['inactive'] = match (true) {
+                (bool) $row['historical'] => null,
+                empty($polled[$row['device_id']]) => 'the nac poller module is off for this switch',
+                $last === null => 'the switch was never polled',
+                $last < $recent => 'the switch was last polled ' . date('Y-m-d H:i', $last),
+                default => null,
+            };
+            $sessions[$i]['current'] = ! $row['historical'] && $sessions[$i]['inactive'] === null;
+        }
+
+        return $sessions;
+    }
+
+    /**
      * Devices behind a switch, seen from the trail: reachable from it over LLDP/CDP links within BEHIND_HOPS hops,
      * except the trail's switches and devices linked to one of them (they have another way to the trail, like the
      * second core switch of a dual-homed access switch).
@@ -559,7 +589,7 @@ class HostService
         $visited = array_fill_keys($trail, true) + [$deviceId => true];
         $found = [];
         $frontier = [$deviceId];
-        $links = $this->repo->linkedDevices($frontier);
+        $links = $this->linked($frontier);
         for ($hop = 0; $hop < self::BEHIND_HOPS && $frontier && count($found) < 200; $hop++) {
             $candidates = [];
             foreach ($frontier as $id) {
@@ -573,7 +603,7 @@ class HostService
             if (! $candidates) {
                 break;
             }
-            $links = $this->repo->linkedDevices($candidates);
+            $links = $this->linked($candidates);
             $frontier = array_values(array_filter($candidates, fn ($id) => ! array_intersect($links[$id] ?? [], $trail)));
             array_push($found, ...$frontier);
         }
@@ -582,29 +612,49 @@ class HostService
     }
 
     /**
-     * Does the device route in one of the VLANs or subnets: an interface in one of the VLANs (Vlan20, irb.20) or an
-     * address whose subnet holds one of the addresses?
+     * LLDP/CDP links of devices, each read once (the search behind a switch runs for every answer).
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, int[]> device_id => linked device ids
+     */
+    private function linked(array $deviceIds): array
+    {
+        $missing = array_values(array_diff($deviceIds, array_keys($this->links)));
+        if ($missing) {
+            $this->links += $this->repo->linkedDevices($missing) + array_fill_keys($missing, []);
+        }
+
+        return array_intersect_key($this->links, array_flip($deviceIds));
+    }
+
+    /**
+     * Does the device route in one of the VLANs or subnets? It needs an interface in one of the VLANs (Vlan20, irb.20) or
+     * an address whose subnet holds one of the addresses, and to be a router: a switch has its management address in a
+     * VLAN too. A router has two or more routed IPv4 interfaces or OSPF / BGP, as the maps tell routers (roleFacts).
      *
      * @param  int[]  $vlans
      * @param  string[]  $ips
      */
     private function routes(int $deviceId, array $vlans, array $ips): bool
     {
-        $this->layer3[$deviceId] ??= $this->repo->layer3Addresses([$deviceId])[$deviceId] ?? [];
-        foreach ($this->layer3[$deviceId] as $address) {
+        $addresses = $this->layer3[$deviceId] ??= $this->repo->layer3Addresses([$deviceId])[$deviceId] ?? [];
+        $evidence = false;
+        foreach ($addresses as $address) {
             $vlan = self::interfaceVlan($address['port']);
-            if ($vlan !== null && in_array($vlan, $vlans, true)) {
-                return true;
-            }
             $network = Cidr::network(HostQuery::ipv6Short($address['ip']), $address['prefix']);
-            foreach ($ips as $ip) {
-                if ($network !== null && Cidr::contains($network, HostQuery::ipv6Short($ip))) {
-                    return true;
-                }
+            $evidence = ($vlan !== null && in_array($vlan, $vlans, true))
+                || ($network !== null && array_filter($ips, fn ($ip) => Cidr::contains($network, HostQuery::ipv6Short($ip))));
+            if ($evidence) {
+                break;
             }
         }
+        if (! $evidence) {
+            return false;
+        }
 
-        return false;
+        $routed = array_unique(array_column(array_filter($addresses, fn ($address) => $address['family'] === 4 && $address['prefix'] < 32), 'port_id'));
+
+        return count($routed) >= 2 || ($this->routers[$deviceId] ??= isset($this->repo->routingDevices([$deviceId])[$deviceId]));
     }
 
     /**

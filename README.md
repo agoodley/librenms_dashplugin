@@ -239,7 +239,8 @@ search ends on the switch the host is plugged into, including:
 * a computer behind an **IP phone**, a wireless client behind an **access point**, a virtual machine behind a server
   (the neighbor on the port says which: its CDP platform, or for LLDP its system description);
 * hosts behind an **unmanaged switch** (an LLDP/CDP neighbor that LibreNMS does not monitor), or on a port with several
-  MACs and no neighbor at all (flagged: probably a hub, switch or virtualization host);
+  MACs and no neighbor at all (flagged: probably a hub, switch or virtualization host); a port with many MACs toward
+  such a neighbor, or toward a switch you may not see, is a switch on the way rather than a second place of the host;
 * a switch without LLDP/CDP: a port that learned the switch's own MAC leads to it; without that, its uplink carries the
   MACs of everything behind it and loses to a port with far fewer;
 * a host that **moved** or a wireless client that **roamed**: entries from before a switch's last forwarding table
@@ -251,12 +252,16 @@ search ends on the switch the host is plugged into, including:
 * the address of a **switch, router or firewall** itself, an interface MAC or a **VRRP / HSRP / GLBP** virtual router MAC:
   the answer is the device (for a gateway, the router that is master / active now), not a port on the way to it. A
   device without forwarding table data may be a switch on the way (or a bridging firewall): it is named as the gateway
-  only with an address in the subnet of the searched address or a router interface in its VLAN, else the answer is
-  *behind* it;
+  only when it routes (two or more routed IPv4 interfaces, or OSPF / BGP, as the maps tell routers) and has an address
+  in the subnet of the searched address or an interface in its VLAN, else the answer is *behind* it (a switch's
+  management address in that VLAN is no evidence);
 * a host the forwarding tables do not show yet (LibreNMS reads them every 6 hours), that sits behind a switch without
   one, or that moved since: its current **802.1X / MAB session** (polled every 5 minutes) gives the port. Behind a
-  switch it counts on that switch or one behind it; instead of a port the forwarding tables found, only when it started
-  after they last saw the host there (a phone keeps the link, and an old session, up after the computer behind it left).
+  switch it counts on that switch or one behind it. Instead of a port the forwarding tables found, a session on another
+  switch counts only when it started after they last saw the host there (a phone keeps the link, and an old session, up
+  after the computer behind it left); on the same switch, when LibreNMS updated it after that (it keeps one session per
+  MAC and switch and moves it to the new port, so a hot desk move shows). Sessions that do not count are greyed out
+  with the reason.
 
 The HSRP and VRRP MACs are the same in every VLAN that uses the group number, so a gateway is located in the VLAN of
 the router interface with the ARP entry (Vlan10, irb.10, ve 10, the unit of a subinterface such as Gi0/0.10); when that
@@ -562,7 +567,9 @@ vendor/bin/phpunit
   neighbor table, so an IPv4 search reads the whole ARP table once and every search the whole IPv6 neighbor table (twice
   for an IPv6 address); the port tab (on every port page) shows IPv4 addresses only and uses indexed lookups. 802.1X
   sessions are looked up on the ports where the MAC is learned, and by the MAC alone (the whole, small session table)
-  when none of them has a current one.
+  when none of them has a current one. Whether a session is on a switch behind the one a trail ends at follows the
+  LLDP/CDP links of each device once per search, by indexed lookups (the links a device reports, and those reported to
+  its ports: a link without a known far port is missed).
 * The rollout planner and the device dependencies follow the same LLDP/CDP links: devices without neighbor data get no
   parents and are left out of rollout plans. Whether devices back each other up is decided strictly (a part without
   its core devices counts as cut off as a whole), so the core devices of a part never share a batch.

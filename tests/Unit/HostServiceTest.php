@@ -320,7 +320,7 @@ class HostServiceTest extends TestCase
         };
         $host = self::service(change: $quiet)->search('d4:be:d9:00:40:01')['hosts'][0];
         $this->assertSame(['located', 4, 405, 'nac'], [$host['status'], $host['edge']['device_id'] ?? null, $host['edge']['port_id'] ?? null, $host['edge']['via'] ?? null]);
-        $this->assertSame([true], array_column($host['nac'], 'current'));
+        $this->assertSame([[true, null]], array_map(fn ($session) => [$session['current'], $session['inactive']], $host['nac']));
 
         // acc-sw2's nac poller module is off: its sessions are what LibreNMS saw before it was switched off
         $off = function (array $data) use ($quiet): array {
@@ -331,6 +331,7 @@ class HostServiceTest extends TestCase
         };
         $host = self::service(change: $off)->search('d4:be:d9:00:40:01')['hosts'][0];
         $this->assertSame(['none', [false]], [$host['status'], array_column($host['nac'], 'current')]);
+        $this->assertSame(['the nac poller module is off for this switch'], array_column($host['nac'], 'inactive'), 'the page says why');
 
         // acc-sw2 was last polled an hour ago (down, or its poller stopped): more than 3 poll intervals of 5 minutes
         $unpolled = function (array $data) use ($quiet): array {
@@ -341,10 +342,17 @@ class HostServiceTest extends TestCase
         };
         $host = self::service(change: $unpolled)->search('d4:be:d9:00:40:01')['hosts'][0];
         $this->assertSame(['none', [false]], [$host['status'], array_column($host['nac'], 'current')]);
+        $this->assertSame(['the switch was last polled ' . date('Y-m-d H:i', self::NOW - 3600)], array_column($host['nac'], 'inactive'));
 
         // polled every 30 minutes, it was polled within 3 intervals
         $slow = fn (array $data): array => ['interval' => 1800] + $unpolled($data);
         $this->assertSame('located', self::service(change: $slow)->search('d4:be:d9:00:40:01')['hosts'][0]['status']);
+
+        // the port tab marks the sessions alike: historical, current, or why not
+        $tab = self::service(change: $off)->portTab(4, 405);
+        $this->assertSame([['kchen', false, 'the nac poller module is off for this switch'], ['pwalsh', false, 'the nac poller module is off for this switch']],
+            array_map(fn ($session) => [$session['username'], $session['current'], $session['inactive']], $tab['nac']));
+        $this->assertSame([[true, null], [true, null]], array_map(fn ($session) => [$session['current'], $session['inactive']], self::service()->portTab(4, 405)['nac']));
     }
 
     public function testTheNacModuleIsOnLikeLibreNMSDecides(): void
@@ -395,10 +403,13 @@ class HostServiceTest extends TestCase
 
             return $data;
         };
-        $host = self::service($repo, change: $chain)->search('d4:be:d9:00:40:02')['hosts'][0];
+        $service = self::service($repo, change: $chain);
+        $host = $service->search('d4:be:d9:00:40:02')['hosts'][0];
 
         $this->assertSame(['located', 9, 901], [$host['status'], $host['edge']['device_id'], $host['edge']['port_id']]);
         $this->assertSame([[4], [9]], $repo->calls['linkedDevices'], 'from acc-sw2 (core1 is the trail) to acc-sw9, whose links end there');
+        $service->search('d4:be:d9:00:40:02');
+        $this->assertSame([[4], [9]], $repo->calls['linkedDevices'], 'the links of each device are read once');
 
         // dual-homed acc-sw2: core2 did not learn the MAC, but it links to core1 (the trail): it is in front, so is what hangs off it
         $dual = function (array $data) use ($chain): array {
@@ -413,37 +424,61 @@ class HostServiceTest extends TestCase
         $this->assertSame('behind', self::service(change: $dual)->search('d4:be:d9:00:40:02')['hosts'][0]['status'], 'a session behind the other core is not behind acc-sw2');
     }
 
-    public function testOnlyLayer3EvidenceMakesADeviceWithoutForwardingTableTheGateway(): void
+    public function testOnlyLayer3EvidenceOfARouterMakesADeviceWithoutForwardingTableTheGateway(): void
     {
-        // core1 learned two virtual router MACs, toward rtr1 and toward dist-sw1 (an EX switch LibreNMS classifies as a
-        // router by its OS); neither has forwarding table data
+        // core1 learned three virtual router MACs, toward rtr1, dist-sw1 and dist-sw2 (EX switches LibreNMS classifies as
+        // routers by their OS); none of them has forwarding table data. The firewalls behind dist-sw2 run VRRP in VLAN 20
         $wan = function (array $data): array {
-            $data['devices'][90] = ['name' => 'rtr1', 'role' => 'router', 'last_polled' => self::NOW - 60];
-            $data['devices'][91] = ['name' => 'dist-sw1', 'role' => 'router', 'last_polled' => self::NOW - 60];
-            foreach ([106 => [1, 'Te1/0/3'], 107 => [1, 'Te1/0/4'], 113 => [1, 'Vl40']] as $portId => [$deviceId, $name]) {
+            foreach ([90 => 'rtr1', 91 => 'dist-sw1', 92 => 'dist-sw2'] as $deviceId => $name) {
+                $data['devices'][$deviceId] = ['name' => $name, 'role' => 'router', 'last_polled' => self::NOW - 60];
+            }
+            foreach ([106 => [1, 'Te1/0/3'], 107 => [1, 'Te1/0/4'], 114 => [1, 'Te1/0/5'], 113 => [1, 'Vl40']] as $portId => [$deviceId, $name]) {
                 $data['ports'][$portId] = ['device_id' => $deviceId, 'ifName' => $name, 'ifDescr' => $name, 'ifAlias' => '', 'ifType' => 'ethernetCsmacd',
                     'ifOperStatus' => 'up', 'ifPhysAddress' => null, 'ifVlan' => '', 'ifTrunk' => null];
             }
             $data['neighbors'][106] = [self::neighbor(90, 'rtr1', 'router', 'Gi0/1')];
             $data['neighbors'][107] = [self::neighbor(91, 'dist-sw1', 'router', 'xe-0/1/0')];
+            $data['neighbors'][114] = [self::neighbor(92, 'dist-sw2', 'router', 'xe-0/1/0')];
             $data['fdb'][] = self::fdb('00005e000114', 1, 106, 20);
             $data['fdb'][] = self::fdb('00005e000115', 1, 107, 40);
+            $data['fdb'][] = self::fdb('00005e000116', 1, 114, 20);
             $data['addresses'][] = self::address('10.10.20.5', '00005e000114', 1, 111);
             $data['addresses'][] = self::address('10.10.40.1', '00005e000115', 1, 113);
-            $data['layer3'] = [90 => [['port' => 'Gi0/2', 'ip' => '10.10.20.2', 'prefix' => 24]], 91 => [['port' => 'vlan.99', 'ip' => '192.168.99.5', 'prefix' => 24]]];
+            $data['addresses'][] = self::address('10.10.20.9', '00005e000116', 1, 111);
+            $data['layer3'] = [
+                // a router: two routed interfaces, one in the subnet of the virtual address
+                90 => [self::l3(9001, 'Gi0/1', '192.0.2.1', 30), self::l3(9002, 'Gi0/2', '10.10.20.2', 24)],
+                // switches with a management address only: in another VLAN, and in the VLAN of the virtual address
+                91 => [self::l3(9101, 'vlan.99', '192.168.99.5', 24)],
+                92 => [self::l3(9201, 'irb.20', '10.10.20.250', 24)],
+            ];
 
             return $data;
         };
-        $this->assertSame(['gateway', 'rtr1'], self::answer(self::service(change: $wan)->search('10.10.20.5')), 'an address in the subnet of the virtual address');
+        $this->assertSame(['gateway', 'rtr1'], self::answer(self::service(change: $wan)->search('10.10.20.5')), 'a router with an address in the subnet');
         $this->assertSame(['behind', 'dist-sw1'], self::answer(self::service(change: $wan)->search('10.10.40.1')), 'a switch with only its management address');
+        $this->assertSame(['behind', 'dist-sw2'], self::answer(self::service(change: $wan)->search('10.10.20.9')), 'a management interface in the VLAN is no router');
+        $this->assertSame(['behind', 'dist-sw2'], self::answer(self::service(change: $wan)->search('00:00:5e:00:01:16')), 'searched by the MAC');
 
-        $irb = function (array $data) use ($wan): array {
+        // a second routed interface (here in the VLAN), or OSPF / BGP, make the switch a router
+        $routers = function (array $data) use ($wan): array {
             $data = $wan($data);
-            $data['layer3'][91][] = ['port' => 'irb.40', 'ip' => 'fd00:40::1', 'prefix' => 64];
+            $data['layer3'][91][] = self::l3(9102, 'irb.40', '10.10.40.2', 24);
+            $data['routing'] = [92];
 
             return $data;
         };
-        $this->assertSame(['gateway', 'dist-sw1'], self::answer(self::service(change: $irb)->search('10.10.40.1')), 'a router interface in the VLAN');
+        $this->assertSame(['gateway', 'dist-sw1'], self::answer(self::service(change: $routers)->search('10.10.40.1')), 'a router interface in the VLAN');
+        $this->assertSame(['gateway', 'dist-sw2'], self::answer(self::service($repo, change: $routers)->search('10.10.20.9')), 'a switch that runs OSPF or BGP');
+        $this->assertSame([[92]], $repo->calls['routingDevices']);
+    }
+
+    /**
+     * An interface address of a device (HostRepository::layer3Addresses).
+     */
+    private static function l3(int $portId, string $port, string $ip, int $prefix): array
+    {
+        return ['port_id' => $portId, 'port' => $port, 'ip' => $ip, 'prefix' => $prefix, 'family' => str_contains($ip, ':') ? 6 : 4];
     }
 
     private static function answer(array $result): array
@@ -558,7 +593,14 @@ final class FakeHostRepository extends HostRepository
 
     public function nacByPort(int $portId): array
     {
-        return [];
+        return array_values(array_filter($this->data['nac'] ?? [], fn ($row) => $row['port_id'] === $portId));
+    }
+
+    public function routingDevices(array $deviceIds): array
+    {
+        $this->calls['routingDevices'][] = array_values($deviceIds);
+
+        return array_fill_keys(array_values(array_intersect($deviceIds, $this->data['routing'] ?? [])), true);
     }
 
     public function vendors(array $macs): array

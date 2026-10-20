@@ -458,6 +458,8 @@ class HostRepository extends ScopedRepository
 
     /**
      * Monitored devices linked to the given ones by LLDP/CDP (either end reporting the link), visible ones only.
+     * Two indexed queries: the links the devices report (local_device_id), and the links others report to their
+     * ports (remote_port_id); remote_device_id has no index of its own, so an OR on it reads the whole table.
      *
      * @param  int[]  $deviceIds
      * @return array<int, int[]> device_id => linked device ids
@@ -469,10 +471,13 @@ class HostRepository extends ScopedRepository
             return [];
         }
 
+        $rows = array_merge(
+            DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $deviceIds)->get(['local_device_id', 'remote_device_id'])->all(),
+            DB::table('links as l')->join('ports as p', 'p.port_id', '=', 'l.remote_port_id')->where('l.active', 1)->whereIntegerInRaw('p.device_id', $deviceIds)
+                ->get(['l.local_device_id', 'p.device_id as remote_device_id'])->all(),
+        );
         $linked = [];
-        foreach (DB::table('links')->where('active', 1)
-            ->where(fn ($query) => $query->whereIntegerInRaw('local_device_id', $deviceIds)->orWhereIntegerInRaw('remote_device_id', $deviceIds))
-            ->get(['local_device_id', 'remote_device_id']) as $row) {
+        foreach ($rows as $row) {
             $a = (int) $row->local_device_id;
             $b = (int) $row->remote_device_id;
             if ($a > 0 && $b > 0 && $a !== $b && $this->canSee($a) && $this->canSee($b)) {
@@ -488,7 +493,7 @@ class HostRepository extends ScopedRepository
      * IPv4 and IPv6 addresses of the given (visible) devices with their prefix length and interface.
      *
      * @param  int[]  $deviceIds
-     * @return array<int, array<int, array{port: string, ip: string, prefix: int}>> device_id => addresses
+     * @return array<int, array<int, array{port_id: int, port: string, ip: string, prefix: int, family: int}>> device_id => addresses
      */
     public function layer3Addresses(array $deviceIds): array
     {
@@ -498,11 +503,12 @@ class HostRepository extends ScopedRepository
         }
 
         $addresses = [];
-        foreach ([['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen'], ['ipv6_addresses', 'ipv6_address', 'ipv6_prefixlen']] as [$table, $column, $prefix]) {
+        foreach ([4 => ['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen'], 6 => ['ipv6_addresses', 'ipv6_address', 'ipv6_prefixlen']] as $family => [$table, $column, $prefix]) {
             try {
                 foreach (DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')->whereIntegerInRaw('p.device_id', $deviceIds)
-                    ->limit(5000)->get(['p.device_id', 'p.ifName', 'p.ifDescr', 'a.' . $column . ' as ip', 'a.' . $prefix . ' as prefix']) as $row) {
-                    $addresses[(int) $row->device_id][] = ['port' => (string) ($row->ifName ?: $row->ifDescr), 'ip' => (string) $row->ip, 'prefix' => (int) $row->prefix];
+                    ->limit(5000)->get(['p.device_id', 'p.port_id', 'p.ifName', 'p.ifDescr', 'a.' . $column . ' as ip', 'a.' . $prefix . ' as prefix']) as $row) {
+                    $addresses[(int) $row->device_id][] = ['port_id' => (int) $row->port_id, 'port' => (string) ($row->ifName ?: $row->ifDescr), 'ip' => (string) $row->ip,
+                        'prefix' => (int) $row->prefix, 'family' => $family];
                 }
             } catch (\Throwable $e) {
                 Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
@@ -510,6 +516,29 @@ class HostRepository extends ScopedRepository
         }
 
         return $addresses;
+    }
+
+    /**
+     * Visible devices with OSPF neighbors or BGP peers (as TopologyRepository's role facts tell a router).
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, true>
+     */
+    public function routingDevices(array $deviceIds): array
+    {
+        $deviceIds = $this->visible($deviceIds);
+        $routing = [];
+        foreach ($deviceIds ? ['ospf_nbrs', 'bgpPeers'] : [] as $table) {
+            try {
+                foreach (DB::table($table)->whereIntegerInRaw('device_id', $deviceIds)->distinct()->pluck('device_id') as $deviceId) {
+                    $routing[(int) $deviceId] = true;
+                }
+            } catch (\Throwable $e) {
+                Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
+            }
+        }
+
+        return $routing;
     }
 
     /**
