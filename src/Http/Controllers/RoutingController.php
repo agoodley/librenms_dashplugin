@@ -2,7 +2,9 @@
 
 namespace Agoodley\LibrenmsTopology\Http\Controllers;
 
+use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\RoutingRepository;
+use Agoodley\LibrenmsTopology\History\FindingBadges;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
 use Agoodley\LibrenmsTopology\Routing\RoutingService;
 use Agoodley\LibrenmsTopology\Support\MapParams;
@@ -26,7 +28,7 @@ class RoutingController extends Controller
     public function index(Request $request): View
     {
         return $this->page($request, 'routing', 'routing analysis',
-            fn (array $params, PluginSettings $settings) => $this->routing($request, $settings)->analyze($params));
+            fn (array $params, PluginSettings $settings) => $this->analyze($request, $settings, $params));
     }
 
     /**
@@ -37,14 +39,16 @@ class RoutingController extends Controller
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json('routing analysis', fn () => $this->routing($request, $settings)->analyze($params));
+        return $this->json('routing analysis', fn () => $this->analyze($request, $settings, $params));
     }
 
     /**
-     * Routing service bound to the logged in user's permissions.
+     * The routing analysis with the logged in user's permissions, its findings marked from the
+     * history of the background checks (FindingBadges).
      */
-    private function routing(Request $request, PluginSettings $settings): RoutingService
+    private function analyze(Request $request, PluginSettings $settings, array $params): array
     {
-        return new RoutingService(new RoutingRepository($request->user()), $settings);
+        return FindingBadges::annotate('routing', (new RoutingService(new RoutingRepository($request->user()), $settings))->analyze($params),
+            new HistoryRepository($request->user()), 120 * $settings->int('history_interval', 5, 1440));
     }
 }

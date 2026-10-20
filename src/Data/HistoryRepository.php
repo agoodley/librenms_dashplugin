@@ -169,19 +169,21 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
+     * Devices by OSPF router ID; a router ID of several devices (a duplicate) names none of them.
+     *
      * @param  int[]  $ids
      * @return array<string, int> OSPF router id => device_id
      */
     public function routerIds(array $ids): array
     {
-        $result = [];
+        $owners = [];
         foreach ($this->strictRows('ospf_instances', $ids, ['device_id', 'ospfRouterId']) as $row) {
             if (! empty($row['ospfRouterId'])) {
-                $result[(string) $row['ospfRouterId']] = (int) $row['device_id'];
+                $owners[(string) $row['ospfRouterId']][(int) $row['device_id']] = true;
             }
         }
 
-        return $result;
+        return self::onlyOwners($owners);
     }
 
     /**
@@ -193,7 +195,8 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * Devices that own the given IP addresses (interface addresses of the devices in $ids).
+     * Devices that own the given IP addresses (interface addresses of the devices in $ids); an
+     * address on several devices (shared gateway, reused in VRFs, a duplicate) names none of them.
      *
      * @param  string[]  $addresses
      * @param  int[]  $ids
@@ -218,7 +221,7 @@ class HistoryRepository extends ScopedRepository
                 foreach (DB::table('ipv4_addresses')->join('ports', 'ports.port_id', '=', 'ipv4_addresses.port_id')
                     ->whereIn('ipv4_addresses.ipv4_address', $chunk)->get(['ipv4_addresses.ipv4_address as address', 'ports.device_id']) as $row) {
                     if (isset($wanted[(int) $row->device_id])) {
-                        $owners[(string) $row->address] = (int) $row->device_id;
+                        $owners[(string) $row->address][(int) $row->device_id] = true;
                     }
                 }
             }
@@ -229,14 +232,25 @@ class HistoryRepository extends ScopedRepository
                     ->where(fn (Builder $q) => $q->whereIn('ipv6_addresses.ipv6_compressed', $chunk)->orWhereIn('ipv6_addresses.ipv6_address', $chunk))
                     ->get(['ipv6_addresses.ipv6_compressed', 'ipv6_addresses.ipv6_address', 'ports.device_id']) as $row) {
                     if (isset($wanted[(int) $row->device_id])) {
-                        $owners[strtolower((string) $row->ipv6_compressed)] = (int) $row->device_id;
-                        $owners[strtolower((string) $row->ipv6_address)] = (int) $row->device_id;
+                        $owners[strtolower((string) $row->ipv6_compressed)][(int) $row->device_id] = true;
+                        $owners[strtolower((string) $row->ipv6_address)][(int) $row->device_id] = true;
                     }
                 }
             }
         }
 
-        return $owners;
+        return self::onlyOwners($owners);
+    }
+
+    /**
+     * The single owner of each key, leaving out keys of several owners.
+     *
+     * @param  array<string, array<int, true>>  $owners
+     * @return array<string, int>
+     */
+    private static function onlyOwners(array $owners): array
+    {
+        return array_map(fn (array $devices) => (int) array_key_first($devices), array_filter($owners, fn (array $devices) => count($devices) === 1));
     }
 
     // ---------------------------------------------------------------- facts

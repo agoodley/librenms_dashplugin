@@ -282,7 +282,8 @@ class FactCollector
     }
 
     /**
-     * Working OSPF adjacencies as each router reports them.
+     * Working OSPF adjacencies as each router reports them. The neighbor is the device with the
+     * neighbor's interface address, else the one with its router ID (a router ID can be duplicated).
      *
      * @param  array<int, array>  $neighbors  ospf_nbrs rows
      * @param  array<string, int>  $routerIds  OSPF router id => device_id
@@ -301,7 +302,7 @@ class FactCollector
             $routerId = (string) ($row['ospfNbrRtrId'] ?? '');
             $ip = (string) ($row['ospfNbrIpAddr'] ?? '');
             $context = (string) ($row['context_name'] ?? '');
-            $neighbor = $routerIds[$routerId] ?? $addresses[$ip] ?? null;
+            $neighbor = $addresses[$ip] ?? $routerIds[$routerId] ?? null;
             $neighbor = $neighbor !== null && $neighbor !== $deviceId && isset($this->deviceNames[$neighbor]) ? $neighbor : null;
             $portId = (int) ($row['port_id'] ?? 0);
             $facts += self::fact(self::OSPF, "d$deviceId|$context|$routerId|$ip", $deviceId, $neighbor, [

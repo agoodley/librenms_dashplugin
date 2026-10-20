@@ -8,8 +8,10 @@ use Agoodley\LibrenmsTopology\History\FactCollector;
 use Agoodley\LibrenmsTopology\History\FactText;
 use Agoodley\LibrenmsTopology\History\FindingBadges;
 use Agoodley\LibrenmsTopology\History\FindingHistory;
+use Agoodley\LibrenmsTopology\History\HistoryService;
 use Agoodley\LibrenmsTopology\History\Runs;
 use Agoodley\LibrenmsTopology\History\Window;
+use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use PHPUnit\Framework\TestCase;
 
 class HistoryBaselineTest extends TestCase
@@ -259,6 +261,46 @@ class HistoryBaselineTest extends TestCase
             'devices' => [3, 1], 'confirmed' => false, 'missed_at' => null, 'first_seen' => '2026-10-20 10:07:00']];
 
         $this->assertSame([7], FindingHistory::run('links', $open, [$finding], '2026-10-20 10:07:00', false)['confirm']);
+    }
+
+    public function testRoutingFindingsReachTheEventlogByTheirCheck(): void
+    {
+        $state = fn (string $code, string $severity) => ['code' => $code, 'severity' => $severity, 'devices' => [7, 8]];
+
+        $entries = FindingHistory::eventlog('routing', [], [$state('ip_duplicate', 'warning')], 'warning');
+
+        $this->assertSame([7, 8], array_column($entries, 'device_id'));
+        $this->assertSame('Topology warning: Duplicate IP address (routing & IP check), details: plugin/topology/routing?device=7', $entries[0]['message']);
+        $this->assertSame('topology:routing:ip_duplicate', $entries[0]['reference']);
+        $this->assertSame('Duplicate OSPF router ID', FindingHistory::label('ospf_duplicate_router_id'));
+        $this->assertSame('BGP session down', FindingHistory::label('bgp_session_down'));
+        $this->assertSame(['stp', 'links', 'redundancy', 'routing'], HistoryService::ANALYSES, 'routing runs after the others');
+        $this->assertSame('stp links redundancy routing', (new PluginSettings([]))->all()['history_checks']);
+    }
+
+    public function testOneSeverityOfACheckCanBeKeptOutOfTheEventlog(): void
+    {
+        // a shared gateway or two separate networks reusing an address (info) against a real duplicate (warning)
+        $skip = array_map('strtolower', (new PluginSettings([]))->list('history_eventlog_skip'));
+        $this->assertContains('ip_duplicate:info', $skip);
+        $this->assertContains('bgp_recent_reset', $skip);
+        $state = fn (string $code, string $severity, int $device) => ['code' => $code, 'severity' => $severity, 'devices' => [$device]];
+        $after = [$state('ip_duplicate', 'info', 1), $state('ip_duplicate', 'warning', 2), $state('bgp_recent_reset', 'warning', 3), $state('ip_mask_mismatch', 'info', 4)];
+
+        $this->assertSame([[2, 'warning'], [4, 'info']], array_map(fn ($e) => [$e['device_id'], $e['severity']], FindingHistory::eventlog('routing', [], $after, 'info', $skip)),
+            'even at the info severity');
+        $this->assertSame([[1, 'warning']], array_map(fn ($e) => [$e['device_id'], $e['severity']],
+            FindingHistory::eventlog('routing', [], [$state('ip_duplicate', 'info', 1), $state('ip_duplicate', 'warning', 1)], 'info', $skip)),
+            'a device with both: the warning counts');
+    }
+
+    public function testTheSameRoutingFindingInTwoVrfsIsTwoFindings(): void
+    {
+        $down = ['code' => 'bgp_session_down', 'severity' => 'warning', 'title' => 'BGP session rtr1 → 198.18.2.1 down', 'devices' => [1], 'ports' => [], 'vlan' => null];
+
+        $this->assertNotSame(FindingHistory::hash('routing', ['vrfs' => ['PROD']] + $down), FindingHistory::hash('routing', ['vrfs' => ['DEV']] + $down));
+        $this->assertSame(FindingHistory::hash('routing', ['vrfs' => ['DEV', 'PROD']] + $down), FindingHistory::hash('routing', ['vrfs' => ['PROD', 'DEV']] + $down));
+        $this->assertSame(sha1('links|bgp_session_down||1|'), FindingHistory::hash('links', $down), 'findings without VRFs keep their identity');
     }
 
     public function testInitialRunsAreTheFirstSuccessfulOnes(): void

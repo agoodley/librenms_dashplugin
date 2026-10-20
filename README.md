@@ -208,7 +208,9 @@ state outside the BGP state machine (Junos peers that LibreNMS has not matched y
 
 Below the findings the page lists the OSPF routers (router ID, ABR / ASBR, areas), every adjacency as each router
 reports it, and every BGP session with its state, uptime, last error and prefixes, problems first. Filter by device,
-group, location or VRF; routers outside the selected group or location still count as neighbors and peers.
+group, location or VRF; routers outside the selected group or location still count as neighbors and peers. The
+[background checks](#topology-history-baseline-and-background-checks) run these checks after each snapshot too: a
+finding of their latest run is marked **new**, and a router gets an eventlog entry when it gets or loses one.
 
 ![Routing & IP diagnostics](docs/images/routing-diagnostics.png)
 
@@ -347,24 +349,26 @@ so a lost uplink is still reported after LibreNMS deleted its neighbor at the ne
 cable is a moved cable, not a lost path).
 
 After each snapshot the **background checks** run the spanning tree (one VLAN at a time, with the loop evidence of
-storms and syslog messages), link and redundancy checks over all devices, one after the other and each in its own
-process, and keep a findings history. A finding counts once two runs in a row report it, or when it takes the place of a
-finding of the same check about the same devices that is gone (findings whose ports change from run to run go on). The
-devices a finding is about are those its title names: "redundancy lost: acc-sw7" is about acc-sw7, so a one-run blip of
-another access switch behind the same core counts for nothing. A finding is resolved once two runs in a row do not
-report it, so a check that flickers from run to run does not flood anything; the Changes page lists the findings that
-count. A device gets an entry in its eventlog (type `topology`) when it gets its first such finding of a check or loses
-its last one, from *Eventlog from severity* (warning by default) and except the *Checks kept out of the eventlog* (those
-that follow the counters of the last poll); the entries then show on the device pages and in the eventlog widget, and
-alert rules can match them. An entry names the check only ("Topology warning: Redundancy lost (redundancy check),
-details: plugin/topology/redundancy?device=12"): findings name other devices, and everyone who may see a device reads
-its eventlog. Entries of the spanning tree check can name its syslog based checks ("Topology warning: MAC flapping
-(spanning tree check)"), also for users whose role may not view syslog; the Changes page leaves the findings of those
-checks out for them, as the spanning tree page does. The diagnostics pages mark findings that are **new** since the
-previous run, and the Changes page lists the confirmed findings that came or went. When a window holds more changes than
-the page reads (5,000 facts that started and 5,000 that ended), it lists the changes after the snapshot where that limit
-fell and counts the facts of that snapshot and the earlier ones per kind, the ten newest one by one ("Oct 20 10:07:
-6,000 root bridge facts changed, not listed"); a filter by device, group or location lists them.
+storms and syslog messages), link, redundancy and routing & IP checks over all devices, one after the other and each in
+its own process, and keep a findings history. A finding counts once two runs in a row report it, or when it takes the
+place of a finding of the same check about the same devices that is gone (findings whose ports change from run to run go
+on). The devices a finding is about are those its title names: "redundancy lost: acc-sw7" is about acc-sw7, so a one-run
+blip of another access switch behind the same core counts for nothing. A finding is resolved once two runs in a row do
+not report it, so a check that flickers from run to run does not flood anything; the Changes page lists the findings
+that count. A device gets an entry in its eventlog (type `topology`) when it gets its first such finding of a check or
+loses its last one, from *Eventlog from severity* (warning by default) and except the *Checks kept out of the eventlog*
+(those that follow the counters of the last poll or a time window, such as a BGP session reset in the last day, and the
+duplicate addresses that are probably shared on purpose or in separate networks); the entries then show on the device
+pages and in the eventlog widget, and alert rules can match them. An entry names the check only ("Topology warning:
+Redundancy lost (redundancy check), details: plugin/topology/redundancy?device=12"): findings name other devices, and
+everyone who may see a device reads its eventlog. Entries of the spanning tree check can name its syslog based checks
+("Topology warning: MAC flapping (spanning tree check)"), also for users whose role may not view syslog; the Changes
+page leaves the findings of those checks out for them, as the spanning tree page does. The diagnostics pages mark
+findings that are **new** since the previous run, and the Changes page lists the confirmed findings that came or went.
+When a window holds more changes than the page reads (5,000 facts that started and 5,000 that ended), it lists the
+changes after the snapshot where that limit fell and counts the facts of that snapshot and the earlier ones per kind,
+the ten newest one by one ("Oct 20 10:07: 6,000 root bridge facts changed, not listed"); a filter by device, group or
+location lists them.
 
 ![Topology changes](docs/images/topology-changes.png)
 
@@ -412,8 +416,8 @@ The plugin is enabled automatically. Its maps and diagnostics pages are listed u
 The topology history keeps its data in tables of the plugin: create them once with `./lnms migrate` (LibreNMS updates run
 it too, so later versions of the plugin update them). The history is recorded by the LibreNMS scheduler, which LibreNMS
 needs anyway (`librenms-scheduler` timer or cron, see `./validate.php`): `topology:snapshot` every *History interval*,
-which records the snapshot and then runs `topology:checks stp|links|redundancy` one after the other, each in a process of
-its own; the output goes to `logs/topology-snapshot.log`, a failure to the eventlog. `./lnms topology:snapshot` does the
+which records the snapshot and then runs `topology:checks stp|links|redundancy|routing` one after the other, each in a
+process of its own; the output goes to `logs/topology-snapshot.log`, a failure to the eventlog. `./lnms topology:snapshot` does the
 same now.
 
 `./validate.php` then warns that the database schema "has extra migrations
@@ -455,7 +459,7 @@ To remove the plugin and its tables:
   the Changes page and the redundancy analysis expect the new topology, or **Accept** the single items that are gone on
   purpose (the redundancy finding of a missing link points to its device on the Changes page). `./lnms topology:snapshot
   --baseline` records the topology and saves it as the baseline of every device; `--no-checks` skips the background
-  checks, `./lnms topology:checks stp` runs one of them.
+  checks, `./lnms topology:checks stp` runs one of them (`stp`, `links`, `redundancy`, `routing`).
 * The **Coverage** page lists the network devices LibreNMS only knows as LLDP/CDP neighbors: adding them (or turning on
   LLDP/CDP autodiscovery, `autodiscovery.xdp`) fills the gaps in the maps and in the redundancy analysis.
 * When the STP page reports a broadcast storm, start with the MAC flapping messages in **Loop evidence**: the ports a
@@ -518,9 +522,9 @@ To remove the plugin and its tables:
 | Record the topology history | on | every *History interval* through the LibreNMS scheduler |
 | History interval | 60 min | 15, 30, 60, 120, 240, 360, 720 or 1440 |
 | Keep changes for | 90 days | facts and findings that ended earlier are deleted |
-| Background checks | `stp links redundancy` | analyses run every *History interval*; empty disables them |
+| Background checks | `stp links redundancy routing` | analyses run every *History interval*, one after the other; empty disables them |
 | Eventlog from severity | warning | a device gets an eventlog entry when it gets or loses a background finding from this severity (`critical`, `warning`, `info` or `none`) |
-| Checks kept out of the eventlog | `link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent multicast_storm` | check codes that follow the counters of the last poll (`multicast_storm`: the multicast rate of the last poll, which routing protocols and video streams raise too); they stay on the pages |
+| Checks kept out of the eventlog | `link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent multicast_storm bgp_recent_reset ip_duplicate:info` | check codes that follow the counters of the last poll (`multicast_storm`: the multicast rate of the last poll, which routing protocols and video streams raise too) or a time window (`bgp_recent_reset`: a reset in the last *BGP reset window*); `code:severity` keeps the findings of a check with that severity out (`ip_duplicate:info`: duplicate addresses that are probably shared gateways, anycast or separate networks reusing the address). They stay on the pages |
 
 ## Permissions
 
@@ -662,8 +666,14 @@ vendor/bin/phpunit
 * The snapshot and each background check run over the whole network, one after the other, each in its own process with
   LibreNMS' `php_memory_limit` (512 MB when it is not set). For 1,242 switches with 23,000 phones and 50 PVST VLANs:
   snapshot 1 s and 115 MB, spanning tree check with loop evidence 5 s and 250 MB (one VLAN at a time), link check 1 s and
-  160 MB, redundancy check 1 s and 125 MB, the Changes page 0.4 s and 72 MB. A check that fails or takes more than an hour
-  is logged in `topology-snapshot.log` and the eventlog, and the others still run.
+  160 MB, redundancy check 1 s and 125 MB, the Changes page 0.4 s and 72 MB. For 2,000 routers with 50,000 addresses,
+  8,000 OSPF adjacencies and 8,000 BGP sessions: snapshot 1.3 s and 80 MB, routing & IP check 1.3 s and 107 MB (with 1,800
+  findings). A check that fails or takes more than an hour is logged in `topology-snapshot.log` and the eventlog, and the
+  others still run.
+* A finding's severity follows the latest run: a duplicate address that the routing check takes for two separate
+  networks while an OSPF adjacency between them is down is info for that time, and leaves the eventlog of a warning
+  threshold until it is a warning again. An OSPF adjacency names its neighbor by the neighbor's interface address, else
+  by its router ID; an address or router ID on several devices names none of them.
 * The redundancy analysis compares the baseline with the last snapshot, and only while that is less than a day old.
 * `./validate.php` warns about the plugin's migration while the plugin is installed and then skips its checks of LibreNMS'
   own schema (see [Installation](#installation)).

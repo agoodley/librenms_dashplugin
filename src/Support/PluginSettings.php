@@ -55,9 +55,9 @@ class PluginSettings
         'history_enabled' => '1',
         'history_interval' => '60',
         'history_retention_days' => '90',
-        'history_checks' => 'stp links redundancy',
+        'history_checks' => 'stp links redundancy routing',
         'history_eventlog_severity' => 'warning',
-        'history_eventlog_skip' => 'link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent multicast_storm',
+        'history_eventlog_skip' => 'link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent multicast_storm bgp_recent_reset ip_duplicate:info',
         'rollout_batch_size' => '0',
         'dependencies_outage_days' => '30',
     ];

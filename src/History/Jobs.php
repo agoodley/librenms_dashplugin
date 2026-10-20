@@ -13,7 +13,7 @@ class Jobs
         {--baseline : then save the recorded topology as the baseline of every device}';
 
     public const CHECKS = 'topology:checks
-        {analysis?* : stp, links or redundancy (default: those of the Background checks setting)}';
+        {analysis?* : stp, links, redundancy or routing (default: those of the Background checks setting)}';
 
     /**
      * Run every History interval: command => parameters as Schedule::command() takes them. One

@@ -312,7 +312,7 @@
             <div class="panel panel-default">
                 <div class="panel-heading">
                     <strong>Findings that came or went</strong>
-                    <span class="text-muted">(background checks of the spanning tree, link and redundancy pages)</span>
+                    <span class="text-muted">(background checks of the spanning tree, link, routing and redundancy pages)</span>
                 </div>
                 <table class="table table-condensed table-hover topo-stp-table">
                     <thead><tr><th>When</th><th></th><th>Severity</th><th>Finding</th><th>Devices</th></tr></thead>

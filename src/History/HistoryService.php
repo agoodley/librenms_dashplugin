@@ -4,7 +4,9 @@ namespace Agoodley\LibrenmsTopology\History;
 
 use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\LoopEvidenceRepository;
+use Agoodley\LibrenmsTopology\Data\RoutingRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
+use Agoodley\LibrenmsTopology\Routing\RoutingService;
 use Agoodley\LibrenmsTopology\Stp\LoopEvidence;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
@@ -19,8 +21,8 @@ use Illuminate\Support\Facades\Log;
  */
 class HistoryService
 {
-    /** Analyses the background checks can run (TopologyService methods returning findings). */
-    public const ANALYSES = ['stp', 'links', 'redundancy'];
+    /** Analyses the background checks can run, in the order they run (findings()). */
+    public const ANALYSES = ['stp', 'links', 'redundancy', 'routing'];
 
     /** Port columns the facts need (interface names). */
     private const PORT_COLUMNS = ['port_id', 'device_id', 'ifName', 'ifDescr'];
@@ -105,9 +107,7 @@ class HistoryService
         $run = $this->history->startRun($analysis, $started);
         $params = MapParams::parse([], $this->settings);
         try {
-            $service = new TopologyService($this->topology, $this->settings, $this->history);
-            // the spanning tree check goes one VLAN at a time (a PVST network has an instance per VLAN)
-            $findings = ($analysis === 'stp' ? $service->stpFindings($params) : $service->$analysis($params))['findings'] ?? [];
+            $findings = $this->findings($analysis, $params);
         } catch (\Throwable $e) {
             Log::error("topology plugin: background $analysis check failed: " . $e->getMessage());
             $this->history->finishRun($run, ['error' => 1, 'recorded' => Runs::record($previous['stats'] ?? null, [])], Carbon::now());
@@ -142,6 +142,23 @@ class HistoryService
             'recorded' => Runs::record($previous['stats'] ?? null, [$analysis])], Carbon::now());
 
         return $stats;
+    }
+
+    /**
+     * Findings of one analysis over all devices (MapParams defaults: no device, group or location):
+     * the spanning tree one VLAN at a time (a PVST network has an instance per VLAN), routing & IP
+     * from the routing service, the others from the topology service.
+     *
+     * @return array<int, array>
+     */
+    private function findings(string $analysis, array $params): array
+    {
+        if ($analysis === 'routing') {
+            return (new RoutingService($this->topology->sibling(RoutingRepository::class), $this->settings))->analyze($params)['findings'] ?? [];
+        }
+        $service = new TopologyService($this->topology, $this->settings, $this->history);
+
+        return ($analysis === 'stp' ? $service->stpFindings($params) : $service->$analysis($params))['findings'] ?? [];
     }
 
     /**

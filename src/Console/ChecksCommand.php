@@ -7,9 +7,10 @@ use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use LibreNMS\Interfaces\Plugins\PluginManagerInterface;
 
 /**
- * `lnms topology:checks`: the background checks of the topology history (spanning tree, link and
- * redundancy analyses over all devices; findings history and eventlog). topology:snapshot runs it
- * for each analysis in a process of its own; it fails when an analysis fails.
+ * `lnms topology:checks`: the background checks of the topology history (spanning tree, link,
+ * redundancy and routing & IP analyses over all devices; findings history and eventlog).
+ * topology:snapshot runs it for each analysis in a process of its own; it fails when an analysis
+ * fails.
  */
 class ChecksCommand extends HistoryCommand
 {

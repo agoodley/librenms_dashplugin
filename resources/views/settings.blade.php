@@ -62,9 +62,9 @@
             ['history_enabled', 'bool', 'Record the topology history', 'every interval below, through the LibreNMS scheduler; needs the plugin tables (./lnms migrate)'],
             ['history_interval', 'number', 'History interval (minutes)', '15, 30, 60, 120, 240, 360, 720 or 1440; LibreNMS refreshes LLDP/CDP neighbors at discovery (every 6 hours by default)'],
             ['history_retention_days', 'number', 'Keep changes for (days)', 'facts and findings that ended earlier are deleted'],
-            ['history_checks', 'text', 'Background checks', 'analyses run with every snapshot: stp, links, redundancy; empty disables them'],
+            ['history_checks', 'text', 'Background checks', 'analyses run with every snapshot, one after the other: stp, links, redundancy, routing; empty disables them'],
             ['history_eventlog_severity', 'text', 'Eventlog from severity', 'a device gets an eventlog entry when it gets or loses a background finding from this severity, confirmed by two runs in a row: critical, warning, info or none'],
-            ['history_eventlog_skip', 'text', 'Checks kept out of the eventlog', 'check codes whose findings follow the counters of the last poll, e.g. link_errors lag_imbalance multicast_storm (the multicast rate of the last poll: routing protocols and video streams send multicast too); they stay on the pages'],
+            ['history_eventlog_skip', 'text', 'Checks kept out of the eventlog', 'check codes whose findings follow the counters of the last poll or a time window, e.g. link_errors lag_imbalance multicast_storm (the multicast rate of the last poll: routing protocols and video streams send multicast too) bgp_recent_reset; code:severity keeps one severity of a check out, e.g. ip_duplicate:info (addresses that are probably shared on purpose or in separate networks); they stay on the pages'],
         ],
         'Rollout planner & device dependencies' => [
             ['rollout_batch_size', 'number', 'Default number of devices per rollout batch', '0: no limit; the planner page can change it per plan'],

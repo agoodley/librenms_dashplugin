@@ -33,7 +33,7 @@ class FindingHistory
     public const EVENTLOG_DEVICES = 10;
 
     /** Analyses as named in eventlog entries. */
-    private const ANALYSIS_NAMES = ['stp' => 'spanning tree', 'links' => 'link & VLAN', 'redundancy' => 'redundancy'];
+    private const ANALYSIS_NAMES = ['stp' => 'spanning tree', 'links' => 'link & VLAN', 'redundancy' => 'redundancy', 'routing' => 'routing & IP'];
 
     /** Names of checks whose code does not read well; the others are their code in words. */
     private const LABELS = [
@@ -73,13 +73,34 @@ class FindingHistory
         'err_disabled' => 'Err-disabled port',
         'syslog_native_vlan' => 'Native VLAN mismatch (syslog)',
         'syslog_duplex_mismatch' => 'Duplex mismatch (syslog)',
+        'ospf_duplicate_router_id' => 'Duplicate OSPF router ID',
+        'ospf_mtu_mismatch' => 'OSPF MTU mismatch',
+        'ospf_neighbor_stuck' => 'OSPF adjacency not full',
+        'ospf_timer_mismatch' => 'OSPF timer mismatch',
+        'ospf_area_mismatch' => 'OSPF area mismatch',
+        'ospf_area_type_mismatch' => 'OSPF area type mismatch',
+        'ospf_auth_mismatch' => 'OSPF authentication mismatch',
+        'ospf_network_type_mismatch' => 'OSPF network type mismatch',
+        'ospf_lsdb_mismatch' => 'OSPF databases differ',
+        'ospf_cost_asymmetric' => 'Asymmetric OSPF cost',
+        'ospf_dr_on_p2p' => 'OSPF DR election on a point-to-point link',
+        'bgp_remote_as_mismatch' => 'BGP remote AS mismatch',
+        'bgp_one_sided' => 'BGP session configured on one side',
+        'bgp_session_down' => 'BGP session down',
+        'bgp_prefix_limit' => 'BGP prefix limit',
+        'bgp_recent_reset' => 'BGP session reset',
+        'bgp_no_prefixes' => 'BGP session without prefixes',
+        'ip_duplicate' => 'Duplicate IP address',
+        'ip_mask_mismatch' => 'Subnet mask mismatch',
+        'ip_vrf_mismatch' => 'Subnet in two VRFs',
     ];
 
     /** Words of check codes. */
     private const WORDS = ['lag' => 'port-channel', 'stp' => 'spanning tree', 'mtu' => 'MTU', 'vlan' => 'VLAN', 'tc' => 'topology change', 'spof' => 'single point of failure'];
 
     /**
-     * Identity of a finding of an analysis.
+     * Identity of a finding of an analysis: its code, devices, ports and VLAN, and the VRFs of a
+     * routing finding (the same session down in two VRFs is two findings).
      */
     public static function hash(string $analysis, array $finding): string
     {
@@ -87,14 +108,20 @@ class FindingHistory
         $ports = array_map('intval', $finding['ports'] ?? []);
         sort($devices);
         sort($ports);
-
-        return sha1(implode('|', [
+        $parts = [
             $analysis,
             $finding['code'],
             $finding['vlan'] ?? '',
             implode(',', array_unique($devices)),
             implode(',', array_unique($ports)),
-        ]));
+        ];
+        if (isset($finding['vrfs'])) {
+            $vrfs = array_map('strval', $finding['vrfs']);
+            sort($vrfs);
+            $parts[] = 'vrf ' . implode(',', array_unique($vrfs));
+        }
+
+        return sha1(implode('|', $parts));
     }
 
     /**
@@ -204,7 +231,8 @@ class FindingHistory
      *
      * @param  array<int, array{code: string, severity: string, devices: int[]}>  $before  confirmed findings before the run
      * @param  array<int, array{code: string, severity: string, devices: int[]}>  $after  confirmed findings after the run
-     * @param  string[]  $skip  check codes kept out of the eventlog
+     * @param  string[]  $skip  check codes kept out of the eventlog, or code:severity for the findings of a check with that
+     *                          severity (ip_duplicate:info)
      * @return array<int, array{device_id: int, message: string, severity: string, reference: string}> severity: critical,
      *                                                                                                  warning, info or ok
      */
@@ -317,14 +345,15 @@ class FindingHistory
      * Check code => device => worst severity of its confirmed findings.
      *
      * @param  array<int, array{code: string, severity: string, devices: int[]}>  $findings
-     * @param  string[]  $skip
+     * @param  string[]  $skip  codes, or code:severity
      * @return array<string, array<int, string>>
      */
     private static function byDevice(array $findings, array $skip): array
     {
+        $skip = array_flip($skip);
         $states = [];
         foreach ($findings as $finding) {
-            if (in_array($finding['code'], $skip, true)) {
+            if (isset($skip[$finding['code']]) || isset($skip[$finding['code'] . ':' . $finding['severity']])) {
                 continue;
             }
             foreach ($finding['devices'] as $device) {

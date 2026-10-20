@@ -190,6 +190,17 @@ class HistoryFactsTest extends TestCase
         $this->assertSame([null, 2], array_column($bgp, 'device_b'));
     }
 
+    public function testAdjacencyNamesTheNeighborByItsAddressBeforeItsRouterId(): void
+    {
+        // a router ID can be duplicated (the routing page reports it): the neighbor's interface address tells them apart
+        $ospf = (new FactCollector(self::NAMES, self::ports()))->ospf([
+            ['device_id' => 1, 'port_id' => 11, 'ospfNbrIpAddr' => '10.0.0.3', 'ospfNbrRtrId' => '2.2.2.2', 'ospfNbrState' => 'full', 'context_name' => ''],
+            ['device_id' => 1, 'port_id' => 12, 'ospfNbrIpAddr' => '10.0.0.9', 'ospfNbrRtrId' => '2.2.2.2', 'ospfNbrState' => 'full', 'context_name' => ''],
+        ], ['2.2.2.2' => 2], ['10.0.0.3' => 3]);
+
+        $this->assertSame([3, 2], array_column($ospf, 'device_b'), 'by address, else by router ID');
+    }
+
     public function testDevicesOutsideTheScopeAreLeftOut(): void
     {
         $collector = new FactCollector([3 => 'acc1'], self::ports());
