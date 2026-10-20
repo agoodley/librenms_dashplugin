@@ -177,6 +177,37 @@ class SiteSessionsTest extends TestCase
         $this->assertSame('as:65515@site:2', $alone[2]['cloud']['id']);
     }
 
+    public function testSharedSegmentsAndSessionsThatAreDown(): void
+    {
+        // three spokes of a DMVPN hub LibreNMS does not monitor (AS65000 at 10.0.0.1 on the tunnels' /24): each spoke has
+        // an address of its own on the subnet, a shared segment
+        $devices = [];
+        $owners = [];
+        $rows = [];
+        foreach ([1, 2, 3] as $s) {
+            $devices[$s] = self::device($s, "spoke-$s", $s, 65100 + $s);
+            $owners['10.0.0.' . (1 + $s)][] = ['device_id' => $s, 'prefixlen' => 24, 'vrf' => ''];
+            $rows[] = self::bgp($s, '10.0.0.1', 65000, 'established', '10.0.0.' . (1 + $s));
+        }
+        $this->assertSame(['as:65000@10.0.0.1'], array_values(array_unique(array_map(fn ($c) => $c['cloud']['id'],
+            (new SiteSessions($devices, $owners))->addBgp($rows)->all()))));
+
+        // every session down (no local address): the routers' interface addresses tell where the peer is, so the
+        // cloud stays shared; the routers to look up are those of unknownSources()
+        $down = array_map(fn ($row) => ['bgpPeerState' => 'active', 'bgpLocalAddr' => '0.0.0.0'] + $row, $rows);
+        $this->assertSame([1, 2, 3], SiteSessions::unknownSources($down, $owners));
+        $this->assertSame([], SiteSessions::unknownSources($rows, $owners));
+        $interfaces = array_map(fn ($s) => [['10.0.0.' . (1 + $s), 24], ['192.168.' . $s . '.1', 24]], [1 => 1, 2 => 2, 3 => 3]);
+        $this->assertSame(['as:65000@10.0.0.1'], array_values(array_unique(array_map(fn ($c) => $c['cloud']['id'],
+            (new SiteSessions($devices, $owners, $interfaces))->addBgp($down)->all()))));
+
+        // a cloud VPN gateway reached from the routers' tunnel /30s, every session down: still shared
+        $gateway = array_map(fn ($row) => ['bgpPeerIdentifier' => '10.255.0.254', 'bgpPeerRemoteAs' => 65515] + $row, $down);
+        $interfaces = array_map(fn ($s) => [['10.255.' . $s . '.1', 30]], [1 => 1, 2 => 2, 3 => 3]);
+        $this->assertSame(['as:65515@10.255.0.254'], array_values(array_unique(array_map(fn ($c) => $c['cloud']['id'],
+            (new SiteSessions($devices, [], $interfaces))->addBgp($gateway)->all()))));
+    }
+
     public function testNeighborsInTheSameVrfAndAddressForms(): void
     {
         // 10.0.0.2 is ce-x in VRF X and ce-y in VRF Y

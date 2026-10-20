@@ -40,8 +40,11 @@ class SiteConnections
     /** @var array<string, int[]> site pair ("site:1|site:2") => indexes of the cables between them */
     private array $siteCables = [];
 
-    /** @var array<int, array<int, int[]>> cable index => device_id => its port on the cable and that port's port-channel */
-    private array $cablePorts = [];
+    /** @var array<string, int[]> "device_id:port_id" (a cable's port or that port's port-channel) => indexes of its cables */
+    private array $cablesByPort = [];
+
+    /** @var array<int, string> cable index => its site pair */
+    private array $cableSites = [];
 
     /**
      * @param  array<int, array>  $devices  device_id => row with location_id (see SiteBuilder)
@@ -79,11 +82,13 @@ class SiteConnections
                 'status' => L2Builder::isUp($pa, $pb) ? 'up' : 'down',
             ]);
             $this->cables[self::pair($aDevice, $bDevice)][] = $index;
-            $this->siteCables[$this->sitePair($aDevice, $bDevice)][] = $index;
-            $this->cablePorts[$index] = [
-                $aDevice => array_values(array_filter([$aPort, $lag[$aPort] ?? 0])),
-                $bDevice => array_values(array_filter([$bPort, $lag[$bPort] ?? 0])),
-            ];
+            $this->cableSites[$index] = $this->sitePair($aDevice, $bDevice);
+            $this->siteCables[$this->cableSites[$index]][] = $index;
+            foreach ([$aDevice => [$aPort, $lag[$aPort] ?? 0], $bDevice => [$bPort, $lag[$bPort] ?? 0]] as $device => $cablePorts) {
+                foreach (array_filter($cablePorts) as $port) {
+                    $this->cablesByPort[$device . ':' . $port][] = $index;
+                }
+            }
         }
 
         return $this;
@@ -197,17 +202,21 @@ class SiteConnections
      * is found through the interface stack: a subnet on a cable's port, or on a sub-interface or
      * port-channel over it, adds its network to that cable; a subnet on interfaces without a known
      * port (VLAN interfaces, port-channels whose members are not listed) to the cables between its
-     * two devices, and a subnet with a VLAN interface or sub-interface at either end to the cables
-     * between the two sites (a transit VLAN to a router behind the far switch). Other subnets are
-     * links of their own, one per pair of ports under them, so both address families and the
-     * sub-interfaces of the same ports (VRF-lite) make one link. A tunnel is always a link of its own.
+     * two devices, and a subnet whose ends both ride local switches (an end without a port of its
+     * own, or whose port's neighbor is at its own site: a transit VLAN to a router behind the far
+     * switch) to the cables between the two sites. Other subnets are links of their own, one per
+     * pair of ports under them, so both address families and the sub-interfaces of the same ports
+     * (VRF-lite) make one link: a port without a neighbor is a circuit of its own (a carrier
+     * handoff). A tunnel is always a link of its own.
      *
      * @param  array  $l3  result of L3Builder::build()
      * @param  array<int, array>  $ports  port_id => row of the subnet ports and of every port below them (below())
      * @param  array<int, int[]>  $stack  port_id => ports right below it: a sub-interface's parent, a port-channel's
-     *                                    members (ifStackTable, port-channel membership, unitParents())
+     *                                    members (stack(), unitParents())
+     * @param  array<int, array<int, int|null>>  $neighbors  port_id => location ids of the monitored neighbors on the
+     *                                                         port (LLDP / CDP links, either direction)
      */
-    public function addSubnets(array $l3, array $ports, array $stack): self
+    public function addSubnets(array $l3, array $ports, array $stack, array $neighbors = []): self
     {
         $subnets = [];
         foreach ($l3['edges'] as $edge) {
@@ -220,12 +229,24 @@ class SiteConnections
             $b = self::resolve((int) $edge['b']['port_id'], $ports, $stack);
             $network = $edge['network'] . ($edge['vrf'] !== '' ? ' (' . $edge['vrf'] . ')' : '');
 
-            $siteCables = $this->siteCables[$this->sitePair($aDevice, $bDevice)] ?? [];
-            $on = array_filter($siteCables, fn (int $index) => array_intersect($this->cablePorts[$index][$aDevice] ?? [], $a['ports'])
-                || array_intersect($this->cablePorts[$index][$bDevice] ?? [], $b['ports']));
+            $sites = $this->sitePair($aDevice, $bDevice);
+            $on = [];
+            foreach ([[$aDevice, $a], [$bDevice, $b]] as [$device, $end]) {
+                foreach ($end['ports'] as $port) {
+                    foreach ($this->cablesByPort[$device . ':' . $port] ?? [] as $index) {
+                        if ($this->cableSites[$index] === $sites) {
+                            $on[$index] = $index;
+                        }
+                    }
+                }
+            }
             if (! $on && ! $a['tunnel'] && ! $b['tunnel']) {
                 $cables = $this->cables[self::pair($aDevice, $bDevice)] ?? [];
-                $on = ! $a['physical'] && ! $b['physical'] && $cables ? $cables : ($a['virtual'] || $b['virtual'] ? $siteCables : []);
+                $on = match (true) {
+                    ! $a['physical'] && ! $b['physical'] && $cables !== [] => $cables,
+                    $this->ridesLocalSwitch($a, $aDevice, $neighbors) && $this->ridesLocalSwitch($b, $bDevice, $neighbors) => $this->siteCables[$sites] ?? [],
+                    default => [],
+                };
             }
             if ($on) {
                 foreach ($on as $index) {
@@ -276,14 +297,14 @@ class SiteConnections
     /**
      * Where a subnet's interface runs, down the interface stack: every port on the way, the physical
      * ports at the bottom, the port whose speed is the capacity (the interface itself, its parent or
-     * its port-channel; none for VLAN interfaces and tunnels), whether the interface is a logical one
-     * (it is not that port itself) and whether it is a tunnel (never followed down).
+     * its port-channel; none for VLAN interfaces and tunnels) and whether it is a tunnel (never
+     * followed down).
      *
-     * @return array{port: int, ports: int[], physical: int[], carrier: int|null, virtual: bool, tunnel: bool}
+     * @return array{port: int, ports: int[], physical: int[], carrier: int|null, tunnel: bool}
      */
     private static function resolve(int $portId, array $ports, array $stack): array
     {
-        $end = ['port' => $portId, 'ports' => [], 'physical' => [], 'carrier' => null, 'virtual' => false, 'tunnel' => false];
+        $end = ['port' => $portId, 'ports' => [], 'physical' => [], 'carrier' => null, 'tunnel' => false];
         $walk = function (int $id, bool $placed, int $depth) use (&$walk, &$end, $ports, $stack): void {
             if (in_array($id, $end['ports'], true)) {
                 return;
@@ -307,9 +328,30 @@ class SiteConnections
             }
         };
         $walk($portId, false, 0);
-        $end['virtual'] = $end['carrier'] !== $portId;
 
         return $end;
+    }
+
+    /**
+     * Does a subnet's end reach the other site through switches of its own site: it has no port of
+     * its own (a VLAN or IRB interface), or the neighbor on its port is at its own site?
+     *
+     * @param  array<int, array<int, int|null>>  $neighbors  see addSubnets()
+     */
+    private function ridesLocalSwitch(array $end, int $deviceId, array $neighbors): bool
+    {
+        if (! $end['physical']) {
+            return true;
+        }
+        foreach ($end['physical'] as $port) {
+            foreach ($neighbors[$port] ?? [] as $location) {
+                if (SiteBuilder::siteId(['location_id' => $location]) === $this->site($deviceId)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

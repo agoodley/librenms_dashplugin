@@ -63,10 +63,11 @@ everything between their devices: LLDP/CDP links (one per cable, port-channel me
 subnets, and OSPF adjacencies and BGP sessions (one per circuit, with the state each router reports). A subnet on a
 cable, or on a sub-interface, VLAN interface or port-channel over it, only adds its network to the cable, as does a
 transit VLAN from a VLAN interface to a router behind the switch at the other end; other subnets, such as tunnels or
-carrier circuits, are links of their own. BGP sessions to peers LibreNMS does not monitor join the site to a cloud per
-remote AS, which shows an MPLS VPN or internet transit provider and which sites hang off it. A private AS number is a
-cloud per site, since sites often reuse them, unless the sites peer with the same address that is not on a subnet of
-their router (a cloud VPN gateway, by the subnet of the session's local address): they share that cloud.
+carrier circuits (a port without an LLDP/CDP neighbor, also when the subnet is on one of its sub-interfaces), are links
+of their own. BGP sessions to peers LibreNMS does not monitor join the site to a cloud per remote AS, which shows an
+MPLS VPN or internet transit provider and which sites hang off it. A private AS number is a cloud per site, since sites
+often reuse them, unless the sites peer with the same address and it is either not on a subnet of their routers (a
+cloud VPN gateway) or on a subnet they join with addresses of their own (a DMVPN hub): then they share that cloud.
 
 ![Site / WAN map](docs/images/site-map.png)
 
@@ -363,6 +364,10 @@ vendor/bin/phpunit
   neighbors LibreNMS does not monitor are left out (their location is unknown), as are sessions to devices outside a
   device group filter; BGP peers LibreNMS does not monitor are grouped by AS, so two providers in the same AS are one
   cloud. The devices without a location are one site, which the map never walks through (hops, hierarchy).
+* A provider in a private AS with its own PE at every branch (an MPLS L3VPN) looks like the firewalls of the branches,
+  so it is a cloud per site. Whether sites share a private AS cloud comes from the routers' addresses: the session's
+  local address, or the router's interface addresses while the session is down, so a shared cloud only splits when
+  LibreNMS has neither.
 
 * STP data comes from the BRIDGE-MIB as polled by LibreNMS: MST instances other than the CIST are not
   available, and findings reflect the last poll (a check can fire during re-convergence).

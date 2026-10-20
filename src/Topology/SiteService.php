@@ -62,7 +62,8 @@ class SiteService
         if ($subnetPorts) {
             $ports = $this->repo->ports($subnetPorts);
             $stack = $this->stack($ports);
-            $connections->addSubnets($l3, $ports + $this->repo->ports(SiteConnections::below($subnetPorts, $stack)), $stack);
+            $below = SiteConnections::below($subnetPorts, $stack);
+            $connections->addSubnets($l3, $ports + $this->repo->ports($below), $stack, $this->sites->portNeighbors(array_merge($subnetPorts, $below)));
         }
 
         // OSPF adjacencies and BGP sessions
@@ -70,7 +71,8 @@ class SiteService
         $bgp = $p['bgp'] ? $this->repo->bgpPeers($ids) : [];
         $owners = $ospf || $bgp ? $this->sites->addressOwners(array_merge(array_column($ospf, 'ospfNbrIpAddr'),
             array_column($ospf, 'ospfNbrRtrId'), array_column($bgp, 'bgpPeerIdentifier'), array_column($bgp, 'bgpLocalAddr'))) : [];
-        $sessions = (new SiteSessions($devices, $owners))->addOspf($ospf)->addBgp($bgp);
+        $sessions = (new SiteSessions($devices, $owners, $this->sites->interfaceAddresses(SiteSessions::unknownSources($bgp, $owners))))
+            ->addOspf($ospf)->addBgp($bgp);
 
         $down = array_keys(array_filter($devices, fn ($device) => L2Builder::deviceStatus($device) === 'down'));
         $maxSites = $this->settings->int('max_nodes', 10, 5000);

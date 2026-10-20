@@ -14,7 +14,8 @@ use Agoodley\LibrenmsTopology\Support\Graph;
  * rather than drawn as an unknown network. BGP sessions to peers LibreNMS does not monitor join the
  * site to a cloud per remote AS; a private AS number can be a different network at every site (each
  * branch's firewall in AS65001), so its clouds are per site, except that sites peering with the same
- * address that is not on a subnet of their router (a cloud VPN gateway in AS65515) share one.
+ * address share one when it is not on a subnet of their routers (a cloud VPN gateway in AS65515) or
+ * when it is on a subnet that their routers join with addresses of their own (a DMVPN hub).
  */
 class SiteSessions
 {
@@ -34,9 +35,36 @@ class SiteSessions
      * @param  array<int, array>  $devices  device_id => row with location_id, location and bgpLocalAs: the map's scope
      * @param  array<string, array<int, array{device_id: int, prefixlen: int, vrf: string}>>  $owners  address => devices
      *     the user may see with that interface address, by device id (SiteRepository::addressOwners())
+     * @param  array<int, array<int, array{0: string, 1: int}>>  $interfaces  device_id => interface addresses and prefix
+     *     lengths of the routers listed by unknownSources()
      */
-    public function __construct(private readonly array $devices, private readonly array $owners)
+    public function __construct(private readonly array $devices, private readonly array $owners, private readonly array $interfaces = [])
     {
+    }
+
+    /**
+     * Routers with sessions to peers in a private AS that LibreNMS does not monitor and no known
+     * local address (a session that is down has none): whether such a peer is on a subnet of the
+     * router then comes from the router's interface addresses.
+     *
+     * @param  array<int, array>  $rows  bgpPeers rows
+     * @param  array<string, array>  $owners  see the constructor
+     * @return int[]
+     */
+    public static function unknownSources(array $rows, array $owners): array
+    {
+        $devices = [];
+        foreach ($rows as $row) {
+            $local = (int) $row['device_id'];
+            $peer = self::canonical((string) ($row['bgpPeerIdentifier'] ?? ''));
+            $own = self::canonical((string) ($row['bgpLocalAddr'] ?? ''));
+            if ($peer !== null && ! isset($owners[$peer]) && self::isPrivateAs((int) ($row['bgpPeerRemoteAs'] ?? 0))
+                && ($own === null || ! in_array($local, array_column($owners[$own] ?? [], 'device_id'), true))) {
+                $devices[$local] = $local;
+            }
+        }
+
+        return array_values($devices);
     }
 
     /**
@@ -224,9 +252,10 @@ class SiteSessions
 
     /**
      * Private AS clouds that several sites share: sites whose routers peer with the same address in
-     * the same private AS, when that address is not on a subnet of the router (by the subnet of the
-     * session's local address: a session with a loopback or a tunnel source to a cloud VPN gateway)
-     * and no router has it on one (the firewall of every branch at 192.168.1.2 stays per site).
+     * the same private AS, when that address is not on a subnet of their routers (a session from a
+     * loopback or a tunnel to a cloud VPN gateway), or is on a subnet their routers join with an
+     * address of their own (spokes .2, .3, .4 of a DMVPN hub at .1). Every branch's firewall at
+     * 192.168.255.2, with the router at 192.168.255.1 everywhere, stays a cloud per site.
      *
      * @param  array<int, array{0: int, 1: int, 2: array}>  $clouds  sessions to unmonitored peers: router, remote AS, side
      * @return array<string, string> "AS|site id" => id of the shared cloud
@@ -236,18 +265,24 @@ class SiteSessions
         $peers = [];
         foreach ($clouds as [$local, $remoteAs, $side]) {
             if (self::isPrivateAs($remoteAs)) {
+                $site = $remoteAs . '|' . SiteBuilder::siteId($this->devices[$local]);
+                [$connected, $address] = $this->source($local, $side);
                 $peer = &$peers[$remoteAs . '@' . $side['peer']];
-                $peer['sites'][$remoteAs . '|' . SiteBuilder::siteId($this->devices[$local])] = true;
-                $connected = $this->connected($local, $side);
+                $peer['sites'][$site] = true;
                 $peer['remote'] = ($peer['remote'] ?? false) || $connected === false;
-                $peer['connected'] = ($peer['connected'] ?? false) || $connected === true;
+                if ($connected) {
+                    $peer['sources'][$site][$address] = true;
+                }
                 unset($peer);
             }
         }
 
         $graph = new Graph;
         foreach ($peers as $address => $peer) {
-            if ($peer['remote'] && ! $peer['connected'] && count($peer['sites']) > 1) {
+            // the routers' addresses on the peer's subnet, of each site: no two sites with the same one
+            $sources = array_merge(...array_map('array_keys', array_values($peer['sources'] ?? [])));
+            $segment = count($peer['sources'] ?? []) > 1 && count(array_unique($sources)) === count($sources);
+            if (count($peer['sites']) > 1 && ($segment || ($peer['remote'] && ! $sources))) {
                 foreach (array_keys($peer['sites']) as $site) {
                     $graph->addEdge($site, $address);
                 }
@@ -266,20 +301,33 @@ class SiteSessions
     }
 
     /**
-     * Is the peer of a session on a subnet of the router, by the subnet of the session's local
-     * address? Null when that address is not known.
+     * Is the peer of a session on a subnet of the router, and the router's address on it: [true,
+     * address], [false, null] when it is not, [null, null] when that is not known. The session's
+     * local address tells while the session is up, the router's interface addresses when it is down.
+     *
+     * @return array{0: bool|null, 1: string|null}
      */
-    private function connected(int $local, array $side): ?bool
+    private function source(int $local, array $side): array
     {
         foreach ($side['own'] === null ? [] : ($this->owners[$side['own']] ?? []) as $owner) {
             if ($owner['device_id'] === $local) {
                 $subnet = self::subnet($side['own'], $owner['prefixlen']);
 
-                return $subnet !== null && Cidr::contains($subnet, $side['peer']);
+                return $subnet !== null && Cidr::contains($subnet, $side['peer']) ? [true, $side['own']] : [false, null];
+            }
+        }
+        if (! isset($this->interfaces[$local])) {
+            return [null, null];
+        }
+        foreach ($this->interfaces[$local] as [$address, $prefix]) {
+            $address = self::canonical($address);
+            $subnet = $address === null ? null : self::subnet($address, $prefix);
+            if ($subnet !== null && Cidr::contains($subnet, $side['peer'])) {
+                return [true, $address];
             }
         }
 
-        return null;
+        return [false, null];
     }
 
     /**

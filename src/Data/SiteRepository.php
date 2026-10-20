@@ -79,6 +79,62 @@ class SiteRepository extends ScopedRepository
     }
 
     /**
+     * Locations of the monitored devices the user may see on the far side of the given ports (active
+     * LLDP / CDP links reported by either side): whether a port faces a switch of its own site, a
+     * device at another site, or nothing LibreNMS knows (a carrier handoff).
+     *
+     * @param  int[]  $portIds
+     * @return array<int, array<int, int|null>> port_id => location ids of its neighbors (null: no location)
+     */
+    public function portNeighbors(array $portIds): array
+    {
+        $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
+        $wanted = array_flip($portIds);
+        $neighbors = [];
+        foreach (array_chunk($portIds, self::CHUNK) as $chunk) {
+            foreach (DB::table('links as l')
+                ->join('devices as a', 'a.device_id', '=', 'l.local_device_id')
+                ->join('devices as b', 'b.device_id', '=', 'l.remote_device_id')
+                ->leftJoin('locations as la', 'la.id', '=', 'a.location_id')
+                ->leftJoin('locations as lb', 'lb.id', '=', 'b.location_id')
+                ->where('l.active', 1)
+                ->where(fn ($query) => $query->whereIntegerInRaw('l.local_port_id', $chunk)->orWhereIntegerInRaw('l.remote_port_id', $chunk))
+                ->get(['l.local_port_id', 'l.remote_port_id', 'l.local_device_id', 'l.remote_device_id', 'la.id as local_location', 'lb.id as remote_location']) as $link) {
+                foreach ([['local', 'remote'], ['remote', 'local']] as [$near, $far]) {
+                    if (isset($wanted[(int) $link->{$near . '_port_id'}]) && $this->canSee((int) $link->{$far . '_device_id'})) {
+                        $location = $link->{$far . '_location'};
+                        $neighbors[(int) $link->{$near . '_port_id'}][] = $location !== null ? (int) $location : null;
+                    }
+                }
+            }
+        }
+
+        return $neighbors;
+    }
+
+    /**
+     * Interface addresses with their prefix length (IPv4 and IPv6) of a few devices.
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, array<int, array{0: string, 1: int}>> device_id => [address, prefix length]
+     */
+    public function interfaceAddresses(array $deviceIds): array
+    {
+        $addresses = [];
+        foreach (array_chunk(array_values(array_unique($deviceIds)), self::CHUNK) as $chunk) {
+            foreach ([['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen'], ['ipv6_addresses', 'ipv6_compressed', 'ipv6_prefixlen']] as [$table, $address, $prefixlen]) {
+                foreach (DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
+                    ->whereIntegerInRaw('p.device_id', $chunk)->where('p.deleted', 0)
+                    ->get(['p.device_id', 'a.' . $address . ' as address', 'a.' . $prefixlen . ' as prefixlen']) as $row) {
+                    $addresses[(int) $row->device_id][] = [(string) $row->address, (int) $row->prefixlen];
+                }
+            }
+        }
+
+        return $addresses;
+    }
+
+    /**
      * Interface addresses that can make a point-to-point subnet (IPv4 with a prefix of at least
      * $prefix4, IPv6 of at least $prefix6, no host routes), in the format of
      * TopologyRepository::addresses(). The rest of an address plan (LANs, loopbacks) never joins

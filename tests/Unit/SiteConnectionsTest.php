@@ -68,7 +68,14 @@ class SiteConnectionsTest extends TestCase
             }
         }
 
-        return $connections->addSubnets($l3, $ports, $stack)->all();
+        // the neighbors of each port, as SiteRepository::portNeighbors() finds them in the links
+        $neighbors = [];
+        foreach ($links as $link) {
+            $neighbors[$link['local_port_id']][] = $devices[$link['remote_device_id']]['location_id'];
+            $neighbors[$link['remote_port_id']][] = $devices[$link['local_device_id']]['location_id'];
+        }
+
+        return $connections->addSubnets($l3, $ports, $stack, $neighbors)->all();
     }
 
     private static function ports(array ...$ports): array
@@ -194,6 +201,10 @@ class SiteConnectionsTest extends TestCase
 
         $this->assertSame([['l2', 'Te1/1/1', '10.9.0.0/29', 10000000000, 1000000000]],
             array_map(fn ($c) => [$c['kind'], $c['a']['port'], $c['network'], $c['speed'], $c['in_bps']], $connections), 'the subnet is on the fiber, not a second link');
+
+        // the same VLAN to a router whose port has no neighbor (a carrier handoff): a circuit of its own
+        $connections = self::connections($devices, $ports, [self::lldp(1, 11, 2, 21)], [[$ports[12], '10.9.0.1', 29], [$ports[32], '10.9.0.2', 29]], [], [[31, 32]]);
+        $this->assertSame([['l2', ''], ['p2p', '10.9.0.0/29']], array_map(fn ($c) => [$c['kind'], (string) $c['network']], $connections));
     }
 
     public function testPortChannelsWithUnknownMembers(): void
@@ -255,6 +266,44 @@ class SiteConnectionsTest extends TestCase
         $this->assertSame([['l2', '10.0.0.0/30', 1000000000], ['p2p', '10.0.0.4/30', 1000000000], ['p2p', '10.0.0.8/30', 0]],
             array_map(fn ($c) => [$c['kind'], $c['network'], $c['speed']], $connections));
         $this->assertSame([8000, 16000, null], [$connections[2]['in_bps'], $connections[2]['out_bps'], $connections[2]['util']]);
+    }
+
+    public function testCarrierCircuitsNextToACable(): void
+    {
+        // (a) an LLDP fiber Te0/0/0 and a carrier circuit handed off on Gi0/0/1.100 between the same two routers:
+        // the handoff port has no neighbor, it is a circuit of its own (ports_stack rows as LibreNMS writes them)
+        $devices = [1 => self::device(1, 'rtr-a', 1), 2 => self::device(2, 'rtr-b', 2)];
+        $ports = self::ports(
+            self::port(11, 1, 'TenGigabitEthernet0/0/0', 'ethernetCsmacd', 10000000000, 'up', 125000000, 62500000),
+            self::port(13, 1, 'GigabitEthernet0/0/1', 'ethernetCsmacd', 1000000000, 'up', 50000000, 25000000),
+            self::port(14, 1, 'GigabitEthernet0/0/1.100', 'l2vlan', 1000000000), self::port(21, 2, 'TenGigabitEthernet0/0/0'),
+            self::port(23, 2, 'GigabitEthernet0/0/1', 'ethernetCsmacd', 1000000000), self::port(24, 2, 'GigabitEthernet0/0/1.100', 'l2vlan', 1000000000),
+        );
+        $connections = self::connections($devices, $ports, [self::lldp(1, 11, 2, 21)], [[$ports[11], '10.0.0.1', 30], [$ports[21], '10.0.0.2', 30],
+            [$ports[14], '10.0.1.1', 30], [$ports[24], '10.0.1.2', 30]], [], [[13, 14], [23, 24]]);
+        $this->assertSame([['l2', 'Te0/0/0', '10.0.0.0/30', 10000000000, 1000000000], ['p2p', 'Gi0/0/1', '10.0.1.0/30', 1000000000, 400000000]],
+            array_map(fn ($c) => [$c['kind'], $c['a']['port'], $c['network'], $c['speed'], $c['in_bps']], $connections));
+
+        // (b) the fiber between the core switches, the circuit between the routers
+        $devices = [1 => self::device(1, 'core-a', 1), 2 => self::device(2, 'core-b', 2), 3 => self::device(3, 'rtr-a', 1), 4 => self::device(4, 'rtr-b', 2)];
+        $ports = self::ports(self::port(11, 1, 'TenGigabitEthernet1/1/1'), self::port(21, 2, 'TenGigabitEthernet1/1/1'),
+            self::port(33, 3, 'GigabitEthernet0/0/1', 'ethernetCsmacd', 1000000000), self::port(34, 3, 'GigabitEthernet0/0/1.100', 'l2vlan', 1000000000),
+            self::port(43, 4, 'GigabitEthernet0/0/1', 'ethernetCsmacd', 1000000000), self::port(44, 4, 'GigabitEthernet0/0/1.100', 'l2vlan', 1000000000));
+        $connections = self::connections($devices, $ports, [self::lldp(1, 11, 2, 21)], [[$ports[34], '10.0.1.1', 30], [$ports[44], '10.0.1.2', 30]],
+            [], [[33, 34], [43, 44]]);
+        $this->assertSame([['l2', 10000000000], ['p2p', 1000000000]], array_map(fn ($c) => [$c['kind'], $c['speed']], $connections));
+
+        // (c) Junos: the fiber on xe-0/1/0 with its unit 0, the circuit on xe-0/2/0 unit 0, with and without stack rows
+        $devices = [1 => self::device(1, 'mx-a', 1), 2 => self::device(2, 'mx-b', 2)];
+        $ports = self::ports(self::port(11, 1, 'xe-0/1/0'), self::port(12, 1, 'xe-0/1/0.0', 'propVirtual', 0), self::port(13, 1, 'xe-0/2/0'),
+            self::port(14, 1, 'xe-0/2/0.0', 'propVirtual', 0), self::port(21, 2, 'xe-0/1/0'), self::port(22, 2, 'xe-0/1/0.0', 'propVirtual', 0),
+            self::port(23, 2, 'xe-0/2/0'), self::port(24, 2, 'xe-0/2/0.0', 'propVirtual', 0));
+        foreach ([[[11, 12], [13, 14], [21, 22], [23, 24]], []] as $pairs) {
+            $connections = self::connections($devices, $ports, [self::lldp(1, 11, 2, 21)], [[$ports[12], '10.0.0.1', 30], [$ports[22], '10.0.0.2', 30],
+                [$ports[14], '10.0.1.1', 30], [$ports[24], '10.0.1.2', 30]], [], $pairs);
+            $this->assertSame([['l2', 'xe-0/1/0', '10.0.0.0/30', 10000000000], ['p2p', 'xe-0/2/0', '10.0.1.0/30', 10000000000]],
+                array_map(fn ($c) => [$c['kind'], $c['a']['port'], $c['network'], $c['speed']], $connections));
+        }
     }
 
     public function testInterfaceStackHelpers(): void
