@@ -21,6 +21,7 @@ The plugin's conventions apply to all of them:
 | 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
 | 4 | [Routing & IP diagnostics](#4-routing--ip-diagnostics) | planned | M |
 | 7 | [Automatic device dependencies](#7-automatic-device-dependencies) | planned | M |
+| 14 | [Rollout planner](#14-rollout-planner-change-and-upgrade-waves) | planned | S–M |
 | 12 | [Coverage report](#12-coverage-report) | planned | S |
 | 9 | [More L3 map layers](#9-more-l3-map-layers) | planned | S each |
 | 10 | [Loop evidence on the STP page](#10-loop-evidence-on-the-stp-page) | planned | S–M |
@@ -32,8 +33,9 @@ Effort: S = new checks or an overlay on data the plugin already loads; M = new q
 L = several new parts (tables, jobs, UI).
 
 **Why this order:** 2 answers the most frequent day-to-day question. 5 and 6 share the same scheduled job and tables and
-turn every check into something that runs without anyone opening a page. 7 reuses the core and outage logic of the
-redundancy page. The rest builds on those.
+turn every check into something that runs without anyone opening a page. 7 and 14 reuse the core and outage logic of
+the redundancy page; 14 also prepares the [change automation plugin](#change-automation-with-ansible). The rest builds
+on those.
 
 ## What a plugin can do in LibreNMS
 
@@ -115,6 +117,20 @@ The L3 counterpart of the spanning tree page.
   derived dependencies.
 * This writes LibreNMS data: admin only, with a preview.
 
+### 14. Rollout planner (change and upgrade waves)
+
+* Pick devices (a selection, a group or a location) and get them in ordered batches for a firmware upgrade, a reboot or
+  a configuration change:
+  * farthest from the core first and the core last, so a change that breaks a device never cuts off devices still
+    waiting for it;
+  * devices that back each other up (the two switches of a redundant pair, MLAG peers) never share a batch: a batch
+    failing as a whole cuts off no more than its devices failing one at a time;
+  * for each batch, what loses its path while it is down (the phones and access points of its switches, single-homed
+    switches behind them), which is what its maintenance window must cover.
+* An optional batch size limit, and JSON at `api/rollout` for the
+  [change automation plugin](#change-automation-with-ansible).
+* Builds on the redundancy analysis: its core, `simulate()` and the devices behind each device. No new data.
+
 ### 12. Coverage report
 
 * LLDP/CDP neighbors that look like switches, routers, APs or firewalls (`DeviceRole::fromPlatform`) but are not
@@ -161,8 +177,11 @@ The L3 counterpart of the spanning tree page.
 
 ## Ideas for separate plugins
 
-These are useful but are not about topology, so they fit better in plugins of their own.
+These are useful but are not about topology, or would change devices, so they fit better in plugins of their own.
 
+* **Change automation with Ansible:** push configuration changes to all or some devices from LibreNMS, made safer by
+  this plugin's topology data. It is the largest of these ideas, so it is worked out
+  [below](#change-automation-with-ansible).
 * **Switch port capacity:** ports unused for N days (`ifLastChange` and uptime), err-disabled ports, free (PoE) ports
   per wiring closet or location.
 * **Config compliance via Oxidized:** rule checks on backed-up configurations (portfast and BPDU guard on edge ports,
@@ -172,3 +191,46 @@ These are useful but are not about topology, so they fit better in plugins of th
   inventory (`transceivers`).
 * **NetBox sync:** push LLDP-discovered cables, IP addresses and VLANs to NetBox, or compare NetBox's documented cabling
   with what LLDP sees. It could reuse this plugin's link de-duplication.
+
+### Change automation with Ansible
+
+Push configuration changes (NTP, syslog, SNMP and AAA servers, VLANs, ACLs, port descriptions) to all or some devices
+from the LibreNMS pages.
+
+* **Why a separate plugin:** this plugin only reads LibreNMS data. Pushing changes means LibreNMS can change every
+  device, and it needs SSH credentials and an Ansible runtime. Many teams will want the topology tools without that. It
+  still appears in the same LibreNMS menu and device pages.
+* **Engine:** Ansible, for its vendor coverage (IOS, NX-OS, EOS, Junos, Aruba CX, ...) and its dry runs with diffs. It
+  runs in a runner with a REST API, not as `ansible-playbook` started by LibreNMS:
+  * [Semaphore UI](https://semaphoreui.com) by default: open source (MIT), one binary and a database. Check which
+    features are only in its paid edition.
+  * [AWX](https://github.com/ansible/awx) for full RBAC, approvals and a credential vault. It installs on Kubernetes,
+    and its releases have been paused since July 2024 for a refactoring, so check its status first.
+
+  The runner keeps the SSH credentials and the playbooks stay in Git, where they are reviewed. The plugin picks the
+  targets, launches, follows and verifies. A small adapter interface keeps other runners possible.
+* **No raw CLI by default:** the plugin launches reviewed templates with device lists and structured variables (for
+  example a list of interface and description pairs), not configuration text typed into the browser.
+* **Not chosen:** Nornir with NAPALM (fast, vendor-neutral diffs and rollback, but no UI, API or permissions: a service
+  to write and maintain), Salt (heavier, less common for networks), Nautobot Golden Config (built around intended
+  configuration, a different model from LibreNMS' discovered state). Oxidized does not push, but takes the backups
+  before and after a change.
+
+| Phase | Scope | Needs |
+|---|---|---|
+| 1 | Connection to the runner; an Ansible inventory from LibreNMS (device groups, locations, LibreNMS `os` mapped to `ansible_network_os`; devices without a mapping are refused); run a template on selected devices; live status and log; an audit log (who, what, when, result), also in each device's eventlog | – |
+| 2 | Dry run (`--check --diff`) showing the diff per device; approval, optionally by a second admin; batches that stop at the first failures; Oxidized backups before and after (its REST API's `node/next`); a LibreNMS maintenance window for the targets | 1 |
+| 3 | Rollout plan and blast radius from this plugin (item 14 and `api/simulate`); the maintenance window also covers what each batch cuts off | 1, item 14 |
+| 4 | Verification: topology and findings before and after the change (root bridge moved, uplink lost, new single point of failure); one-click fixes for findings with a clear configuration (port descriptions, STP root priority) | items 5 and 6 |
+
+* **Safety:**
+  * admin only, ideally with a permission of its own; the runner's API token may only launch the plugin's templates;
+  * data discovered from the network is untrusted: an LLDP/CDP neighbor can advertise any name, newlines and commands
+    included. Strip control characters, allow a safe character set and cap the length before it goes into a
+    configuration; port descriptions named after neighbors are the first case;
+  * commit-confirm where the platform has it (Junos `commit confirmed`, IOS-XR, EOS configure sessions), so a change
+    that cuts off management rolls itself back;
+  * never everything at once: every run goes in batches.
+* Keep it to picking targets, launching, following and verifying on top of the runner, not a configuration management
+  product.
+* Effort: L overall; phase 1 is M.
