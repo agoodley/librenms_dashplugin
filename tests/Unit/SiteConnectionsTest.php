@@ -44,19 +44,22 @@ class SiteConnectionsTest extends TestCase
     }
 
     /**
-     * Connections as SiteService builds them: cables, then the subnets with the interface stack completed by name
-     * (unitParents() looked up in the given ports).
+     * Connections as SiteService builds them: cables, then the subnets with the interface stack from ports_stack
+     * pairs (either orientation) and port-channel membership, completed by name (unitParents() looked up in the
+     * given ports).
      *
      * @param  array<int, array>  $ports  every port, by id
      * @param  array<int, array{0: array, 1: string, 2: int, 3?: string}>  $addresses  [port, address, prefix, vrf]
+     * @param  array<int, array{0: int, 1: int}>  $pairs  ports_stack rows as [high_port_id, low_port_id]
      */
-    private static function connections(array $devices, array $ports, array $links, array $addresses, array $lag = [], array $stack = []): array
+    private static function connections(array $devices, array $ports, array $links, array $addresses, array $lag = [], array $pairs = []): array
     {
         $connections = (new SiteConnections($devices))->addLinks(L2Builder::uniqueLinks($links, $devices, $ports), $ports, $lag);
         $rows = array_map(fn ($a) => self::address(...$a), $addresses);
         $l3 = (new L3Builder($devices, $rows))->build(['hideStubs' => true, 'p2pPrefix4' => 29, 'p2pPrefix6' => 126, 'ospf' => false, 'bgp' => false]);
 
         $subnetPorts = $connections->subnetPorts($l3);
+        $stack = SiteConnections::stack($pairs, $ports, $lag);
         foreach (SiteConnections::unitParents(array_intersect_key($ports, array_flip($subnetPorts)), $stack) as $portId => $parent) {
             foreach ($ports as $candidate) {
                 if ($candidate['device_id'] === $parent['device_id'] && in_array($candidate['ifName'], $parent['names'], true)) {
@@ -131,13 +134,15 @@ class SiteConnectionsTest extends TestCase
             self::port(21, 2, 'TenGigabitEthernet0/0/0'),
             self::port(22, 2, 'TenGigabitEthernet0/0/0.100', 'l2vlan'), self::port(23, 2, 'TenGigabitEthernet0/0/0.200', 'l2vlan'),
         );
-        $connections = self::connections($devices, $ports, [self::lldp(1, 11, 2, 21)], [
-            [$ports[12], '10.0.0.1', 30], [$ports[22], '10.0.0.2', 30], [$ports[13], '10.0.0.5', 30, 'CUST'], [$ports[23], '10.0.0.6', 30, 'CUST'],
-        ], [], [22 => [21], 23 => [21]]);
+        $addresses = [[$ports[12], '10.0.0.1', 30], [$ports[22], '10.0.0.2', 30], [$ports[13], '10.0.0.5', 30, 'CUST'], [$ports[23], '10.0.0.6', 30, 'CUST']];
 
-        $this->assertCount(1, $connections, 'the subnets of the sub-interfaces are on the cable');
-        $this->assertSame(['l2', '10.0.0.0/30, 10.0.0.4/30 (CUST)', 10000000000, 1.0], [$connections[0]['kind'], $connections[0]['network'],
-            $connections[0]['speed'], $connections[0]['util']]);
+        // LibreNMS 24.8+ keeps the sub-interface in low_port_id, before it was the high side: the same either way
+        foreach ([[[21, 22], [21, 23]], [[22, 21], [23, 21]]] as $pairs) {
+            $connections = self::connections($devices, $ports, [self::lldp(1, 11, 2, 21)], $addresses, [], $pairs);
+            $this->assertCount(1, $connections, 'the subnets of the sub-interfaces are on the cable');
+            $this->assertSame(['l2', '10.0.0.0/30, 10.0.0.4/30 (CUST)', 10000000000, 1.0], [$connections[0]['kind'], $connections[0]['network'],
+                $connections[0]['speed'], $connections[0]['util']]);
+        }
     }
 
     public function testVlanInterfacesOnATrunk(): void
@@ -150,6 +155,45 @@ class SiteConnectionsTest extends TestCase
 
         $this->assertCount(1, $connections);
         $this->assertSame(['l2', '10.0.0.8/30', 10000000000], [$connections[0]['kind'], $connections[0]['network'], $connections[0]['speed']]);
+
+        // Junos EX irb.300 (its irb parent: ifType other, 1G) <-> Cisco Vlan300, with and without the stack rows
+        $devices = [1 => self::device(1, 'ex-a', 1), 2 => self::device(2, 'cat-b', 2)];
+        $ports = self::ports(self::port(11, 1, 'xe-0/1/0'), self::port(12, 1, 'irb', 'other', 1000000000), self::port(13, 1, 'irb.300', 'propVirtual', 0),
+            self::port(14, 1, 'irb.400', 'propVirtual', 0), self::port(21, 2, 'TenGigabitEthernet1/1/1'), self::port(22, 2, 'Vlan300', 'propVirtual', 1000000000));
+        foreach ([[], [[12, 13], [12, 14]], [[13, 12], [14, 12]]] as $pairs) {
+            $connections = self::connections($devices, $ports, [self::lldp(1, 11, 2, 21)], [[$ports[13], '10.0.0.1', 30], [$ports[22], '10.0.0.2', 30]], [], $pairs);
+            $this->assertSame([['l2', '10.0.0.0/30', 10000000000]], array_map(fn ($c) => [$c['kind'], $c['network'], $c['speed']], $connections));
+        }
+    }
+
+    public function testLogicalInterfacesHaveNoCapacity(): void
+    {
+        // subnets without a cable on interfaces whose type says nothing: their names do (legacy Junos EX vlan, SRX reth,
+        // BVI, a Linux VLAN sub-interface), a port-channel keeps its capacity
+        $devices = [1 => self::device(1, 'a', 1), 2 => self::device(2, 'b', 2)];
+        foreach (['vlan' => 0, 'reth0' => 0, 'BVI1' => 0, 'eth0.100' => 0, 'irb' => 0, 'ae0' => 1000000000, 'GigabitEthernet0/0/2' => 1000000000] as $name => $speed) {
+            $ports = self::ports(self::port(11, 1, $name, $name === 'irb' ? 'other' : 'ethernetCsmacd', 1000000000), self::port(21, 2, $name, 'ethernetCsmacd', 1000000000));
+            $connections = self::connections($devices, $ports, [], [[$ports[11], '10.0.0.1', 30], [$ports[21], '10.0.0.2', 30]]);
+            $this->assertSame(['p2p', $speed], [$connections[0]['kind'], $connections[0]['speed']], $name);
+        }
+    }
+
+    public function testTransitVlanToARouterBehindTheFarSwitch(): void
+    {
+        // dark fiber HQ core Te1/1/1 <-> branch switch sw-b Te1/1/1; the transit /29 runs from the core's Vlan900 to the
+        // branch router rtr-b's Gi0/0/0.900 (rtr-b is cabled to sw-b inside the branch): one physical path
+        $devices = [1 => self::device(1, 'core', 1), 2 => self::device(2, 'sw-b', 2), 3 => self::device(3, 'rtr-b', 2)];
+        $ports = self::ports(
+            self::port(11, 1, 'TenGigabitEthernet1/1/1', 'ethernetCsmacd', 10000000000, 'up', 125000000, 62500000),
+            self::port(12, 1, 'Vlan900', 'propVirtual', 1000000000, 'up', 125000000, 62500000),
+            self::port(21, 2, 'TenGigabitEthernet1/1/1'), self::port(22, 2, 'GigabitEthernet1/0/1', 'ethernetCsmacd', 1000000000),
+            self::port(31, 3, 'GigabitEthernet0/0/0', 'ethernetCsmacd', 1000000000), self::port(32, 3, 'GigabitEthernet0/0/0.900', 'l2vlan', 1000000000),
+        );
+        $connections = self::connections($devices, $ports, [self::lldp(1, 11, 2, 21), self::lldp(3, 31, 2, 22)],
+            [[$ports[12], '10.9.0.1', 29], [$ports[32], '10.9.0.2', 29]], [], [[31, 32]]);
+
+        $this->assertSame([['l2', 'Te1/1/1', '10.9.0.0/29', 10000000000, 1000000000]],
+            array_map(fn ($c) => [$c['kind'], $c['a']['port'], $c['network'], $c['speed'], $c['in_bps']], $connections), 'the subnet is on the fiber, not a second link');
     }
 
     public function testPortChannelsWithUnknownMembers(): void
@@ -185,7 +229,7 @@ class SiteConnectionsTest extends TestCase
         );
         $connections = self::connections($devices, $ports, [], [
             [$ports[12], '10.0.0.1', 30], [$ports[22], '10.0.0.2', 30], [$ports[13], '10.0.0.5', 30, 'CUST'], [$ports[23], '10.0.0.6', 30, 'CUST'],
-        ], [], [22 => [21], 23 => [21]]);
+        ], [], [[21, 22], [21, 23], [11, 12], [11, 13]]);
 
         $this->assertCount(1, $connections, 'one link per pair of physical ports');
         $link = $connections[0];
@@ -215,6 +259,15 @@ class SiteConnectionsTest extends TestCase
 
     public function testInterfaceStackHelpers(): void
     {
+        // stack pairs of either orientation: the upper port is the sub-interface, the VLAN or IRB interface, the port-channel
+        $ports = self::ports(self::port(1, 5, 'GigabitEthernet0/0/1'), self::port(2, 5, 'GigabitEthernet0/0/1.100', 'l2vlan'),
+            self::port(3, 5, 'irb', 'other'), self::port(4, 5, 'irb.300', 'propVirtual'), self::port(5, 5, 'Vlan10', 'propVirtual'),
+            self::port(6, 5, 'Port-channel1', 'propVirtual'), self::port(7, 5, 'TenGigabitEthernet1/1/1'), self::port(8, 5, 'TenGigabitEthernet1/1/2'),
+            self::port(9, 5, 'ae0', 'ieee8023adLag'), self::port(10, 5, 'ae0.0', 'propVirtual'));
+        $expected = [6 => [7, 8], 2 => [1], 4 => [3], 5 => [6], 10 => [9]];
+        $this->assertEquals($expected, SiteConnections::stack([[1, 2], [3, 4], [6, 5], [9, 10], [1, 7]], $ports, [7 => 6, 8 => 6]), 'LibreNMS 24.8+');
+        $this->assertEquals($expected, SiteConnections::stack([[2, 1], [4, 3], [5, 6], [10, 9], [7, 1], [6, 7]], $ports, [7 => 6, 8 => 6]), 'before 24.8');
+
         $this->assertEqualsCanonicalizing([10, 11, 12, 21], SiteConnections::below([30, 40], [30 => [10], 10 => [11, 12], 40 => [21], 21 => [10]]));
         $ports = self::ports(self::port(1, 5, 'xe-0/1/0.0', 'propVirtual'), self::port(2, 5, 'Te0/0/0.100', 'l2vlan'), self::port(3, 5, 'Vlan300', 'propVirtual'),
             self::port(4, 5, 'ae0.0', 'propVirtual'));

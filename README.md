@@ -61,10 +61,12 @@ IOS XR, which counts it (and the VLAN tag of a subinterface): XR 1514, or 1518 o
 One node per LibreNMS location, with its device count and what is down, and one link per pair of sites that adds up
 everything between their devices: LLDP/CDP links (one per cable, port-channel members included), point-to-point
 subnets, and OSPF adjacencies and BGP sessions (one per circuit, with the state each router reports). A subnet on a
-cable, or on a sub-interface, VLAN interface or port-channel over it, only adds its network to the cable; other subnets,
-such as tunnels or carrier circuits, are links of their own. BGP sessions to peers LibreNMS does not monitor join the
-site to a cloud per remote AS, which shows an MPLS VPN or internet transit provider and which sites hang off it; a
-private AS number is a cloud per site, since sites often reuse them.
+cable, or on a sub-interface, VLAN interface or port-channel over it, only adds its network to the cable, as does a
+transit VLAN from a VLAN interface to a router behind the switch at the other end; other subnets, such as tunnels or
+carrier circuits, are links of their own. BGP sessions to peers LibreNMS does not monitor join the site to a cloud per
+remote AS, which shows an MPLS VPN or internet transit provider and which sites hang off it. A private AS number is a
+cloud per site, since sites often reuse them, unless the sites peer with the same address that is not on a subnet of
+their router (a cloud VPN gateway, by the subnet of the session's local address): they share that cloud.
 
 ![Site / WAN map](docs/images/site-map.png)
 

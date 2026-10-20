@@ -69,7 +69,7 @@ class SiteService
         $ospf = $p['ospf'] ? $this->repo->ospfNeighbors($ids) : [];
         $bgp = $p['bgp'] ? $this->repo->bgpPeers($ids) : [];
         $owners = $ospf || $bgp ? $this->sites->addressOwners(array_merge(array_column($ospf, 'ospfNbrIpAddr'),
-            array_column($ospf, 'ospfNbrRtrId'), array_column($bgp, 'bgpPeerIdentifier'))) : [];
+            array_column($ospf, 'ospfNbrRtrId'), array_column($bgp, 'bgpPeerIdentifier'), array_column($bgp, 'bgpLocalAddr'))) : [];
         $sessions = (new SiteSessions($devices, $owners))->addOspf($ospf)->addBgp($bgp);
 
         $down = array_keys(array_filter($devices, fn ($device) => L2Builder::deviceStatus($device) === 'down'));
@@ -98,8 +98,9 @@ class SiteService
     }
 
     /**
-     * Interface stack under the subnet ports' devices: ifStackTable, port-channel membership (also
-     * Cisco PAgP) and the parents of sub-interfaces the stack does not list, by name.
+     * Interface stack under the subnet ports' devices: ifStackTable pairs (either orientation),
+     * port-channel membership (also Cisco PAgP) and the parents of sub-interfaces the stack does not
+     * list, by name.
      *
      * @param  array<int, array>  $ports  port_id => row of the subnet ports
      * @return array<int, int[]> port_id => ports right below it
@@ -107,10 +108,9 @@ class SiteService
     private function stack(array $ports): array
     {
         $deviceIds = array_values(array_unique(array_map('intval', array_column($ports, 'device_id'))));
-        $stack = $this->sites->portStack($deviceIds);
-        foreach ($this->repo->lagParents($deviceIds) as $member => $aggregate) {
-            $stack[$aggregate][] = $member;
-        }
+        $pairs = $this->sites->stackPairs($deviceIds);
+        $paired = $pairs ? $this->repo->ports(array_merge(...$pairs), ['port_id', 'device_id', 'ifName', 'ifDescr', 'ifType']) : [];
+        $stack = SiteConnections::stack($pairs, $paired, $this->repo->lagParents($deviceIds));
 
         $parents = SiteConnections::unitParents($ports, $stack);
         $names = [];

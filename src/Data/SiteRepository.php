@@ -181,36 +181,56 @@ class SiteRepository extends ScopedRepository
     }
 
     /**
-     * Interface stack of the devices (IF-MIB ifStackTable): port_id => ids of the ports right below
-     * it, such as the parent of a sub-interface or the members of an aggregate.
+     * Interface stack pairs of the devices (IF-MIB ifStackTable) as port id pairs, in no particular
+     * order: since LibreNMS 24.8 ports_stack keeps the higher layer (a sub-interface, a port-channel)
+     * in low_port_id, before it kept it as the ifIndex in port_id_high. SiteConnections::stack() tells
+     * the upper port from the lower one by the ports themselves.
      *
      * @param  int[]  $deviceIds
-     * @return array<int, int[]>
+     * @return array<int, array{0: int, 1: int}>
      */
-    public function portStack(array $deviceIds): array
+    public function stackPairs(array $deviceIds): array
     {
         if (! $deviceIds) {
             return [];
         }
 
-        $stack = [];
-        // current schema first, then the column names used before LibreNMS 24.8
-        foreach ([['high_port_id', 'low_port_id'], ['port_id_high', 'port_id_low']] as [$high, $low]) {
-            try {
-                foreach (DB::table('ports_stack')->whereIntegerInRaw('device_id', $deviceIds)
-                    ->where($high, '>', 0)->where($low, '>', 0)
-                    ->get([$high . ' as high', $low . ' as low']) as $row) {
-                    if ((int) $row->high !== (int) $row->low) {
-                        $stack[(int) $row->high][] = (int) $row->low;
-                    }
+        $pairs = [];
+        $byIndex = [];
+        try {
+            foreach (DB::table('ports_stack')->whereIntegerInRaw('device_id', $deviceIds)
+                ->get(['device_id', 'high_ifIndex', 'low_ifIndex', 'high_port_id', 'low_port_id']) as $row) {
+                if ($row->high_port_id && $row->low_port_id) {
+                    $pairs[] = [(int) $row->high_port_id, (int) $row->low_port_id];
+                } else {
+                    $byIndex[] = [(int) $row->device_id, (int) $row->high_ifIndex, (int) $row->low_ifIndex];
                 }
-                break;
+            }
+        } catch (\Throwable $e) {
+            try {
+                foreach (DB::table('ports_stack')->whereIntegerInRaw('device_id', $deviceIds)->get(['device_id', 'port_id_high', 'port_id_low']) as $row) {
+                    $byIndex[] = [(int) $row->device_id, (int) $row->port_id_high, (int) $row->port_id_low];
+                }
             } catch (\Throwable $e) {
                 Log::debug('topology plugin: cannot read ports_stack: ' . $e->getMessage());
             }
         }
 
-        return $stack;
+        // rows without port ids (and the schema before 24.8) name the ports by ifIndex
+        if ($byIndex) {
+            $ports = [];
+            foreach (DB::table('ports')->whereIntegerInRaw('device_id', array_values(array_unique(array_column($byIndex, 0))))
+                ->get(['port_id', 'device_id', 'ifIndex']) as $port) {
+                $ports[$port->device_id . ':' . $port->ifIndex] = (int) $port->port_id;
+            }
+            foreach ($byIndex as [$deviceId, $high, $low]) {
+                if (isset($ports["$deviceId:$high"], $ports["$deviceId:$low"])) {
+                    $pairs[] = [$ports["$deviceId:$high"], $ports["$deviceId:$low"]];
+                }
+            }
+        }
+
+        return array_values(array_filter($pairs, fn (array $pair) => $pair[0] > 0 && $pair[1] > 0 && $pair[0] !== $pair[1]));
     }
 
     /**

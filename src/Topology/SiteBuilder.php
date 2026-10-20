@@ -26,7 +26,7 @@ class SiteBuilder
      *                                      location, lat, lng
      * @param  array<int, array>  $connections  between two devices, or a device and an AS cloud: kind (l2, p2p, ospf, bgp),
      *     a / b (ends: device_id, port, port_url, aggregate; b is null for a cloud), cloud (id, label, name, remote_as,
-     *     private), speed (bps, 0 when only the traffic is known), status (up / down / disabled: shut down on purpose),
+     *     private, shared), speed (bps, 0 when only the traffic is known), status (up / down / disabled: shut down on purpose),
      *     util (%), in_bps / out_bps (measured at end a), network, state, states (of the a and b sides of a session),
      *     type, protocols, description
      * @param  array<int, int>  $outages  device_id => start of the outage (unix time) of down devices
@@ -224,6 +224,7 @@ class SiteBuilder
                     'status' => 'unknown',
                     'remote_as' => $cloud['remote_as'] ?? null,
                     'private' => (bool) ($cloud['private'] ?? false),
+                    'shared' => (bool) ($cloud['shared'] ?? false),
                 ];
             } else {
                 continue;

@@ -7,16 +7,23 @@ use Agoodley\LibrenmsTopology\Support\InterfaceName;
 /**
  * Links between devices at different sites, for SiteBuilder: neighbor links (one per cable) and
  * point-to-point subnets. A subnet on a cable only adds its network to it, also when it is
- * configured on a sub-interface, a VLAN interface or a port-channel over the cable; other subnets
- * are links of their own, measured on the physical port (or port-channel) under them. Tunnels and
- * other logical interfaces have no capacity of their own (their ifSpeed is a nominal bandwidth),
- * so a link on them only shows its traffic.
+ * configured on a sub-interface, a VLAN interface or a port-channel over the cable, or runs from a
+ * VLAN interface across the cables between the two sites; other subnets are links of their own,
+ * measured on the physical port (or port-channel) under them. Tunnels and other logical interfaces
+ * have no capacity of their own (their ifSpeed is a nominal bandwidth), so a link on them only
+ * shows its traffic.
  */
 class SiteConnections
 {
     /** Interface types without a capacity of their own (port-channels aside: see hasCapacity()). */
     private const LOGICAL_TYPES = ['tunnel', 'mplstunnel', 'propvirtual', 'l2vlan', 'l3ipvlan', 'l3ipxvlan', 'softwareloopback',
         'ifpwtype', 'virtualipaddress', 'bridge'];
+
+    /**
+     * Names of logical interfaces whatever their type: Junos irb, vlan and SRX reth, Cisco Vlan, BVI
+     * and BDI, Huawei Vlanif, Brocade ve, loopbacks and VXLAN interfaces.
+     */
+    private const LOGICAL_NAMES = '/^(irb|vlan|vl\d|bvi|bdi|reth|ve\s*\d|loopback|lo\d|nve|vxlan)/i';
 
     /** Deepest interface stack followed (a unit over a port-channel over its members). */
     private const STACK_DEPTH = 4;
@@ -29,6 +36,9 @@ class SiteConnections
 
     /** @var array<string, int[]> device pair ("12-34") => indexes of the cables between them */
     private array $cables = [];
+
+    /** @var array<string, int[]> site pair ("site:1|site:2") => indexes of the cables between them */
+    private array $siteCables = [];
 
     /** @var array<int, array<int, int[]>> cable index => device_id => its port on the cable and that port's port-channel */
     private array $cablePorts = [];
@@ -69,6 +79,7 @@ class SiteConnections
                 'status' => L2Builder::isUp($pa, $pb) ? 'up' : 'down',
             ]);
             $this->cables[self::pair($aDevice, $bDevice)][] = $index;
+            $this->siteCables[$this->sitePair($aDevice, $bDevice)][] = $index;
             $this->cablePorts[$index] = [
                 $aDevice => array_values(array_filter([$aPort, $lag[$aPort] ?? 0])),
                 $bDevice => array_values(array_filter([$bPort, $lag[$bPort] ?? 0])),
@@ -95,6 +106,38 @@ class SiteConnections
         }
 
         return array_values(array_unique(array_filter($ports)));
+    }
+
+    /**
+     * The interface stack as port_id => ports right below it, from stack pairs of either orientation
+     * (LibreNMS keeps the higher layer in low_port_id since 24.8, in port_id_high before): the upper
+     * port of a pair is the more logical one, a sub-interface or unit over its parent, a VLAN, IRB or
+     * other logical interface over a port, a port-channel over its members. Pairs of two ports of the
+     * same kind say nothing and are left out.
+     *
+     * @param  array<int, array{0: int, 1: int}>  $pairs  port id pairs (SiteRepository::stackPairs())
+     * @param  array<int, array>  $ports  port_id => row (ifName, ifDescr, ifType) of the paired ports
+     * @param  array<int, int>  $lag  member port_id => port-channel port_id (TopologyRepository::lagParents())
+     * @return array<int, int[]>
+     */
+    public static function stack(array $pairs, array $ports, array $lag): array
+    {
+        $stack = [];
+        foreach ($lag as $member => $aggregate) {
+            $stack[(int) $aggregate][] = (int) $member;
+        }
+        foreach ($pairs as [$a, $b]) {
+            if (! isset($ports[$a], $ports[$b]) || ($lag[$a] ?? null) === $b || ($lag[$b] ?? null) === $a) {
+                continue;
+            }
+            $layers = [self::layer($ports[$a]), self::layer($ports[$b])];
+            if ($layers[0] !== $layers[1]) {
+                [$upper, $lower] = $layers[0] > $layers[1] ? [$a, $b] : [$b, $a];
+                $stack[$upper][] = $lower;
+            }
+        }
+
+        return array_map(fn (array $lows) => array_values(array_unique($lows)), $stack);
     }
 
     /**
@@ -154,9 +197,10 @@ class SiteConnections
      * is found through the interface stack: a subnet on a cable's port, or on a sub-interface or
      * port-channel over it, adds its network to that cable; a subnet on interfaces without a known
      * port (VLAN interfaces, port-channels whose members are not listed) to the cables between its
-     * two devices. Other subnets are links of their own, one per pair of ports under them, so both
-     * address families and the sub-interfaces of the same ports (VRF-lite) make one link. A tunnel is
-     * always a link of its own.
+     * two devices, and a subnet with a VLAN interface or sub-interface at either end to the cables
+     * between the two sites (a transit VLAN to a router behind the far switch). Other subnets are
+     * links of their own, one per pair of ports under them, so both address families and the
+     * sub-interfaces of the same ports (VRF-lite) make one link. A tunnel is always a link of its own.
      *
      * @param  array  $l3  result of L3Builder::build()
      * @param  array<int, array>  $ports  port_id => row of the subnet ports and of every port below them (below())
@@ -176,11 +220,12 @@ class SiteConnections
             $b = self::resolve((int) $edge['b']['port_id'], $ports, $stack);
             $network = $edge['network'] . ($edge['vrf'] !== '' ? ' (' . $edge['vrf'] . ')' : '');
 
-            $cables = $this->cables[self::pair($aDevice, $bDevice)] ?? [];
-            $on = array_filter($cables, fn (int $index) => array_intersect($this->cablePorts[$index][$aDevice] ?? [], $a['ports'])
+            $siteCables = $this->siteCables[$this->sitePair($aDevice, $bDevice)] ?? [];
+            $on = array_filter($siteCables, fn (int $index) => array_intersect($this->cablePorts[$index][$aDevice] ?? [], $a['ports'])
                 || array_intersect($this->cablePorts[$index][$bDevice] ?? [], $b['ports']));
-            if (! $on && ! $a['physical'] && ! $b['physical'] && ! $a['tunnel'] && ! $b['tunnel']) {
-                $on = $cables;
+            if (! $on && ! $a['tunnel'] && ! $b['tunnel']) {
+                $cables = $this->cables[self::pair($aDevice, $bDevice)] ?? [];
+                $on = ! $a['physical'] && ! $b['physical'] && $cables ? $cables : ($a['virtual'] || $b['virtual'] ? $siteCables : []);
             }
             if ($on) {
                 foreach ($on as $index) {
@@ -231,21 +276,23 @@ class SiteConnections
     /**
      * Where a subnet's interface runs, down the interface stack: every port on the way, the physical
      * ports at the bottom, the port whose speed is the capacity (the interface itself, its parent or
-     * its port-channel; none for VLAN interfaces and tunnels) and whether it is a tunnel.
+     * its port-channel; none for VLAN interfaces and tunnels), whether the interface is a logical one
+     * (it is not that port itself) and whether it is a tunnel (never followed down).
      *
-     * @return array{port: int, ports: int[], physical: int[], carrier: int|null, tunnel: bool}
+     * @return array{port: int, ports: int[], physical: int[], carrier: int|null, virtual: bool, tunnel: bool}
      */
     private static function resolve(int $portId, array $ports, array $stack): array
     {
-        $end = ['port' => $portId, 'ports' => [], 'physical' => [], 'carrier' => null, 'tunnel' => false];
+        $end = ['port' => $portId, 'ports' => [], 'physical' => [], 'carrier' => null, 'virtual' => false, 'tunnel' => false];
         $walk = function (int $id, bool $placed, int $depth) use (&$walk, &$end, $ports, $stack): void {
             if (in_array($id, $end['ports'], true)) {
                 return;
             }
             $end['ports'][] = $id;
             $port = $ports[$id] ?? null;
-            $lows = $depth < self::STACK_DEPTH ? array_values(array_unique($stack[$id] ?? [])) : [];
-            $end['tunnel'] = $end['tunnel'] || ($port !== null && self::isTunnel($port));
+            $tunnel = $port !== null && self::isTunnel($port);
+            $lows = $depth < self::STACK_DEPTH && ! $tunnel ? array_values(array_unique($stack[$id] ?? [])) : [];
+            $end['tunnel'] = $end['tunnel'] || $tunnel;
             // a sub-interface runs on its parent, a port-channel is the capacity of its members
             $capacity = $port !== null && self::hasCapacity($port) && (count($lows) !== 1 || self::isAggregate($port));
             if (! $placed && ($capacity || count($lows) > 1)) {
@@ -260,18 +307,40 @@ class SiteConnections
             }
         };
         $walk($portId, false, 0);
+        $end['virtual'] = $end['carrier'] !== $portId;
 
         return $end;
     }
 
     /**
-     * Does an interface have a capacity of its own? Port-channels do; tunnels, VLAN interfaces,
-     * sub-interfaces and other logical interfaces do not, their ifSpeed is nominal.
+     * Does an interface have a capacity of its own? Port-channels do; tunnels, VLAN and IRB
+     * interfaces, sub-interfaces and other logical interfaces do not, their ifSpeed is nominal.
      */
     private static function hasCapacity(array $port): bool
     {
-        return self::isAggregate($port)
-            || ! (in_array(strtolower((string) ($port['ifType'] ?? '')), self::LOGICAL_TYPES, true) || self::isTunnel($port));
+        return self::isAggregate($port) || ! self::isLogical($port);
+    }
+
+    private static function isLogical(array $port): bool
+    {
+        $name = InterfaceName::label($port);
+
+        return in_array(strtolower((string) ($port['ifType'] ?? '')), self::LOGICAL_TYPES, true) || self::isTunnel($port)
+            || preg_match(self::LOGICAL_NAMES, $name) || preg_match('/\.\d+$/', $name);
+    }
+
+    /**
+     * Stack layer of an interface: 3 a sub-interface or unit (a name ending in .number), 2 another
+     * logical interface (also ifType other, such as Junos irb), 1 a port-channel, 0 a port.
+     */
+    private static function layer(array $port): int
+    {
+        return match (true) {
+            (bool) preg_match('/\.\d+$/', InterfaceName::label($port)) => 3,
+            self::isAggregate($port) => 1,
+            self::isLogical($port) || strtolower((string) ($port['ifType'] ?? '')) === 'other' => 2,
+            default => 0,
+        };
     }
 
     private static function isAggregate(array $port): bool
@@ -302,6 +371,14 @@ class SiteConnections
     private function site(int $deviceId): ?string
     {
         return isset($this->devices[$deviceId]) ? SiteBuilder::siteId($this->devices[$deviceId]) : null;
+    }
+
+    private function sitePair(int $a, int $b): string
+    {
+        $sites = [(string) $this->site($a), (string) $this->site($b)];
+        sort($sites);
+
+        return implode('|', $sites);
     }
 
     /**

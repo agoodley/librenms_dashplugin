@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsTopology\Topology;
 
 use Agoodley\LibrenmsTopology\Support\Cidr;
+use Agoodley\LibrenmsTopology\Support\Graph;
 
 /**
  * Routing sessions between sites, for SiteBuilder. An OSPF adjacency or a BGP session between two
@@ -12,7 +13,8 @@ use Agoodley\LibrenmsTopology\Support\Cidr;
  * every device the user may see, so a session to a device outside the map's scope is left out
  * rather than drawn as an unknown network. BGP sessions to peers LibreNMS does not monitor join the
  * site to a cloud per remote AS; a private AS number can be a different network at every site (each
- * branch's firewall in AS65001), so its clouds are per site.
+ * branch's firewall in AS65001), so its clouds are per site, except that sites peering with the same
+ * address that is not on a subnet of their router (a cloud VPN gateway in AS65515) share one.
  */
 class SiteSessions
 {
@@ -83,6 +85,7 @@ class SiteSessions
     public function addBgp(array $rows): self
     {
         $pairs = [];
+        $clouds = [];
         foreach ($rows as $row) {
             $local = (int) $row['device_id'];
             $peer = self::canonical((string) ($row['bgpPeerIdentifier'] ?? ''));
@@ -105,7 +108,7 @@ class SiteSessions
 
             $owner = $this->owner($peer, $side['vrf']);
             if ($owner === null) {
-                $this->cloudSession($local, $remoteAs, $side);
+                $clouds[] = [$local, $remoteAs, $side];
             } elseif ($this->betweenSites($local, $owner['device_id'])) {
                 $pairs[self::pair($local, $owner['device_id'])][] = $side + ['remote' => $owner['device_id']];
             }
@@ -117,6 +120,10 @@ class SiteSessions
                     $this->side("bgp|$pair|$index", 'bgp', $side['device_id'], $side['remote'], $side);
                 }
             }
+        }
+        $shared = $this->sharedClouds($clouds);
+        foreach ($clouds as [$local, $remoteAs, $side]) {
+            $this->cloudSession($local, $remoteAs, $side, $shared[$remoteAs . '|' . SiteBuilder::siteId($this->devices[$local])] ?? null);
         }
 
         return $this;
@@ -216,10 +223,70 @@ class SiteSessions
     }
 
     /**
-     * A session to a peer LibreNMS does not monitor (or the user may not see): a cloud per remote
-     * AS, per site for a private AS number.
+     * Private AS clouds that several sites share: sites whose routers peer with the same address in
+     * the same private AS, when that address is not on a subnet of the router (by the subnet of the
+     * session's local address: a session with a loopback or a tunnel source to a cloud VPN gateway)
+     * and no router has it on one (the firewall of every branch at 192.168.1.2 stays per site).
+     *
+     * @param  array<int, array{0: int, 1: int, 2: array}>  $clouds  sessions to unmonitored peers: router, remote AS, side
+     * @return array<string, string> "AS|site id" => id of the shared cloud
      */
-    private function cloudSession(int $local, int $remoteAs, array $side): void
+    private function sharedClouds(array $clouds): array
+    {
+        $peers = [];
+        foreach ($clouds as [$local, $remoteAs, $side]) {
+            if (self::isPrivateAs($remoteAs)) {
+                $peer = &$peers[$remoteAs . '@' . $side['peer']];
+                $peer['sites'][$remoteAs . '|' . SiteBuilder::siteId($this->devices[$local])] = true;
+                $connected = $this->connected($local, $side);
+                $peer['remote'] = ($peer['remote'] ?? false) || $connected === false;
+                $peer['connected'] = ($peer['connected'] ?? false) || $connected === true;
+                unset($peer);
+            }
+        }
+
+        $graph = new Graph;
+        foreach ($peers as $address => $peer) {
+            if ($peer['remote'] && ! $peer['connected'] && count($peer['sites']) > 1) {
+                foreach (array_keys($peer['sites']) as $site) {
+                    $graph->addEdge($site, $address);
+                }
+            }
+        }
+        $shared = [];
+        foreach ($graph->components() as $component) {
+            $addresses = array_values(array_filter($component, fn ($node) => str_contains((string) $node, '@')));
+            sort($addresses);
+            foreach (array_diff($component, $addresses) as $site) {
+                $shared[$site] = 'as:' . $addresses[0];
+            }
+        }
+
+        return $shared;
+    }
+
+    /**
+     * Is the peer of a session on a subnet of the router, by the subnet of the session's local
+     * address? Null when that address is not known.
+     */
+    private function connected(int $local, array $side): ?bool
+    {
+        foreach ($side['own'] === null ? [] : ($this->owners[$side['own']] ?? []) as $owner) {
+            if ($owner['device_id'] === $local) {
+                $subnet = self::subnet($side['own'], $owner['prefixlen']);
+
+                return $subnet !== null && Cidr::contains($subnet, $side['peer']);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * A session to a peer LibreNMS does not monitor (or the user may not see): a cloud per remote
+     * AS; for a private AS number per site, or the cloud the site shares with others (sharedClouds()).
+     */
+    private function cloudSession(int $local, int $remoteAs, array $side, ?string $shared): void
     {
         $key = $local . '|' . $side['vrf'] . '|' . $side['peer'];
         if (isset($this->clouds[$key])) {
@@ -232,12 +299,16 @@ class SiteSessions
             'a' => ['device_id' => $local],
             'b' => null,
             'cloud' => [
-                'id' => 'as:' . ($remoteAs ?: $side['peer']) . ($private ? '@' . SiteBuilder::siteId($device) : ''),
+                'id' => $shared ?? 'as:' . ($remoteAs ?: $side['peer']) . ($private ? '@' . SiteBuilder::siteId($device) : ''),
                 'label' => $remoteAs ? 'AS' . $remoteAs : $side['peer'],
-                'name' => $remoteAs ? 'Autonomous System ' . $remoteAs . ($private ? ' at ' . (($device['location'] ?? '') ?: 'no location') : '')
-                    : 'BGP peer ' . $side['peer'],
+                'name' => match (true) {
+                    ! $remoteAs => 'BGP peer ' . $side['peer'],
+                    $private && $shared === null => 'Autonomous System ' . $remoteAs . ' at ' . (($device['location'] ?? '') ?: 'no location'),
+                    default => 'Autonomous System ' . $remoteAs,
+                },
                 'remote_as' => $remoteAs ?: null,
                 'private' => $private,
+                'shared' => $shared !== null,
             ],
             'status' => self::status([$side]),
             'state' => $side['state'],

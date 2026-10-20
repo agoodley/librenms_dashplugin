@@ -2552,9 +2552,13 @@
                 }).join(', ') + (node.down_devices.length > 25 ? ' &hellip; and ' + (node.down_devices.length - 25) + ' more' : '')) +
                 this.row('Coordinates', node.lat !== null ? esc(node.lat + ', ' + node.lng) : '<span class="text-muted">not set</span>');
         } else {
-            html += this.row('Remote AS', esc(node.remote_as)) + '<tr><td colspan="2" class="text-muted">' + (node.private
-                ? 'BGP peers in a private AS that LibreNMS does not monitor. Sites often reuse private AS numbers, so every site has a cloud of its own.'
-                : 'BGP peers that LibreNMS does not monitor, grouped by their AS: a provider network or an internet transit.') + '</td></tr>';
+            var about = 'BGP peers that LibreNMS does not monitor, grouped by their AS: a provider network or an internet transit.';
+            if (node.private) {
+                about = node.shared
+                    ? 'BGP peers in a private AS that LibreNMS does not monitor, shared by the sites that peer with the same address (such as a cloud VPN gateway).'
+                    : 'BGP peers in a private AS that LibreNMS does not monitor. Sites often reuse private AS numbers, so every site has a cloud of its own.';
+            }
+            html += this.row('Remote AS', esc(node.remote_as)) + '<tr><td colspan="2" class="text-muted">' + about + '</td></tr>';
         }
         html += '</table>';
 

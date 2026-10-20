@@ -123,7 +123,7 @@ class SiteSessionsTest extends TestCase
             ->all();
 
         $this->assertCount(1, $sessions, 'no cloud for a monitored device, a session listed twice is one');
-        $this->assertSame(['as:64496', 'AS64496', 'Autonomous System 64496', 64496, false], array_values($sessions[0]['cloud']));
+        $this->assertSame(['as:64496', 'AS64496', 'Autonomous System 64496', 64496, false, false], array_values($sessions[0]['cloud']));
         $this->assertSame(['198.51.100.1', 'up', null], [$sessions[0]['network'], $sessions[0]['status'], $sessions[0]['b']]);
     }
 
@@ -145,6 +145,36 @@ class SiteSessionsTest extends TestCase
         // the private clouds do not join the sites, the provider's does
         $result = (new SiteBuilder($devices, $sessions))->build(['center' => 1, 'depth' => 2]);
         $this->assertEqualsCanonicalizing(['site:1', 'site:2', 'as:65100@site:1', 'as:64496', 'as:198.51.100.13'], array_column($result['nodes'], 'id'));
+    }
+
+    public function testSitesPeeringWithTheSameRemoteGatewayShareItsPrivateAsCloud(): void
+    {
+        // three branches peer with the same cloud VPN gateway (AS65515 at 10.255.0.254) from their loopbacks; branch 3's
+        // session is down (no local address); every branch also peers with its own firewall at 192.168.1.2 (AS65001) on
+        // a /30 of the router
+        $devices = [];
+        $owners = [];
+        $rows = [];
+        foreach ([1, 2, 3] as $s) {
+            $devices[$s] = self::device($s, "fw-$s", $s, 65000 + $s);
+            $owners["10.255.$s.1"][] = ['device_id' => $s, 'prefixlen' => 32, 'vrf' => ''];
+            $owners['192.168.1.1'][] = ['device_id' => $s, 'prefixlen' => 30, 'vrf' => ''];
+            $rows[] = self::bgp($s, '10.255.0.254', 65515, $s === 3 ? 'active' : 'established', $s === 3 ? '0.0.0.0' : "10.255.$s.1");
+            $rows[] = self::bgp($s, '192.168.1.2', 65001, 'established', '192.168.1.1');
+        }
+        $sessions = (new SiteSessions($devices, $owners))->addBgp($rows)->all();
+
+        $this->assertSame(['as:65515@10.255.0.254', 'as:65001@site:1', 'as:65515@10.255.0.254', 'as:65001@site:2', 'as:65515@10.255.0.254', 'as:65001@site:3'],
+            array_map(fn ($c) => $c['cloud']['id'], $sessions));
+        $this->assertSame(['Autonomous System 65515', true, true], [$sessions[0]['cloud']['name'], $sessions[0]['cloud']['private'], $sessions[0]['cloud']['shared']]);
+        $this->assertSame(['Autonomous System 65001 at Site 1', false], [$sessions[1]['cloud']['name'], $sessions[1]['cloud']['shared']]);
+
+        $result = (new SiteBuilder($devices, $sessions))->build(['center' => 1, 'depth' => 2]);
+        $this->assertEqualsCanonicalizing(['site:1', 'site:2', 'site:3', 'as:65515@10.255.0.254', 'as:65001@site:1'], array_column($result['nodes'], 'id'));
+
+        // without the local addresses nothing shows that the gateway is not on a subnet of the routers: a cloud per site
+        $alone = (new SiteSessions($devices, []))->addBgp($rows)->all();
+        $this->assertSame('as:65515@site:2', $alone[2]['cloud']['id']);
     }
 
     public function testNeighborsInTheSameVrfAndAddressForms(): void
