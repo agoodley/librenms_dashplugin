@@ -1,9 +1,9 @@
 # LibreNMS Topology & Spanning Tree plugin
 
-NetBrain-style **Layer 2**, **Layer 3** and **site / WAN** network diagrams plus **spanning tree**, **link & VLAN** and
-**redundancy & failure impact** diagnostics for [LibreNMS](https://www.librenms.org), built entirely from data LibreNMS
-already collects (LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, IP addresses, OSPF, BGP,
-transceiver sensors and the hardware inventory).
+NetBrain-style **Layer 2**, **Layer 3** and **site / WAN** network diagrams plus **spanning tree**, **link & VLAN**,
+**routing & IP** and **redundancy & failure impact** diagnostics for [LibreNMS](https://www.librenms.org), built
+entirely from data LibreNMS already collects (LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, IP
+addresses, OSPF, BGP, transceiver sensors and the hardware inventory).
 
 ![Layer 2 map](docs/images/l2-map.png)
 
@@ -169,6 +169,49 @@ VLANs that are local to each switch on purpose can be ignored, and every check c
 
 ![Link & VLAN diagnostics](docs/images/link-diagnostics.png)
 
+### Routing & IP diagnostics
+
+The Layer 3 counterpart of the spanning tree page: OSPF routers and adjacencies, BGP sessions and the interface
+addresses of every device you can see are checked against each other:
+
+| Check | Severity |
+|---|---|
+| **Duplicate OSPF router ID** on two routers (critical when they are in one OSPF domain), or a neighbor reporting the router's own ID | critical / warning |
+| **OSPF adjacency stuck in ExStart / Exchange** with the MTU of both ends (critical when the interface MTUs differ) | critical / warning |
+| OSPF hello / dead interval, area, area type (stub / NSSA) or authentication that differs between the interfaces of one link or the routers of one area: no adjacency can form | critical |
+| **BGP remote AS** configured on one router that is not the local AS of the (monitored) peer, when the peer was rejected for it (Bad Peer AS) or the session never came up | critical |
+| OSPF adjacency stuck in Init or Loading, 2-Way on a point-to-point interface, a configured neighbor that is down | warning |
+| OSPF network type that differs on one link; routers of one area whose LSA counts differ by more than 1 % | warning |
+| **BGP session down** (unless shut down on purpose), with its last error as text ("Cease / Maximum Number of Prefixes Reached (6/1)") and what usually causes it; sessions configured on one router only (never established, while the peer's sessions in that VRF are polled) | warning |
+| Accepted prefixes near (warning) or at (critical) the peer's maximum-prefix limit, per address family | warning / critical |
+| **Duplicate IP address** in one VRF on interfaces that are up, within one network; different prefix lengths on two neighbors | warning |
+| BGP session reset recently (with its cause, or the router's own restart); session up without any accepted prefix | info / warning |
+| OSPF cost that differs per direction on a link; DR election on a point-to-point link (/30, /31) | info |
+| Shared addresses on several devices: a gateway address when each device also has its own (VRRP, HSRP, anycast gateway), anycast on loopbacks, host addresses or three or more devices, or devices LibreNMS sees no link between (separate networks may reuse addresses) | info |
+| A link (LLDP/CDP, or an OSPF adjacency) that joins two differently named VRFs, on routers that both have both VRFs | info |
+
+Subnets are reused by networks that never meet (customers, sites, VRFs), so interfaces and addresses are only compared
+where they are on one link: the two ports of an LLDP/CDP link (with their subinterfaces), the two ends of an OSPF
+adjacency, neighbors in one routing table, the two addresses of a /30 or /31 held by two devices, or, for OSPF
+interfaces, one OSPF domain. A link whose ends are in differently named VRFs (a provider edge facing a customer router)
+is a routing boundary, so a provider and its customers are separate networks; a link end without an address (an L2
+port, a LAG member, a port with SVIs behind it) is in the VRFs of its device's addresses that share a subnet with the
+other end. A link without addresses on either end (a trunk) joins every routing table, unless a subnet its two devices
+share is in VRFs of different names only (no VRF name holds it on both) and is point-to-point (/30, /31, /126, /127: a
+provider edge facing a customer router over a port-channel) or both devices have addresses in VRFs of their own: then it
+joins only the VRFs that agree. A duplicate address between devices that LibreNMS sees no link between in that routing
+table is only info: that includes sites joined only through BGP or an MPLS VPN, which count as separate networks.
+Host-local bridges (virbr0, docker0, ...) are left out.
+VRF names are local to each router and compared without case: a provider edge facing a customer router joins VRFs on
+purpose and is not reported. LSA checksum sums are not compared (they change with every LSA refresh), BGP sessions in a
+state outside the BGP state machine (Junos peers that LibreNMS has not matched yet) are listed but not checked.
+
+Below the findings the page lists the OSPF routers (router ID, ABR / ASBR, areas), every adjacency as each router
+reports it, and every BGP session with its state, uptime, last error and prefixes, problems first. Filter by device,
+group, location or VRF; routers outside the selected group or location still count as neighbors and peers.
+
+![Routing & IP diagnostics](docs/images/routing-diagnostics.png)
+
 ### Redundancy & failure impact
 
 Every device should keep a path to **the core**: the core devices set in the settings, else the designated root
@@ -281,7 +324,7 @@ every change is written to the device's eventlog with the parents it had before.
 * LibreNMS 26.x (developed and tested against 26.9 / master of October 2026), PHP 8.2+
 * The LibreNMS modules that feed the plugin enabled for your devices:
   `discovery-protocols` (links), `ports`, `vlans`, `ports-stack`, `stp`, `ipv4-addresses`
-  (`ipv6-addresses`), `ospf`, `bgp-peers`, `fdb-table` (rogue root tracing), `transceivers` and `sensors`
+  (`ipv6-addresses`), `vrf`, `ospf`, `bgp-peers`, `fdb-table` (rogue root tracing), `transceivers` and `sensors`
   (optical levels), `entity-physical` (stack members and line cards). The maps and checks work with whatever subset
   is available.
 
@@ -345,14 +388,17 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   (both pages name a switch that is cabled like a second core switch).
 * Before a firmware rollout, plan it on **Rollout Planner** for the device group or location, then put each batch and
   the devices listed under it in a LibreNMS maintenance window while it runs.
+* On the routing page, a BGP session's last error is decoded ("Hold Timer Expired (4/0)": keepalives lost) – look there
+  first when a peer flaps. Addresses that are shared on purpose (anycast, VRRP / HSRP virtual addresses that a device
+  reports as interface addresses) can be left out of the IP checks in the settings.
 * Give the locations a latitude and longitude (LibreNMS can look them up from the address) and the site map can lay
   the network out geographically; the first visit uses that layout.
-* `plugin/topology/api/l2`, `api/l3`, `api/sites`, `api/stp`, `api/links`, `api/redundancy`, `api/coverage`,
-  `api/rollout` and `api/dependencies` return the same data as JSON (same query parameters as the pages, e.g.
-  `api/stp?vlan=30&group=2`, `api/links?device=12`) for automation. `api/coverage` cuts each list at the same 500 rows
-  as the page and returns the full counts as `findings_total`, `neighbors_total`, `devices_total` and `ports_total`:
-  narrow it with `device`, `group` or `location` for the rest. Phones and servers among the neighbors are only
-  counted, in `summary.other_neighbors`.
+* `plugin/topology/api/l2`, `api/l3`, `api/sites`, `api/stp`, `api/links`, `api/routing`, `api/redundancy`,
+  `api/coverage`, `api/rollout` and `api/dependencies` return the same data as JSON (same query parameters as the
+  pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`, `api/routing?vrf=PROD`) for automation. `api/coverage`
+  cuts each list at the same 500 rows as the page and returns the full counts as `findings_total`, `neighbors_total`,
+  `devices_total` and `ports_total`: narrow it with `device`, `group` or `location` for the rest. Phones and servers
+  among the neighbors are only counted, in `summary.other_neighbors`.
 
 ## Settings
 
@@ -378,6 +424,10 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Optical margin | 2 dB | receive power this close to the alarm threshold is reported (0 disables) |
 | Ignored VLANs | – | e.g. `999 1002-1005`: VLANs local to each switch by design |
 | Disabled checks | – | check codes or categories (`mismatch`, `vlans`, `lags`, `counters`, `optics`, `neighbors`, `descriptions`), e.g. `mtu_mismatch description_missing` |
+| BGP reset window | 24 h | sessions that came up less than this ago are reported as reset (0 disables) |
+| Prefix limit warning | 80 % | share of a peer's maximum-prefix limit that warns (100 % is critical; 0 only reports peers at the limit) |
+| Ignored addresses | – | CIDRs or addresses left out of the IP checks (anycast, virtual gateway addresses) |
+| Disabled routing checks | – | check codes or categories (`ospf`, `bgp`, `ip`), e.g. `ospf_cost_asymmetric bgp_no_prefixes` |
 | Core devices | – | hostnames/sysNames/ids every device should keep a path to; empty: designated root bridges, else automatic |
 | Warn from | 2 | switches, routers or firewalls cut off by one failure before a single point of failure is a warning |
 | Disabled redundancy checks | – | check codes or categories (`outages`, `lost`, `fake`, `spof`), e.g. `spof_link uplinks_same_device` |
@@ -412,6 +462,10 @@ may view syslog.
   (`SyslogPatterns` classifies the messages, `Data\LoopEvidenceRepository` reads the packet rates and the syslog).
 * `src/Links/LinkAnalyzer.php` – the link and VLAN checks (both ends of each link, port-channels, VLAN islands per
   L2 domain, descriptions and their configuration lines).
+* `src/Routing/RoutingAnalyzer.php` – the OSPF, BGP and IP checks (OSPF domains from the adjacencies, the interface
+  facing each neighbor, BGP peers resolved to monitored devices); `BgpErrors` turns NOTIFICATION codes into text. The
+  rows are streamed in and kept in small objects (2,000 routers with 50,000 addresses take about 50 MB and 0.6 s);
+  with a device selected, `RoutingService` reads only the addresses its checks need.
 * `src/Redundancy/RedundancyAnalyzer.php` – single points of failure (cut vertices and bridges toward the core,
   `Support\Graph::cuts()`), fake and lost redundancy and outages; `CoreFinder` picks the core, `PortUnits` reads stack
   members and line cards from the hardware inventory.
@@ -477,6 +531,16 @@ vendor/bin/phpunit
   at the next discovery, so "redundancy lost" covers failures since the last discovery run; a link that has been down
   for longer is simply missing (roadmap item 5 keeps a baseline). It looks at device and link failures, not at VLANs:
   a backup trunk that does not carry a VLAN is a link & VLAN finding.
+* The routing checks see what LibreNMS polls: OSPFv2 (OSPF-MIB; OSPFv3 is not checked) and BGP sessions; accepted
+  prefix counts come from Cisco, Junos, Arista, Dell OS10 and Huawei VRP routers (bgpPeers_cbgp), the maximum-prefix
+  limits only from Cisco. Adjacency and session states are a snapshot of the last poll, so a state seen during a change
+  can show up once. A session or address is matched to a device only when that device is monitored and visible to you
+  and the address is on that device only; a one-sided session needs the peer's BGP sessions in that VRF to be polled
+  (an SNMP context per VRF). A session that has never come up to a confederation peer can be reported as a remote AS
+  mismatch, and interfaces on one LAN behind a switch are only compared when their routers are in one OSPF domain.
+  Subinterfaces are matched to the port LLDP/CDP reports by name (Gi0/1.100 to Gi0/1), but LAG members are not matched
+  to their port-channel: a LAG PE-CE handoff larger than a point-to-point subnet (a /29, an IPv6 /64), toward a
+  customer router without VRFs, still joins every routing table, so addresses reused across it are warnings.
 * The coverage report only knows what LLDP/CDP and the forwarding tables report: a switch that sends no LLDP/CDP shows
   up at best as a port with many MAC addresses. LibreNMS does not keep the management address a neighbor advertises, so
   *Add* opens the Add Device page without it. Neighbors LibreNMS did not link are matched to monitored devices by
@@ -500,7 +564,7 @@ vendor/bin/phpunit
 
 ## Roadmap
 
-Planned tools (host locator, topology history, routing diagnostics and more) are listed in [ROADMAP.md](ROADMAP.md).
+Planned tools (host locator, topology history, background diagnostics and more) are listed in [ROADMAP.md](ROADMAP.md).
 
 ## License
 

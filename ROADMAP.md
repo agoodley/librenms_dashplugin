@@ -20,6 +20,7 @@ The plugin's conventions apply to all of them:
 |---|---|---|---|
 | 1 | [Link & VLAN diagnostics](README.md#link--vlan-diagnostics) | **done** | – |
 | 3 | [Redundancy & failure impact](README.md#redundancy--failure-impact) | **done** | – |
+| 4 | [Routing & IP diagnostics](README.md#routing--ip-diagnostics) | **done** | – |
 | 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
 | 7 | [Automatic device dependencies](README.md#device-dependencies) | **done** | – |
 | 9 | [More L3 map layers](README.md#layer-3-map-overlays) | **done** | – |
@@ -29,7 +30,6 @@ The plugin's conventions apply to all of them:
 | 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
 | 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
 | 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
-| 4 | [Routing & IP diagnostics](#4-routing--ip-diagnostics) | planned | M |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
 | 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
 
@@ -85,28 +85,6 @@ turn every check into something that runs without anyone opening a page. The res
 * A finding's identity is its code, devices, ports and VLAN.
 * Builds on the scheduled job and tables of 5.
 
-### 4. Routing & IP diagnostics
-
-The L3 counterpart of the spanning tree page.
-
-* **OSPF**
-  * duplicate router IDs (`ospf_instances.ospfRouterId`)
-  * neighbors stuck in ExStart / Exchange, which usually means an MTU mismatch (compare `ports.ifMtu` of both ends)
-  * hello / dead interval, area or network type mismatch on one subnet (`ospf_ports`)
-  * different costs in each direction (`ospfIfMetricValue`)
-  * routers of one area whose databases disagree (`ospf_areas.ospfAreaLsaCount` / `ospfAreaLsaCksumSum`)
-  * DR/BDR elections on point-to-point links
-* **BGP**
-  * last error decoded to text (`bgpPeerLastErrorCode` / `SubCode`, e.g. "hold timer expired")
-  * recent session resets (`bgpPeerFsmEstablishedTime`)
-  * peer configured with a remote AS that is not the peer's `bgpLocalAs`
-  * sessions configured on one side only
-  * accepted prefixes near the configured limit, or none at all (`bgpPeers_cbgp`)
-* **IP**
-  * duplicate addresses (the L3 map currently keeps one of them silently)
-  * different subnet masks on the two ends of a link
-  * the same subnet in two VRFs on neighboring devices
-* Builds on: the subnet index of `L3Builder`, the `Finding` format and the layout of the diagnostics pages.
 
 ## Later
 

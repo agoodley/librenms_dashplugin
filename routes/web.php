@@ -5,6 +5,7 @@ use Agoodley\LibrenmsTopology\Http\Controllers\AssetController;
 use Agoodley\LibrenmsTopology\Http\Controllers\CoverageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PlanningController;
+use Agoodley\LibrenmsTopology\Http\Controllers\RoutingController;
 use Agoodley\LibrenmsTopology\Http\Controllers\SiteController;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use Illuminate\Support\Facades\Route;
@@ -21,6 +22,7 @@ Route::middleware(['web', 'auth'])
         Route::get('stp', [PageController::class, 'stp'])->name('stp');
         Route::get('links', [PageController::class, 'links'])->name('links');
         Route::get('redundancy', [PageController::class, 'redundancy'])->name('redundancy');
+        Route::get('routing', [RoutingController::class, 'index'])->name('routing');
 
         Route::get('api/l2', [ApiController::class, 'l2'])->name('api.l2');
         Route::get('api/l3', [ApiController::class, 'l3'])->name('api.l3');
@@ -29,6 +31,7 @@ Route::middleware(['web', 'auth'])
         Route::get('api/links', [ApiController::class, 'links'])->name('api.links');
         Route::get('api/redundancy', [ApiController::class, 'redundancy'])->name('api.redundancy');
         Route::get('api/simulate', [ApiController::class, 'simulate'])->name('api.simulate');
+        Route::get('api/routing', [RoutingController::class, 'api'])->name('api.routing');
 
         Route::get('coverage', [CoverageController::class, 'index'])->name('coverage');
         Route::get('api/coverage', [CoverageController::class, 'api'])->name('api.coverage');
