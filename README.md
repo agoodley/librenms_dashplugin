@@ -124,21 +124,26 @@ changed in the last day, week or month, or between two dates:
 | **Cable moved**: a port whose neighbor changed ("acc-sw2 Gi1/0/49 now connects to core2 Te1/0/5 (was core1 Te1/0/5)"), or a link that came back | links |
 | **Link gone**, **new link**, port-channel members that joined or left | links |
 | **New unmanaged switch or access point**, and other unknown LLDP/CDP neighbors | links |
-| **Root bridge moved** (one line per spanning tree instance, with the switches that saw it), ports that started or stopped blocking | spanning tree |
+| **Root bridge moved** (one line per move, with its VLANs and the switches that saw it), ports that started or stopped blocking | spanning tree |
 | **OSPF adjacency lost / up**, **BGP session down / established** (one line when both routers report it) | routing |
 | **New device**: a device LibreNMS started to monitor, with what it brought | devices |
 
 An admin can **save the baseline**: the topology as it should be (links, port-channel members, root bridges, OSPF
 adjacencies, BGP sessions), for everything or for the devices of the current filter. The page then lists what is missing
-compared to the baseline, with since when, and what is new. The redundancy page uses it too: a baseline link
-that LLDP/CDP no longer reports counts as a down link, so a lost uplink is still reported after LibreNMS deleted its
-neighbor at the next discovery (a port that now has another cable is a moved cable, not a lost path).
+compared to the baseline, with since when, and what is new; **Accept** takes one missing item out of the baseline when it
+is gone on purpose. The redundancy page uses it too: a baseline link that LLDP/CDP no longer reports counts as a down link,
+so a lost uplink is still reported after LibreNMS deleted its neighbor at the next discovery (a port that now has another
+cable is a moved cable, not a lost path).
 
-With every snapshot the **background checks** run the spanning tree, link and redundancy checks over all devices and keep
-a findings history. New and resolved findings from *Eventlog from severity* (warning by default) go to the eventlog of
-their devices (type `topology`), so they show on the device pages and in the eventlog widget and alert rules can match
-them. The diagnostics pages mark findings that are **new** since the previous run, and the Changes page lists the findings
-that came or went.
+At the same interval the **background checks** run the spanning tree, link and redundancy checks over all devices, each
+in its own process, and keep a findings history. A finding counts once two runs in a row report it, and is resolved once
+two runs in a row do not, so a check that flickers from run to run does not flood anything. A device gets an entry in its
+eventlog (type `topology`) when it gets its first such finding of a check or loses its last one, from *Eventlog from
+severity* (warning by default) and except the *Checks kept out of the eventlog* (those that follow the counters of the last
+poll); the entries then show on the device pages and in the eventlog widget, and alert rules can match them. An entry names
+the check only ("Topology warning: Redundancy lost (redundancy check), details: plugin/topology/redundancy?device=12"):
+findings name other devices, and everyone who may see a device reads its eventlog. The diagnostics pages mark findings
+that are **new** since the previous run, and the Changes page lists the findings that came or went.
 
 ![Topology changes](docs/images/topology-changes.png)
 
@@ -150,6 +155,8 @@ that came or went.
   (`ipv6-addresses`), `ospf`, `bgp-peers`, `fdb-table` (rogue root tracing), `transceivers` and `sensors`
   (optical levels), `entity-physical` (stack members and line cards). The maps and checks work with whatever subset
   is available.
+* The topology history adds four tables (`topology_*`) with a database migration of the plugin and runs through the
+  LibreNMS scheduler. `./validate.php` warns about that migration; read [Installation](#installation) before acting on it.
 
 ## Installation
 
@@ -183,9 +190,27 @@ can be disabled or configured in **Overview → Plugins → Plugin Admin → top
 
 The topology history keeps its data in tables of the plugin: create them once with `./lnms migrate` (LibreNMS updates run
 it too, so later versions of the plugin update them). The history is recorded by the LibreNMS scheduler, which LibreNMS
-needs anyway (`librenms-scheduler` timer or cron, see `./validate.php`); `./lnms topology:snapshot` records one now.
+needs anyway (`librenms-scheduler` timer or cron, see `./validate.php`): `topology:snapshot --no-checks` and
+`topology:checks stp|links|redundancy` every *History interval*, their output in `logs/topology-snapshot.log`, a failure
+in the eventlog. `./lnms topology:snapshot` records a snapshot and runs the checks now.
 
-To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
+`./validate.php` then warns that the database schema "has extra migrations
+(2026_10_20_000000_create_topology_history_tables)" and is "between releases": that is the plugin's migration, and the
+warning stays while the plugin is installed. While it warns, validate.php skips its checks of LibreNMS' own schema
+(structure and collation). **Do not delete the plugin's row from the `migrations` table** to silence it: validate.php then
+lists the `topology_*` tables as extra tables and offers to drop them. **Never apply that fix**: it deletes the history and
+the baseline.
+
+To remove the plugin and its tables:
+
+```bash
+# drops the topology_* tables and removes their row from the migrations table
+# (it lists LibreNMS' own migrations as "Migration not found" and leaves them alone)
+./lnms migrate:reset --path=vendor/agoodley/librenms-topology-plugin/database/migrations
+./lnms plugin:remove agoodley/librenms-topology-plugin
+```
+
+`./lnms plugin:remove` alone keeps the tables, so a reinstall keeps the history.
 
 ## Usage tips
 
@@ -202,8 +227,10 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   `l2?fail=d:12,p:345` opens the map with device 12 and the link of port 345 failed (`api/simulate?fail=...` returns the
   same as JSON).
 * After a planned change, save the **baseline** again (for the affected location or group only, by filtering first) so
-  the Changes page and the redundancy analysis expect the new topology. `./lnms topology:snapshot --baseline` records the
-  topology and saves it as the baseline of every device; `--no-checks` skips the background checks.
+  the Changes page and the redundancy analysis expect the new topology, or **Accept** the single items that are gone on
+  purpose (the redundancy finding of a missing link points to its device on the Changes page). `./lnms topology:snapshot
+  --baseline` records the topology and saves it as the baseline of every device; `--no-checks` skips the background
+  checks, `./lnms topology:checks stp` runs one of them.
 * If the automatic core is not your core, set **Core devices** in the settings; the switches next to the LibreNMS
   poller are a good choice when you want "what can the poller still reach".
 * `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links`, `api/redundancy` and `api/changes` return the same data as
@@ -236,8 +263,9 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Record the topology history | on | every *History interval* through the LibreNMS scheduler |
 | History interval | 60 min | 15, 30, 60, 120, 240, 360, 720 or 1440 |
 | Keep changes for | 90 days | facts and findings that ended earlier are deleted |
-| Background checks | `stp links redundancy` | analyses run with every snapshot; empty disables them |
-| Eventlog from severity | warning | new and resolved background findings from this severity go to the device eventlogs (`critical`, `warning`, `info` or `none`) |
+| Background checks | `stp links redundancy` | analyses run every *History interval*; empty disables them |
+| Eventlog from severity | warning | a device gets an eventlog entry when it gets or loses a background finding from this severity (`critical`, `warning`, `info` or `none`) |
+| Checks kept out of the eventlog | `link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent` | check codes that follow the counters of the last poll; they stay on the pages |
 
 ## Permissions
 
@@ -262,10 +290,11 @@ baseline.
 * `src/Redundancy/RedundancyAnalyzer.php` – single points of failure (cut vertices and bridges toward the core,
   `Support\Graph::cuts()`), fake and lost redundancy and outages; `CoreFinder` picks the core, `PortUnits` reads stack
   members and line cards from the hardware inventory.
-* `src/History/` – the topology history: `FactCollector` (what a snapshot records), `FactDiff` (what it writes),
-  `ChangeReport` (moved cables, root bridge moves, lost adjacencies), `Baseline`, `FindingHistory` (background checks
-  and eventlog entries); `HistoryService` runs them, `Console/SnapshotCommand` is the scheduled `topology:snapshot` and
-  `database/migrations` creates the tables.
+* `src/History/` – the topology history: `FactCollector` (what a snapshot records: one fact per link, port-channel
+  member, root bridge a switch sees and blocked port, the last two with their VLANs), `FactDiff` (what it writes),
+  `ChangeReport` (moved cables, root bridge moves, lost adjacencies), `Baseline`, `FindingHistory` (findings confirmed
+  by two runs, eventlog entries); `HistoryService` runs them, `Console/` holds the scheduled `topology:snapshot` and
+  `topology:checks` and `database/migrations` creates the tables.
 * `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
@@ -296,8 +325,14 @@ vendor/bin/phpunit
   hours by default), spanning tree, OSPF and BGP at polling. A change shows up at the first snapshot after LibreNMS
   noticed it, and a change undone in between is not seen. Phones are left out (they move all day), and devices disabled
   in LibreNMS keep their last state.
-* The background checks analyze the whole network in one process: about 4 s and 250 MB of memory for 1,200 switches with
-  23,000 phones, on top of a 1 s snapshot. On much larger networks raise the *History interval*.
+* The snapshot and each background check run over the whole network, each in its own process with LibreNMS'
+  `php_memory_limit` (512 MB when it is not set). For 1,242 switches with 23,000 phones and 50 PVST VLANs: snapshot 1 s and
+  115 MB, link and redundancy checks 2 s and 160 MB each, the Changes page 0.3 s and 55 MB. The spanning tree check needs
+  550 MB there (it analyzes every VLAN of every switch): set `php_memory_limit` higher or leave `stp` out of *Background
+  checks*. A check that fails is logged in `topology-snapshot.log` and the eventlog, and the others still run.
+* The redundancy analysis compares the baseline with the last snapshot, and only while that is less than a day old.
+* `./validate.php` warns about the plugin's migration while the plugin is installed and then skips its checks of LibreNMS'
+  own schema (see [Installation](#installation)).
 
 ## Roadmap
 
