@@ -63,8 +63,9 @@ class TopologyService
             }
             $group = &$ends[(int) $link['local_device_id']][DeviceRole::fromNeighbor($link['remote_platform'], $link['remote_version'], $link['remote_hostname'])];
             $group['count'] = ($group['count'] ?? 0) + 1;
-            if (count($group['names'] ?? []) < L2Builder::GROUP_NAMES && $link['remote_hostname'] !== '') {
-                $group['names'][] = (string) $link['remote_hostname'];
+            $name = trim((string) $link['remote_hostname']);
+            if ($name !== '' && count($group['names'] ?? []) < L2Builder::GROUP_NAMES) {
+                $group['names'][] = $name;
             }
 
             return false;
