@@ -41,16 +41,24 @@ class PathServiceTest extends TestCase
 
     /**
      * @param  int[]|null  $visible  devices the user may see (null: all)
+     * @param  (\Closure(string): array)|null  $hosts  host locator answers (default: hosts())
      */
-    private static function service(?PathFixture $net = null, ?array $visible = null, array $settings = [], ?FakePathRepository &$repo = null, ?int $routes = 100): PathService
+    private static function service(?PathFixture $net = null, ?array $visible = null, array $settings = [], ?FakePathRepository &$repo = null, ?int $routes = 100,
+        bool $admin = false, ?FakePathTopology &$topology = null, ?\Closure $hosts = null): PathService
     {
         $net ??= PathFixture::campus();
         $visible ??= array_keys($net->devices);
         $repo = new FakePathRepository($net, $visible);
         $repo->size = $routes;
+        $topology = new FakePathTopology($net, $visible);
 
-        return new PathService($repo, new FakePathTopology($net, $visible), new PluginSettings($settings), self::hosts(),
-            fn (string $name, array $parameters = []) => $name . '?' . http_build_query($parameters));
+        return new PathService($repo, $topology, new PluginSettings($settings), $hosts ?? self::hosts(),
+            fn (string $name, array $parameters = []) => $name . '?' . http_build_query($parameters), $admin);
+    }
+
+    private static function codes(array $result): array
+    {
+        return array_column($result['findings'], 'code');
     }
 
     private static function names(array $result): array
@@ -183,14 +191,135 @@ class PathServiceTest extends TestCase
         $result = self::service(null, null, ['path_route_rows' => '1000'], $repo, 5000)->trace(['a' => '10.90.110.11', 'b' => '10.90.130.31']);
 
         $this->assertSame([], $repo->calls, 'no route reads');
-        $this->assertStringContainsString('about 5,000 routes', implode(' ', array_column($result['notes'], 'text')));
+        $notes = implode(' ', array_column($result['notes'], 'text'));
+        $this->assertStringContainsString('more than the 1,000 routes a path trace reads', $notes);
+        $this->assertStringNotContainsString('5,000', $notes, 'the size of the whole table is for admins');
         $this->assertTrue($result['complete'], 'every router estimated from subnets and neighbors');
         $this->assertSame(['dist1', 'rtr1', 'rtr3', 'rtr2'], array_values(array_map(fn ($hop) => $hop['name'], array_filter($result['hops'], fn ($hop) => $hop['layer'] === 'l3'))));
+        $estimated = array_column($result['findings'], null, 'code')['estimated_hops'];
+        $this->assertStringContainsString('Route table limit', $estimated['recommendation'], 'not: enable the route discovery module');
+        $this->assertStringNotContainsString('discovery_modules', $estimated['recommendation']);
+
+        $admin = self::service(null, null, ['path_route_rows' => '1000'], $repo, 5000, true)->trace(['a' => '10.90.110.11', 'b' => '10.90.130.31']);
+        $this->assertStringContainsString('holds about 5,000 routes, more than the 1,000', implode(' ', array_column($admin['notes'], 'text')));
+    }
+
+    public function testASecondTraceStartsClean(): void
+    {
+        $service = self::service();
+        $this->assertContains('path_outside', self::codes($service->trace(['a' => '10.90.110.11', 'b_device' => PathFixture::REMOTE])));
+
+        $second = $service->trace(['a' => '10.90.110.11', 'b' => '10.90.110.12']);
+        $this->assertSame([], self::codes($second), 'no finding of the first trace');
+        $this->assertSame([], $second['notes']);
+        $this->assertSame(['l2', true], [$second['mode'], $second['complete']]);
+    }
+
+    public function testOnlyTheLinksAroundThePathAreRead(): void
+    {
+        // forty more access switches on dist2, in a chain
+        $net = PathFixture::campus();
+        $previous = 212;
+        for ($id = 20; $id < 60; $id++) {
+            $net->device($id, 'chain' . $id, 'switch')->port(5000 + $id * 10, $id, 'Te1/1/1')->port(5001 + $id * 10, $id, 'Te1/1/2');
+            $net->link($previous, 5000 + $id * 10);
+            $net->portVlans[5000 + $id * 10] = $net->portVlans[5001 + $id * 10] = [1 => true, 110 => false];
+            $previous = 5001 + $id * 10;
+        }
+        $net->links = array_values(array_filter($net->links, fn ($link) => ! in_array(403, [$link['local_port_id'], $link['remote_port_id']], true)));
+
+        $result = self::service($net, null, [], $repo, 100, false, $topology)->trace(['a' => '10.90.110.11', 'b' => '10.90.110.12']);
+        $this->assertSame(['l2', true], [$result['mode'], $result['complete']]);
+        $read = array_merge(...$repo->linkReads);
+        sort($read);
+        $this->assertSame([PathFixture::DIST1, PathFixture::ACC1, PathFixture::ACC2], array_values(array_unique($read)),
+            'the links of the ends and of dist1: the path through it is the shortest before dist2 is read');
+        $this->assertSame([], array_values(array_filter(array_unique($topology->deviceReads), fn ($id) => $id >= 20)), 'no row of the chain');
+    }
+
+    public function testRoutesNotReadAgainAtTheLastDiscoveryAreEstimated(): void
+    {
+        $net = PathFixture::campus();
+        $net->routeData[PathFixture::RTR1]['discovered'] = PathFixture::NOW + 2 * 86400;
+
+        $result = self::service($net)->trace(['a' => '10.90.110.11', 'b' => '10.90.130.31']);
+        $this->assertTrue($result['complete']);
+        $hops = array_combine(self::names($result), $result['hops']);
+        $this->assertStringContainsString('2d before its last discovery', $hops['rtr1']['estimated']);
+        $this->assertSame([null, '10.90.0.5'], [$hops['rtr1']['route']['prefix'], $hops['rtr1']['route']['next_hop']], 'no route of it: the estimated next hop');
+        $this->assertStringContainsString('routes_max_number', array_column($result['findings'], null, 'code')['estimated_hops']['recommendation']);
+    }
+
+    public function testALoopThroughAnEstimateIsNotARoutingLoop(): void
+    {
+        // rtr2 defaults to rtr3 (no routes, estimated on to rtr1), and rtr1 now routes VLAN 110 back to rtr3
+        $net = PathFixture::campus();
+        $net->routes[PathFixture::RTR1] = array_values(array_filter($net->routes[PathFixture::RTR1], fn ($route) => $route['dest'] !== '10.90.110.0'));
+        $net->route(PathFixture::RTR1, '10.90.110.0', 24, '10.90.0.5', 503, 'static');
+
+        $result = self::service($net)->trace(['a_device' => PathFixture::RTR2, 'b' => '10.90.110.12']);
+        $this->assertFalse($result['complete']);
+        $this->assertNotContains('routing_loop', self::codes($result));
+        $finding = array_column($result['findings'], null, 'code')['path_unknown'];
+        $this->assertSame('warning', $finding['severity']);
+        $this->assertStringContainsString('an estimated next hop is part of that way', $finding['detail']);
+    }
+
+    public function testAnAddressOfSeveralDevicesIsTheOneThePathReaches(): void
+    {
+        // dist2 has rtr2's 10.90.130.1 too (a duplicate address)
+        $net = PathFixture::campus();
+        $net->address(PathFixture::DIST2, 2130, 'Vlan130', '10.90.130.1', 24);
+
+        $result = self::service($net)->trace(['a' => '10.90.110.11', 'b' => '10.90.130.1']);
+        $this->assertSame(['rtr2', 'device'], [$result['b']['device'], $result['b']['kind']], 'the router the routed path reaches');
+        $this->assertStringContainsString('the path reaches rtr2', $result['b']['notes'][0]['text']);
+        $this->assertSame('rtr2', end($result['hops'])['name']);
+        $this->assertTrue($result['complete']);
+
+        $a = self::service($net)->trace(['a' => '10.90.130.1', 'b' => '10.90.110.12'])['a'];
+        $this->assertSame('dist2', $a['device'], 'the lower id first');
+        $this->assertStringContainsString('10.90.130.1 is an address of 2 devices (dist2, rtr2): the path uses dist2.', $a['notes'][0]['text']);
+    }
+
+    public function testAHiddenHopAndAStaleHostAreSaidSo(): void
+    {
+        $result = self::service(null, [PathFixture::ACC1, PathFixture::ACC2])->trace(['a_device' => PathFixture::ACC1, 'a_port' => 305, 'b_device' => PathFixture::ACC2, 'vlan' => 110]);
+        $this->assertStringContainsString('path_hidden=1', (string) $result['map_url']);
+
+        $hosts = self::hosts();
+        $stale = function (string $query) use ($hosts): array {
+            $answer = $hosts($query);
+            foreach ($answer['hosts'] as &$host) {
+                $host['stale'] = true;
+            }
+
+            return $answer;
+        };
+        $result = self::service(null, null, [], $repo, 100, false, $topology, $stale)->trace(['a' => '10.90.110.11', 'b' => '10.90.110.12']);
+        $this->assertStringContainsString('did not list this host at their last discovery', $result['a']['notes'][0]['text']);
+        $this->assertTrue($result['complete'], 'still traced from where it was seen');
+    }
+
+    public function testASingleSpanningTreeInstanceForAVlanIsSaidSo(): void
+    {
+        // acc1 runs one RSTP / MSTP instance: LibreNMS has it as the common instance
+        $net = PathFixture::campus();
+        $net->instances = array_values(array_filter($net->instances, fn ($row) => $row['device_id'] !== PathFixture::ACC1));
+        $net->instances[] = ['device_id' => PathFixture::ACC1, 'vlan' => null, 'rootBridge' => 0, 'bridgeAddress' => '00aa03000001', 'designatedRoot' => '00aa01000110', 'rootPort' => 0, 'priority' => 32768];
+        $net->stpPorts = array_values(array_filter($net->stpPorts, fn ($row) => $row['device_id'] !== PathFixture::ACC1));
+        foreach ([301 => 'forwarding', 302 => 'discarding', 305 => 'forwarding'] as $portId => $state) {
+            $net->stpPorts[] = ['device_id' => PathFixture::ACC1, 'vlan' => null, 'port_id' => $portId, 'port_index' => $portId, 'state' => $state, 'enable' => 'enabled', 'designatedBridge' => ''];
+        }
+
+        $result = self::service($net)->trace(['a' => '10.90.110.11', 'b' => '10.90.110.12']);
+        $this->assertSame(['acc1', 'dist1', 'acc2'], array_slice(self::names($result), 1, 3));
+        $this->assertStringContainsString('acc1 run a single spanning tree instance in LibreNMS', implode(' ', array_column($result['notes'], 'text')));
     }
 }
 
 /**
- * The path repository on PathFixture's data: links anonymize devices out of sight like PathRepository::links().
+ * The path repository on PathFixture's data: links anonymize devices out of sight like PathRepository::linksAt().
  */
 final class FakePathRepository extends PathRepository
 {
@@ -198,6 +327,9 @@ final class FakePathRepository extends PathRepository
 
     /** @var string[] route table reads */
     public array $calls = [];
+
+    /** @var array<int, int[]> devices whose links each read asked for */
+    public array $linkReads = [];
 
     /**
      * @param  int[]  $visible
@@ -207,23 +339,54 @@ final class FakePathRepository extends PathRepository
         parent::__construct(null);
     }
 
-    public function links(array $ids): array
+    public function canSee(int $deviceId): bool
     {
-        $hidden = [];
+        return in_array($deviceId, $this->visible, true);
+    }
+
+    public function linksAt(array $deviceIds, array $hidden = [], array $names = []): array
+    {
+        $this->linkReads[] = $deviceIds;
+        $remotes = array_merge($deviceIds, $this->hiddenDeviceIds($hidden));
         $links = [];
-        foreach ($this->net->links as $link) {
-            if (! in_array($link['local_device_id'], $ids, true)) {
-                continue;
-            }
+        foreach ($this->net->links as $index => $link) {
             $remote = (int) $link['remote_device_id'];
-            if ($remote && ! in_array($remote, $this->visible, true)) {
-                $hidden[$remote] ??= count($hidden) + 1;
-                $link = array_merge($link, ['remote_device_id' => 0, 'remote_port_id' => null, 'remote_hostname' => L2Tracer::HIDDEN . $hidden[$remote], 'remote_port' => '']);
+            if ($this->canSee($link['local_device_id']) && (in_array($link['local_device_id'], $deviceIds, true) || ($remote && in_array($remote, $remotes, true))
+                || (! $remote && in_array(strtolower($link['remote_hostname']), array_map('strtolower', $names), true)))) {
+                $links[$index + 1] = $this->anonymized(['id' => $index + 1] + $link);
             }
-            $links[] = $link;
         }
 
         return $links;
+    }
+
+    public function portsWithVlans(array $portIds): array
+    {
+        return array_fill_keys(array_keys(array_intersect_key($this->net->portVlans, array_flip($portIds))), true);
+    }
+
+    public function portVlans(array $portIds, int $vlan): array
+    {
+        $result = [];
+        foreach (array_intersect_key($this->net->portVlans, array_flip($portIds)) as $portId => $vlans) {
+            if (isset($vlans[$vlan])) {
+                $result[$portId] = $vlans[$vlan];
+            }
+        }
+
+        return $result;
+    }
+
+    public function portsWithIp(array $portIds): array
+    {
+        $result = [];
+        foreach ($this->net->interfaces as $interface) {
+            if (in_array($interface['port_id'], $portIds, true)) {
+                $result[$interface['port_id']] = true;
+            }
+        }
+
+        return $result;
     }
 
     public function routeTableSize(): ?int
@@ -233,7 +396,7 @@ final class FakePathRepository extends PathRepository
 
     public function stpInstances(array $ids, ?int $vlan): array
     {
-        return array_values(array_filter($this->net->instances, fn ($row) => in_array($row['device_id'], $ids, true) && in_array($row['device_id'], $this->visible, true)));
+        return array_values(array_filter($this->net->instances, fn ($row) => in_array($row['device_id'], $ids, true) && $this->canSee($row['device_id'])));
     }
 
     public function stpPorts(array $keys, array $portIds): array
@@ -242,11 +405,27 @@ final class FakePathRepository extends PathRepository
             && ($keys[$row['device_id']] ?? null) === StpIndex::vlanKey($row['vlan'])));
     }
 
+    public function routerCandidates(array $ids): array
+    {
+        return array_values(array_filter($ids, fn ($id) => $this->canSee($id) && in_array($this->net->devices[$id]['role'] ?? '', ['router', 'l3switch', 'firewall'], true)));
+    }
+
+    public function interfaces(array $deviceIds): array
+    {
+        return array_values(array_filter($this->net->interfaces, fn ($interface) => in_array($interface['device_id'], $deviceIds, true) && $this->canSee($interface['device_id'])));
+    }
+
+    public function owners(string $address): array
+    {
+        return array_values(array_filter($this->net->interfaces, fn ($interface) => Cidr::canonical($interface['address']) === Cidr::canonical($address)
+            && $this->canSee($interface['device_id'])));
+    }
+
     public function routeData(array $deviceIds): array
     {
         $this->calls[] = 'routeData';
 
-        return array_intersect_key($this->net->routeData, array_flip($deviceIds));
+        return array_intersect_key($this->net->routeData, array_flip(array_filter($deviceIds, fn ($id) => $this->canSee($id))));
     }
 
     public function routesToward(string $destination, array $deviceIds): array
@@ -276,8 +455,7 @@ final class FakePathRepository extends PathRepository
     {
         $device = $this->net->devices[$deviceId] ?? null;
 
-        return $device && in_array($deviceId, $this->visible, true)
-            ? ['device_id' => $deviceId, 'name' => $device['display'], 'hostname' => $device['hostname'], 'ips' => []] : null;
+        return $device && $this->canSee($deviceId) ? ['device_id' => $deviceId, 'name' => $device['display'], 'hostname' => $device['hostname'], 'ips' => []] : null;
     }
 }
 
@@ -286,6 +464,9 @@ final class FakePathRepository extends PathRepository
  */
 final class FakePathTopology extends TopologyRepository
 {
+    /** @var int[] devices whose rows were read */
+    public array $deviceReads = [];
+
     /**
      * @param  int[]  $visible
      */
@@ -303,6 +484,7 @@ final class FakePathTopology extends TopologyRepository
     {
         $devices = [];
         foreach ($ids as $id) {
+            $this->deviceReads[] = $id;
             if (isset($this->net->devices[$id])) {
                 $devices[$id] = $this->net->devices[$id] + ['url' => 'device/' . $id];
             }
@@ -311,7 +493,7 @@ final class FakePathTopology extends TopologyRepository
         return $devices;
     }
 
-    public function lagParents(array $ids): array
+    public function lagParents(array $ids, bool $strict = false): array
     {
         return array_filter($this->net->lag, fn ($aggregate) => in_array($this->net->ports[$aggregate]['device_id'], $ids, true));
     }
@@ -321,33 +503,12 @@ final class FakePathTopology extends TopologyRepository
         $ports = [];
         foreach ($portIds as $portId) {
             if (isset($this->net->ports[(int) $portId])) {
-                $ports[(int) $portId] = $this->net->ports[(int) $portId] + ['url' => null, 'poll_period' => 300];
+                $ports[(int) $portId] = $columns === null ? $this->net->ports[(int) $portId] + ['url' => null, 'poll_period' => 300]
+                    : array_intersect_key($this->net->ports[(int) $portId], array_flip($columns));
             }
         }
 
         return $ports;
-    }
-
-    public function portVlans(array $portIds): array
-    {
-        return array_intersect_key($this->net->portVlans, array_flip($portIds));
-    }
-
-    public function portsWithIp(array $portIds): array
-    {
-        $result = [];
-        foreach ($this->net->interfaces as $interface) {
-            if (in_array($interface['port_id'], $portIds, true)) {
-                $result[$interface['port_id']] = true;
-            }
-        }
-
-        return $result;
-    }
-
-    public function addresses(array $ids, bool $ipv6 = false): array
-    {
-        return array_values(array_filter($this->net->interfaces, fn ($interface) => in_array($interface['device_id'], $ids, true)));
     }
 
     public function ospfNeighbors(array $ids): array

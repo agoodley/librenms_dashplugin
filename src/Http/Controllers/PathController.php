@@ -44,7 +44,9 @@ class PathController extends Controller
         $topology = new TopologyRepository($user);
         $hosts = new HostService($topology->sibling(HostRepository::class), $topology, $settings, new DnsResolver((string) ($user->user_id ?? $request->ip())));
 
-        return new PathService($topology->sibling(PathRepository::class), $topology, $settings, fn (string $q) => $hosts->search($q));
+        $admin = $user !== null && ($user->can('admin') || (method_exists($user, 'isAdmin') && $user->isAdmin()));
+
+        return new PathService($topology->sibling(PathRepository::class), $topology, $settings, fn (string $q) => $hosts->search($q), null, $admin);
     }
 
     /**

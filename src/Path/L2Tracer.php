@@ -166,29 +166,30 @@ class L2Tracer
     }
 
     /**
-     * Ports on the links around the first device, out to the switches it reaches, that stop the VLAN: down, blocking,
-     * not carrying it or routed. Tells why there is no forwarding path (empty when the devices are not linked at all).
+     * Ports that stop the VLAN on the shortest chains of links between two devices, whatever their state: down,
+     * blocking, not carrying it or routed. Tells why there is no forwarding path (empty when the devices are not linked).
      *
      * @return array<int, array{device_id: int, port_id: int, why: string}>
      */
     public function blockers(int $fromDevice, int $toDevice, ?int $vlan): array
     {
+        $source = 'd:' . $fromDevice;
+        $target = 'd:' . $toDevice;
+        $fromSource = $this->distances($source, null, null, [], false);
+        if (! isset($fromSource[$target])) {
+            return [];
+        }
+        $toTarget = $this->distances($target, null, null, [], false);
+        $length = $fromSource[$target];
+
         $blockers = [];
-        $start = 'd:' . $fromDevice;
-        $seen = [$start => true];
-        $queue = [$start];
-        $reached = false;
-        for ($i = 0; $i < count($queue); $i++) {
-            $node = $queue[$i];
-            if ($node === 'd:' . $toDevice) {
-                $reached = true;
-                continue;
-            }
-            if ($node !== $start && ! $this->transit($node)) {
-                continue;
-            }
-            foreach ($this->incident[$node] ?? [] as $edgeId) {
-                $edge = $this->edges[$edgeId];
+        foreach ($this->edges as $edge) {
+            foreach ([[$edge['from'], $edge['to']], [$edge['to'], $edge['from']]] as [$near, $far]) {
+                // on a shortest chain: the source or a switch on one end, the target or a switch on the other
+                if (! isset($fromSource[$near], $toTarget[$far]) || $fromSource[$near] + 1 + $toTarget[$far] !== $length
+                    || ($near !== $source && ! $this->transit($near)) || ($far !== $target && ! $this->transit($far))) {
+                    continue;
+                }
                 foreach (['a', 'b'] as $side) {
                     $deviceId = $edge[$side . '_device'];
                     $why = $deviceId ? $this->endProblem($deviceId, $edge[$side . '_port'] ? (int) $edge[$side . '_port'] : null, self::sideMembers($edge, $side), $vlan, []) : null;
@@ -196,15 +197,41 @@ class L2Tracer
                         $blockers[$deviceId . ':' . $edge[$side . '_port']] = ['device_id' => $deviceId, 'port_id' => (int) $edge[$side . '_port'], 'why' => $why];
                     }
                 }
-                $next = $edge['from'] === $node ? $edge['to'] : $edge['from'];
-                if (! isset($seen[$next])) {
-                    $seen[$next] = true;
-                    $queue[] = $next;
-                }
+                break;
             }
         }
 
-        return $reached ? array_values($blockers) : [];
+        return array_values($blockers);
+    }
+
+    /**
+     * How far from a node every switch on the way is loaded (its links known): all transit nodes within radius hops of
+     * it (over links that pass the VLAN, or any link) are in $expanded; frontier holds the ones one hop further whose
+     * links are still to be read. radius null: nothing left to read, every path from the node is known.
+     *
+     * @param  array<string, true>  $expanded  nodes whose links are loaded
+     * @param  array<int, ?int>  $ends  ports a path may start or end on (routed ones allowed)
+     * @return array{radius: ?int, frontier: string[], distances: array<string, int>}
+     */
+    public function horizon(string $start, ?int $vlan, ?int $startPort, array $ends, array $expanded, bool $usable = true): array
+    {
+        $distances = $this->distances($start, $vlan, $startPort, $ends, $usable);
+        $nearest = null;
+        $frontier = [];
+        foreach ($distances as $node => $distance) {
+            if (isset($expanded[$node]) || ($node !== $start && ! $this->transit($node))) {
+                continue;
+            }
+            if ($nearest === null || $distance < $nearest) {
+                $nearest = $distance;
+                $frontier = [];
+            }
+            if ($distance === $nearest) {
+                $frontier[] = $node;
+            }
+        }
+
+        return ['radius' => $nearest === null ? null : $nearest - 1, 'frontier' => $frontier, 'distances' => $distances];
     }
 
     /**
@@ -229,9 +256,19 @@ class L2Tracer
      */
     public function speed(array $edge): int
     {
+        return self::linkSpeed($edge, $this->ports);
+    }
+
+    /**
+     * Speed of a link with these port rows (see speed()).
+     *
+     * @param  array<int, array>  $ports
+     */
+    public static function linkSpeed(array $edge, array $ports): int
+    {
         if ($edge['lag']) {
             foreach (['a_port', 'b_port'] as $end) {
-                $port = $this->ports[(int) $edge[$end]] ?? [];
+                $port = $ports[(int) $edge[$end]] ?? [];
                 if ((int) ($port['ifSpeed'] ?? 0) > 0 && ($port['ifType'] ?? '') === 'ieee8023adLag') {
                     return (int) $port['ifSpeed'];
                 }
@@ -239,7 +276,7 @@ class L2Tracer
         }
         $total = 0;
         foreach ($edge['members'] as $member) {
-            $speeds = array_filter([(int) ($this->ports[(int) $member['a']]['ifSpeed'] ?? 0), (int) ($this->ports[(int) $member['b']]['ifSpeed'] ?? 0)]);
+            $speeds = array_filter([(int) ($ports[(int) $member['a']]['ifSpeed'] ?? 0), (int) ($ports[(int) $member['b']]['ifSpeed'] ?? 0)]);
             $total += $speeds ? min($speeds) : 0;
         }
 
@@ -425,6 +462,40 @@ class L2Tracer
         }
 
         return $answer;
+    }
+
+    /**
+     * Hops from a node to every node it reaches through switches (over links that pass the VLAN, or any link), the
+     * first link on $startPort when given.
+     *
+     * @param  array<int, ?int>  $ends
+     * @return array<string, int>
+     */
+    private function distances(string $start, ?int $vlan, ?int $startPort, array $ends, bool $usable): array
+    {
+        if (! isset($this->nodes[$start])) {
+            return [];
+        }
+        $distance = [$start => 0];
+        $queue = [$start];
+        for ($i = 0; $i < count($queue); $i++) {
+            $node = $queue[$i];
+            if ($node !== $start && ! $this->transit($node)) {
+                continue;
+            }
+            foreach ($this->incident[$node] ?? [] as $edgeId) {
+                $edge = $this->edges[$edgeId];
+                $next = $edge['from'] === $node ? $edge['to'] : $edge['from'];
+                if (isset($distance[$next]) || ($node === $start && $startPort !== null && ! $this->onPort($edge, $node, $startPort))
+                    || ($usable && ! $this->usable($edge, $vlan, $ends))) {
+                    continue;
+                }
+                $distance[$next] = $distance[$node] + 1;
+                $queue[] = $next;
+            }
+        }
+
+        return $distance;
     }
 
     private function transit(string $node): bool

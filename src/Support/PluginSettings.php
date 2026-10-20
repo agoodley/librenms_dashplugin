@@ -53,7 +53,7 @@ class PluginSettings
         'rollout_batch_size' => '0',
         'dependencies_outage_days' => '30',
         'path_util_percent' => '80',
-        'path_route_rows' => '2000000',
+        'path_route_rows' => '500000',
     ];
 
     /** @var array<string, string> */

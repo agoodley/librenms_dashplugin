@@ -2368,14 +2368,15 @@
 
     /**
      * The path of the path trace page: map node ids in order (path=d:12,u:name,...) and, for each two of them, the
-     * ports of the link between them (path_ports=12:34,...; '-' where the path is not drawn). Null without one.
+     * ports of the link between them (path_ports=12:34,...; '-' where the path is not drawn); path_hidden=1 when it
+     * crosses devices the user may not see. Null without one.
      */
     function parsePath(params, mode) {
         var nodes = (params.get('path') || '').split(',').filter(Boolean);
         if (mode !== 'l2' || !nodes.length) {
             return null;
         }
-        return {nodes: nodes, ports: (params.get('path_ports') || '').split(','), edges: null, data: null, focused: false};
+        return {nodes: nodes, ports: (params.get('path_ports') || '').split(','), hidden: params.get('path_hidden') === '1', edges: null, data: null, focused: false};
     }
 
     /**
@@ -2385,6 +2386,9 @@
         if (this.path) {
             url.set('path', this.path.nodes.join(','));
             url.set('path_ports', this.path.ports.join(','));
+            if (this.path.hidden) {
+                url.set('path_hidden', '1');
+            }
         }
     };
 
@@ -2477,7 +2481,8 @@
             this.network.fit({nodes: shown, animation: false});
         }
         if (shown.length < this.path.nodes.length) {
-            this.flash((this.path.nodes.length - shown.length) + ' of the ' + this.path.nodes.length + ' devices on the path are not on this map: widen the number of hops.');
+            this.flash((this.path.nodes.length - shown.length) + ' of the ' + this.path.nodes.length + ' devices on the path are not on this map: '
+                + (this.path.hidden ? 'the path crosses devices you may not see, and the map does not show what lies beyond them.' : 'widen the number of hops.'));
         }
     };
 

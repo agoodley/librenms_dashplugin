@@ -289,21 +289,30 @@ uses, and how the router forwards it.
   port-channel spans a switch pair (MLAG / vPC), several paths of the same length remain: the page says so and shows the
   one with ports known to forward, then the faster links.
 * **Between subnets** the path goes from A's gateway (the router with A's subnet connected, preferably the one with A's
-  ARP entry) router by router: each looks up B's address in its route table in LibreNMS (longest prefix, in the VRF of
-  the interface the traffic arrives on; equal cost next hops are listed and the path follows the lowest), and the next
-  hop leads to the router that owns that address, until a router has B's subnet connected. The switches between two
-  routers, and between the last router and B, are the Layer 2 path in the VLAN of the router interfaces (an SVI or a
-  sub-interface: its parent port).
-* A router without routes in LibreNMS (the `route` discovery module is off by default) is crossed by an **estimate**:
-  the first step of the shortest way, over its OSPF / BGP neighbors and the subnets it shares with other routers, toward
-  a router with B's subnet connected. Estimated hops are marked, with the reason.
+  ARP entry) router by router: each looks up B's address in its route table in LibreNMS and its connected subnets
+  (longest prefix, in the VRF of the interface the traffic arrives on; an interface that is down does not count, nor a
+  route over it; equal cost next hops are listed and the path follows the lowest), and the next hop leads to the router
+  that owns that address, until a router has B's subnet connected. An IPv6 link-local next hop is the neighbor on the
+  route's interface; a recursive one (iBGP from a loopback, an MPLS VPN toward the far PE) is reached through the
+  router's own route toward it, and the routers on the way are followed toward that next hop. When several devices have
+  the next hop's address (overlapping VRF subnets, anycast gateways), the one on the egress link counts: its LLDP/CDP
+  neighbor, else the one on its subnet, else the page says it cannot tell. The switches between two routers, and between
+  the last router and B, are the Layer 2 path in the VLAN of the router interfaces (an SVI or a sub-interface: its
+  parent port).
+* A router without current routes in LibreNMS is crossed by an **estimate**: the first step of the shortest way, over
+  its OSPF / BGP neighbors and the subnets it shares with other routers (never back to a router already on the path),
+  toward a router with B's subnet connected. The estimate says why: the `route` discovery module is off (the default),
+  its routes were not read again at its last discovery (the module was turned off, or it has more routes than
+  LibreNMS reads of a device), it has none in that VRF, or the route table is larger than a trace reads.
 * **Problems on the path** are listed with a fix: ports down, half duplex, interface errors and discards (the link
   diagnostics' thresholds), links at 80 % or more (*Busy link*, critical from 95 %), port-channels missing members, no
-  route or a null route toward B, a routing loop, no forwarding path in the VLAN (with the ports that stop it), and a
-  next hop that is no device you can see, after which the path resumes at the router with B's subnet connected when
-  there is one. The summary names the slowest link and the busiest port.
+  route or a null route toward B, a routing loop (only "path unknown" when an estimated hop is part of it), no
+  forwarding path in the VLAN (with the ports that stop it on the shortest chains of links), and a next hop that is no
+  device you can see, after which the path resumes at the router with B's subnet connected when there is one (the
+  routers between are not known, so the path counts as incomplete). The summary names the slowest link and the
+  busiest port; every routed hop says when its routes were read.
 * **Show on the L2 map** opens the map around the path with its devices framed and its links highlighted
-  (`l2?...&path=d:12,d:7&path_ports=345:678`).
+  (`l2?...&path=d:12,d:7&path_ports=345:678`). A path across a device you may not see is shown only up to it.
 
 ![Path trace](docs/images/path-trace.png)
 
@@ -474,7 +483,7 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Ports with many MAC addresses | 4 | MAC addresses in the last discovery on an access port without a neighbor that explains them before it is reported as a possible unmanaged switch (0 disables the count, several neighbors on one port are still reported) |
 | Disabled coverage checks | – | check codes or categories (`unmonitored`, `devices`, `ports`), e.g. `not_linked hub_suspected` |
 | Busy link on a path | 80 % | utilization in or out from which a port on a traced path is a finding (critical from 95 %) |
-| Route table limit | 2,000,000 | a path trace reads LibreNMS' route table (no index but its key: two full reads per trace) only while it holds fewer routes than this; larger, every router is crossed by an estimate (0: no limit) |
+| Route table limit | 500,000 | a path trace reads LibreNMS' route table (no index but its key: one full read per address it routes toward; the per-router summary is kept for 5 minutes) only while it holds fewer routes than this; larger, every router is crossed by an estimate (0: no limit) |
 | Rollout batch size | 0 | default most devices per rollout batch (0: no limit); the planner page can change it |
 | Outage history | 30 days | outages the derived dependencies are checked against |
 
@@ -488,7 +497,7 @@ too), and compares the names of neighbors LibreNMS did not link only with the de
 ones), so it tells nothing else about the others. Only LibreNMS admins can apply derived device dependencies; other
 users see the page read only. The syslog evidence of the spanning tree page is only shown to users whose LibreNMS role
 may view syslog. A path trace only resolves ends the user may see and shows devices out of their sight on the path
-without name, ports or addresses.
+without name, ports or addresses; only admins see the size of the whole route table.
 
 ## How it works
 
@@ -606,14 +615,22 @@ vendor/bin/phpunit
   for an IPv6 address); the port tab (on every port page) shows IPv4 addresses only and uses indexed lookups. 802.1X
   sessions are looked up on the ports where the MAC is learned, and by the MAC alone (the whole, small session table)
   when none of them has a current one.
+* Path trace query cost: the links are read outward from both ends of each Layer 2 segment, a few devices at a time,
+  until the path found is the shortest one (every path that could be as short is loaded) or one end has nothing left to
+  read; at most 3,000 devices' links per trace. Only the VLAN rows and the spanning tree rows of the traced VLAN on those
+  links are read, and the counters of the ports on the answer. The interfaces and neighbors of the routing devices are
+  read once per trace, the route table once per address routed toward (the destination, a recursive next hop).
 * The path trace is worked out from what LibreNMS last read, not sent through the network: no live traceroute, so
   policy routing, ECMP hashing (the path follows the lowest next hop), asymmetric return paths and changes since the last
   discovery can make the real path differ. Route tables need the `route` discovery module, which LibreNMS skips on
-  routers with more than `routes_max_number` routes (1,000 by default, so not on routers with a full BGP table): those
-  routers are estimated. A route whose next hop is not an address in LibreNMS (unnumbered interfaces, a next hop on an
-  unmonitored router) ends the trace there. VRFs are followed by name; an MPLS VPN is crossed from PE to PE without the
-  P routers. Gateway redundancy (HSRP / VRRP) is not resolved: the path leaves A's subnet through the router with A's
-  ARP entry. A device you may not see is crossed as "a device you may not see" when the visible devices on both sides
+  routers with more than `routes_max_number` routes (1,000 by default, so not on routers with a full BGP table) and
+  keeps their last table: a table older than its router's last discovery is not used, those routers are estimated. A
+  route whose next hop is no address of a device you can see (an unmonitored router) leaves the devices you can see
+  there; the path resumes at the router with B's subnet connected when there is one, without the routers between. A
+  next hop out of an unnumbered interface is the device LLDP/CDP sees on it. VRFs are followed by name; an MPLS VPN and
+  other recursive next hops are followed through the routers on the way toward the far router's address, as the
+  label switched path would go. Gateway redundancy (HSRP / VRRP) is not resolved: the path leaves A's subnet through
+  the router with A's ARP entry. A device you may not see is crossed as "a device you may not see" when the visible devices on both sides
   report it as their LLDP/CDP neighbor; its ports and name are not shown, and it is assumed to pass frames on.
 * The rollout planner and the device dependencies follow the same LLDP/CDP links: devices without neighbor data get no
   parents and are left out of rollout plans. Whether devices back each other up is decided strictly (a part without

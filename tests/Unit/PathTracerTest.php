@@ -3,12 +3,15 @@
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
 use Agoodley\LibrenmsTopology\Path\L2Tracer;
+use Agoodley\LibrenmsTopology\Path\L3Tracer;
 use PHPUnit\Framework\TestCase;
 
 /**
  * L2Tracer and L3Tracer on PathFixture's campus: forwarding paths per spanning tree instance, port-channels as one hop,
- * no transit through routers or routed ports, devices out of sight, and router-by-router lookups with ECMP, kept route
- * history, estimates where a router has no routes, and the ways a routed path ends.
+ * no transit through routers or routed ports, devices out of sight, what stops a VLAN, how far the links must be loaded,
+ * and router-by-router lookups with ECMP, kept route history, interfaces that are down, estimates where a router has no
+ * current routes (and why), never back onto the path, IPv6 link-local and recursive next hops, an address several
+ * devices have, and the ways a routed path ends.
  */
 class PathTracerTest extends TestCase
 {
@@ -225,5 +228,166 @@ class PathTracerTest extends TestCase
         $this->assertSame([self::D1, self::D2], array_column($l3->gateways('10.90.110.11'), 'device_id'));
         $this->assertSame([], $l3->gateways('192.0.2.1'));
         $this->assertSame(PathFixture::RTR2, $l3->owners('10.90.0.7')[0]['device_id']);
+    }
+
+    public function testTheHorizonTellsWhenThePathFoundIsTheShortest(): void
+    {
+        $net = PathFixture::campus();
+        $tracer = $net->l2(110);
+        $expanded = ['d:3' => true, 'd:4' => true];
+
+        // acc1 and acc2 read: dist1 is one forwarding hop from both, dist2 only over links blocked in VLAN 110
+        $near = $tracer->horizon('d:3', 110, null, [], $expanded);
+        $this->assertSame([0, ['d:1']], [$near['radius'], $near['frontier']]);
+        $this->assertSame(2, $near['distances']['d:2'], 'through dist1: acc1 Gi1/0/50 blocks VLAN 110');
+        $wider = $tracer->horizon('d:3', 110, null, [], $expanded + ['d:1' => true]);
+        $this->assertSame([1, ['d:2']], [$wider['radius'], $wider['frontier']]);
+        // over any link, whatever its state
+        $this->assertSame(1, $tracer->horizon('d:3', null, null, [], $expanded, false)['distances']['d:2']);
+        // nothing left to read once the switches it reaches are
+        $this->assertNull($tracer->horizon('d:3', 110, null, [], $expanded + ['d:1' => true, 'd:2' => true])['radius']);
+    }
+
+    public function testAnEstimateNeverLeadsBackToARouterOnThePath(): void
+    {
+        // a ring rtr1 - rtr3 - rtr2 - rtr4 - rtr1 (the last link a backup); rtr1 routes the destination via rtr3, rtr3 and rtr2 have no routes
+        $net = self::ring();
+        $net->route(5, '192.0.2.0', 24, '10.0.13.2', 51, 'ospf', 30);
+
+        $trace = $net->l3()->trace(5, null, '', '192.0.2.10');
+        $this->assertSame('connected', $trace['end']);
+        $this->assertSame([5, 7, 6, 10], array_column($trace['hops'], 'device_id'), 'rtr3 is estimated on to rtr2, not back to rtr1 (its neighbor with the lower id)');
+        $this->assertStringContainsString('the next hop is taken to be rtr2, on a subnet they share, on the shortest way toward rtr4', $trace['hops'][1]['estimated']);
+
+        // a real route back closes a loop through the estimate: the way is not known, it is not a routing loop
+        $net->route(6, '192.0.2.0', 24, '10.0.32.1', 61, 'static');
+        $trace = $net->l3()->trace(5, null, '', '192.0.2.10');
+        $this->assertSame(['loop', 1, true], [$trace['end'], $trace['loop'], $trace['estimated_loop']]);
+    }
+
+    public function testAConnectedSubnetOnADownInterfaceDoesNotCount(): void
+    {
+        $net = PathFixture::campus();
+        // rtr1 has 10.90.130.2/24 on a shut down port, and its current OSPF route to the branch via rtr3
+        $net->address(PathFixture::RTR1, 530, 'Gi0/0/9', '10.90.130.2', 24, '', false);
+        $this->assertSame([PathFixture::RTR2], array_column($net->l3()->gateways('10.90.130.31'), 'device_id'));
+        $path = [self::D1, PathFixture::RTR1, PathFixture::RTR3, PathFixture::RTR2];
+        $this->assertSame($path, array_column($net->l3()->trace(self::D1, 1110, '', '10.90.130.31')['hops'], 'device_id'));
+
+        // the interface route of that port, read before it went down, no longer counts either
+        $net->route(PathFixture::RTR1, '10.90.130.0', 24, '0.0.0.0', 530, 'local', 0, null, 3);
+        $trace = $net->l3()->trace(self::D1, 1110, '', '10.90.130.31');
+        $this->assertSame(['connected', $path], [$trace['end'], array_column($trace['hops'], 'device_id')]);
+        $this->assertSame('OSPF', $trace['hops'][1]['route']['protocol']);
+    }
+
+    public function testRoutesThatCannotBeUsedAreEstimatedAndSayWhy(): void
+    {
+        $path = [self::D1, PathFixture::RTR1, PathFixture::RTR3, PathFixture::RTR2];
+
+        // rtr1's last discovery started two days after its newest route: the module no longer reads them (or too many)
+        $net = PathFixture::campus();
+        $net->routeData[PathFixture::RTR1]['discovered'] = PathFixture::NOW + 2 * 86400;
+        $trace = $net->l3()->trace(self::D1, 1110, '', '10.90.130.31');
+        $this->assertSame($path, array_column($trace['hops'], 'device_id'));
+        $rtr1 = $trace['hops'][1];
+        $this->assertSame([L3Tracer::ROUTES_STALE, null], [$rtr1['estimated_why'], $rtr1['route']]);
+        $this->assertStringStartsWith("LibreNMS' routes of rtr1 date from 2d before its last discovery", $rtr1['estimated']);
+        $this->assertSame(PathFixture::NOW, $rtr1['routes_read']);
+
+        // routes of another VRF only
+        $net = PathFixture::campus();
+        $net->routeData[PathFixture::RTR1]['contexts'] = ['CUST-A' => 5];
+        $rtr1 = $net->l3()->trace(self::D1, 1110, '', '10.90.130.31')['hops'][1];
+        $this->assertSame(L3Tracer::ROUTES_VRF, $rtr1['estimated_why']);
+        $this->assertStringStartsWith('LibreNMS has routes of rtr1, but none in its global table', $rtr1['estimated']);
+
+        // the route table not read at all
+        $trace = PathFixture::campus()->l3(true)->trace(self::D1, 1110, '', '10.90.130.31');
+        $this->assertSame([L3Tracer::ROUTES_SKIPPED], array_values(array_unique(array_filter(array_column($trace['hops'], 'estimated_why')))));
+        $this->assertStringStartsWith('The route table of LibreNMS was not read', $trace['hops'][0]['estimated']);
+        $this->assertSame('connected', $trace['end']);
+    }
+
+    public function testAnIpv6NextHopIsTheLinkLocalAddressOfTheNeighborOnTheEgressPort(): void
+    {
+        $net = PathFixture::campus();
+        // rtr1 routes 2001:db8:130::/64 via fe80::2 out of Gi0/0/2, where LLDP sees rtr3; rtr2 has fe80::2 too (link-local addresses repeat)
+        $net->address(PathFixture::RTR1, 503, 'Gi0/0/2', 'fe80::1', 64)->address(PathFixture::RTR3, 701, 'Gi0/0/0', 'fe80::2', 64)
+            ->address(PathFixture::RTR2, 601, 'Gi0/0/0', 'fe80::2', 64)->address(PathFixture::RTR3, 703, 'Gi0/0/2', '2001:db8:130::1', 64);
+        $net->link(503, 701);
+        $net->route(PathFixture::RTR1, '2001:db8:130::', 64, 'fe80:0000:0000:0000:0000:0000:0000:0002', 503, 'ospf', 10);
+
+        $trace = $net->l3()->trace(PathFixture::RTR1, null, '', '2001:db8:130::25');
+        $this->assertSame('connected', $trace['end']);
+        $this->assertSame([PathFixture::RTR1, PathFixture::RTR3], array_column($trace['hops'], 'device_id'), 'the fe80::2 on the link of Gi0/0/2, not rtr2\'s');
+        $this->assertSame(['fe80::2', 503, 701], [$trace['hops'][0]['next_hop'], $trace['hops'][0]['out_port'], $trace['hops'][1]['in_port']]);
+        $this->assertSame(703, $trace['egress']['port_id']);
+
+        // LibreNMS without the link-local addresses: the LLDP/CDP neighbor on that port
+        $net->interfaces = array_values(array_filter($net->interfaces, fn ($interface) => ! str_starts_with($interface['address'], 'fe80')));
+        $trace = $net->l3()->trace(PathFixture::RTR1, null, '', '2001:db8:130::25');
+        $this->assertSame(['connected', [PathFixture::RTR1, PathFixture::RTR3]], [$trace['end'], array_column($trace['hops'], 'device_id')]);
+    }
+
+    public function testANextHopSeveralDevicesHaveIsTheOneOnTheEgressLink(): void
+    {
+        $net = PathFixture::campus();
+        // two customer routers with 10.0.0.2 (the same PE-CE subnet behind two PEs), ce2 on rtr1's Gi0/0/5
+        $net->device(11, 'ce1', 'router')->device(12, 'ce2', 'router');
+        $net->address(11, 1101, 'Gi0/0', '10.0.0.2', 30)->address(11, 1102, 'Gi0/1', '172.20.1.1', 24)
+            ->address(12, 1201, 'Gi0/0', '10.0.0.2', 30)->address(12, 1202, 'Gi0/1', '172.20.2.1', 24)
+            ->address(PathFixture::RTR1, 505, 'Gi0/0/5', '10.0.0.1', 30);
+        $net->link(505, 1201);
+        $net->route(PathFixture::RTR1, '172.20.2.0', 24, '10.0.0.2', 505, 'static');
+
+        $trace = $net->l3()->trace(PathFixture::RTR1, null, '', '172.20.2.9');
+        $this->assertSame([PathFixture::RTR1, 12], array_column($trace['hops'], 'device_id'), 'ce2, the LLDP neighbor of the egress port, not ce1');
+        $this->assertSame([], $trace['hops'][0]['ambiguous']);
+
+        // nothing tells them apart: the first is taken, the other one reported
+        $net->links = array_values(array_filter($net->links, fn ($link) => $link['local_port_id'] !== 505 && $link['local_port_id'] !== 1201));
+        $trace = $net->l3()->trace(PathFixture::RTR1, null, '', '172.20.2.9');
+        $this->assertSame([PathFixture::RTR1, 11], array_slice(array_column($trace['hops'], 'device_id'), 0, 2));
+        $this->assertSame([12], $trace['hops'][0]['ambiguous']);
+    }
+
+    public function testARecursiveNextHopIsFollowedThroughTheRoutersOnTheWay(): void
+    {
+        $net = PathFixture::campus();
+        // rtr1 learns the branch subnet by iBGP from rtr2's loopback, which its OSPF route reaches via rtr3
+        $net->address(PathFixture::RTR2, 699, 'Lo0', '10.255.0.2', 32);
+        $net->routes[PathFixture::RTR1] = array_values(array_filter($net->routes[PathFixture::RTR1], fn ($route) => $route['dest'] !== '10.90.130.0'));
+        $net->route(PathFixture::RTR1, '10.90.130.0', 24, '10.255.0.2', 0, 'bgp', 200)->route(PathFixture::RTR1, '10.255.0.2', 32, '10.90.0.5', 503, 'ospf', 30);
+
+        $trace = $net->l3()->trace(self::D1, 1110, '', '10.90.130.31');
+        $this->assertSame('connected', $trace['end']);
+        $this->assertSame([self::D1, PathFixture::RTR1, PathFixture::RTR3, PathFixture::RTR2], array_column($trace['hops'], 'device_id'), 'rtr3 between rtr1 and its BGP next hop');
+        [, $rtr1, $rtr3] = $trace['hops'];
+        $this->assertSame(['10.255.0.2', '10.90.0.5', 503, false, 'BGP'], [$rtr1['next_hop'], $rtr1['via'], $rtr1['out_port'], $rtr1['recursive'], $rtr1['route']['protocol']]);
+        $this->assertSame('10.255.0.2', $rtr3['toward']);
+        $this->assertStringEndsWith("rtr2, which has the next hop's address.", $rtr3['estimated']);
+
+        // no route toward the next hop: on at its router, the routers between not known
+        $net->routes[PathFixture::RTR1] = array_values(array_filter($net->routes[PathFixture::RTR1], fn ($route) => $route['dest'] !== '10.255.0.2'));
+        $trace = $net->l3()->trace(self::D1, 1110, '', '10.90.130.31');
+        $this->assertSame([self::D1, PathFixture::RTR1, PathFixture::RTR2], array_column($trace['hops'], 'device_id'));
+        $this->assertTrue($trace['hops'][1]['recursive']);
+    }
+
+    /**
+     * Four routers in a ring with point-to-point /30s: rtr1 (5) - rtr3 (7) - rtr2 (6) - rtr4 (10) - rtr1, 192.0.2.0/24 on rtr4.
+     */
+    private static function ring(): PathFixture
+    {
+        $net = new PathFixture;
+        $net->device(5, 'rtr1', 'router')->device(7, 'rtr3', 'router')->device(6, 'rtr2', 'router')->device(10, 'rtr4', 'router');
+        $net->address(5, 51, 'Gi0/1', '10.0.13.1', 30)->address(7, 71, 'Gi0/1', '10.0.13.2', 30)
+            ->address(7, 72, 'Gi0/2', '10.0.32.1', 30)->address(6, 61, 'Gi0/1', '10.0.32.2', 30)
+            ->address(6, 62, 'Gi0/2', '10.0.24.1', 30)->address(10, 101, 'Gi0/1', '10.0.24.2', 30)
+            ->address(10, 102, 'Gi0/2', '10.0.41.1', 30)->address(5, 52, 'Gi0/2', '10.0.41.2', 30)
+            ->address(10, 103, 'Gi0/3', '192.0.2.1', 24);
+
+        return $net;
     }
 }

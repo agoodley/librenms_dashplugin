@@ -224,6 +224,7 @@
                         <span class="topo-actions" style="display: inline-flex; margin: 0 0 0 8px">
                             <a class="btn btn-xs btn-default" href="{{ $result['map_url'] }}"><i class="fa fa-sitemap"></i> Show on the L2 map</a>
                         </span>
+                        @if($summary['hidden'])<small class="text-muted">the map shows the path up to the devices you may not see</small>@endif
                     @endif
                 </div>
                 <table class="table table-condensed table-hover topo-stp-table topo-path">
@@ -265,19 +266,23 @@
                             </td>
                             <td class="topo-wrap">
                                 @if($hop['type'] === 'device' && $hop['layer'] === 'l3')
-                                    @if($hop['route'] && $hop['route']['prefix'] === null)
+                                    @if($hop['connected'])
+                                        <small>delivers to its connected subnet <span class="topo-mono">{{ $hop['connected'] }}</span></small>
+                                    @elseif($hop['route'] && $hop['route']['prefix'] === null)
                                         next hop <span class="topo-mono">{{ $hop['route']['next_hop'] }}</span>
                                     @elseif($hop['route'])
                                         <span class="topo-mono">{{ $hop['route']['prefix'] }}</span>
                                         @if($hop['route']['next_hop']) via <span class="topo-mono">{{ $hop['route']['next_hop'] }}</span>@endif
                                         @if($hop['route']['protocol'])<small class="text-muted">({{ $hop['route']['protocol'] }})</small>@endif
+                                        @if($hop['route']['via'])<br><small>a recursive next hop, reached through <span class="topo-mono">{{ $hop['route']['via'] }}</span></small>@endif
+                                        @if($hop['route']['recursive'])<br><small class="topo-text-warning">not on one of its subnets, and its routes do not lead to it: the routers between are not known</small>@endif
                                         @if(count($hop['route']['next_hops']) > 1)<br><small>one of {{ count($hop['route']['next_hops']) }} equal cost next hops: <span class="topo-mono">{{ implode(', ', $hop['route']['next_hops']) }}</span></small>@endif
-                                    @elseif($hop['connected'])
-                                        <small>delivers to its connected subnet <span class="topo-mono">{{ $hop['connected'] }}</span></small>
                                     @elseif(! $hop['estimated'])
                                         <small class="text-muted">routes</small>
                                     @endif
+                                    @if($hop['toward'])<br><small>on the way to the next hop <span class="topo-mono">{{ $hop['toward'] }}</span></small>@endif
                                     @if($hop['vrf'])<br><small>VRF {{ $hop['vrf'] }}</small>@endif
+                                    @if($hop['routes_read'])<br><small class="text-muted">routes read {{ $ago($hop['routes_read']) }}</small>@endif
                                     @if($hop['estimated'])<br><small class="topo-text-warning"><i class="fa fa-question-circle"></i> estimated: {{ $hop['estimated'] }}</small>@endif
                                 @elseif($hop['type'] === 'device' && $hop['vlan'])
                                     <small>bridged in VLAN {{ $hop['vlan'] }}</small>
@@ -290,7 +295,8 @@
             </div>
             <p class="text-muted" style="font-size: 12px">
                 The path is worked out from what LibreNMS last read: LLDP/CDP links, spanning tree states, forwarding and ARP tables
-                (every 6 hours by default), interface counters (every poll) and route tables (the <code>route</code> discovery module, off by default).
+                (every 6 hours by default), interface counters (every poll) and route tables (the <code>route</code> discovery module, off by default;
+                a route table not read again at its router's last discovery is not used).
                 It is not a live traceroute: ECMP, policy routing and changes since the last discovery can make the real path differ.
             </p>
         @endif

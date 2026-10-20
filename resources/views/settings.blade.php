@@ -54,7 +54,7 @@
         ],
         'Path trace' => [
             ['path_util_percent', 'number', 'Report a port on a traced path from this utilization (%)', 'in or out; critical from 95 %'],
-            ['path_route_rows', 'number', 'Route table limit', 'read LibreNMS\' route table (two full reads per trace) only while it holds fewer routes than this; larger, routers are estimated from their neighbors (0: no limit)'],
+            ['path_route_rows', 'number', 'Route table limit', 'read LibreNMS\' route table (one full read per address a trace routes toward, its per-router summary kept 5 minutes) only while it holds fewer routes than this; larger, routers are estimated from their neighbors (0: no limit)'],
         ],
         'Monitoring coverage' => [
             ['coverage_mac_threshold', 'number', 'Report access ports without LLDP/CDP neighbor from this many MAC addresses', 'in the last discovery: a likely unmanaged switch or hub (a phone on the port does not count as a neighbor); 0 disables the count'],

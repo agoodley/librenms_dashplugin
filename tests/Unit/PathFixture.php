@@ -185,9 +185,9 @@ class PathFixture
         return $this;
     }
 
-    public function address(int $deviceId, int $portId, ?string $name, string $address, int $prefix, string $vrf = ''): self
+    public function address(int $deviceId, int $portId, ?string $name, string $address, int $prefix, string $vrf = '', bool $up = true): self
     {
-        $this->interfaces[] = ['device_id' => $deviceId, 'port_id' => $portId, 'address' => $address, 'prefixlen' => $prefix, 'vrf' => $vrf];
+        $this->interfaces[] = ['device_id' => $deviceId, 'port_id' => $portId, 'address' => $address, 'prefixlen' => $prefix, 'vrf' => $vrf, 'up' => $up];
         if ($name !== null && ! isset($this->ports[$portId])) {
             $this->port($portId, $deviceId, $name, 1, str_starts_with($name, 'Vlan') ? 'l3ipvlan' : 'ethernetCsmacd');
         }
@@ -227,10 +227,31 @@ class PathFixture
         return new L2Tracer($this->devices, $this->links, $this->ports, $this->lag, $this->stp($vlan), $this->portVlans, $this->routed);
     }
 
-    public function l3(): L3Tracer
+    public function l3(bool $skipped = false): L3Tracer
     {
-        return new L3Tracer($this->interfaces, $this->routes, $this->routeData, $this->adjacencies, array_map(fn ($device) => $device['role'], $this->devices),
-            array_map(fn ($device) => $device['display'], $this->devices));
+        $routing = array_filter($this->devices, fn ($device) => in_array($device['role'], ['router', 'l3switch', 'firewall'], true));
+
+        return new L3Tracer(array_values(array_filter($this->interfaces, fn ($interface) => isset($routing[$interface['device_id']]))), $this->routes, $this->routeData,
+            $this->adjacencies, array_map(fn ($device) => $device['role'], $this->devices), array_map(fn ($device) => $device['display'], $this->devices),
+            $this->linked(), fn (string $address) => array_values(array_filter($this->interfaces, fn ($interface) => $interface['address'] === $address)), $skipped);
+    }
+
+    /**
+     * Devices joined by LLDP/CDP on a port (or its port-channel): device_id => their port.
+     */
+    public function linked(): \Closure
+    {
+        return function (int $deviceId, int $portId): array {
+            $ports = [$portId => true] + (isset($this->lag[$portId]) ? [$this->lag[$portId] => true] : []);
+            $found = [];
+            foreach ($this->links as $link) {
+                if ($link['local_device_id'] === $deviceId && isset($ports[$link['local_port_id']]) && $link['remote_device_id']) {
+                    $found[$link['remote_device_id']] = $link['remote_port_id'];
+                }
+            }
+
+            return $found;
+        };
     }
 
     /**
