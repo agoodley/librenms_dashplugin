@@ -20,7 +20,7 @@
             <div>
                 @if($neighbor['url'])<a href="{{ $neighbor['url'] }}"><strong>{{ $neighbor['name'] }}</strong></a>@else<strong>{{ $neighbor['name'] }}</strong>@endif
                 {{ $neighbor['port'] }}
-                @if(! $neighbor['device_id'])<span class="text-muted">(unmanaged neighbor{{ $neighbor['platform'] ? ': ' . $neighbor['platform'] : '' }})</span>@endif
+                @if(! $neighbor['device_id'])<span class="text-muted">(unmanaged neighbor{{ ($neighbor['platform'] ?: $neighbor['description']) !== '' ? ': ' . ($neighbor['platform'] ?: $neighbor['description']) : '' }})</span>@endif
                 @if($neighbor['via'])<small class="text-muted">on member {{ $neighbor['via'] }}</small>@endif
             </div>
         @empty
@@ -76,6 +76,9 @@
         @endif
 
         <h5>MAC addresses learned
+            @if($tab['fdb_port'])
+                on port-channel @if($tab['fdb_port']['url'])<a href="{{ $tab['fdb_port']['url'] }}">{{ $tab['fdb_port']['label'] }}</a>@else{{ $tab['fdb_port']['label'] }}@endif
+            @endif
             <small class="text-muted">
                 {{ $tab['mac_count'] }} at the last discovery{{ $tab['last_discovery'] ? ' (' . $ago($tab['last_discovery']) . ')' : '' }}@if(count($tab['macs']) < $tab['mac_count']), showing the newest {{ count($tab['macs']) }}@endif
             </small>
@@ -97,7 +100,7 @@
                 </tbody>
             </table>
         @else
-            <p class="text-muted">None in the forwarding table LibreNMS has for this switch.</p>
+            <p class="text-muted">None in the forwarding table LibreNMS has for this switch{{ $tab['parent'] ? ' (neither on this port nor on its port-channel)' : '' }}.</p>
         @endif
 
         @if($tab['nac'])

@@ -27,13 +27,19 @@ class HostQuery
         if ($input === '') {
             return $result(self::EMPTY);
         }
-        if (filter_var($input, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-            return $result(self::IPV4, $input);
+        $ipv4 = rtrim($input, '.'); // a trailing dot, as in a DNS answer
+        if (filter_var($ipv4, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return $result(self::IPV4, $ipv4);
         }
 
         $ipv6 = (string) preg_replace('/%.*$/', '', trim($input, '[]')); // zone index (fe80::1%eth0)
         if (filter_var($ipv6, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
-            return $result(self::IPV6, self::ipv6Full($ipv6));
+            // an IPv4-mapped address (::ffff:10.10.10.55) is the IPv4 address
+            $binary = (string) inet_pton($ipv6);
+
+            return str_starts_with($binary, str_repeat("\0", 10) . "\xff\xff")
+                ? $result(self::IPV4, (string) inet_ntop(substr($binary, 12)))
+                : $result(self::IPV6, self::ipv6Full($ipv6));
         }
 
         $mac = Mac::normalize($input);
@@ -41,8 +47,11 @@ class HostQuery
             return $result(self::MAC, $mac);
         }
 
+        // a hostname; its last label is never all digits (10.10.10 is a mistyped address)
         $name = rtrim(strtolower($input), '.');
-        if (strlen($name) <= 253 && preg_match('/^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?)*$/', $name)) {
+        $labels = explode('.', $name);
+        if (strlen($name) <= 253 && max(array_map('strlen', $labels)) <= 63 && ! ctype_digit((string) end($labels))
+            && preg_match('/^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?)*$/', $name)) {
             return $result(self::NAME, $name);
         }
 

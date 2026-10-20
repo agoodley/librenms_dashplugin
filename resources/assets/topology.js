@@ -40,6 +40,14 @@
     }
 
     /**
+     * 12 lowercase hex digits of a MAC address (aa:bb:cc:dd:ee:ff, aabb.ccdd.eeff, ...), null when it is not one.
+     */
+    function normalizeMac(value) {
+        var hex = String(value === null || value === undefined ? '' : value).toLowerCase().replace(/^0x/, '').replace(/[:\-. ]/g, '');
+        return /^[0-9a-f]{12}$/.test(hex) ? hex : null;
+    }
+
+    /**
      * Seconds to "95s", "12m", "3.5h" or "2.1d".
      */
     function formatDuration(seconds) {
@@ -252,7 +260,7 @@
         this.simResult = null;
         this.outages = {top: {}, behind: {}};
         // a host found by the host locator (host=<mac> in the URL), drawn next to its switch
-        this.host = {mac: new URLSearchParams(window.location.search).get('host'), data: null, warned: false};
+        this.host = {mac: normalizeMac(new URLSearchParams(window.location.search).get('host')), data: null, warned: false};
         this.container = document.getElementById('topo-canvas');
         this.panel = document.getElementById('topo-details');
         this.status = document.getElementById('topo-status');
@@ -450,7 +458,12 @@
         var self = this;
         var params = this.query();
         if (!fromHistory) {
-            window.history.replaceState(null, '', window.location.pathname + '?' + params.toString());
+            // the located host stays in the shareable URL
+            var url = new URLSearchParams(params.toString());
+            if (this.host.mac) {
+                url.set('host', this.host.mac);
+            }
+            window.history.replaceState(null, '', window.location.pathname + '?' + url.toString());
         }
         this.updateNavLinks(params);
         this.setLoading(true);
@@ -1830,8 +1843,9 @@
     // ------------------------------------------------------------------ located host (host locator)
 
     /**
-     * Draw the host of host=<mac> next to the switch it is plugged into, joined by its port, and select it.
-     * Its location comes from the host locator API, once per page; it is drawn again after every redraw.
+     * Draw the host of host=<mac> next to the switch it is plugged into, joined by its port, or next to the device it is
+     * somewhere behind, and select it; an address of a monitored device selects that device. The answer comes from the
+     * host locator API, once per page; the host is drawn again after every redraw.
      */
     TopologyMap.prototype.drawHost = function () {
         var self = this;
@@ -1846,8 +1860,7 @@
             }).then(function (response) {
                 return response.ok ? response.json() : null;
             }).then(function (body) {
-                var host = body && body.hosts && body.hosts[0];
-                self.host.data = host && host.edge ? host : {missing: true};
+                self.host.data = (body && body.hosts && body.hosts[0]) || {missing: true};
                 self.drawHost();
             }).catch(function () {
                 self.host.data = {missing: true};
@@ -1860,26 +1873,45 @@
         }
 
         var host = this.host.data;
-        var edge = host.edge;
-        var switchId = edge ? 'd:' + edge.device_id : null;
-        if (host.missing || !this.nodes.get(switchId)) {
-            if (!this.host.warned) {
-                this.host.warned = true;
-                this.flash(host.missing ? 'Host ' + this.host.mac + ' is not in a forwarding table you can see.' :
-                    host.readable + ' is on ' + edge.device + ' ' + edge.port + ', which is not on this map.');
+        var name = host.readable || this.host.mac.match(/../g).join(':');
+        var warn = function (message) {
+            if (!self.host.warned) {
+                self.host.warned = true;
+                self.flash(message);
+            }
+        };
+
+        // an address of a monitored device: the device is the answer
+        if ((host.status === 'owner' || host.status === 'gateway') && host.device) {
+            var deviceNode = 'd:' + host.device.device_id;
+            if (this.nodes.get(deviceNode)) {
+                this.network.selectNodes([deviceNode]);
+                this.network.focus(deviceNode, {scale: Math.max(1, this.network.getScale()), animation: {duration: 500}});
+                this.showNode(deviceNode);
+            } else {
+                warn(name + ' is an address of ' + host.device.name + ', which is not on this map.');
             }
             return;
         }
 
-        var switchNode = this.nodes.get(switchId);
-        var position = this.network.getPositions([switchId])[switchId] || {x: 0, y: 0};
+        var edge = host.edge;
+        var behind = host.status === 'behind' && host.device ? host.device : null;
+        var anchor = behind ? 'd:' + behind.device_id : (edge ? 'd:' + edge.device_id : null);
+        var where = behind ? 'behind ' + behind.name : (edge ? edge.device + ' ' + edge.port : '');
+        if (!anchor || !this.nodes.get(anchor)) {
+            warn(anchor ? name + ' is ' + (behind ? '' : 'on ') + where + ', which is not on this map.' : name + ' is not in a forwarding table you can see.');
+            return;
+        }
+
+        var anchorNode = this.nodes.get(anchor);
+        var position = this.network.getPositions([anchor])[anchor] || {x: 0, y: 0};
         var ips = (host.addresses || []).map(function (address) {
             return address.display;
         });
         var tooltip = document.createElement('div');
         tooltip.className = 'topo-tooltip';
         tooltip.innerHTML = '<b>' + esc(host.readable) + '</b><br>' + esc(host.vendor || '') + (ips.length ? '<br>' + esc(ips.slice(0, 4).join(', ')) : '') +
-            '<br>' + esc(edge.device + ' ' + edge.port);
+            '<br>' + esc(where);
         this.nodes.update({
             id: HOST_NODE,
             label: [ips[0], host.vendor, host.readable].filter(Boolean).join('\n'),
@@ -1887,20 +1919,20 @@
             shape: 'image',
             image: iconUrl('other', 'up', false),
             size: 16,
-            level: switchNode.level !== undefined ? switchNode.level + 1 : undefined,
+            level: anchorNode.level !== undefined ? anchorNode.level + 1 : undefined,
             x: position.x + 90,
             y: position.y + 150,
             data: {id: HOST_NODE, name: host.readable, type: 'host'}
         });
         this.edges.update({
             id: HOST_EDGE,
-            from: switchId,
+            from: anchor,
             to: HOST_NODE,
-            dashes: [5, 4],
+            dashes: behind ? [2, 6] : [5, 4],
             width: 2,
             color: {color: '#f39c12', highlight: '#f39c12', hover: '#f39c12'},
             // shaped like a link so the interface label and the switch's connection list show the port
-            data: {id: HOST_EDGE, from: switchId, to: HOST_NODE, kind: 'host', a: {name: edge.port, short: edge.port}, b: null}
+            data: {id: HOST_EDGE, from: anchor, to: HOST_NODE, kind: 'host', a: behind ? null : {name: edge.port, short: edge.port}, b: null}
         });
         this.network.selectNodes([HOST_NODE]);
         this.network.focus(HOST_NODE, {scale: Math.max(1, this.network.getScale()), animation: {duration: 500}});
@@ -1908,7 +1940,7 @@
     };
 
     /**
-     * Details panel of the located host: where it is plugged in and what the locator says about it.
+     * Details panel of the located host: where it is plugged in (or what it is behind) and what the locator says about it.
      */
     TopologyMap.prototype.showHost = function () {
         var host = this.host.data;
@@ -1916,15 +1948,19 @@
             return;
         }
         var edge = host.edge;
+        var link = function (url, text) {
+            return url ? '<a href="' + esc(url) + '">' + esc(text) + '</a>' : esc(text);
+        };
         var html = '<h4 class="topo-panel-title"><i class="fa fa-map-marker"></i> ' + esc(host.readable) + '</h4><table class="table table-condensed topo-kv">' +
             this.row('Vendor', esc(host.vendor || '-')) +
             this.row('Addresses', esc((host.addresses || []).map(function (address) {
                 return address.display;
             }).join(', ') || '-')) +
-            this.row('Switch', '<a href="' + esc(edge.device_url) + '">' + esc(edge.device) + '</a>') +
-            this.row('Port', edge.port_url ? '<a href="' + esc(edge.port_url) + '">' + esc(edge.port) + '</a>' : esc(edge.port)) +
+            (host.status === 'behind' && host.device ? this.row('Behind', link(host.device.url, host.device.name)) : '') +
+            this.row(host.status === 'behind' ? 'Learned on' : 'Switch', link(edge.device_url, edge.device)) +
+            this.row('Port', link(edge.port_url, edge.port)) +
             this.row('VLAN', esc((edge.vlans || []).join(', ') || '-')) +
-            this.row('Last seen', esc(edge.last_seen ? formatDuration(Math.max(0, Date.now() / 1000 - edge.last_seen)) + ' ago' : '-')) +
+            this.row('Last seen', esc(edge.last_seen ? formatDuration(Math.max(0, Math.round(Date.now() / 1000 - edge.last_seen))) + ' ago' : '-')) +
             '</table>';
         (host.notes || []).forEach(function (note) {
             html += '<div class="topo-host-note topo-host-note-' + esc(note.level) + '">' + esc(note.text) + '</div>';
@@ -1966,8 +2002,9 @@
      * Short notification (LibreNMS toastr when available).
      */
     TopologyMap.prototype.flash = function (message) {
+        // toastr inserts HTML, and messages carry device, port and host names
         if (window.toastr) {
-            window.toastr.info(message);
+            window.toastr.info(esc(message));
         } else {
             this.status.innerHTML = esc(message);
         }
@@ -2047,6 +2084,7 @@
         },
         // exposed for tests
         _formatSpeed: formatSpeed,
-        _iconUrl: iconUrl
+        _iconUrl: iconUrl,
+        _normalizeMac: normalizeMac
     };
 })(window, document);

@@ -33,6 +33,7 @@
         ],
         'Host locator' => [
             ['hosts_shared_port_macs', 'number', 'Flag an access port without LLDP/CDP neighbor from this many MACs', 'an unmanaged switch, hub or virtualization host is probably connected to it'],
+            ['hosts_dns', 'bool', 'Look up hostnames that are not LibreNMS devices in DNS', 'with the server\'s resolver (getent), 2 seconds at most, cached for 5 minutes, 20 lookups per user and minute'],
         ],
     ];
 @endphp

@@ -31,6 +31,7 @@ class PluginSettings
         'redundancy_warn_devices' => '2',
         'redundancy_disabled_checks' => '',
         'hosts_shared_port_macs' => '5',
+        'hosts_dns' => '1',
     ];
 
     /** @var array<string, string> */

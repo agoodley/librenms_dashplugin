@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Hosts;
 
+use Agoodley\LibrenmsTopology\Stp\StpAnalyzer;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
 
 /**
@@ -9,30 +10,43 @@ use Agoodley\LibrenmsTopology\Support\DeviceRole;
  * every switch that learned it.
  *
  * A switch learns a host's MAC on the port toward the host, so on most switches that is an
- * inter-switch link. Each entry is followed to the neighbor on its port (LLDP/CDP, in either
- * direction, across port-channels): an entry pointing to a switch that learned the MAC too is a
- * hop on the way; the others are where the trail ends: an access port, an access point, IP phone,
- * server or unmanaged switch on it, or a monitored switch whose forwarding table does not list the
- * host. When several trails end, the port with the fewest MACs wins: an uplink without LLDP/CDP
- * carries every MAC of the switches behind it. Entries from before a switch's last forwarding
- * table discovery are reported separately: the host moved or left.
+ * inter-switch link. Each entry is followed to the neighbor on its port (LLDP/CDP in either
+ * direction, across port-channels, or, on a port without one, a switch whose own MAC the port
+ * learned): an entry pointing to a switch that learned the MAC too is a hop on the way. The others
+ * are where trails end: an access port, an access point, IP phone, server or unmanaged switch on
+ * it, or a monitored device that does not list the host (no forwarding table data, a host that was
+ * silent when the table was read, or an address of the device itself such as a virtual router
+ * MAC). Of several ends the best explained one wins, then the newest sighting (a client roamed, a
+ * laptop moved), then the port with fewer MACs: an uplink without LLDP/CDP carries every MAC of the
+ * switches behind it. Entries from before a switch's last forwarding table read are reported
+ * separately: the host moved or left.
+ *
+ * The answer is a port (located), a monitored device the host is somewhere behind (behind), or the
+ * device the address belongs to: one of its interfaces (owner) or a virtual router address it
+ * answers as master / active router (gateway).
  */
 class HostLocator
 {
-    /** An entry older than its switch's newest one by more than this is from an earlier discovery (seconds). */
+    /** An entry this much older than its switch's newest one is from an earlier read (seconds). */
     public const STALE_AFTER = 900;
 
+    /** Sightings further apart are not simultaneous: the host moved or roamed in between (seconds). */
+    public const EARLIER_AFTER = 1800;
+
     /** Roles of monitored devices that forward between their links. */
-    private const NETWORK_ROLES = [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER, DeviceRole::FIREWALL];
+    public const NETWORK_ROLES = [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER, DeviceRole::FIREWALL];
 
     /** Roles of unmanaged neighbors that do not forward (an unknown platform counts as a switch). */
     private const END_ROLES = [DeviceRole::SERVER, DeviceRole::PHONE, DeviceRole::WIRELESS, DeviceRole::OTHER];
 
-    /** Where a trail ends, best first. */
-    private const ENDS = ['owner' => 0, 'access' => 1, 'end-device' => 1, 'unmanaged' => 1, 'monitored' => 2, 'unknown-port' => 3];
+    /**
+     * Where a trail ends, best explained first. monitored: a monitored switch, router or firewall without
+     * forwarding table data; not-listed: one whose forwarding table does not list the host.
+     */
+    private const ENDS = ['owner' => 0, 'access' => 1, 'end-device' => 1, 'unmanaged' => 1, 'monitored' => 2, 'not-listed' => 3, 'unknown-port' => 4];
 
-    /** Which neighbor on a port explains the host best. */
-    private const NEIGHBOR_ORDER = ['owner' => 0, 'unmanaged' => 1, 'monitored' => 2, 'end-device' => 3];
+    /** Which neighbor on a port explains the host best; a switch that does not list it only when it is the only one. */
+    private const NEIGHBOR_ORDER = ['owner' => 0, 'unmanaged' => 1, 'monitored' => 2, 'end-device' => 3, 'not-listed' => 4];
 
     private const ROLE_NAMES = [
         DeviceRole::WIRELESS => 'access point', DeviceRole::PHONE => 'phone', DeviceRole::SERVER => 'server',
@@ -40,23 +54,41 @@ class HostLocator
         DeviceRole::L3SWITCH => 'switch', DeviceRole::OTHER => 'device', DeviceRole::UNKNOWN => 'switch',
     ];
 
+    /** @var array<int, int[]> aggregate port_id => member port_ids */
+    private array $members = [];
+
+    /** @var array<int, int> port_id => current MACs */
+    private array $counts = [];
+
+    /** @var (\Closure(int[]): array<int, int>)|null */
+    private ?\Closure $macCounter;
+
     /**
-     * @param  array<int, array>  $ports  port_id => device_id, name, aggregate (bool), macs (MACs learned on it now)
+     * @param  array<int, array>  $ports  port_id => device_id, name, aggregate (bool), macs (current MACs, when known up front)
      * @param  array<int, array<int, array>>  $neighbors  port_id => LLDP/CDP neighbors on the port: name, port,
      *                                                     device_id (monitored and visible, else null), role
      * @param  array<int, int>  $lagParent  member port_id => aggregate port_id
-     * @param  array<int, int>  $fresh  device_id => time of its newest forwarding table entry
-     * @param  array<int, string>  $deviceNames
+     * @param  array<int, int>  $since  device_id => start of its last forwarding table read: older entries are from an
+     *                                  earlier read; a device missing here has no forwarding table data
+     * @param  array<int, array{name: string, role?: string}>  $devices  monitored devices
      * @param  int  $sharedPortMacs  MACs on an access port without a neighbor from which it is flagged as shared
+     * @param  array<int, int[]>  $switchMacs  port_id => monitored devices whose own MAC the port learned at the last read
+     * @param  (\Closure(int[]): array<int, int>)|null  $macCounter  port_ids => current MACs, asked for trail ends only
      */
     public function __construct(
         private readonly array $ports,
         private readonly array $neighbors,
         private readonly array $lagParent,
-        private readonly array $fresh,
-        private readonly array $deviceNames,
+        private readonly array $since,
+        private readonly array $devices,
         private readonly int $sharedPortMacs = 5,
+        private readonly array $switchMacs = [],
+        ?\Closure $macCounter = null,
     ) {
+        $this->macCounter = $macCounter;
+        foreach ($lagParent as $member => $aggregate) {
+            $this->members[$aggregate][] = $member;
+        }
     }
 
     /**
@@ -64,26 +96,28 @@ class HostLocator
      *
      * @param  array<int, array>  $rows  forwarding table entries of the MAC: device_id, port_id, vlan, first_seen, last_seen
      * @param  array<int, array>  $owners  interfaces of monitored devices with this MAC: device_id, port
-     * @return array{status: string, stale: bool, edge: array|null, seen: array<int, array>, notes: array<int, array{level: string, text: string}>}
+     * @return array{status: string, stale: bool, edge: array|null, device: array|null, gateway: array|null,
+     *               seen: array<int, array>, notes: array<int, array{level: string, text: string}>}
      */
     public function locate(string $mac, array $rows, array $owners = []): array
     {
+        $gateway = Mac::gateway($mac);
+        $ownerPorts = [];
+        foreach ($owners as $owner) {
+            $ownerPorts[(int) $owner['device_id']][] = (string) $owner['port'];
+        }
         $notes = [];
-        foreach ($owners as $owner) {
-            $notes[] = self::note('info', 'This is the MAC address of ' . $this->deviceName((int) $owner['device_id']) . ' ' . $owner['port'] . '.');
+        foreach ($ownerPorts as $deviceId => $interfaces) {
+            $notes[] = self::note('info', 'This is the MAC address of ' . $this->deviceName($deviceId) . ' ' . self::listed(array_values(array_unique($interfaces))) . '.');
         }
-        if (Mac::isLocal($mac) && ! Mac::isMulticast($mac)) {
+        $gatewayNote = $gateway ? 'Virtual router address (' . $gateway['label'] . '): the router that is master / active for the group sends from it.' : null;
+        if ($gatewayNote === null && Mac::isLocal($mac) && ! Mac::isMulticast($mac)) {
             $notes[] = self::note('info', 'Locally administered address: randomized by phones and laptops for privacy, or a virtual interface. It has no vendor and can change.');
-        }
-
-        $ownerDevices = [];
-        foreach ($owners as $owner) {
-            $ownerDevices[(int) $owner['device_id']] = true;
         }
 
         $entries = $this->entries($rows);
         if (! $entries) {
-            return ['status' => 'none', 'stale' => false, 'edge' => null, 'seen' => [], 'notes' => $notes];
+            return self::result('none', false, null, null, $gateway, [], $gatewayNote === null ? $notes : array_merge($notes, [self::note('info', $gatewayNote)]));
         }
 
         $current = array_filter($entries, fn ($entry) => ! $entry['stale']);
@@ -98,31 +132,62 @@ class HostLocator
         $seen = [];
         $ends = [];
         foreach ($working as $key => $entry) {
-            [$end, $neighbor, $toward] = $this->trail($entry, $learned, $ownerDevices);
-            if ($toward !== null) {
-                $seen[$key] = $entry + [
-                    'reason' => 'toward-switch',
-                    'detail' => ($this->isAggregate($entry['port_id']) ? 'port-channel' : 'link') . ' toward ' . $toward . ', which also learned it',
-                ];
+            $trail = $this->trail($entry, $learned, $ownerPorts);
+            if ($trail['toward'] !== null) {
+                $seen[$key] = $entry + ['reason' => 'toward-switch', 'detail' => $trail['toward']];
             } else {
-                $ends[$key] = $entry + ['via' => $end, 'neighbor' => $neighbor];
+                $ends[$key] = $entry + ['via' => $trail['via'], 'neighbor' => $trail['neighbor']];
             }
         }
 
         $edge = null;
         if ($ends) {
-            uasort($ends, fn ($a, $b) => [self::ENDS[$a['via']], $a['macs'], -$a['last_seen'], $a['device_id'], $a['port_id']]
-                <=> [self::ENDS[$b['via']], $b['macs'], -$b['last_seen'], $b['device_id'], $b['port_id']]);
-            $edge = array_shift($ends);
+            $this->countMacs(array_column($ends, 'port_id'));
+            foreach ($ends as &$end) {
+                $end['macs'] = $this->counts[$end['port_id']] ?? 0;
+            }
+            unset($end);
+            $edge = $this->pickEdge($ends);
             foreach ($ends as $key => $end) {
                 $seen[$key] = $end + $this->otherEnd($end, $edge, $notes);
             }
-            $notes = array_merge($notes, $this->edgeNotes($mac, $edge));
         } else {
             $notes[] = self::note('warning', 'Every switch that learned it points to another switch that learned it: the forwarding tables are from different times or the network has a loop.');
         }
 
-        if ($stale && $edge) {
+        // what the answer is: a port, a device the host is behind, or the device the address belongs to
+        $status = $edge === null ? 'uplinks' : 'located';
+        $device = null;
+        if ($edge !== null) {
+            $at = $edge['neighbor']['device_id'] ?? null;
+            $owner = $this->networkOwner(array_keys($ownerPorts), $edge);
+            if ($owner !== null) {
+                $status = 'owner';
+                $device = $owner;
+                if ($edge['device_id'] === $owner || ($edge['via'] === 'owner' && $at === $owner)) {
+                    $seen[] = $edge + ['reason' => 'toward-owner', 'detail' => $edge['device_id'] === $owner
+                        ? 'learned by ' . $this->deviceName($owner) . ' itself'
+                        : $this->linkTo($edge) . ', the device with this address'];
+                    $edge = null;
+                }
+            } elseif ($gateway && $at !== null && in_array($edge['via'], ['owner', 'monitored', 'not-listed'], true)) {
+                $status = 'gateway';
+                $device = $at;
+                $gatewayNote = 'Virtual router address (' . $gateway['label'] . '): ' . $this->deviceName($at) . ' sends from it as the master / active router of the group.';
+                $seen[] = $edge + ['reason' => 'toward-owner', 'detail' => $this->linkTo($edge) . ', which answers it'];
+                $edge = null;
+            } elseif (in_array($edge['via'], ['monitored', 'not-listed'], true) && $at !== null) {
+                $status = 'behind';
+                $device = $at;
+            }
+        }
+        if ($gatewayNote !== null) {
+            array_splice($notes, count($ownerPorts), 0, [self::note('info', $gatewayNote)]);
+        }
+        if ($edge !== null) {
+            $notes = array_merge($notes, $this->edgeNotes($mac, $edge));
+        }
+        if ($stale && ($edge !== null || $device !== null)) {
             $notes[] = self::note('warning', 'Not seen at the last forwarding table discovery: the host may be switched off or gone.');
         }
         foreach ($entries as $key => $entry) {
@@ -133,17 +198,7 @@ class HostLocator
 
         usort($seen, fn ($a, $b) => [$a['reason'] === 'stale', -$a['last_seen'], $a['device_id'], $a['port_id']] <=> [$b['reason'] === 'stale', -$b['last_seen'], $b['device_id'], $b['port_id']]);
 
-        return [
-            'status' => match (true) {
-                $edge === null => 'uplinks',
-                $edge['via'] === 'monitored' => 'behind',
-                default => 'located',
-            },
-            'stale' => $stale,
-            'edge' => $edge,
-            'seen' => array_values($seen),
-            'notes' => $notes,
-        ];
+        return self::result($status, $stale, $edge, $device === null ? null : ['device_id' => $device, 'name' => $this->deviceName($device)], $gateway, array_values($seen), $notes);
     }
 
     /**
@@ -165,7 +220,6 @@ class HostLocator
                 'vlans' => [],
                 'first_seen' => (int) $row['first_seen'],
                 'last_seen' => $lastSeen,
-                'macs' => (int) ($this->ports[$portId]['macs'] ?? 0),
             ];
             if ($row['vlan'] !== null && ! in_array((int) $row['vlan'], $entry['vlans'], true)) {
                 $entry['vlans'][] = (int) $row['vlan'];
@@ -177,8 +231,8 @@ class HostLocator
 
         foreach ($entries as &$entry) {
             sort($entry['vlans']);
-            $newest = $this->fresh[$entry['device_id']] ?? $entry['last_seen'];
-            $entry['stale'] = $entry['last_seen'] < $newest - self::STALE_AFTER;
+            $since = $this->since[$entry['device_id']] ?? null;
+            $entry['stale'] = $since !== null && $entry['last_seen'] < $since;
         }
         unset($entry);
 
@@ -186,59 +240,70 @@ class HostLocator
     }
 
     /**
-     * Where an entry leads: [how the trail ends, the neighbor there, null] or, for a hop on the way,
-     * [null, null, name of the switch it points to].
+     * Where an entry leads: toward (why it is a hop on the way), or how the trail ends (via) and the neighbor there.
      *
      * @param  array<int, true>  $learned  switches with an entry for the MAC
-     * @param  array<int, true>  $ownerDevices  monitored devices with an interface that has this MAC
-     * @return array{0: string|null, 1: array|null, 2: string|null}
+     * @param  array<int, string[]>  $ownerPorts  monitored devices with an interface that has this MAC
+     * @return array{toward: ?string, via: ?string, neighbor: ?array}
      */
-    private function trail(array $entry, array $learned, array $ownerDevices): array
+    private function trail(array $entry, array $learned, array $ownerPorts): array
     {
-        if ($entry['port_id'] <= 0 || ! isset($this->ports[$entry['port_id']])) {
-            return ['unknown-port', null, null];
+        $portId = $entry['port_id'];
+        if ($portId <= 0 || ! isset($this->ports[$portId])) {
+            return ['toward' => null, 'via' => 'unknown-port', 'neighbor' => null];
         }
 
-        $neighbors = $this->neighborsOf($entry['port_id']);
+        $link = $this->isAggregate($portId) ? 'port-channel' : 'link';
+        $neighbors = $this->neighborsOf($portId);
         foreach ($neighbors as $neighbor) {
             $deviceId = $neighbor['device_id'];
             if ($deviceId !== null && $deviceId !== $entry['device_id'] && isset($learned[$deviceId])) {
-                return [null, null, $this->deviceName($deviceId)];
+                return ['toward' => $link . ' toward ' . $this->deviceName($deviceId) . ', which also learned it', 'via' => null, 'neighbor' => null];
             }
         }
 
-        // the neighbor that explains the host best; a switch that keeps its forwarding table
-        // up to date and does not list the host is not where it is
+        if (! $neighbors) {
+            // a port that learned the own MAC of a switch that learned the host too leads to that switch
+            foreach ($this->switchMacs[$portId] ?? [] as $deviceId) {
+                if ($deviceId !== $entry['device_id'] && isset($learned[$deviceId])) {
+                    return ['toward' => $link . ' toward ' . $this->deviceName($deviceId) . ' (its own MAC address is learned here), which also learned it',
+                        'via' => null, 'neighbor' => null];
+                }
+            }
+
+            return ['toward' => null, 'via' => 'access', 'neighbor' => null];
+        }
+
         $best = null;
         $names = [];
         foreach ($neighbors as $neighbor) {
             $deviceId = $neighbor['device_id'];
-            $end = $deviceId !== null && isset($ownerDevices[$deviceId]) ? 'owner' : $this->endKind($neighbor);
-            if ($end === 'monitored' && isset($this->fresh[$deviceId]) && $this->fresh[$deviceId] >= $entry['last_seen'] - self::STALE_AFTER) {
-                continue;
-            }
-            $names[$neighbor['name']] = true;
+            $end = $deviceId !== null && isset($ownerPorts[$deviceId]) ? 'owner' : $this->endKind($neighbor);
+            $names[(string) $neighbor['name']] = true;
             if ($best === null || self::NEIGHBOR_ORDER[$end] < self::NEIGHBOR_ORDER[$best['end']]) {
                 $best = $neighbor + ['end' => $end];
             }
         }
-        if ($best !== null) {
-            $best['others'] = array_values(array_diff(array_keys($names), [$best['name']]));
-        }
+        $best['others'] = array_values(array_diff(array_map('strval', array_keys($names)), [(string) $best['name']]));
 
-        return $best === null ? ['access', null, null] : [$best['end'], $best, null];
+        return ['toward' => null, 'via' => $best['end'], 'neighbor' => $best];
     }
 
     /**
-     * monitored: a monitored switch, router or firewall (it does not list the host, or the trail
-     * would continue there); unmanaged: a neighbor that forwards and is not monitored (or not visible);
-     * end-device: an access point, phone, server or other end device.
+     * monitored / not-listed: a monitored switch, router or firewall that did not learn the host (else the trail
+     * would continue there), without forwarding table data or with one that does not list it; unmanaged: a
+     * neighbor that forwards and is not monitored (or not visible); end-device: an access point, phone, server
+     * or other end device.
      */
     private function endKind(array $neighbor): string
     {
         $role = $neighbor['role'] ?? DeviceRole::UNKNOWN;
         if ($neighbor['device_id'] !== null) {
-            return in_array($role, self::NETWORK_ROLES, true) ? 'monitored' : 'end-device';
+            if (! in_array($role, self::NETWORK_ROLES, true)) {
+                return 'end-device';
+            }
+
+            return isset($this->since[$neighbor['device_id']]) ? 'not-listed' : 'monitored';
         }
 
         return in_array($role, self::END_ROLES, true) ? 'end-device' : 'unmanaged';
@@ -252,12 +317,8 @@ class HostLocator
     private function neighborsOf(int $portId): array
     {
         $result = $this->neighbors[$portId] ?? [];
-        if ($this->isAggregate($portId)) {
-            foreach ($this->lagParent as $member => $aggregate) {
-                if ($aggregate === $portId) {
-                    $result = array_merge($result, $this->neighbors[$member] ?? []);
-                }
-            }
+        foreach ($this->members[$portId] ?? [] as $member) {
+            $result = array_merge($result, $this->neighbors[$member] ?? []);
         }
 
         return $result;
@@ -265,13 +326,68 @@ class HostLocator
 
     private function isAggregate(int $portId): bool
     {
-        return ! empty($this->ports[$portId]['aggregate']) || in_array($portId, $this->lagParent, true);
+        return ! empty($this->ports[$portId]['aggregate']) || isset($this->members[$portId]);
+    }
+
+    /**
+     * Fetch the current MAC counts of trail end ports not known yet.
+     *
+     * @param  int[]  $portIds
+     */
+    private function countMacs(array $portIds): void
+    {
+        $missing = array_values(array_diff(array_unique($portIds), array_keys($this->counts)));
+        if (! $missing) {
+            return;
+        }
+
+        $counts = $this->macCounter ? ($this->macCounter)($missing) : [];
+        foreach ($missing as $portId) {
+            $this->counts[$portId] = (int) ($counts[$portId] ?? $this->ports[$portId]['macs'] ?? 0);
+        }
+    }
+
+    /**
+     * The best trail end, taken out of $ends: best explained, then the newest sighting (one much older than
+     * the newest of its kind is from before the host moved or roamed), then fewer MACs on the port.
+     *
+     * @param  array<string, array>  $ends  extended with uplink and earlier flags
+     */
+    private function pickEdge(array &$ends): array
+    {
+        // an access port with far more MACs than another trail end is an uplink to a switch without LLDP/CDP
+        foreach ($ends as $key => $end) {
+            $fewest = null;
+            foreach ($ends as $other => $candidate) {
+                if ($other !== $key && self::ENDS[$candidate['via']] === 1) {
+                    $fewest = min($fewest ?? PHP_INT_MAX, $candidate['macs']);
+                }
+            }
+            $ends[$key]['uplink'] = $end['via'] === 'access' && $fewest !== null && self::uplinkLike($end['macs'], $fewest);
+        }
+
+        $group = fn (array $end) => self::ENDS[$end['via']] . ($end['uplink'] ? 'u' : '');
+        $newest = [];
+        foreach ($ends as $end) {
+            $newest[$group($end)] = max($newest[$group($end)] ?? 0, $end['last_seen']);
+        }
+        foreach ($ends as $key => $end) {
+            $ends[$key]['earlier'] = $end['last_seen'] < $newest[$group($end)] - self::EARLIER_AFTER;
+        }
+
+        $rank = fn (array $end) => [self::ENDS[$end['via']], $end['uplink'], $end['earlier'], $end['macs'], -$end['last_seen'], $end['device_id'], $end['port_id']];
+        uasort($ends, fn ($a, $b) => $rank($a) <=> $rank($b));
+        $key = array_key_first($ends);
+        $edge = $ends[$key];
+        unset($ends[$key]);
+
+        return $edge;
     }
 
     /**
      * Why another trail end is not the answer.
      *
-     * @param  array  $notes  host notes, extended with a warning when two access ports learned it
+     * @param  array  $notes  host notes, extended with a warning when two access ports learned it at the same time
      * @return array{reason: string, detail: string}
      */
     private function otherEnd(array $end, array $edge, array &$notes): array
@@ -279,22 +395,46 @@ class HostLocator
         if ($end['via'] === 'unknown-port') {
             return ['reason' => 'unknown-port', 'detail' => 'learned on a port LibreNMS could not map (bridge port without ifIndex)'];
         }
-        $destination = $edge['neighbor']['device_id'] ?? null;
-        if ($destination !== null && ($end['neighbor']['device_id'] ?? null) === $destination) {
-            return ['reason' => 'same-destination', 'detail' => 'another path to ' . $end['neighbor']['name']];
+        $neighbor = $end['neighbor'];
+        if ($neighbor !== null && $edge['neighbor'] !== null && self::sameNeighbor($neighbor, $edge['neighbor'])) {
+            return $neighbor['device_id'] !== null && in_array($neighbor['role'] ?? '', self::NETWORK_ROLES, true)
+                ? ['reason' => 'same-destination', 'detail' => 'another path to ' . $neighbor['name']]
+                : ['reason' => 'dual-homed', 'detail' => 'another link to ' . $neighbor['name'] . ': it is connected to both switches (a port-channel across a switch pair, or dual-homed)'];
         }
-        if ($end['via'] === 'monitored') {
-            return ['reason' => 'behind-monitored', 'detail' => 'toward ' . $end['neighbor']['name'] . ', whose forwarding table does not list it'];
+        if (in_array($end['via'], ['monitored', 'not-listed'], true)) {
+            return ['reason' => 'behind-monitored', 'detail' => 'toward ' . $neighbor['name'] . ', '
+                . ($end['via'] === 'monitored' ? 'which has no forwarding table data' : 'whose forwarding table does not list it')];
         }
-        if ($end['via'] === 'access' && $end['macs'] >= max(2 * $edge['macs'], $edge['macs'] + 3)) {
+        if ($end['last_seen'] < $edge['last_seen'] - self::EARLIER_AFTER) {
+            return ['reason' => 'earlier', 'detail' => 'seen here ' . StpAnalyzer::duration($edge['last_seen'] - $end['last_seen'])
+                . ' before the newest sighting: the host moved or roamed since'];
+        }
+        if ($end['via'] === 'access' && ($end['uplink'] || self::uplinkLike($end['macs'], $edge['macs']))) {
             return ['reason' => 'uplink', 'detail' => 'carries ' . $end['macs'] . ' MACs: probably an uplink to a switch without LLDP/CDP'];
         }
 
         $notes[] = self::note('warning', 'Also learned on another access port (' . $this->deviceName($end['device_id']) . ' ' . $this->portName($end['port_id'])
-            . '): the host may have moved, or a loop, a bridge or an unmanaged switch joins the two ports.');
+            . ') at about the same time: a loop, a bridge or an unmanaged switch joins the two ports, or the host moved between the two readings.');
 
         return ['reason' => 'access', 'detail' => 'also learned here (' . $end['macs'] . ' MAC' . ($end['macs'] === 1 ? '' : 's') . ' on the port'
-            . ($end['neighbor'] ? ', behind ' . $end['neighbor']['name'] : '') . ')'];
+            . ($neighbor ? ', behind ' . $neighbor['name'] : '') . ')'];
+    }
+
+    /**
+     * The monitored switch, router or firewall the address belongs to, preferably the one the trail ends at.
+     *
+     * @param  int[]  $owners
+     */
+    private function networkOwner(array $owners, array $edge): ?int
+    {
+        $network = array_values(array_filter($owners, fn ($deviceId) => in_array($this->devices[$deviceId]['role'] ?? DeviceRole::UNKNOWN, self::NETWORK_ROLES, true)));
+        foreach ([$edge['neighbor']['device_id'] ?? null, $edge['device_id']] as $candidate) {
+            if ($candidate !== null && in_array($candidate, $network, true)) {
+                return $candidate;
+            }
+        }
+
+        return $network[0] ?? null;
     }
 
     /**
@@ -322,7 +462,9 @@ class HostLocator
                 default => 'Behind ' . $neighbor['name'] . ' (' . $role . ').',
             })],
             'unmanaged' => [self::note('info', 'Behind ' . $neighbor['name'] . ', an unmanaged ' . $role . ' (not monitored by LibreNMS, or not visible to you).')],
-            'monitored' => [self::note('warning', 'The trail ends at ' . $neighbor['name'] . ': LibreNMS monitors it but its forwarding table does not list the host (forwarding table discovery off or not supported), so the host is somewhere behind it.')],
+            'monitored' => [self::note('warning', 'The trail ends at ' . $neighbor['name'] . ': LibreNMS monitors it but has no forwarding table from it (forwarding table discovery off or not supported), so the host is somewhere behind it.')],
+            'not-listed' => [self::note('warning', 'The trail ends at ' . $neighbor['name'] . ': its forwarding table does not list the host. The host was silent when the table was read'
+                . ' (switches forget idle hosts after about 5 minutes) or connected after that, or the address belongs to ' . $neighbor['name'] . ' itself.')],
             'unknown-port' => [self::note('warning', 'Learned on a port LibreNMS could not map (bridge port without ifIndex).')],
             default => $edge['macs'] >= $this->sharedPortMacs
                 ? [self::note('info', $edge['macs'] . ' MACs are learned on this port and it has no LLDP/CDP neighbor: an unmanaged switch, hub or virtualization host is probably connected to it.')]
@@ -330,14 +472,60 @@ class HostLocator
         });
     }
 
+    /**
+     * An access port with this many MACs where another trail end has $fewest looks like an uplink.
+     */
+    private static function uplinkLike(int $macs, int $fewest): bool
+    {
+        return $macs >= max(2 * $fewest, $fewest + 3);
+    }
+
+    /**
+     * The same device on two trail ends (the same monitored device, or the same LLDP/CDP name).
+     */
+    private static function sameNeighbor(array $a, array $b): bool
+    {
+        if ($a['device_id'] !== null || $b['device_id'] !== null) {
+            return $a['device_id'] === $b['device_id'];
+        }
+        $name = strtolower((string) $a['name']);
+
+        return $name !== '' && $name !== 'unknown neighbor' && $name === strtolower((string) $b['name']);
+    }
+
+    private function linkTo(array $edge): string
+    {
+        return ($this->isAggregate($edge['port_id']) ? 'port-channel' : 'link') . ' toward ' . ($edge['neighbor']['name'] ?? $this->deviceName($edge['device_id']));
+    }
+
     private function deviceName(int $deviceId): string
     {
-        return $this->deviceNames[$deviceId] ?? 'device #' . $deviceId;
+        return (string) ($this->devices[$deviceId]['name'] ?? 'device #' . $deviceId);
     }
 
     private function portName(int $portId): string
     {
         return (string) ($this->ports[$portId]['name'] ?? 'port #' . $portId);
+    }
+
+    /**
+     * Vl10 / Vl10 and Vl20 / Vl10, Vl20, Vl30 and 64 more interfaces (Cisco SVIs share one MAC).
+     *
+     * @param  string[]  $names
+     */
+    private static function listed(array $names): string
+    {
+        $count = count($names);
+        if ($count > 4) {
+            return implode(', ', array_slice($names, 0, 3)) . ' and ' . ($count - 3) . ' more interfaces';
+        }
+
+        return $count > 1 ? implode(', ', array_slice($names, 0, -1)) . ' and ' . end($names) : (string) ($names[0] ?? '');
+    }
+
+    private static function result(string $status, bool $stale, ?array $edge, ?array $device, ?array $gateway, array $seen, array $notes): array
+    {
+        return ['status' => $status, 'stale' => $stale, 'edge' => $edge, 'device' => $device, 'gateway' => $gateway, 'seen' => $seen, 'notes' => $notes];
     }
 
     /**

@@ -13,7 +13,9 @@
     $vlanText = fn (array $entry) => implode(', ', array_map(fn ($vlan, $name) => $vlan . ($name !== null && $name !== '' && $name !== sprintf('VLAN%04d', $vlan) ? ' (' . $name . ')' : ''), $entry['vlans'], $entry['vlan_names'])) ?: '-';
     $statusBadges = [
         'located' => ['ok', 'located'],
-        'behind' => ['warning', 'trail ends at a switch'],
+        'behind' => ['warning', 'behind a switch'],
+        'owner' => ['ok', 'address of a monitored device'],
+        'gateway' => ['ok', 'virtual router address'],
         'uplinks' => ['warning', 'only on uplinks'],
         'none' => ['info', 'not in a forwarding table'],
     ];
@@ -45,7 +47,8 @@
             <p>
                 Monitored device{{ count($result['devices']) === 1 ? '' : 's' }}:
                 @foreach($result['devices'] as $device)
-                    <a href="{{ url('device/' . $device['device_id']) }}">{{ $device['name'] }}</a>@if($device['ips']) <span class="text-muted">({{ implode(', ', $device['ips']) }})</span>@endif @if(! $loop->last), @endif
+                    <a href="{{ url('device/' . $device['device_id']) }}">{{ $device['name'] }}</a>@if($device['ips']) <span class="text-muted">({{ implode(', ', $device['ips']) }})</span>@endif
+                    <a class="text-muted" href="{{ route('topology.l2', ['device' => $device['device_id'], 'depth' => 1]) }}" title="L2 map around {{ $device['name'] }}"><i class="fa fa-sitemap"></i></a>@if(! $loop->last), @endif
                 @endforeach
             </p>
         @elseif($result['resolved'])
@@ -55,24 +58,42 @@
         @foreach($result['hosts'] as $host)
             @php
                 [$badgeLevel, $badgeText] = $statusBadges[$host['status']] ?? ['info', $host['status']];
+                if ($host['status'] === 'behind' && $host['device']) {
+                    $badgeText = 'behind ' . $host['device']['name'];
+                }
                 $edge = $host['edge'];
+                $answer = in_array($host['status'], ['owner', 'gateway'], true) ? $host['device'] : null;
                 $users = array_values(array_unique(array_filter(array_column(array_filter($host['nac'], fn ($n) => ! $n['historical']), 'username'))));
             @endphp
-            <div class="panel panel-default topo-host" data-mac="{{ $host['mac'] }}">
+            <div class="panel panel-default topo-host" data-mac="{{ $host['mac'] }}" data-status="{{ $host['status'] }}">
                 <div class="panel-heading">
                     <span class="topo-sev topo-sev-{{ $badgeLevel }}">{{ $badgeText }}</span>
                     @if($host['stale'])<span class="topo-sev topo-sev-warning">not seen recently</span>@endif
                     <strong class="topo-mono" style="font-size: 13px; margin-left: 6px">{{ $host['readable'] }}</strong>
-                    @if($host['vendor'])<span class="text-muted">{{ $host['vendor'] }}</span>@endif
+                    @if($host['gateway'])<span class="text-muted">{{ $host['gateway']['label'] }}</span>@elseif($host['vendor'])<span class="text-muted">{{ $host['vendor'] }}</span>@endif
+                    @if($host['vlan'] !== null)<span class="topo-host-ip">VLAN {{ $host['vlan'] }}</span>@endif
                     @foreach(array_slice(array_values(array_unique(array_column($host['addresses'], 'display'))), 0, 6) as $ip)
                         <span class="topo-host-ip">{{ $ip }}</span>
                     @endforeach
                     @if($users)<span title="802.1X / MAB user"><i class="fa fa-user"></i> {{ implode(', ', $users) }}</span>@endif
                 </div>
                 <div class="panel-body">
+                    @if($answer)
+                        <div class="topo-host-edge topo-host-answer">
+                            <i class="fa fa-server fa-fw"></i>
+                            @if($answer['url'])<a href="{{ $answer['url'] }}"><strong>{{ $answer['name'] }}</strong></a>@else<strong>{{ $answer['name'] }}</strong>@endif
+                            <span class="text-muted">{{ $host['status'] === 'gateway' ? 'answers this virtual router address now' : 'has this MAC address on its own interface' }}</span>
+                            @if($host['map_url'])
+                                <span class="topo-actions" style="display: inline-flex; margin: 0 0 0 8px">
+                                    <a class="btn btn-xs btn-default" href="{{ $host['map_url'] }}"><i class="fa fa-sitemap"></i> Show on the L2 map</a>
+                                </span>
+                            @endif
+                        </div>
+                    @endif
                     @if($edge)
                         <div class="topo-host-edge">
                             <i class="fa fa-plug fa-fw"></i>
+                            @if($answer || $host['status'] === 'behind')<span class="text-muted">learned on</span>@endif
                             <a href="{{ $edge['device_url'] }}"><strong>{{ $edge['device'] }}</strong></a>
                             @if($edge['port_url'])
                                 <a href="{{ $edge['port_url'] }}"><strong>{{ $edge['port'] }}</strong></a>
@@ -88,9 +109,11 @@
                                     @if($edge['neighbor']['port'])<span class="text-muted">{{ $edge['neighbor']['port'] }}</span>@endif
                                 </span>
                             @endif
-                            <span class="topo-actions" style="display: inline-flex; margin: 0 0 0 8px">
-                                <a class="btn btn-xs btn-default" href="{{ $edge['map_url'] }}"><i class="fa fa-sitemap"></i> Show on the L2 map</a>
-                            </span>
+                            @if($host['map_url'] && ! $answer)
+                                <span class="topo-actions" style="display: inline-flex; margin: 0 0 0 8px">
+                                    <a class="btn btn-xs btn-default" href="{{ $host['map_url'] }}"><i class="fa fa-sitemap"></i> Show on the L2 map</a>
+                                </span>
+                            @endif
                         </div>
                         <table class="table table-condensed topo-kv topo-host-facts">
                             <tr><th>VLAN</th><td>{{ $vlanText($edge) }}</td><th>MACs on the port</th><td>{{ $edge['macs'] }}</td></tr>
@@ -141,9 +164,13 @@
                     @endif
 
                     @if($host['seen'])
-                        <h5>Also learned on <small class="text-muted">(and why the host is not there)</small></h5>
+                        @if($answer)
+                            <h5>Learned on <small class="text-muted">(each on the way to {{ $answer['name'] }})</small></h5>
+                        @else
+                            <h5>Also learned on <small class="text-muted">(and why the host is not there)</small></h5>
+                        @endif
                         <table class="table table-condensed table-hover topo-stp-table">
-                            <thead><tr><th>Switch</th><th>Port</th><th>VLAN</th><th>Last seen</th><th>Why not here</th></tr></thead>
+                            <thead><tr><th>Switch</th><th>Port</th><th>VLAN</th><th>Last seen</th><th>{{ $answer ? 'Leads to' : 'Why not here' }}</th></tr></thead>
                             <tbody>
                             @foreach($host['seen'] as $entry)
                                 <tr class="{{ $entry['reason'] === 'stale' ? 'text-muted' : '' }}">
@@ -162,7 +189,7 @@
         @endforeach
 
         @if($result['truncated'])
-            <p class="text-muted">Only the first {{ count($result['hosts']) }} MAC addresses of this address are shown.</p>
+            <p class="text-muted">Only the first {{ count($result['hosts']) }} answers are shown.</p>
         @endif
         <p class="text-muted" style="font-size: 12px">
             LibreNMS reads forwarding (MAC address) tables and ARP / IPv6 neighbor tables at discovery, every 6 hours by default,
@@ -174,7 +201,7 @@
             Enter an IP address (<code>10.10.10.55</code>, <code>2001:db8::55</code>), a MAC address in any notation
             (<code>d4:be:d9:01:02:03</code>, <code>d4be.d901.0203</code>) or a hostname to find the switch port it is plugged into.
             Inter-switch links and port-channels are followed to the switch the host is connected to, past IP phones, access points and
-            unmanaged switches.
+            unmanaged switches. A gateway address leads to the router that answers it.
         </p>
     @endif
 </div>

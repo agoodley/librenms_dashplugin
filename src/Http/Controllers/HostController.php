@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsTopology\Http\Controllers;
 
 use Agoodley\LibrenmsTopology\Data\HostRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
+use Agoodley\LibrenmsTopology\Hosts\DnsResolver;
 use Agoodley\LibrenmsTopology\Hosts\HostService;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
@@ -34,11 +35,18 @@ class HostController extends Controller
 
     private function hosts(Request $request, PluginSettings $settings): HostService
     {
-        return new HostService(new HostRepository($request->user()), new TopologyRepository($request->user()), $settings);
+        $user = $request->user();
+
+        return new HostService(new HostRepository($user), new TopologyRepository($user), $settings, new DnsResolver((string) ($user->user_id ?? $request->ip())));
     }
 
+    /**
+     * The search text; anything but a string (q[]=...) counts as empty.
+     */
     private static function query(Request $request): string
     {
-        return mb_substr(trim((string) $request->query('q', '')), 0, 255);
+        $q = $request->query('q', '');
+
+        return is_string($q) ? mb_substr(trim($q), 0, 255) : '';
     }
 }

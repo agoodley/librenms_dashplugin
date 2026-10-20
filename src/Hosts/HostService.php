@@ -15,31 +15,34 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
  */
 class HostService
 {
-    /** MAC addresses located per search (an IP address can have several, e.g. a VRRP virtual MAC). */
+    /** Answers per search (an IP address can have several MACs, a virtual router MAC one answer per VLAN). */
     public const MAX_HOSTS = 8;
+
+    /** Addresses of a device or a DNS name looked up per search. */
+    public const MAX_IPS = 8;
 
     /** MACs listed on the port tab. */
     public const PORT_MACS = 50;
 
-    /**
-     * A MAC learned on more switches than this (a gateway's) only gets the end of its trails worked
-     * out: no per-switch freshness, and MACs counted only on ports without a neighbor.
-     */
-    public const WIDE_DEVICES = 50;
-
-    /** @var callable(string): string[] */
+    /** @var (callable(string): (string[]|null))|null */
     private $resolver;
 
+    private \Closure $urls;
+
     /**
-     * @param  callable(string): string[]|null  $resolver  hostname => IP addresses (default: DNS)
+     * @param  (callable(string): (string[]|null))|null  $resolver  hostname => IP addresses, null when the user made
+     *                                                             too many lookups (DnsResolver); none: no DNS
+     * @param  (\Closure(string, array): string)|null  $urls  route name and parameters => URL (default: route())
      */
     public function __construct(
         private readonly HostRepository $repo,
         private readonly TopologyRepository $topology,
         private readonly PluginSettings $settings,
         ?callable $resolver = null,
+        ?\Closure $urls = null,
     ) {
-        $this->resolver = $resolver ?? [self::class, 'resolve'];
+        $this->resolver = $resolver;
+        $this->urls = $urls ?? fn (string $name, array $parameters = []) => route($name, $parameters);
     }
 
     /**
@@ -52,6 +55,8 @@ class HostService
 
         $macs = [];
         $ips = [];
+        $searched = [];
+        $ends = [];
         switch ($query['kind']) {
             case HostQuery::EMPTY:
                 return $result;
@@ -67,53 +72,65 @@ class HostService
                 $ips = [$query['value']];
                 break;
             case HostQuery::NAME:
-                // a monitored device: where its addresses and its own interface MACs are learned
                 $devices = $this->repo->devicesByName($query['value']);
                 $result['devices'] = $devices;
-                $ips = array_values(array_unique(array_merge(...array_column($devices, 'ips') ?: [[]])));
-                if (! $ips) {
-                    foreach ($devices ? array_column($devices, 'hostname') : [$query['value']] as $name) {
-                        $ips = array_merge($ips, ($this->resolver)($name));
+                $searched = array_column($devices, 'device_id');
+                $ips = array_slice(array_values(array_unique(array_merge([], ...array_column($devices, 'ips')))), 0, self::MAX_IPS);
+                if (! $devices) {
+                    $ips = $this->resolve($query['value'], $result['message']);
+                    if ($ips === null) {
+                        return $result;
                     }
-                    $ips = array_slice(array_values(array_unique($ips)), 0, 4);
+                } elseif (! $ips && $this->resolver !== null && $this->settings->bool('hosts_dns')) {
+                    // devices LibreNMS polls by hostname without a stored address
+                    foreach (array_unique(array_column($devices, 'hostname')) as $hostname) {
+                        $ips = array_merge($ips, ($this->resolver)($hostname) ?? []);
+                    }
+                    $ips = array_slice(array_values(array_unique($ips)), 0, self::MAX_IPS);
                 }
-                $result['resolved'] = array_map(fn ($ip) => str_contains($ip, ':') ? HostQuery::ipv6Short($ip) : $ip, $ips);
-                if ($devices) {
-                    $macs = array_values(array_unique(array_column($this->repo->fdbByMacs($this->repo->deviceMacs(array_column($devices, 'device_id'))), 'mac')));
-                }
-                if (! $ips && ! $macs) {
-                    $result['message'] = $devices
-                        ? $query['value'] . ' is monitored by LibreNMS, but its address is unknown and no switch you can see has learned the MAC address of one of its interfaces.'
-                        : $query['value'] . ' is not a device in LibreNMS and does not resolve in DNS.';
-
-                    return $result;
-                }
+                $result['resolved'] = array_map([self::class, 'display'], $ips);
+                // where the interfaces of a server or other end device are plugged in; a switch or router is the answer itself
+                $ends = array_filter($devices, fn ($device) => ! in_array($device['role'], HostLocator::NETWORK_ROLES, true));
+                $macs = $ends ? $this->repo->deviceMacs(array_column($ends, 'device_id')) : [];
                 break;
         }
 
-        foreach ($ips as $ip) {
-            $rows = str_contains($ip, ':') ? $this->repo->ndByIp(HostQuery::ipv6Full($ip)) : $this->repo->arpByIp($ip);
+        // the MACs of the addresses, each in the VLAN of the router interface that has the ARP / neighbor entry
+        $targets = [];
+        if ($ips) {
+            $rows = $this->repo->addressesByIps($ips);
+            $vlans = $this->interfaceVlans(array_column($rows, 'port_id'));
             foreach ($rows as $row) {
-                $macs[] = $row['mac'];
+                $vlan = $vlans[$row['port_id']] ?? null;
+                $targets[$row['mac'] . '|' . $vlan] ??= ['mac' => $row['mac'], 'vlan' => $vlan, 'optional' => false];
             }
         }
-        $macs = array_values(array_unique(array_filter($macs, fn ($mac) => strlen($mac) === 12)));
-        if ($ips && ! $macs) {
-            $result['message'] = 'No ARP or IPv6 neighbor entry for ' . implode(', ', $result['resolved'] ?: array_map(fn ($ip) => str_contains($ip, ':') ? HostQuery::ipv6Short($ip) : $ip, $ips))
-                . ' on the devices you can see. LibreNMS learns IP addresses from the ARP and neighbor tables of routers and L3 switches.';
-
-            return $result;
+        foreach ($macs as $mac) {
+            $targets[$mac . '|'] ??= ['mac' => $mac, 'vlan' => null, 'optional' => $query['kind'] === HostQuery::NAME];
         }
+        $targets = array_values(array_filter($targets, fn ($target) => strlen($target['mac']) === 12));
 
-        $result['truncated'] = count($macs) > self::MAX_HOSTS;
-        $result['hosts'] = $this->locate(array_slice($macs, 0, self::MAX_HOSTS));
+        if ($targets) {
+            [$result['hosts'], $result['truncated']] = $this->locate($targets, $searched);
+        }
+        if (! $result['hosts']) {
+            $addresses = implode(', ', $result['resolved'] ?: array_map([self::class, 'display'], $ips));
+            $result['message'] = match (true) {
+                (bool) $ends => $query['value'] . ' is monitored by LibreNMS, but ' . ($ips ? 'its address (' . $addresses . ') is in no ARP or IPv6 neighbor table you can see' : 'its address is unknown')
+                    . ' and no switch you can see has learned the MAC address of one of its interfaces.',
+                (bool) $result['devices'] => $query['value'] . ' is a switch, router or firewall monitored by LibreNMS: its device page and the L2 map show its links'
+                    . ($ips ? '; its address (' . $addresses . ') is in no ARP or IPv6 neighbor table you can see.' : '.'),
+                default => 'No ARP or IPv6 neighbor entry for ' . $addresses . ' on the devices you can see. LibreNMS learns IP addresses from the ARP and neighbor tables of routers and L3 switches.',
+            };
+        }
 
         return $result;
     }
 
     /**
      * Everything the port tab shows about one port: far end, port-channel, VLANs, spanning tree,
-     * the MACs learned on it and 802.1X sessions. Queries by port and device only.
+     * the MACs learned on it (with their IPv4 addresses) and 802.1X sessions. It is on every port
+     * page, so it only uses indexed lookups: by port, device or MAC (IPv6 neighbors have no MAC index).
      */
     public function portTab(int $deviceId, int $portId): array
     {
@@ -150,23 +167,29 @@ class HostService
             }
         }
 
-        $fresh = $this->repo->fdbFreshness([$deviceId]);
+        // a port-channel member's MACs are learned on the port-channel
+        $fdbPort = $portId;
         $fdb = $this->repo->fdbByPort($portId, self::PORT_MACS);
+        if (! $fdb && $parent) {
+            $fdbPort = $parent;
+            $fdb = $this->repo->fdbByPort($parent, self::PORT_MACS);
+        }
+        $since = $this->repo->fdbSince([$deviceId], $fdb);
+        $start = $since[$deviceId] ?? null;
         $macs = array_values(array_unique(array_column($fdb, 'mac')));
         $ouis = $this->repo->vendors($macs);
         $addresses = [];
-        foreach ($this->repo->addressesByMacs($macs) as $row) {
-            $addresses[$row['mac']][] = $row['family'] === 6 ? HostQuery::ipv6Short($row['ip']) : $row['ip'];
+        foreach ($this->repo->addressesByMacs($macs, false) as $row) {
+            $addresses[$row['mac']][] = $row['ip'];
         }
-        $newest = $fresh[$deviceId] ?? 0;
         $learned = [];
         foreach ($fdb as $row) {
             $learned[] = $row + [
                 'readable' => Mac::readable($row['mac']),
                 'vendor' => Mac::vendor($row['mac'], $ouis),
                 'ips' => array_values(array_unique($addresses[$row['mac']] ?? [])),
-                'stale' => $row['last_seen'] < $newest - HostLocator::STALE_AFTER,
-                'locate_url' => route('topology.hosts', ['q' => Mac::readable($row['mac'])]),
+                'stale' => $start !== null && $row['last_seen'] < $start,
+                'locate_url' => ($this->urls)('topology.hosts', ['q' => Mac::readable($row['mac'])]),
             ];
         }
 
@@ -179,45 +202,139 @@ class HostService
                 'status' => $related[$id]['ifOperStatus'] ?? null], $members),
             'vlans' => $this->repo->portVlans($deviceId, $portId),
             'stp' => $stp,
-            'mac_count' => $this->repo->macCounts([$portId], $fresh, HostLocator::STALE_AFTER)[$portId] ?? 0,
+            'fdb_port' => $fdbPort === $portId ? null : ['label' => self::portLabel($related[$fdbPort] ?? null, $fdbPort), 'url' => $related[$fdbPort]['url'] ?? null],
+            'mac_count' => $this->repo->macCounts([$fdbPort], $since)[$fdbPort] ?? 0,
             'macs' => $learned,
             'nac' => array_map(fn ($row) => $row + ['readable' => Mac::readable($row['mac'])], $this->repo->nacByPort($portId)),
-            'last_discovery' => $newest ?: null,
-            'map_url' => route('topology.l2', ['device' => $deviceId, 'depth' => 1]),
+            // when the switch's forwarding table was read: its current entries carry the time, else the start of the discovery
+            'last_discovery' => $start === null ? null : max($start, $fdb ? max(array_column($fdb, 'last_seen')) : 0),
+            'map_url' => ($this->urls)('topology.l2', ['device' => $deviceId, 'depth' => 1]),
         ];
     }
 
     /**
-     * Locate each MAC and describe the answer with names and links.
-     *
-     * @param  string[]  $macs
+     * VLAN of a router interface from its name: Vlan10 / Vl10 (Cisco, Arista, Dell, Aruba), Vlanif10
+     * (Huawei), Vlan-interface10 (H3C / Comware), irb.10 and vlan.10 (Juniper).
      */
-    private function locate(array $macs): array
+    public static function interfaceVlan(string $name): ?int
     {
-        $fdb = $this->repo->fdbByMacs($macs);
-        $deviceIds = array_values(array_unique(array_column($fdb, 'device_id')));
-        $portIds = array_values(array_unique(array_filter(array_column($fdb, 'port_id'))));
-        $wide = count($deviceIds) > self::WIDE_DEVICES;
-        $fresh = $wide ? [] : $this->repo->fdbFreshness($deviceIds);
+        if (! preg_match('/^(?:vl|vlan|vlanif|vlan-interface|irb\.|vlan\.)\s*(\d{1,4})$/i', trim($name), $match)) {
+            return null;
+        }
+        $vlan = (int) $match[1];
+
+        return $vlan >= 1 && $vlan <= 4094 ? $vlan : null;
+    }
+
+    /**
+     * IP addresses of a name that is not a LibreNMS device, or null with the reason in $message.
+     *
+     * @return string[]|null
+     */
+    private function resolve(string $name, ?string &$message): ?array
+    {
+        if ($this->resolver === null || ! $this->settings->bool('hosts_dns')) {
+            $message = $name . ' is not a device in LibreNMS' . ($this->resolver === null ? '.' : ' (DNS lookups are switched off in the plugin settings).');
+
+            return null;
+        }
+
+        $ips = ($this->resolver)($name);
+        if ($ips === null) {
+            $message = 'Too many DNS lookups: try again in a minute.';
+
+            return null;
+        }
+        $ips = array_slice(array_values(array_unique(array_filter($ips, fn ($ip) => filter_var($ip, FILTER_VALIDATE_IP) !== false))), 0, self::MAX_IPS);
+        if (! $ips) {
+            $message = $name . ' is not a device in LibreNMS and does not resolve in DNS.';
+
+            return null;
+        }
+
+        return $ips;
+    }
+
+    /**
+     * Locate each MAC and describe the answers with names and links.
+     *
+     * @param  array<int, array{mac: string, vlan: ?int, optional: bool}>  $targets  vlan: only the entries of that VLAN
+     *                                                                                 (from the ARP entry); optional: left
+     *                                                                                 out when no switch learned it
+     * @param  int[]  $searched  devices searched by name, owners of their interface MACs
+     * @return array{0: array, 1: bool} answers, truncated
+     */
+    private function locate(array $targets, array $searched): array
+    {
+        $byMac = [];
+        foreach ($this->repo->fdbByMacs(array_values(array_unique(array_column($targets, 'mac')))) as $row) {
+            $byMac[$row['mac']][] = $row;
+        }
+
+        // one answer per MAC; a virtual router MAC searched by itself one per VLAN (HSRP group 1 is the same MAC in every VLAN)
+        $answers = [];
+        foreach ($targets as $target) {
+            $rows = $byMac[$target['mac']] ?? [];
+            $gateway = Mac::gateway($target['mac']) !== null;
+            if (! $rows && $target['optional']) {
+                continue;
+            }
+            if ($target['vlan'] !== null) {
+                $answers[] = ['rows' => self::inVlan($rows, $target['vlan'], $gateway)] + $target;
+                continue;
+            }
+            $groups = $gateway ? self::byVlan($rows) : [];
+            if (count($groups) > 1) {
+                foreach ($groups as [$vlan, $group]) {
+                    $answers[] = ['vlan' => $vlan, 'rows' => $group] + $target;
+                }
+            } else {
+                $answers[] = ['rows' => $rows] + $target;
+            }
+        }
+        $truncated = count($answers) > self::MAX_HOSTS;
+        $answers = array_slice($answers, 0, self::MAX_HOSTS);
+        if (! $answers) {
+            return [[], false];
+        }
+
+        $rows = array_merge(...array_column($answers, 'rows'));
+        $macs = array_values(array_unique(array_column($answers, 'mac')));
+        $deviceIds = array_values(array_unique(array_column($rows, 'device_id')));
+        $portIds = array_values(array_unique(array_filter(array_column($rows, 'port_id'))));
 
         $lag = $this->topology->lagParents($deviceIds);
         $wanted = array_flip($portIds);
         $members = array_keys(array_filter($lag, fn ($parent) => isset($wanted[$parent])));
         $ports = $this->repo->ports(array_merge($portIds, $members));
         $neighbors = $this->repo->neighbors(array_merge($portIds, $members));
-        $countPorts = $wide ? array_filter($portIds, fn ($id) => empty($neighbors[$id]) && ! in_array($id, $lag, true)) : $portIds;
-        $counts = $this->repo->macCounts($countPorts, $fresh, HostLocator::STALE_AFTER);
-
         $neighborDevices = [];
-        foreach ($neighbors as $list) {
+        $withNeighbors = [];
+        foreach ($neighbors as $portId => $list) {
             foreach ($list as $neighbor) {
                 if ($neighbor['device_id']) {
                     $neighborDevices[] = $neighbor['device_id'];
                 }
             }
+            if ($list) {
+                $withNeighbors[$portId] = true;
+                $withNeighbors[$lag[$portId] ?? $portId] = true;
+            }
         }
-        $devices = $this->repo->deviceRows(array_merge($deviceIds, $neighborDevices));
-        $names = array_map(fn ($device) => $device['name'], $devices);
+        $owners = $this->repo->owners($macs, array_merge($deviceIds, $neighborDevices, $searched));
+        $ownerDevices = [];
+        foreach ($owners as $list) {
+            foreach ($list as $owner) {
+                $ownerDevices[] = $owner['device_id'];
+            }
+        }
+        $devices = $this->repo->deviceRows(array_merge($deviceIds, $neighborDevices, $ownerDevices));
+        // the switches that learned the MACs, and the neighbors a trail can end at (with or without forwarding table data)
+        $since = $this->repo->fdbSince(array_merge($deviceIds, $neighborDevices), $rows);
+
+        // ports without LLDP/CDP neighbor: which of the switches that learned the MACs they lead to
+        $bare = array_values(array_filter($portIds, fn ($portId) => isset($ports[$portId]) && ! isset($withNeighbors[$portId])));
+        $switchMacs = $bare ? $this->repo->switchMacsOn($bare, $deviceIds, $since) : [];
 
         $locatorPorts = [];
         $aggregates = array_flip(array_values($lag));
@@ -226,29 +343,30 @@ class HostService
                 'device_id' => (int) $port['device_id'],
                 'name' => self::portLabel($port, $portId),
                 'aggregate' => isset($aggregates[$portId]) || InterfaceName::isLagName($port['ifName'] ?? '') || ($port['ifType'] ?? '') === 'ieee8023adLag',
-                'macs' => $counts[$portId] ?? 0,
             ];
         }
-        $locator = new HostLocator($locatorPorts, $neighbors, $lag, $fresh, $names, $this->settings->int('hosts_shared_port_macs', 2, 10000));
+        $locator = new HostLocator($locatorPorts, $neighbors, $lag, $since,
+            array_map(fn ($device) => ['name' => $device['name'], 'role' => $device['role']], $devices),
+            $this->settings->int('hosts_shared_port_macs', 2, 10000), $switchMacs,
+            fn (array $ids) => $this->repo->macCounts($ids, $since));
 
         $vlanNames = [];
-        $byMac = [];
-        foreach ($fdb as $row) {
-            $byMac[$row['mac']][] = $row;
+        foreach ($rows as $row) {
             if ($row['vlan'] !== null && $row['vlan_name'] !== null) {
                 $vlanNames[$row['device_id'] . ':' . $row['vlan']] = $row['vlan_name'];
             }
         }
         $ouis = $this->repo->vendors($macs);
+        $addressRows = $this->repo->addressesByMacs($macs);
+        $addressVlans = $this->interfaceVlans(array_column($addressRows, 'port_id'));
         $addresses = [];
-        foreach ($this->repo->addressesByMacs($macs) as $row) {
-            $addresses[$row['mac']][] = $row;
+        foreach ($addressRows as $row) {
+            $addresses[$row['mac']][] = $row + ['vlan' => $addressVlans[$row['port_id']] ?? null];
         }
         $nac = [];
-        foreach ($this->repo->nacByMacs($macs) as $row) {
+        foreach ($this->repo->nacByMacs($macs, $portIds) as $row) {
             $nac[$row['mac']][] = $row;
         }
-        $ownerDevices = array_values(array_unique(array_merge($deviceIds, $neighborDevices)));
 
         $describe = function (array $entry) use ($ports, $devices, $vlanNames): array {
             $deviceId = $entry['device_id'];
@@ -257,7 +375,7 @@ class HostService
 
             return array_merge($entry, [
                 'device' => $devices[$deviceId]['name'] ?? '#' . $deviceId,
-                'device_url' => $devices[$deviceId]['url'] ?? url('device/' . $deviceId),
+                'device_url' => $devices[$deviceId]['url'] ?? null,
                 'port' => $entry['port_id'] > 0 ? self::portLabel($port, $entry['port_id']) : 'unknown port',
                 'port_url' => $port['url'] ?? null,
                 'description' => trim((string) ($port['ifAlias'] ?? '')),
@@ -271,23 +389,26 @@ class HostService
         };
 
         $hosts = [];
-        foreach ($macs as $mac) {
-            $located = $locator->locate($mac, $byMac[$mac] ?? [], $this->repo->owners($mac, $ownerDevices));
-            $edge = $located['edge'] ? $describe($located['edge']) : null;
+        foreach ($answers as $answer) {
+            $mac = $answer['mac'];
+            $located = $locator->locate($mac, $answer['rows'], $owners[$mac] ?? []);
+            $vlan = $answer['vlan'];
             $hosts[] = [
                 'mac' => $mac,
                 'readable' => Mac::readable($mac),
                 'vendor' => Mac::vendor($mac, $ouis),
-                'addresses' => array_map(fn ($row) => $row + [
-                    'display' => $row['family'] === 6 ? HostQuery::ipv6Short($row['ip']) : $row['ip'],
+                'vlan' => $vlan,
+                'gateway' => $located['gateway'],
+                'addresses' => array_values(array_map(fn ($row) => $row + [
+                    'display' => self::display($row['ip']),
                     'device' => $devices[$row['device_id']]['name'] ?? null,
-                ], $addresses[$mac] ?? []),
+                ], array_filter($addresses[$mac] ?? [], fn ($row) => $vlan === null || $row['vlan'] === null || $row['vlan'] === $vlan))),
                 'nac' => $nac[$mac] ?? [],
                 'status' => $located['status'],
                 'stale' => $located['stale'],
-                'edge' => $edge === null ? null : $edge + [
-                    'map_url' => route('topology.l2', ['device' => $edge['device_id'], 'depth' => 1, 'host' => $mac]),
-                ],
+                'edge' => $located['edge'] ? $describe($located['edge']) : null,
+                'device' => $located['device'] ? $located['device'] + ['url' => $devices[$located['device']['device_id']]['url'] ?? null] : null,
+                'map_url' => $this->mapUrl($located, $mac),
                 'seen' => array_map($describe, $located['seen']),
                 'notes' => $located['notes'],
             ];
@@ -320,7 +441,68 @@ class HostService
         }
         unset($host);
 
-        return $hosts;
+        return [$hosts, $truncated];
+    }
+
+    /**
+     * Where the L2 map shows the answer: the host next to its switch or next to the device it is behind;
+     * a device the address belongs to is the answer itself.
+     */
+    private function mapUrl(array $located, string $mac): ?string
+    {
+        return match ($located['status']) {
+            'located' => ($this->urls)('topology.l2', ['device' => $located['edge']['device_id'], 'depth' => 1, 'host' => $mac]),
+            'behind' => ($this->urls)('topology.l2', ['device' => $located['device']['device_id'], 'depth' => 1, 'host' => $mac]),
+            'owner', 'gateway' => ($this->urls)('topology.l2', ['device' => $located['device']['device_id'], 'depth' => 1]),
+            default => null,
+        };
+    }
+
+    /**
+     * @param  int[]  $portIds  router interfaces
+     * @return array<int, int> port_id => VLAN of the interface
+     */
+    private function interfaceVlans(array $portIds): array
+    {
+        $vlans = [];
+        foreach ($this->repo->ports($portIds) as $portId => $port) {
+            $vlan = self::interfaceVlan(InterfaceName::label($port));
+            if ($vlan !== null) {
+                $vlans[$portId] = $vlan;
+            }
+        }
+
+        return $vlans;
+    }
+
+    /**
+     * The entries of one VLAN (and those without VLAN). A host's MAC is in one VLAN, so when no entry has
+     * that VLAN (VLANs not mapped on some switches) all entries are used; a virtual router MAC's only those.
+     */
+    private static function inVlan(array $rows, int $vlan, bool $strict): array
+    {
+        $matching = array_values(array_filter($rows, fn ($row) => $row['vlan'] === $vlan || $row['vlan'] === null));
+        if ($strict || in_array($vlan, array_column($rows, 'vlan'), true)) {
+            return $matching;
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Entries per VLAN, lowest first, entries without VLAN last.
+     *
+     * @return array<int, array{0: ?int, 1: array}>
+     */
+    private static function byVlan(array $rows): array
+    {
+        $groups = [];
+        foreach ($rows as $row) {
+            $groups[$row['vlan'] ?? PHP_INT_MAX][] = $row;
+        }
+        ksort($groups);
+
+        return array_map(fn ($vlan, $group) => [$vlan === PHP_INT_MAX ? null : $vlan, $group], array_keys($groups), array_values($groups));
     }
 
     /**
@@ -332,30 +514,10 @@ class HostService
     }
 
     /**
-     * A and AAAA records of a name, with a short resolver timeout so a broken DNS does not hang the page.
-     *
-     * @return string[]
+     * IPv6 in its short form, IPv4 as is.
      */
-    public static function resolve(string $name): array
+    private static function display(string $ip): string
     {
-        $previous = getenv('RES_OPTIONS');
-        putenv('RES_OPTIONS=timeout:1 attempts:1');
-        try {
-            $records = @dns_get_record($name, DNS_A | DNS_AAAA) ?: [];
-        } catch (\Throwable) {
-            $records = [];
-        } finally {
-            putenv($previous === false ? 'RES_OPTIONS' : 'RES_OPTIONS=' . $previous);
-        }
-
-        $ips = [];
-        foreach ($records as $record) {
-            $ip = $record['ip'] ?? $record['ipv6'] ?? null;
-            if ($ip && filter_var($ip, FILTER_VALIDATE_IP)) {
-                $ips[] = $ip;
-            }
-        }
-
-        return array_values(array_unique($ips));
+        return str_contains($ip, ':') ? HostQuery::ipv6Short($ip) : $ip;
     }
 }

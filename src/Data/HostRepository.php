@@ -2,7 +2,11 @@
 
 namespace Agoodley\LibrenmsTopology\Data;
 
+use Agoodley\LibrenmsTopology\Hosts\HostLocator;
+use Agoodley\LibrenmsTopology\Hosts\HostQuery;
+use Agoodley\LibrenmsTopology\Hosts\Mac;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
+use Agoodley\LibrenmsTopology\Support\InterfaceName;
 use Agoodley\LibrenmsTopology\Topology\L2Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -10,11 +14,24 @@ use Illuminate\Support\Facades\Log;
 /**
  * Database access of the host locator and the port tab: forwarding tables (ports_fdb), ARP
  * (ipv4_mac), IPv6 neighbors (ipv6_nd), 802.1X / MAB sessions (ports_nac) and the OUI table, only
- * from devices the user may see. Every lookup is by MAC, address, port or device so the indexes
- * are used; MACs are LibreNMS' 12 lowercase hex digits.
+ * from devices the user may see. MACs are LibreNMS' 12 lowercase hex digits.
+ *
+ * Indexes LibreNMS has: ports_fdb on port, MAC and device; ipv4_mac on MAC, port and device (not on
+ * the address); ipv6_nd on port and device only; ports_nac on port + MAC and device; ports on device
+ * (not on ifPhysAddress). A search by IPv4 address therefore reads the whole ARP table once, and any
+ * IPv6 lookup the whole IPv6 neighbor table once; everything else is looked up by index.
  */
 class HostRepository extends ScopedRepository
 {
+    /** Devices put into a query's permission filter at most; with more, rows are checked after reading. */
+    private const SCOPE_IN_QUERY = 1000;
+
+    /** Assumed duration of a discovery whose duration LibreNMS did not record (seconds). */
+    private const UNKNOWN_DURATION = 3600;
+
+    /** Slack between the recorded start of a discovery and the forwarding table entries it stamps (seconds). */
+    private const READ_MARGIN = 60;
+
     /**
      * Forwarding table entries of the MACs.
      *
@@ -41,40 +58,74 @@ class HostRepository extends ScopedRepository
     }
 
     /**
-     * Time of each switch's newest forwarding table entry: entries older than that are from an
-     * earlier discovery (LibreNMS refreshes updated_at of every entry it still sees).
+     * Start of each switch's last forwarding table read: entries updated before it are from an earlier
+     * read (LibreNMS stamps every entry it still sees with the time of the read). It is the start of the
+     * device's last discovery when an entry confirms that discovery read the table (one indexed probe per
+     * device); otherwise (forwarding table module off or failed, never discovered) the newest entry tells,
+     * which reads all entries of that device. Devices without entries have no forwarding table data.
      *
      * @param  int[]  $deviceIds
+     * @param  array<int, array>  $rows  entries already read (fdbRows()): each proves a read at its time
      * @return array<int, int> device_id => unix time
      */
-    public function fdbFreshness(array $deviceIds): array
+    public function fdbSince(array $deviceIds, array $rows = []): array
     {
         $deviceIds = $this->visible($deviceIds);
         if (! $deviceIds) {
             return [];
         }
 
-        $fresh = [];
-        foreach (DB::table('ports_fdb')->whereIntegerInRaw('device_id', $deviceIds)->groupBy('device_id')
-            ->selectRaw('device_id, MAX(updated_at) as newest')->get() as $row) {
-            $fresh[(int) $row->device_id] = self::time($row->newest);
+        $since = [];
+        try {
+            $starts = [];
+            foreach (DB::table('devices')->whereIntegerInRaw('device_id', $deviceIds)->get(['device_id', 'last_discovered', 'last_discovered_timetaken']) as $row) {
+                $at = self::time($row->last_discovered);
+                if ($at > 0) {
+                    $took = $row->last_discovered_timetaken === null ? self::UNKNOWN_DURATION : (int) ceil((float) $row->last_discovered_timetaken);
+                    $starts[(int) $row->device_id] = $at - $took - self::READ_MARGIN;
+                }
+            }
+            foreach (array_chunk($starts, 100, true) as $chunk) {
+                $query = null;
+                foreach ($chunk as $deviceId => $start) {
+                    $probe = DB::table('ports_fdb')->select('device_id')->where('device_id', $deviceId)->where('updated_at', '>=', self::date($start))->limit(1);
+                    $query = $query === null ? $probe : $query->unionAll($probe);
+                }
+                foreach ($query->get() as $row) {
+                    $since[(int) $row->device_id] = $chunk[(int) $row->device_id];
+                }
+            }
+
+            $rest = array_values(array_diff($deviceIds, array_keys($since)));
+            if ($rest) {
+                foreach (DB::table('ports_fdb')->whereIntegerInRaw('device_id', $rest)->groupBy('device_id')
+                    ->selectRaw('device_id, MAX(updated_at) as newest')->get() as $row) {
+                    $since[(int) $row->device_id] = self::time($row->newest) - HostLocator::STALE_AFTER;
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot read forwarding table times: ' . $e->getMessage());
         }
 
-        return $fresh;
+        foreach ($rows as $row) {
+            if (isset($since[$row['device_id']])) {
+                $since[$row['device_id']] = max($since[$row['device_id']], $row['last_seen'] - HostLocator::STALE_AFTER);
+            }
+        }
+
+        return $since;
     }
 
     /**
-     * MACs learned on each port at its switch's last forwarding table discovery (all entries for a
-     * switch missing from $fresh).
+     * MACs learned on each port at its switch's last forwarding table read.
      *
      * @param  int[]  $portIds
-     * @param  array<int, int>  $fresh  device_id => newest entry (fdbFreshness())
-     * @param  int  $window  entries this much older than the newest still count (seconds)
+     * @param  array<int, int>  $since  see fdbSince(); all entries count for a switch missing here
      * @return array<int, int> port_id => distinct MACs
      */
-    public function macCounts(array $portIds, array $fresh, int $window): array
+    public function macCounts(array $portIds, array $since): array
     {
-        $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
+        $portIds = self::ids($portIds);
         if (! $portIds) {
             return [];
         }
@@ -90,8 +141,8 @@ class HostRepository extends ScopedRepository
                 continue;
             }
             $query = DB::table('ports_fdb')->whereIntegerInRaw('port_id', $ids);
-            if (isset($fresh[$deviceId])) {
-                $query->where('updated_at', '>=', date('Y-m-d H:i:s', $fresh[$deviceId] - $window));
+            if (isset($since[$deviceId])) {
+                $query->where('updated_at', '>=', self::date($since[$deviceId]));
             }
             foreach ($query->groupBy('port_id')->selectRaw('port_id, COUNT(DISTINCT mac_address) as macs')->get() as $row) {
                 $counts[(int) $row->port_id] = (int) $row->macs;
@@ -102,32 +153,80 @@ class HostRepository extends ScopedRepository
     }
 
     /**
-     * ARP entries of an IPv4 address (ipv4_address has no index in LibreNMS: one exact match scan).
+     * Monitored devices whose own (interface) MAC address each port learned at its switch's last read:
+     * a port without LLDP/CDP neighbor that learned a switch's MAC leads toward that switch.
      *
-     * @return array<int, array{mac: string, ip: string, family: int, device_id: int, port_id: int, context: ?string}>
+     * @param  int[]  $portIds
+     * @param  int[]  $deviceIds  the devices to look for
+     * @param  array<int, int>  $since  see fdbSince()
+     * @return array<int, int[]> port_id => device ids
      */
-    public function arpByIp(string $ip): array
+    public function switchMacsOn(array $portIds, array $deviceIds, array $since): array
     {
-        return $this->addressRows('ipv4_mac', 'ipv4_address', fn ($query) => $query->where('ipv4_address', $ip), 4);
+        $portIds = self::ids($portIds);
+        $deviceIds = $this->visible($deviceIds);
+        if (! $portIds || ! $deviceIds) {
+            return [];
+        }
+
+        $found = [];
+        try {
+            $learned = []; // mac => port_id => device that learned it
+            foreach (DB::table('ports_fdb')->whereIntegerInRaw('port_id', $portIds)->limit(20000)->get(['port_id', 'device_id', 'mac_address', 'updated_at']) as $row) {
+                $device = (int) $row->device_id;
+                if (! isset($since[$device]) || self::time($row->updated_at) >= $since[$device]) {
+                    $learned[strtolower((string) $row->mac_address)][(int) $row->port_id] = $device;
+                }
+            }
+            foreach (array_chunk(array_keys($learned), 1000) as $chunk) {
+                foreach (DB::table('ports')->whereIntegerInRaw('device_id', $deviceIds)->whereIn('ifPhysAddress', $chunk)->get(['device_id', 'ifPhysAddress']) as $row) {
+                    $owner = (int) $row->device_id;
+                    foreach ($learned[strtolower((string) $row->ifPhysAddress)] ?? [] as $portId => $device) {
+                        if ($owner !== $device) {
+                            $found[$portId][$owner] = true;
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot match switch MACs: ' . $e->getMessage());
+        }
+
+        return array_map(fn ($owners) => array_keys($owners), $found);
     }
 
     /**
-     * IPv6 neighbor entries of an address, in the uncompressed form LibreNMS stores.
+     * ARP and IPv6 neighbor entries of the addresses (IPv6 in any notation).
      *
-     * @return array<int, array> see arpByIp()
+     * @param  string[]  $ips
+     * @return array<int, array{mac: string, ip: string, family: int, device_id: int, port_id: int, context: ?string}>
      */
-    public function ndByIp(string $ip): array
+    public function addressesByIps(array $ips): array
     {
-        return $this->addressRows('ipv6_nd', 'ipv6_address', fn ($query) => $query->where('ipv6_address', $ip), 6);
+        $v4 = [];
+        $v6 = [];
+        foreach ($ips as $ip) {
+            if (str_contains($ip, ':')) {
+                $v6[] = HostQuery::ipv6Full($ip);
+            } else {
+                $v4[] = $ip;
+            }
+        }
+
+        return array_merge(
+            $v4 ? $this->addressRows('ipv4_mac', 'ipv4_address', fn ($query) => $query->whereIn('ipv4_address', array_values(array_unique($v4))), 4) : [],
+            $v6 ? $this->addressRows('ipv6_nd', 'ipv6_address', fn ($query) => $query->whereIn('ipv6_address', array_values(array_unique($v6))), 6) : [],
+        );
     }
 
     /**
      * IPv4 and IPv6 addresses of the MACs from the ARP and IPv6 neighbor tables.
      *
      * @param  string[]  $macs
-     * @return array<int, array> see arpByIp()
+     * @param  bool  $ipv6  also read the IPv6 neighbor table (no index on the MAC)
+     * @return array<int, array> see addressesByIps()
      */
-    public function addressesByMacs(array $macs): array
+    public function addressesByMacs(array $macs, bool $ipv6 = true): array
     {
         if (! $macs) {
             return [];
@@ -135,18 +234,28 @@ class HostRepository extends ScopedRepository
 
         return array_merge(
             $this->addressRows('ipv4_mac', 'ipv4_address', fn ($query) => $query->whereIn('mac_address', array_values($macs)), 4),
-            $this->addressRows('ipv6_nd', 'ipv6_address', fn ($query) => $query->whereIn('mac_address', array_values($macs)), 6),
+            $ipv6 ? $this->addressRows('ipv6_nd', 'ipv6_address', fn ($query) => $query->whereIn('mac_address', array_values($macs)), 6) : [],
         );
     }
 
     /**
-     * 802.1X / MAB sessions of the MACs (the nac poller module), newest first.
+     * 802.1X / MAB sessions of the MACs (the nac poller module) on the given ports, newest first.
      *
      * @param  string[]  $macs
+     * @param  int[]  $portIds  ports where the MACs are learned (the table has no index on the MAC alone)
      */
-    public function nacByMacs(array $macs): array
+    public function nacByMacs(array $macs, array $portIds): array
     {
-        return $macs ? $this->nacRows(DB::table('ports_nac')->whereIn('mac_address', array_values($macs))) : [];
+        $portIds = self::ids($portIds);
+        if (! $macs || ! $portIds) {
+            return [];
+        }
+
+        $wanted = array_flip($macs);
+        $variants = array_values(array_unique(array_merge(...array_map([Mac::class, 'variants'], array_values($macs)))));
+
+        return array_values(array_filter($this->nacRows(DB::table('ports_nac')->whereIntegerInRaw('port_id', $portIds)->whereIn('mac_address', $variants)),
+            fn ($row) => isset($wanted[$row['mac']])));
     }
 
     /**
@@ -190,22 +299,25 @@ class HostRepository extends ScopedRepository
     }
 
     /**
-     * Interfaces of the given (visible) devices that have this MAC address.
+     * Interfaces of the given (visible) devices that have one of the MAC addresses.
      *
+     * @param  string[]  $macs
      * @param  int[]  $deviceIds
-     * @return array<int, array{device_id: int, port_id: int, port: string}>
+     * @return array<string, array<int, array{device_id: int, port_id: int, port: string}>> mac => interfaces
      */
-    public function owners(string $mac, array $deviceIds): array
+    public function owners(array $macs, array $deviceIds): array
     {
+        $macs = array_values(array_unique(array_filter($macs, fn ($mac) => strlen($mac) === 12)));
         $deviceIds = $this->visible($deviceIds);
-        if (! $deviceIds) {
+        if (! $macs || ! $deviceIds) {
             return [];
         }
 
         $owners = [];
-        foreach (DB::table('ports')->whereIntegerInRaw('device_id', $deviceIds)->where('ifPhysAddress', $mac)
-            ->get(['device_id', 'port_id', 'ifName', 'ifDescr']) as $row) {
-            $owners[] = ['device_id' => (int) $row->device_id, 'port_id' => (int) $row->port_id, 'port' => (string) ($row->ifName ?: $row->ifDescr)];
+        foreach (DB::table('ports')->whereIntegerInRaw('device_id', $deviceIds)->whereIn('ifPhysAddress', $macs)
+            ->orderBy('device_id')->orderBy('ifIndex')->get(['device_id', 'port_id', 'ifName', 'ifDescr', 'ifPhysAddress']) as $row) {
+            $owners[strtolower((string) $row->ifPhysAddress)][] = ['device_id' => (int) $row->device_id, 'port_id' => (int) $row->port_id,
+                'port' => InterfaceName::short((string) ($row->ifName ?: $row->ifDescr))];
         }
 
         return $owners;
@@ -242,35 +354,39 @@ class HostRepository extends ScopedRepository
      * LLDP/CDP themselves are only seen this way).
      *
      * @param  int[]  $portIds
-     * @return array<int, array<int, array{name: string, port: string, device_id: ?int, role: string, platform: string}>>
+     * @return array<int, array<int, array{name: string, port: string, device_id: ?int, role: string, platform: string, description: string}>>
      */
     public function neighbors(array $portIds): array
     {
-        $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
+        $portIds = self::ids($portIds);
         if (! $portIds) {
             return [];
         }
 
         $rows = DB::table('links')->where('active', 1)
             ->where(fn ($query) => $query->whereIntegerInRaw('local_port_id', $portIds)->orWhereIntegerInRaw('remote_port_id', $portIds))
-            ->get(['local_device_id', 'local_port_id', 'remote_device_id', 'remote_port_id', 'remote_hostname', 'remote_port', 'remote_platform'])
+            ->get(['local_device_id', 'local_port_id', 'remote_device_id', 'remote_port_id', 'remote_hostname', 'remote_port', 'remote_platform', 'remote_version'])
             ->map(fn ($row) => (array) $row)->all();
 
         $wanted = array_flip($portIds);
         $deviceIds = [];
-        $localPorts = [];
+        $named = [];
         foreach ($rows as $row) {
             foreach (['local_device_id', 'remote_device_id'] as $column) {
                 if ((int) $row[$column] > 0 && $this->canSee((int) $row[$column])) {
                     $deviceIds[(int) $row[$column]] = true;
                 }
             }
+            // the neighbor's port by its name in LibreNMS, so both directions of a link look the same
+            if (isset($wanted[(int) $row['local_port_id']]) && (int) $row['remote_port_id'] > 0) {
+                $named[(int) $row['remote_port_id']] = true;
+            }
             if (isset($wanted[(int) $row['remote_port_id']])) {
-                $localPorts[(int) $row['local_port_id']] = true;
+                $named[(int) $row['local_port_id']] = true;
             }
         }
         $devices = $this->deviceRows(array_keys($deviceIds));
-        $portNames = $this->portNames(array_keys($localPorts));
+        $portNames = $this->portNames(array_keys($named));
 
         $neighbors = [];
         foreach ($rows as $row) {
@@ -278,46 +394,66 @@ class HostRepository extends ScopedRepository
             $remote = (int) $row['remote_port_id'];
             if (isset($wanted[$local]) && $this->canSee((int) $row['local_device_id'])) {
                 $deviceId = (int) $row['remote_device_id'];
-                $visible = $deviceId > 0 && isset($devices[$deviceId]);
-                $neighbors[$local][] = [
-                    'name' => $visible ? $devices[$deviceId]['name'] : (L2Builder::shortHost(trim((string) $row['remote_hostname'])) ?: 'unknown neighbor'),
-                    'port' => (string) $row['remote_port'],
-                    'device_id' => $visible ? $deviceId : null,
-                    // a device the user may not see looks like an unmanaged neighbor, as on the maps
-                    'role' => $visible ? $devices[$deviceId]['role'] : DeviceRole::fromPlatform($row['remote_platform'], $row['remote_hostname']),
-                    'platform' => (string) $row['remote_platform'],
-                ];
+                // a device the user may not see looks like an unmanaged neighbor, as on the maps
+                $neighbors[$local][] = $deviceId > 0 && isset($devices[$deviceId])
+                    ? self::monitoredNeighbor($deviceId, $devices[$deviceId], $portNames[$remote] ?? (string) $row['remote_port'])
+                    : self::unmanagedNeighbor($row);
             }
             $deviceId = (int) $row['local_device_id'];
             if ($remote && isset($wanted[$remote]) && isset($devices[$deviceId]) && $deviceId !== (int) $row['remote_device_id']) {
-                $neighbors[$remote][] = [
-                    'name' => $devices[$deviceId]['name'],
-                    'port' => $portNames[$local] ?? '',
-                    'device_id' => $deviceId,
-                    'role' => $devices[$deviceId]['role'],
-                    'platform' => '',
-                ];
+                $neighbors[$remote][] = self::monitoredNeighbor($deviceId, $devices[$deviceId], $portNames[$local] ?? '');
             }
         }
 
-        // a link reported by both ends appears twice
-        foreach ($neighbors as &$list) {
-            $unique = [];
-            foreach ($list as $neighbor) {
-                $unique[($neighbor['device_id'] ?? $neighbor['name']) . '|' . $neighbor['port']] ??= $neighbor;
-            }
-            $list = array_values($unique);
-        }
-        unset($list);
+        return array_map([self::class, 'uniqueNeighbors'], $neighbors);
+    }
 
-        return $neighbors;
+    /**
+     * The neighbors of a port without the second copy of a link reported by both ends, which can name the
+     * far port differently (CDP TenGigabitEthernet1/1/1, ifName Te1/1/1).
+     *
+     * @param  array<int, array>  $neighbors
+     * @return array<int, array>
+     */
+    public static function uniqueNeighbors(array $neighbors): array
+    {
+        $unique = [];
+        foreach ($neighbors as $neighbor) {
+            $unique[($neighbor['device_id'] ?? 'u:' . strtolower($neighbor['name'])) . '|' . InterfaceName::normalize($neighbor['port'])] ??= $neighbor;
+        }
+
+        return array_values($unique);
+    }
+
+    /**
+     * A neighbor LibreNMS does not monitor (or the user may not see) from the LLDP/CDP data of the port:
+     * its role from the CDP platform or, for LLDP (which has no platform), the system description
+     * LibreNMS keeps in remote_version.
+     *
+     * @param  array  $link  links row: remote_hostname, remote_port, remote_platform, remote_version
+     * @return array{name: string, port: string, device_id: null, role: string, platform: string, description: string}
+     */
+    public static function unmanagedNeighbor(array $link): array
+    {
+        $hostname = trim((string) ($link['remote_hostname'] ?? ''));
+        $platform = trim((string) ($link['remote_platform'] ?? ''));
+        $description = trim((string) ($link['remote_version'] ?? ''));
+
+        return [
+            'name' => L2Builder::shortHost($hostname) ?: 'unknown neighbor',
+            'port' => (string) ($link['remote_port'] ?? ''),
+            'device_id' => null,
+            'role' => DeviceRole::fromNeighbor($platform, $description, $hostname),
+            'platform' => $platform,
+            'description' => mb_substr(trim((string) preg_replace('/\R.*/s', '', $description)), 0, 120),
+        ];
     }
 
     /**
      * Monitored devices named like the query (hostname, sysName or display name, also without
-     * the domain), with the addresses LibreNMS polls them on.
+     * the domain), with their role and the addresses LibreNMS polls them on.
      *
-     * @return array<int, array{device_id: int, name: string, hostname: string, ips: string[]}>
+     * @return array<int, array{device_id: int, name: string, hostname: string, role: string, ips: string[]}>
      */
     public function devicesByName(string $name): array
     {
@@ -325,7 +461,7 @@ class HostRepository extends ScopedRepository
             ->where(fn ($query) => $query->where('hostname', $name)->orWhere('hostname', 'like', addcslashes($name, '%_\\') . '.%')
                 ->orWhere('sysName', $name)->orWhere('display', $name))
             ->limit(20)
-            ->get(['device_id', 'hostname', 'sysName', 'display', 'ip', 'overwrite_ip']);
+            ->get(['device_id', 'hostname', 'sysName', 'display', 'ip', 'overwrite_ip', 'type', 'os', 'hardware']);
 
         $devices = [];
         foreach ($rows as $row) {
@@ -344,7 +480,7 @@ class HostRepository extends ScopedRepository
                 $ips[] = $binary;
             }
             $devices[] = ['device_id' => $deviceId, 'name' => (string) ($row->display ?: $row->hostname), 'hostname' => (string) $row->hostname,
-                'ips' => array_values(array_unique($ips))];
+                'role' => DeviceRole::classify((array) $row), 'ips' => array_values(array_unique($ips))];
         }
 
         return $devices;
@@ -404,7 +540,7 @@ class HostRepository extends ScopedRepository
      */
     public function ports(array $portIds): array
     {
-        $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
+        $portIds = self::ids($portIds);
         if (! $portIds) {
             return [];
         }
@@ -473,6 +609,15 @@ class HostRepository extends ScopedRepository
     }
 
     /**
+     * @param  int  $deviceId
+     * @param  array{name: string, role: string}  $device  deviceRows() row
+     */
+    private static function monitoredNeighbor(int $deviceId, array $device, string $port): array
+    {
+        return ['name' => $device['name'], 'port' => $port, 'device_id' => $deviceId, 'role' => $device['role'], 'platform' => '', 'description' => ''];
+    }
+
+    /**
      * @param  \Illuminate\Database\Query\Builder  $query  ports_fdb as f
      */
     private function fdbRows($query): array
@@ -504,13 +649,13 @@ class HostRepository extends ScopedRepository
     }
 
     /**
-     * ARP / IPv6 neighbor rows from visible devices; a missing table (LibreNMS before ipv6_nd) gives none.
+     * ARP / IPv6 neighbor rows from visible devices (at most 500); a missing table (LibreNMS before ipv6_nd) gives none.
      */
     private function addressRows(string $table, string $column, callable $where, int $family): array
     {
         $rows = [];
         try {
-            $query = DB::table($table);
+            $query = $this->scoped(DB::table($table));
             $where($query);
             foreach ($query->limit(500)->get(['mac_address', $column . ' as ip', 'device_id', 'port_id', 'context_name']) as $row) {
                 $deviceId = (int) $row->device_id;
@@ -534,20 +679,23 @@ class HostRepository extends ScopedRepository
     }
 
     /**
+     * 802.1X / MAB rows from visible devices (at most 200), with the MAC in LibreNMS' notation (some
+     * switches store it as 0:4:f2:bc:95:2).
+     *
      * @param  \Illuminate\Database\Query\Builder  $query  ports_nac
      */
     private function nacRows($query): array
     {
         $rows = [];
         try {
-            foreach ($query->limit(200)->get() as $row) {
+            foreach ($this->scoped($query)->limit(200)->get() as $row) {
                 $row = (array) $row;
                 $deviceId = (int) $row['device_id'];
                 if (! $this->canSee($deviceId)) {
                     continue;
                 }
                 $rows[] = [
-                    'mac' => strtolower((string) $row['mac_address']),
+                    'mac' => Mac::normalize((string) $row['mac_address']) ?? strtolower((string) $row['mac_address']),
                     'device_id' => $deviceId,
                     'port_id' => (int) $row['port_id'],
                     'username' => (string) ($row['username'] ?? ''),
@@ -571,12 +719,37 @@ class HostRepository extends ScopedRepository
     }
 
     /**
+     * Limit a query on a per-device table to the devices the user may see, so that a row limit counts
+     * visible rows only (for a user who may see very many devices the rows are checked after reading).
+     *
+     * @param  \Illuminate\Database\Query\Builder  $query
+     * @return \Illuminate\Database\Query\Builder
+     */
+    private function scoped($query)
+    {
+        $ids = array_keys($this->accessible());
+        if (count($ids) <= self::SCOPE_IN_QUERY) {
+            $query->whereIntegerInRaw('device_id', $ids);
+        }
+
+        return $query;
+    }
+
+    /**
      * @param  int[]  $deviceIds
      * @return int[] the ones the user may see
      */
     private function visible(array $deviceIds): array
     {
         return array_values(array_filter(array_unique(array_map('intval', $deviceIds)), fn ($id) => $this->canSee($id)));
+    }
+
+    /**
+     * @return int[] distinct positive ids
+     */
+    private static function ids(array $ids): array
+    {
+        return array_values(array_unique(array_filter(array_map('intval', $ids), fn ($id) => $id > 0)));
     }
 
     private static function time(mixed $value): int
@@ -586,5 +759,10 @@ class HostRepository extends ScopedRepository
         }
 
         return $value instanceof \DateTimeInterface ? $value->getTimestamp() : (int) strtotime((string) $value);
+    }
+
+    private static function date(int $time): string
+    {
+        return date('Y-m-d H:i:s', $time);
     }
 }

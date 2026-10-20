@@ -121,16 +121,24 @@ port instead: an inter-switch link or port-channel toward a switch that learned 
 search ends on the switch the host is plugged into, including:
 
 * a computer behind an **IP phone**, a wireless client behind an **access point**, a virtual machine behind a server
-  (the neighbor on the port says which);
+  (the neighbor on the port says which: its CDP platform, or for LLDP its system description);
 * hosts behind an **unmanaged switch** (an LLDP/CDP neighbor that LibreNMS does not monitor), or on a port with several
   MACs and no neighbor at all (flagged: probably a hub, switch or virtualization host);
-* a switch without LLDP/CDP: its uplink carries the MACs of everything behind it, so the port with the fewest MACs wins;
-* a host that **moved**: entries from before a switch's last forwarding table discovery are listed as old;
-* a monitored switch without forwarding table data: the trail ends there ("the host is somewhere behind acc-sw7");
-* the MAC of a monitored device's own interface (a server's NIC, a router's VLAN interface) is named as such.
+* a switch without LLDP/CDP: a port that learned the switch's own MAC leads to it; without that, its uplink carries the
+  MACs of everything behind it and loses to a port with far fewer;
+* a host that **moved** or a wireless client that **roamed**: entries from before a switch's last forwarding table
+  discovery are listed as old, and of two sightings the newer wins ("seen here 3.8h before the newest sighting");
+* a server on **two switches** (a port-channel across a switch pair): the second link is named as such, no warning;
+* a **silent host**: when the trail ends at a monitored switch that does not list the MAC (switches forget idle hosts
+  after a few minutes) or has no forwarding table data, the answer is *behind* that switch, and the L2 map draws the host
+  next to it;
+* the address of a **switch, router or firewall** itself, an interface MAC or a **VRRP / HSRP / GLBP** virtual router MAC:
+  the answer is the device (for a gateway, the router that is master / active now), not a port on the way to it.
 
-Every other port that learned the MAC is listed with the reason the host is not there. **Show on the L2 map** opens the
-map centered on the switch with the host drawn next to it on its port.
+An IP search uses the VLAN of the ARP entry: the HSRP and VRRP MACs are the same in every VLAN that uses the group
+number, so a gateway MAC searched by itself gets one answer per VLAN. Every other port that learned the MAC is listed
+with the reason the host is not there. **Show on the L2 map** opens the map centered on the switch with the host drawn
+next to it on its port (next to the switch it is behind; for a device's own address, the device).
 
 Every **port page** gets a *Plugins* tab with the port's far end (LLDP/CDP in both directions), port-channel, VLANs,
 spanning tree state and role per instance, the MAC addresses learned on it (vendor, IP addresses, last seen, a *Locate*
@@ -150,7 +158,7 @@ link each) and its 802.1X / MAB sessions.
   (`ipv6-addresses`), `ospf`, `bgp-peers`, `fdb-table` (rogue root tracing, host locator), `arp-table` and `ipv6-nd`
   (host locator), `nac` (802.1X sessions, off by default), `transceivers` and `sensors` (optical levels),
   `entity-physical` (stack members and line cards). The maps and checks work with whatever subset is available; the
-  MAC vendors need LibreNMS' OUI table (`mac_oui.enabled`).
+  MAC vendors need LibreNMS' OUI table (`mac_oui.enabled`), DNS lookups of the host locator `getent` (glibc or musl).
 
 ## Installation
 
@@ -200,9 +208,9 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   same as JSON).
 * If the automatic core is not your core, set **Core devices** in the settings; the switches next to the LibreNMS
   poller are a good choice when you want "what can the poller still reach".
-* **Host locator** links are shareable: `hosts?q=10.10.10.55`, and `l2?device=12&host=d4bed9010203` opens the L2 map with
-  that host drawn next to switch 12. On a port page, *Plugins* → *Locate* on a MAC finds where that host really is when
-  the port is an uplink.
+* **Host locator** links are shareable: `hosts?q=10.10.10.55`, and `l2?device=7&host=d4bed9010203` opens the L2 map
+  around device 7 with that host drawn next to the switch it is plugged into (the switch has to be on the map). On a port
+  page, *Plugins* → *Locate* on a MAC finds where that host really is when the port is an uplink.
 * `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links` and `api/redundancy` return the same data as JSON (same
   query parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`) for automation, and
   `api/hosts?q=...` the host locator's answer.
@@ -231,6 +239,7 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Warn from | 2 | switches, routers or firewalls cut off by one failure before a single point of failure is a warning |
 | Disabled redundancy checks | – | check codes or categories (`outages`, `lost`, `fake`, `spof`), e.g. `spof_link uplinks_same_device` |
 | Shared access port | 5 MACs | an access port without LLDP/CDP neighbor with this many MACs is flagged by the host locator |
+| DNS lookups | on | hostnames that are not LibreNMS devices are resolved with the server's resolver (`getent`) in a subprocess stopped after 2 seconds; answers and failures are cached for 5 minutes, 20 lookups per user and minute |
 
 ## Permissions
 
@@ -282,9 +291,14 @@ vendor/bin/phpunit
   not listed as outages: nothing tells what they depend on.
 * The host locator works from the forwarding (MAC address), ARP and IPv6 neighbor tables LibreNMS reads at discovery,
   every 6 hours by default (the `arp-table` poller module refreshes ARP every poll, `nac` is off by default), so every
-  answer shows when the host was last seen. LibreNMS keeps entries it no longer sees until its daily cleanup; the
-  locator lists entries from before a switch's last discovery as old. Switches whose forwarding table LibreNMS does not
-  read end the trail. ARP has no index on the IP address in LibreNMS, so an IP search reads the whole ARP table once.
+  answer shows when the host was last seen. LibreNMS keeps forwarding table entries it no longer sees for 10 days
+  (`ports_fdb_purge`); the locator lists entries from before a switch's last discovery as old (the start of the
+  device's last discovery, confirmed by one entry from it) and counts MACs on a port from that discovery only.
+  Switches whose forwarding table LibreNMS does not read end the trail.
+* Query cost: LibreNMS has no index on the address in the ARP table or on anything but port and device in the IPv6
+  neighbor table, so an IPv4 search reads the whole ARP table once and every search the whole IPv6 neighbor table (twice
+  for an IPv6 address); the port tab (on every port page) shows IPv4 addresses only and uses indexed lookups. 802.1X
+  sessions are looked up on the ports where the MAC is learned.
 
 ## Roadmap
 
