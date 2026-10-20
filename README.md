@@ -488,7 +488,9 @@ vendor/bin/phpunit
   and the address is on that device only; a one-sided session needs the peer's BGP sessions in that VRF to be polled
   (an SNMP context per VRF). A session that has never come up to a confederation peer can be reported as a remote AS
   mismatch, and interfaces on one LAN behind a switch are only compared when their routers are in one OSPF domain.
-  Subinterfaces are matched to the port LLDP/CDP reports by name (Gi0/1.100 to Gi0/1).
+  Subinterfaces are matched to the port LLDP/CDP reports by name (Gi0/1.100 to Gi0/1), but LAG members are not matched
+  to their port-channel: a LAG PE-CE handoff larger than a point-to-point subnet (a /29, an IPv6 /64), toward a
+  customer router without VRFs, still joins every routing table, so addresses reused across it are warnings.
 * The coverage report only knows what LLDP/CDP and the forwarding tables report: a switch that sends no LLDP/CDP shows
   up at best as a port with many MAC addresses. LibreNMS does not keep the management address a neighbor advertises, so
   *Add* opens the Add Device page without it. Neighbors LibreNMS did not link are matched to monitored devices by
