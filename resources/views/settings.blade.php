@@ -23,16 +23,17 @@
             ['stp_disabled_checks', 'text', 'Checks to skip', 'check codes (the code of each finding in the STP JSON) or categories (root, config, changes, ports, loops, storms, syslog), e.g. timers_non_default multicast_storm'],
         ],
         'Loop evidence: syslog patterns' => [
-            ['stp_syslog_loop_detected', 'text', 'Loop detected', 'regular expressions, case-insensitive, matched against the program and text of each message in this order (the first match counts); to switch a check off, add its check code to Checks to skip above. Check code: loop_detected'],
-            ['stp_syslog_udld', 'text', 'Unidirectional link (UDLD)', 'check code: udld'],
-            ['stp_syslog_bpdu_guard', 'text', 'BPDU guard', 'check code: bpdu_guard'],
-            ['stp_syslog_loop_guard', 'text', 'Loop guard', 'check code: loop_guard'],
-            ['stp_syslog_root_guard', 'text', 'Root guard', 'check code: root_guard'],
-            ['stp_syslog_storm_control', 'text', 'Storm control', 'check code: storm_control'],
-            ['stp_syslog_mac_flapping', 'text', 'MAC flapping', 'check code: mac_flapping'],
-            ['stp_syslog_native_vlan', 'text', 'Native VLAN mismatch', 'check code: syslog_native_vlan'],
-            ['stp_syslog_duplex', 'text', 'Duplex mismatch', 'check code: syslog_duplex_mismatch'],
-            ['stp_syslog_err_disabled', 'text', 'Err-disabled port', 'any other err-disable message; check code: err_disabled'],
+            ['stp_syslog_ignore', 'pattern', 'Messages to ignore', 'configuration commands echoed to syslog and recoveries (unblocking, err-disable recovery); checked first. Patterns are regular expressions matched against the program and text of each message, case-insensitive (or written as /pattern/flags); empty fields use the default shown in them'],
+            ['stp_syslog_loop_detected', 'pattern', 'Loop detected', 'checked in this order, the first match counts; to switch a check off, add its check code to Checks to skip above. Check code: loop_detected'],
+            ['stp_syslog_udld', 'pattern', 'Unidirectional link (UDLD)', 'check code: udld'],
+            ['stp_syslog_bpdu_guard', 'pattern', 'BPDU guard', 'check code: bpdu_guard'],
+            ['stp_syslog_loop_guard', 'pattern', 'Loop guard', 'check code: loop_guard'],
+            ['stp_syslog_root_guard', 'pattern', 'Root guard', 'check code: root_guard'],
+            ['stp_syslog_storm_control', 'pattern', 'Storm control / excessive broadcasts', 'check code: storm_control'],
+            ['stp_syslog_mac_flapping', 'pattern', 'MAC flapping', 'check code: mac_flapping'],
+            ['stp_syslog_native_vlan', 'pattern', 'Native VLAN mismatch', 'check code: syslog_native_vlan'],
+            ['stp_syslog_duplex', 'pattern', 'Duplex mismatch', 'check code: syslog_duplex_mismatch'],
+            ['stp_syslog_err_disabled', 'pattern', 'Err-disabled port', 'any other err-disable message; check code: err_disabled'],
         ],
         'Link & VLAN diagnostics' => [
             ['links_error_threshold', 'number', 'Report interface errors from this many per poll on an inter-switch port', '0 disables the check'],
@@ -64,6 +65,10 @@
                             @if($type === 'bool')
                                 <input type="hidden" name="settings[{{ $name }}]" value="0">
                                 <input id="topo-setting-{{ $name }}" type="checkbox" name="settings[{{ $name }}]" value="1" @checked(($settings[$name] ?? '0') === '1')>
+                            @elseif($type === 'pattern')
+                                {{-- empty unless changed, so an improved default of a later version applies --}}
+                                @php($default = \Agoodley\LibrenmsTopology\Support\PluginSettings::DEFAULTS[$name] ?? '')
+                                <input id="topo-setting-{{ $name }}" type="text" class="form-control input-sm" name="settings[{{ $name }}]" value="{{ ($settings[$name] ?? '') === $default ? '' : $settings[$name] }}" placeholder="{{ $default }}" title="Default: {{ $default }}">
                             @elseif($type === 'number')
                                 <input id="topo-setting-{{ $name }}" type="number" min="0" class="form-control input-sm" style="max-width: 140px" name="settings[{{ $name }}]" value="{{ $settings[$name] ?? '' }}">
                             @else

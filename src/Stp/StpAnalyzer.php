@@ -237,37 +237,41 @@ class StpAnalyzer
             $instances[] = $row;
         }
 
-        // the same issue usually shows in every PVST instance: list it once with its VLANs
+        // the same issue usually shows in every PVST instance: list it once with its VLANs; the disabled
+        // checks of the STP page are left out here too
         $issues = [];
-        $add = function (string $severity, string $text, array $row) use (&$issues): void {
+        $add = function (string $code, string $severity, string $text, array $row) use (&$issues): void {
+            if (! $this->enabled($code)) {
+                return;
+            }
             $issues[$severity . '|' . $text]['severity'] = $severity;
             $issues[$severity . '|' . $text]['text'] = $text;
             $issues[$severity . '|' . $text]['vlans'][] = $row['label'];
         };
         foreach ($instances as $row) {
             if ($row['is_root'] && $this->isDefaultPriority($row['priority'], $row['vlan'])) {
-                $add(Finding::WARNING, 'root bridge with default priority', $row);
+                $add('root_default_priority', Finding::WARNING, 'root bridge with default priority', $row);
             }
             if ($row['last_tc'] !== null && $row['last_tc'] < $this->tcRecentSeconds()) {
-                $add(Finding::INFO, 'topology change ' . self::duration($row['last_tc']) . ' ago', $row);
+                $add('tc_recent', Finding::INFO, 'topology change ' . self::duration($row['last_tc']) . ' ago', $row);
             }
             if ($row['tc_rate'] !== null && $row['tc_rate'] > $this->settings->int('stp_tc_rate_per_day', 1)) {
-                $add(Finding::WARNING, $row['tc_rate'] . ' topology changes per day', $row);
+                $add('tc_rate', Finding::WARNING, $row['tc_rate'] . ' topology changes per day', $row);
             }
             foreach ($row['blocked_ports'] as $port) {
                 if ($port['state'] === 'broken') {
-                    $add(Finding::CRITICAL, 'port ' . $port['port'] . ' is in broken state', $row);
+                    $add('port_broken', Finding::CRITICAL, 'port ' . $port['port'] . ' is in broken state', $row);
                 }
             }
             foreach ($this->stp->portsFor($deviceId, $row['vlan']) as $port) {
                 if ($port['forwardTransitions'] >= $this->settings->int('stp_flap_transitions', 1)) {
-                    $add(Finding::WARNING, $this->portName($port['port_id']) . ' changed to forwarding ' . $port['forwardTransitions'] . ' times', $row);
+                    $add('port_flapping', Finding::WARNING, $this->portName($port['port_id']) . ' changed to forwarding ' . $port['forwardTransitions'] . ' times', $row);
                 }
             }
             // only bridge addresses are looked up here (cheap); the STP page also checks interface MACs
             $rootMac = $this->stp->instance($deviceId, $row['vlan'])['designatedRoot'] ?? '';
             if (! $row['is_root'] && $rootMac !== '' && $this->stp->bridgeOwner($rootMac) === null && empty($rootLookups[$rootMac]['owners']) && empty($rootLookups[$rootMac]['hidden'])) {
-                $add(Finding::WARNING, 'root bridge ' . $row['root_id'] . ' is not a monitored bridge (possible rogue switch, see STP diagnostics)', $row);
+                $add('root_unmanaged', Finding::WARNING, 'root bridge ' . $row['root_id'] . ' is not a monitored bridge (possible rogue switch, see STP diagnostics)', $row);
             }
         }
 
@@ -1447,9 +1451,17 @@ class StpAnalyzer
 
     private function add(Finding $finding): void
     {
-        if (! isset($this->disabled[$finding->code]) && ! isset($this->disabled[self::CHECKS[$finding->code] ?? ''])) {
+        if ($this->enabled($finding->code)) {
             $this->findings[] = $finding;
         }
+    }
+
+    /**
+     * Neither the check nor its category is in the disabled checks setting.
+     */
+    private function enabled(string $code): bool
+    {
+        return ! isset($this->disabled[$code]) && ! isset($this->disabled[self::CHECKS[$code] ?? '']);
     }
 
     /**

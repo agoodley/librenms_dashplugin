@@ -31,8 +31,9 @@ class LoopEvidence
     ];
 
     /**
-     * Syslog checks in matching order: a message counts for the first check whose pattern (a setting)
-     * matches its program and text, so a port err-disabled by BPDU guard is BPDU guard, not err-disable.
+     * Syslog checks in matching order: a message counts for the first check whose pattern (a setting,
+     * see SyslogPatterns) matches its program and text, so a port err-disabled by BPDU guard is BPDU
+     * guard, not err-disable.
      */
     public const SYSLOG = [
         'loop_detected' => [
@@ -67,9 +68,10 @@ class LoopEvidence
         ],
         'storm_control' => [
             'setting' => 'stp_syslog_storm_control', 'severity' => Finding::WARNING,
-            'title' => 'storm control triggered', 'messages' => 'storm control messages',
-            'fix' => 'Storm control dropped or shut down traffic on these ports: look for a loop or a misbehaving host behind them. Storm '
-                . 'control limits the damage, it does not remove the cause.',
+            'title' => 'storm control triggered or excessive broadcasts', 'messages' => 'storm messages',
+            'fix' => 'These ports saw a broadcast or multicast storm: storm control dropped or shut down traffic, or the switch reported '
+                . 'excessive broadcasts. Look for a loop or a misbehaving host behind them; storm control limits the damage, it does not '
+                . 'remove the cause.',
         ],
         'mac_flapping' => [
             'setting' => 'stp_syslog_mac_flapping', 'severity' => Finding::WARNING,
@@ -102,6 +104,9 @@ class LoopEvidence
     /** Counters not refreshed for this long (seconds) are ignored: nobody polls the port any more. */
     private const STALE_COUNTERS = 86400;
 
+    /** Counters older than this (seconds, and than two poll periods) are shown with their age. */
+    private const OLD_COUNTERS = 900;
+
     /** Inter-switch ports listed in the evidence table besides the storms (the busiest ones). */
     private const TABLE_PORTS = 25;
 
@@ -110,8 +115,13 @@ class LoopEvidence
 
     private const LIST_LIMIT = 10;
 
+    /** Distinct MAC addresses flapping (on one switch or several) from which MAC flapping is a loop. */
+    private const LOOP_MACS = 10;
+
     /** @var array<string, true> disabled check codes and categories */
     private array $disabled;
+
+    private SyslogPatterns $patterns;
 
     /** @var Finding[] */
     private array $findings = [];
@@ -125,9 +135,10 @@ class LoopEvidence
     /**
      * @param  array<int, array>  $devices  device_id => device row (display, hostname, role, status)
      * @param  array<int, array>  $links  rows of the links table of these devices
-     * @param  array<int, array>  $ports  port_id => port row with its counter rates (LoopEvidenceRepository::portRates())
-     * @param  array<int, array>  $syslog  syslog rows (device_id, timestamp, program, msg), newest first
+     * @param  array<int, array>  $ports  port_id => port row with its counters and rates (LoopEvidenceRepository::portRates())
+     * @param  array<int, array>  $syslog  syslog rows (device_id, timestamp, program, msg; code when the reader classified them already)
      * @param  array<int, array>  $syslogPorts  port_id => port row (device_id, ifName, ifDescr) of the devices in $syslog
+     * @param  SyslogPatterns|null  $patterns  the patterns the syslog was read with, to report their problems once
      */
     public function __construct(
         private array $devices,
@@ -137,17 +148,20 @@ class LoopEvidence
         private array $syslogPorts,
         private PluginSettings $settings,
         private ?int $now = null,
+        ?SyslogPatterns $patterns = null,
     ) {
         $this->now ??= time();
         $this->disabled = array_fill_keys(array_map('strtolower', $settings->list('stp_disabled_checks')), true);
+        $this->patterns = $patterns ?? new SyslogPatterns($settings);
     }
 
     /**
      * Run the storm and syslog checks.
      *
-     * @param  array{syslog_hidden?: bool, syslog_truncated?: bool, syslog_scan_limited?: int, syslog_devices?: int, syslog_scope?: int}  $context
-     *     what the caller could read: syslog hidden from this user, more matches than were kept, the number of
-     *     messages searched when the window held more, devices that sent syslog in the window and devices asked for
+     * @param  array{syslog_hidden?: bool, syslog_truncated?: bool, syslog_limited?: int, syslog_scanned?: int, syslog_devices?: int, syslog_scope?: int}  $context
+     *     what the caller could read: syslog hidden from this user, more matching messages than were kept, devices
+     *     whose older messages of the window were not searched and the messages searched, devices that sent syslog
+     *     in the window and devices asked for
      * @return array{findings: array, device_names: array<int, string>, evidence: array}
      */
     public function analyze(array $context = []): array
@@ -155,16 +169,21 @@ class LoopEvidence
         $this->findings = [];
         $this->notices = [];
         $hours = $this->settings->int('stp_syslog_hours', 1, 720);
+        $hidden = ! empty($context['syslog_hidden']);
 
         $storms = $this->checkStorms();
-        $syslog = empty($context['syslog_hidden']) ? $this->checkSyslog($hours) : [];
-        $syslogOff = self::scanPattern($this->settings) === null;
-        if (! empty($context['syslog_scan_limited'])) {
-            $this->notices[] = 'Only the newest ' . number_format((int) $context['syslog_scan_limited']) . " syslog messages of the last $hours hours were searched; "
-                . 'shorten the syslog window in the settings to cover it all.';
+        $syslog = $hidden ? [] : $this->checkSyslog($hours);
+        if (! $hidden) {
+            $this->notices = array_merge($this->notices, $this->patterns->notices());
         }
+        $limited = (int) ($context['syslog_limited'] ?? 0);
         if (! empty($context['syslog_truncated'])) {
-            $this->notices[] = 'Only the newest ' . number_format(count($this->syslog)) . " matching syslog messages of the last $hours hours were analyzed.";
+            $this->notices[] = "More syslog messages of the last $hours hours match the checks than are analyzed at once: only the newest "
+                . number_format(count($this->syslog)) . ', taken in turns from each device, were.';
+        } elseif ($limited) {
+            $this->notices[] = number_format((int) ($context['syslog_scanned'] ?? 0)) . " syslog messages of the last $hours hours were searched, "
+                . 'which did not reach back to the start of the window on ' . $limited . ($limited === 1 ? ' busy device' : ' busy devices')
+                . '; shorten the syslog window in the settings to search all of it.';
         }
 
         $findings = array_map(fn (Finding $f) => $f->toArray() + ['category' => self::CHECKS[$f->code] ?? 'other'], $this->findings);
@@ -186,8 +205,8 @@ class LoopEvidence
                 'storms_off' => $storms['off'],
                 'syslog' => $syslog,
                 'syslog_hours' => $hours,
-                'syslog_hidden' => ! empty($context['syslog_hidden']),
-                'syslog_off' => $syslogOff,
+                'syslog_hidden' => $hidden,
+                'syslog_off' => ! $this->patterns->usable(),
                 'syslog_devices' => (int) ($context['syslog_devices'] ?? 0),
                 'syslog_scope' => (int) ($context['syslog_scope'] ?? 0),
                 'notices' => $this->notices,
@@ -210,22 +229,6 @@ class LoopEvidence
             $result['summary']['recent_tc_window']);
 
         return $result;
-    }
-
-    /**
-     * The evidence tables narrowed to one device: its own ports and messages, and its neighbors'
-     * ports toward it.
-     */
-    public static function forDevice(array $evidence, int $deviceId): array
-    {
-        if (! $evidence) {
-            return $evidence;
-        }
-        $evidence['storms'] = array_values(array_filter($evidence['storms'],
-            fn ($row) => $row['device_id'] === $deviceId || ($row['neighbor']['device_id'] ?? null) === $deviceId));
-        $evidence['syslog'] = array_values(array_filter($evidence['syslog'], fn ($row) => $row['device_id'] === $deviceId));
-
-        return $evidence;
     }
 
     /**
@@ -265,25 +268,6 @@ class LoopEvidence
         }
 
         return $ports;
-    }
-
-    /**
-     * The patterns of the enabled syslog checks as one regular expression, to pick the candidate
-     * messages while reading the syslog; null when every syslog check is off, empty or invalid.
-     * Messages only a disabled check matches are not needed: analyze() drops them.
-     */
-    public static function scanPattern(PluginSettings $settings): ?string
-    {
-        $disabled = array_fill_keys(array_map('strtolower', $settings->list('stp_disabled_checks')), true);
-        $parts = [];
-        foreach (self::SYSLOG as $code => $check) {
-            $pattern = trim((string) ($settings->all()[$check['setting']] ?? ''));
-            if ($pattern !== '' && ! isset($disabled[$code]) && ! isset($disabled['syslog']) && self::compile($pattern) !== null) {
-                $parts[] = '(?:' . str_replace('~', '\~', $pattern) . ')';
-            }
-        }
-
-        return $parts ? '~' . implode('|', $parts) . '~i' : null;
     }
 
     // ---------------------------------------------------------------- storms
@@ -334,7 +318,8 @@ class LoopEvidence
 
     /**
      * Rates of one inter-switch port, the busier direction of each kind; null when the counters are
-     * missing or out of date (device or port down, port no longer polled).
+     * missing or out of date (device or port down, port no longer polled). Counters older than a few
+     * polls carry their age.
      */
     private function stormRow(int $portId, array $link): ?array
     {
@@ -344,7 +329,8 @@ class LoopEvidence
             return null;
         }
         $polled = (int) ($port['poll_time'] ?? 0);
-        if ($polled > 0 && $this->now - $polled > self::STALE_COUNTERS) {
+        $age = $polled > 0 ? max(0, $this->now - $polled) : null;
+        if ($age !== null && $age > self::STALE_COUNTERS) {
             return null;
         }
 
@@ -357,9 +343,16 @@ class LoopEvidence
             'port' => InterfaceName::short(InterfaceName::label($port)),
             'neighbor' => $link['neighbor'],
             'speed' => $speed,
+            'age' => $age !== null && $age > max(self::OLD_COUNTERS, 2 * (int) ($port['poll_period'] ?? 0)) ? $age : null,
         ];
         foreach (['broadcast' => 'Broadcast', 'multicast' => 'Multicast'] as $kind => $column) {
             $row[$kind] = null;
+            // LibreNMS stores 0 for counters a device does not report; a link between switches always carries some
+            // broadcast (ARP) and multicast (BPDUs, LLDP) traffic, so both directions at 0 mean there are none
+            $counters = array_filter([$port["ifIn{$column}Pkts"] ?? null, $port["ifOut{$column}Pkts"] ?? null], fn ($value) => $value !== null);
+            if ($counters && ! array_filter($counters, fn ($value) => (int) $value > 0)) {
+                continue;
+            }
             foreach (['In' => 'in', 'Out' => 'out'] as $direction => $label) {
                 if (! isset($port["if{$direction}{$column}Pkts_rate"])) {
                     continue;
@@ -444,8 +437,9 @@ class LoopEvidence
     {
         $rate = $row[$kind];
         $neighbor = trim($row['neighbor']['name'] . ' ' . $row['neighbor']['port']);
+        $notes = array_filter([$neighbor !== '' ? "to $neighbor" : '', $row['age'] !== null ? 'polled ' . StpAnalyzer::duration($row['age']) . ' ago' : '']);
 
-        return $row['name'] . ' ' . $row['port'] . ($neighbor !== '' ? " (to $neighbor)" : '') . ': '
+        return $row['name'] . ' ' . $row['port'] . ($notes ? ' (' . implode(', ', $notes) . ')' : '') . ': '
             . number_format($rate['pps']) . " $kind packets/s {$rate['direction']}"
             . ($rate['share'] !== null ? ', ' . round($rate['share'] * 100) . '% of its packets' : '')
             . ($rate['load'] !== null && $rate['load'] >= 0.01 ? ', at least ' . round($rate['load'] * 100) . '% of the link' : '');
@@ -461,8 +455,7 @@ class LoopEvidence
      */
     private function checkSyslog(int $hours): array
     {
-        $patterns = $this->patterns();
-        if (! array_filter(array_keys($patterns), fn ($code) => $this->enabled($code))) {
+        if (! $this->patterns->usable()) {
             return [];
         }
 
@@ -470,9 +463,12 @@ class LoopEvidence
         $groups = [];
         foreach ($this->syslog as $message) {
             $time = strtotime((string) ($message['timestamp'] ?? '')) ?: 0;
+            if ($time < $since) {
+                continue;
+            }
             $text = trim(((string) ($message['program'] ?? '')) . ' ' . ((string) ($message['msg'] ?? '')));
-            $code = $time >= $since ? self::classify($text, $patterns) : null;
-            if ($code === null || ! $this->enabled($code)) {
+            $code = array_key_exists('code', $message) ? $message['code'] : $this->patterns->classify($text);
+            if ($code === null || ! isset(self::SYSLOG[$code]) || ! $this->enabled($code)) {
                 continue;
             }
             $deviceId = (int) $message['device_id'];
@@ -498,60 +494,6 @@ class LoopEvidence
     }
 
     /**
-     * Compiled patterns of the syslog checks in matching order. A disabled check keeps its pattern,
-     * so its messages are not counted by a later check (an err-disable caused by BPDU guard stays
-     * BPDU guard); empty patterns match nothing, invalid ones are reported and skipped.
-     *
-     * @return array<string, string> code => regular expression
-     */
-    private function patterns(): array
-    {
-        $patterns = [];
-        foreach (self::SYSLOG as $code => $check) {
-            $pattern = trim((string) ($this->settings->all()[$check['setting']] ?? ''));
-            if ($pattern === '') {
-                continue;
-            }
-            $regex = self::compile($pattern);
-            if ($regex === null) {
-                if ($this->enabled($code)) {
-                    $this->notices[] = "The syslog pattern for {$check['title']} ({$check['setting']}) is not a valid regular expression; that check was skipped.";
-                }
-                continue;
-            }
-            $patterns[$code] = $regex;
-        }
-
-        return $patterns;
-    }
-
-    /**
-     * Case-insensitive PCRE of a pattern setting, null when it does not compile.
-     */
-    private static function compile(string $pattern): ?string
-    {
-        $regex = '~' . str_replace('~', '\~', $pattern) . '~i';
-
-        return @preg_match($regex, '') === false ? null : $regex;
-    }
-
-    /**
-     * First check whose pattern matches the message.
-     *
-     * @param  array<string, string>  $patterns
-     */
-    private static function classify(string $text, array $patterns): ?string
-    {
-        foreach ($patterns as $code => $regex) {
-            if (preg_match($regex, $text) === 1) {
-                return $code;
-            }
-        }
-
-        return null;
-    }
-
-    /**
      * Add one message to the group of its device: count, time range, the ports, MAC addresses and
      * VLANs it names, its program, and the newest message as an example.
      */
@@ -573,24 +515,26 @@ class LoopEvidence
         foreach (self::vlansIn($text) as $vlan) {
             $group['vlans'][$vlan] = true;
         }
-        if ($program !== '') {
-            $group['programs'][$program] = ($group['programs'][$program] ?? 0) + 1;
-        }
+        $group['programs'][$program] = true;
 
         return $group;
     }
 
     /**
-     * One finding for a syslog check. MAC flapping on several switches or of many addresses, and
-     * storm control on several switches, point at a loop rather than at one host: critical.
+     * One finding for a syslog check. Many MAC addresses flapping (on one switch or across several)
+     * and storm control on several switches point at a loop rather than at one host: critical. One
+     * address flapping, even on two switches, is usually a dual-homed host.
      *
      * @return string the severity
      */
     private function syslogFinding(string $code, array $check, array $group, int $hours): string
     {
         $severity = $check['severity'];
-        $maxMacs = max(array_map(fn ($row) => count($row['macs']), $group));
-        if (($code === 'mac_flapping' && (count($group) >= 2 || $maxMacs >= 10)) || ($code === 'storm_control' && count($group) >= 2)) {
+        $macs = [];
+        foreach ($group as $row) {
+            $macs += $row['macs'];
+        }
+        if (($code === 'mac_flapping' && count($macs) >= self::LOOP_MACS) || ($code === 'storm_control' && count($group) >= 2)) {
             $severity = Finding::CRITICAL;
         }
 
@@ -640,7 +584,6 @@ class LoopEvidence
      */
     private function evidenceRow(string $code, array $check, string $severity, array $row): array
     {
-        arsort($row['programs']);
         $vlans = array_keys($row['vlans']);
         sort($vlans);
         $ports = [];
@@ -663,14 +606,16 @@ class LoopEvidence
             'macs' => count($row['macs']),
             'mac_examples' => array_map(fn ($mac) => implode(':', str_split($mac, 2)), array_slice(array_keys($row['macs']), 0, 3)),
             'vlans' => array_slice($vlans, 0, self::LIST_LIMIT),
-            'program' => (string) (array_key_first($row['programs']) ?? ''),
+            // the link to the messages filters on the program when they all share one
+            'program' => count($row['programs']) === 1 ? (string) array_key_first($row['programs']) : '',
             'message' => mb_substr($row['message'], 0, 300),
         ];
     }
 
     /**
      * Ports of the device named in a message: typed names (Gi1/0/49, Ethernet1/1, ge-0/0/1.0) and
-     * bare ones after "port" or "interface" (ProCurve "port 5", "port A1").
+     * bare ones after "port" or "interface" (ProCurve "port 5", "port A1"). CDP names the neighbor
+     * and its port after ", with": those are not ports of this device.
      *
      * @return array<int, string> port_id => short name
      */
@@ -680,6 +625,7 @@ class LoopEvidence
         if (! $index) {
             return [];
         }
+        $text = (string) preg_replace('~,\s*with\s.*$~is', '', $text);
 
         preg_match_all('~(?<![\w/.:-])([A-Za-z][A-Za-z-]*?\d+(?:[/:]\d+)*(?:\.\d+)?)~', $text, $typed);
         preg_match_all('~\b(?:ports?|interface)\s+([A-Za-z]?\d+(?:/[A-Za-z]?\d+)*)~i', $text, $bare);
@@ -697,7 +643,8 @@ class LoopEvidence
     }
 
     /**
-     * Normalized ifName / ifDescr => port_id of a device's ports (every device with messages, in one pass).
+     * Normalized ifName / ifDescr => port_id of a device's ports (every device with messages, in one
+     * pass); deleted ports are left out, so a renumbered port is found under its current id.
      *
      * @return array<string, int>
      */
@@ -708,7 +655,7 @@ class LoopEvidence
             $logging = array_flip(array_map('intval', array_column($this->syslog, 'device_id')));
             foreach ([$this->syslogPorts, $this->ports] as $ports) {
                 foreach ($ports as $portId => $port) {
-                    if (! isset($logging[(int) ($port['device_id'] ?? 0)])) {
+                    if (! isset($logging[(int) ($port['device_id'] ?? 0)]) || ! empty($port['deleted'])) {
                         continue;
                     }
                     foreach (['ifName', 'ifDescr'] as $field) {

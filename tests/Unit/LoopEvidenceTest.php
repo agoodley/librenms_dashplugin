@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
 use Agoodley\LibrenmsTopology\Stp\Finding;
 use Agoodley\LibrenmsTopology\Stp\LoopEvidence;
+use Agoodley\LibrenmsTopology\Stp\SyslogPatterns;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use PHPUnit\Framework\TestCase;
 
@@ -164,6 +165,35 @@ class LoopEvidenceTest extends TestCase
         $this->assertTrue($off['evidence']['storms_off']);
     }
 
+    public function testZeroCountersAreNoCountersAndOldOnesShowTheirAge(): void
+    {
+        // LibreNMS stores 0 for the counters a device does not report
+        $net = (new LoopFixture)->device(2, 'sw-a')->device(3, 'sw-b')->device(4, 'sw-c')
+            ->link(2, 'Gi1/0/1', 3, 'Gi1/0/1')->link(2, 'Gi1/0/2', 4, 'Gi1/0/1');
+        $net->set(2, 'Gi1/0/1', ['ifInBroadcastPkts' => 0, 'ifOutBroadcastPkts' => 0, 'ifInMulticastPkts' => 0, 'ifOutMulticastPkts' => 0,
+            'ifInBroadcastPkts_rate' => 0, 'ifOutBroadcastPkts_rate' => 0, 'ifInMulticastPkts_rate' => 0, 'ifOutMulticastPkts_rate' => 0,
+            'ifInUcastPkts_rate' => 5000, 'ifOutUcastPkts_rate' => 5000]);
+        $net->set(2, 'Gi1/0/2', ['ifInBroadcastPkts' => 0, 'ifOutBroadcastPkts' => 0, 'ifInMulticastPkts' => 81234, 'ifOutMulticastPkts' => 91234,
+            'ifInBroadcastPkts_rate' => 0, 'ifOutBroadcastPkts_rate' => 0, 'ifInMulticastPkts_rate' => 3, 'ifOutMulticastPkts_rate' => 4,
+            'ifInUcastPkts_rate' => 5000, 'ifOutUcastPkts_rate' => 5000]);
+        $evidence = $net->evidence()['evidence'];
+        $this->assertSame(4, $evidence['inter_switch_ports']);
+        $this->assertSame(1, $evidence['ports_with_counters'], 'only the port with multicast counters');
+        $this->assertSame('Gi1/0/2', $evidence['storms'][0]['port']);
+        $this->assertNull($evidence['storms'][0]['broadcast'], 'broadcast counters at 0: not reported');
+        $this->assertSame(['pps' => 4, 'direction' => 'out'], array_slice($evidence['storms'][0]['multicast'], 0, 2));
+        $this->assertNull($evidence['storms'][0]['age']);
+
+        // counters of an older poll carry their age, in the table and in the finding
+        $net->set(3, 'Gi1/0/1', ['ifInBroadcastPkts' => 7, 'ifInBroadcastPkts_rate' => 250000, 'ifInUcastPkts_rate' => 1000, 'poll_time' => LoopFixture::NOW - 3 * 3600]);
+        $result = $net->evidence();
+        $this->assertStringContainsString('sw-b Gi1/0/1 (to sw-a Gi1/0/1, polled 3h ago): 250,000 broadcast packets/s in, 100% of its packets',
+            self::find($result, 'broadcast_storm')['detail']);
+        $this->assertSame(3 * 3600, $result['evidence']['storms'][0]['age']);
+        $net->set(3, 'Gi1/0/1', ['poll_time' => LoopFixture::NOW - 600]);
+        $this->assertNull($net->evidence()['evidence']['storms'][0]['age'], 'within two poll periods');
+    }
+
     /**
      * Switches of several vendors with the messages they log; the ports are named like their ifName.
      */
@@ -269,7 +299,7 @@ class LoopEvidenceTest extends TestCase
             self::rows($result, 'loop_detected')[2]['message'], 'newest message');
 
         $finding = self::find($result, 'storm_control');
-        $this->assertStringStartsWith('2 storm control messages in the last 24 hours: sw-a (1 message, port Gi1/0/49, latest 13m ago); sw-b', $finding['detail']);
+        $this->assertStringStartsWith('2 storm messages in the last 24 hours: sw-a (1 message, port Gi1/0/49, latest 13m ago); sw-b', $finding['detail']);
         $this->assertSame('syslog', $finding['category']);
         $this->assertStringStartsWith('1 err-disable message in the last 24 hours: sw-a (1 message, port Gi1/0/20, latest 8m ago).',
             self::find($result, 'err_disabled')['detail']);
@@ -295,9 +325,17 @@ class LoopEvidenceTest extends TestCase
         $single->log(2, '%SW_MATM-4-MACFLAP_NOTIF', 'Host 0050.56a1.0001 in vlan 10 is flapping between port Gi1/0/1 and port Gi1/0/2');
         $this->assertSame('warning', self::find($single->evidence(), 'mac_flapping')['severity']);
 
-        // the same on two switches: a loop again
+        // the same address on two switches: a dual-homed host or NIC teaming, still no loop
         $single->device(3, 'sw-b')->log(3, '', '%L2FM-4-L2FM_MAC_MOVE: Mac 0050.56a1.0001 in vlan 10 has moved from Eth1/1 to Eth1/2');
-        $this->assertSame('critical', self::find($single->evidence(), 'mac_flapping')['severity']);
+        $this->assertSame('warning', self::find($single->evidence(), 'mac_flapping')['severity']);
+
+        // ten addresses between them: a loop
+        for ($i = 2; $i <= 9; $i++) {
+            $single->log(2 + $i % 2, '%SW_MATM-4-MACFLAP_NOTIF', sprintf('Host 0050.56a1.%04x in vlan 10 is flapping between port Gi1/0/1 and port Gi1/0/2', $i));
+        }
+        $this->assertSame('warning', self::find($single->evidence(), 'mac_flapping')['severity'], '9 addresses');
+        $single->log(3, '%SW_MATM-4-MACFLAP_NOTIF', 'Host 0050.56a1.000a in vlan 10 is flapping between port Gi1/0/1 and port Gi1/0/2');
+        $this->assertSame('critical', self::find($single->evidence(), 'mac_flapping')['severity'], '10 addresses on two switches');
     }
 
     public function testPatternsAreSettings(): void
@@ -345,21 +383,153 @@ class LoopEvidenceTest extends TestCase
             'but not the one of a disabled check');
     }
 
-    public function testScanPattern(): void
+    public function testSyslogPatterns(): void
     {
-        $pattern = LoopEvidence::scanPattern(new PluginSettings);
-        $this->assertStringStartsWith('~(?:loop[ _-]?back[ _-]?detected|loopback error|loop[ _-]?detect)|(?:udld|unidirectional link)|', $pattern);
-        $this->assertStringEndsWith('~i', $pattern);
-        $this->assertSame(10, substr_count($pattern, '(?:'));
-        $this->assertSame(1, preg_match($pattern, '%SW_MATM-4-MACFLAP_NOTIF Host 0050.56a1.0001 in vlan 10 is flapping between port Gi1/0/49 and port Gi1/0/50'));
-        $this->assertSame(0, preg_match($pattern, '%LINK-3-UPDOWN Interface GigabitEthernet1/0/49, changed state to up'));
+        $patterns = new SyslogPatterns(new PluginSettings);
+        $this->assertTrue($patterns->usable());
+        $this->assertSame('mac_flapping', $patterns->classify('%SW_MATM-4-MACFLAP_NOTIF Host 0050.56a1.0001 in vlan 10 is flapping between port Gi1/0/49 and port Gi1/0/50'));
+        $this->assertNull($patterns->classify('%LINK-3-UPDOWN Interface GigabitEthernet1/0/49, changed state to up'));
+        $this->assertSame([], $patterns->notices());
+
+        // bare patterns are case-insensitive, an unescaped delimiter is escaped and an escaped one kept
+        $this->assertSame('~udld~i', SyslogPatterns::compile('udld'));
+        $this->assertSame('~a\~b~i', SyslogPatterns::compile('a~b'));
+        $this->assertSame('~a\~b~i', SyslogPatterns::compile('a\~b'));
+        $this->assertSame('~a\\\\\\~b~i', SyslogPatterns::compile('a\\\\~b'), 'a literal backslash before the delimiter');
+        $this->assertNull(SyslogPatterns::compile('udld('));
+        // patterns with delimiters and flags, as LibreNMS' syslog hooks write them, are used as they are
+        $this->assertSame('/udld/i', SyslogPatterns::compile('/udld/i'));
+        $this->assertSame('#^%UDLD#', SyslogPatterns::compile('#^%UDLD#'));
+        $this->assertNull(SyslogPatterns::compile('/udld/q'), 'unknown flag');
+        $this->assertSame('~/udld~i', SyslogPatterns::compile('/udld'), 'no closing delimiter: a bare pattern');
 
         $settings = array_fill_keys(array_column(LoopEvidence::SYSLOG, 'setting'), '');
-        $this->assertNull(LoopEvidence::scanPattern(new PluginSettings($settings)));
-        $this->assertSame('~(?:udld)~i', LoopEvidence::scanPattern(new PluginSettings(['stp_syslog_udld' => 'udld', 'stp_syslog_duplex' => 'dup(lex'] + $settings)));
-        $this->assertSame('~(?:a\~b)~i', LoopEvidence::scanPattern(new PluginSettings(['stp_syslog_udld' => 'a~b'] + $settings)));
-        $this->assertNull(LoopEvidence::scanPattern(new PluginSettings(['stp_disabled_checks' => 'syslog'])));
-        $this->assertSame(9, substr_count(LoopEvidence::scanPattern(new PluginSettings(['stp_disabled_checks' => 'udld'])), '(?:'));
+        $this->assertFalse((new SyslogPatterns(new PluginSettings($settings)))->usable());
+        $this->assertFalse((new SyslogPatterns(new PluginSettings(['stp_disabled_checks' => 'syslog'])))->usable());
+
+        // each pattern is matched on its own: the same group name in two patterns and backreferences work as written
+        $own = new SyslogPatterns(new PluginSettings([
+            'stp_syslog_udld' => 'udld.*?(?<if>\S+)$', 'stp_syslog_bpdu_guard' => 'bpdu.*?(?<if>\S+)$', 'stp_syslog_root_guard' => '(root)-\1',
+        ] + $settings));
+        $this->assertSame('udld', $own->classify('UDLD disabled interface Te1/1/1'));
+        $this->assertSame('bpdu_guard', $own->classify('BPDU guard disabled Gi1/0/5'));
+        $this->assertSame('root_guard', $own->classify('root-root'));
+        $this->assertNull($own->classify('root-guard'));
+        $this->assertSame([], $own->notices());
+
+        // a pattern that fails on a message (here invalid UTF-8 with the u flag) is reported
+        $utf8 = new SyslogPatterns(new PluginSettings(['stp_syslog_udld' => '/udld/iu'] + $settings));
+        $this->assertNull($utf8->classify("UDLD \xff disabled"));
+        $this->assertSame('udld', $utf8->classify('UDLD disabled'));
+        $this->assertSame(['The syslog pattern for unidirectional links (UDLD) (stp_syslog_udld) failed on 1 message '
+            . '(Malformed UTF-8 characters, possibly incorrectly encoded), which it did not match.'], $utf8->notices());
+
+        // an invalid pattern to ignore: nothing is ignored
+        $ignore = new SyslogPatterns(new PluginSettings(['stp_syslog_ignore' => 'logged command(']));
+        $this->assertSame('storm_control', $ignore->classify('%PARSER-5-CFGLOG_LOGGEDCMD User:netops logged command:storm-control broadcast level 1.00'));
+        $this->assertSame(['The syslog pattern for messages to ignore (stp_syslog_ignore) is not a valid regular expression; no message is ignored.'],
+            $ignore->notices());
+    }
+
+    public function testDelimitedPatternsAndNoticesOnThePage(): void
+    {
+        $net = (new LoopFixture)->device(2, 'sw-a');
+        $net->log(2, '%UDLD-4-UDLD_PORT_DISABLED', 'UDLD disabled interface Te1/1/1, unidirectional link detected');
+
+        $this->assertSame(['udld' => 'warning'], self::codes($net->evidence(['stp_syslog_udld' => '/udld/i'])));
+        $this->assertSame([], self::codes($net->evidence(['stp_syslog_udld' => '/udld/'])), 'case-sensitive as written');
+        $escaped = $net->evidence(['stp_syslog_udld' => 'udld|a\~b']);
+        $this->assertSame(['udld' => 'warning'], self::codes($escaped));
+        $this->assertSame([], $escaped['evidence']['notices']);
+
+        // problems of the patterns are not shown to users who may not see syslog
+        $this->assertCount(1, $net->evidence(['stp_syslog_udld' => 'udld('])['evidence']['notices']);
+        $this->assertSame([], $net->evidence(['stp_syslog_udld' => 'udld('], ['syslog_hidden' => true])['evidence']['notices']);
+    }
+
+    public function testConfigurationCommandsAndRecoveriesAreIgnored(): void
+    {
+        $net = (new LoopFixture)->device(2, 'sw-a')->device(3, 'sw-b')->device(5, 'ex-1')->device(6, 'nx-1');
+        $net->port(2, 'GigabitEthernet1/0/5');
+        $net->port(2, 'GigabitEthernet1/0/21');
+        $net->port(2, 'GigabitEthernet1/0/51');
+        $net->port(5, 'ge-0/0/5');
+        // configuration commands echoed to syslog (archive log config, Junos command line, Arista accounting)
+        $net->log(2, '%PARSER-5-CFGLOG_LOGGEDCMD', 'User:netops  logged command:storm-control broadcast level 1.00')
+            ->log(3, '%PARSER-5-CFGLOG_LOGGEDCMD', 'User:netops  logged command:storm-control broadcast level 1.00')
+            ->log(2, '%PARSER-5-CFGLOG_LOGGEDCMD', 'User:netops  logged command:spanning-tree bpduguard enable')
+            ->log(5, 'MGD', "UI_CMDLINE_READ_LINE: User 'netops', command 'set protocols layer2-control bpdu-block interface ge-0/0/5 '")
+            ->log(5, 'MGD', 'UI_CFG_AUDIT_SET: User \'netops\' set: [protocols layer2-control bpdu-block interface ge-0/0/5]')
+            ->log(3, 'Aaa', '%ACCOUNTING-6-CMD: netops vty3 10.0.0.1 stop service=shell priv-lvl=15 cmd=spanning-tree guard root');
+        // recoveries
+        $net->log(2, '%SPANTREE-2-ROOTGUARD_BLOCK', 'Root guard blocking port GigabitEthernet1/0/51 on VLAN0010.', 900)
+            ->log(2, '%SPANTREE-2-ROOTGUARD_UNBLOCK', 'Root guard unblocking port GigabitEthernet1/0/51 on VLAN0010.', 600)
+            ->log(2, '%PM-4-ERR_RECOVER', 'Attempting to recover from bpduguard err-disable state on Gi1/0/21', 500)
+            ->log(6, '', '%ETHPORT-5-STORM_CONTROL_BELOW_THRESHOLD: Traffic in port Ethernet1/49 has fallen below the configured threshold', 400)
+            ->log(5, 'ESWD', 'ESWD_STP_LOOP_PROTECT_CLEARED: ge-0/0/5.0: loop protect cleared for instance 0', 300);
+
+        $result = $net->evidence();
+        $this->assertSame(['root_guard' => 'warning'], self::codes($result));
+        $this->assertStringStartsWith('1 root guard message in the last 24 hours: sw-a (1 message, VLAN 10, port Gi1/0/51', self::find($result, 'root_guard')['detail']);
+
+        // the messages to ignore are a setting too
+        $this->assertSame(['root_guard' => 'warning'], self::codes($net->evidence(['stp_syslog_ignore' => 'unblock|logged command|UI_|cmd=|recover|threshold|cleared'])));
+        $own = $net->evidence(['stp_syslog_ignore' => 'ROOTGUARD_BLOCK|unblock']);
+        $this->assertArrayNotHasKey('root_guard', self::codes($own));
+        $this->assertSame('critical', self::codes($own)['storm_control'], 'the commands count again');
+    }
+
+    public function testMoreVendorMessages(): void
+    {
+        $net = (new LoopFixture)->device(3, 'nx-1')->device(6, 'hp-1');
+        $net->port(3, 'Ethernet1/53');
+        $net->port(3, 'Ethernet1/54');
+        $net->port(6, 'A1');
+        $net->log(3, '', '%L2FM-2-L2FM_MAC_FLAP_DISABLE_LEARN_N3K: Loops detected in the network among ports Eth1/53 and Eth1/54 vlan 1 - '
+            . 'Disabling dynamic learning notifications for a period between 120 and 240 seconds on vlan 1')
+            ->log(6, 'FFI', 'port A1-Excessive Broadcasts. See help. [00331]');
+
+        $result = $net->evidence();
+        $this->assertSame(['loop_detected' => 'critical', 'storm_control' => 'warning'], self::codes($result));
+        $this->assertSame(['Eth1/53', 'Eth1/54'], array_column(self::rows($result, 'loop_detected')[3]['ports'], 'name'));
+        $this->assertSame([1], self::rows($result, 'loop_detected')[3]['vlans']);
+        $this->assertSame(['A1'], array_column(self::rows($result, 'storm_control')[6]['ports'], 'name'), 'ProCurve "port A1-..."');
+    }
+
+    public function testCdpNamesTheNeighborPortAfterWith(): void
+    {
+        // the neighbor's ports exist on this switch too, so only the cut keeps them out
+        $net = (new LoopFixture)->device(2, 'sw-a');
+        foreach (['GigabitEthernet1/0/1', 'GigabitEthernet1/0/2', 'FastEthernet0/1', 'FastEthernet0/3'] as $name) {
+            $net->port(2, $name);
+        }
+        $net->log(2, '%CDP-4-NATIVE_VLAN_MISMATCH', 'Native VLAN mismatch discovered on GigabitEthernet1/0/1 (10), with sw-b GigabitEthernet1/0/2 (20).')
+            ->log(2, '%CDP-4-DUPLEX_MISMATCH', 'duplex mismatch discovered on FastEthernet0/1 (not half duplex), with sw-c FastEthernet0/3 (half duplex).');
+
+        $result = $net->evidence();
+        $this->assertSame(['Gi1/0/1'], array_column(self::rows($result, 'syslog_native_vlan')[2]['ports'], 'name'));
+        $this->assertSame(['Fa0/1'], array_column(self::rows($result, 'syslog_duplex_mismatch')[2]['ports'], 'name'));
+    }
+
+    public function testDeletedPortsAreNotNamed(): void
+    {
+        // after a reload renumbered the ports, LibreNMS keeps the old row as deleted next to the new one
+        $net = (new LoopFixture)->device(2, 'sw-a');
+        $net->port(2, 'GigabitEthernet1/0/21', ['deleted' => 1]);
+        $live = $net->port(2, 'GigabitEthernet1/0/21');
+        $net->log(2, '%PM-4-ERR_DISABLE', 'bpduguard error detected on Gi1/0/21, putting Gi1/0/21 in err-disable state');
+
+        $this->assertSame([['port_id' => $live, 'name' => 'Gi1/0/21']], $net->evidence()['evidence']['syslog'][0]['ports']);
+    }
+
+    public function testTheSyslogLinkFiltersOnASharedProgramOnly(): void
+    {
+        $net = self::vendors();
+        $result = $net->evidence();
+        $this->assertSame('', self::rows($result, 'bpdu_guard')[2]['program'], 'BLOCK_BPDUGUARD and ERR_DISABLE');
+        $this->assertSame('%SPANTREE-2-LOOPGUARD_BLOCK', self::rows($result, 'loop_guard')[2]['program']);
+        $this->assertSame('EBRA', self::rows($result, 'mac_flapping')[4]['program']);
+        $this->assertSame('', self::rows($result, 'root_guard')[3]['program'], 'NX-OS: the mnemonic is in the message');
     }
 
     public function testHiddenAndTruncatedSyslog(): void
@@ -371,13 +541,15 @@ class LoopEvidenceTest extends TestCase
         $this->assertSame([], $hidden['evidence']['syslog']);
         $this->assertTrue($hidden['evidence']['syslog_hidden']);
 
-        $truncated = $net->evidence([], ['syslog_truncated' => true, 'syslog_scan_limited' => 100000, 'syslog_devices' => 4, 'syslog_scope' => 5]);
-        $this->assertSame([
-            'Only the newest 100,000 syslog messages of the last 24 hours were searched; shorten the syslog window in the settings to cover it all.',
-            'Only the newest 23 matching syslog messages of the last 24 hours were analyzed.',
-        ], $truncated['evidence']['notices']);
-        $this->assertSame(4, $truncated['evidence']['syslog_devices']);
-        $this->assertSame(5, $truncated['evidence']['syslog_scope']);
+        $limited = $net->evidence([], ['syslog_limited' => 2, 'syslog_scanned' => 100000, 'syslog_devices' => 4, 'syslog_scope' => 5]);
+        $this->assertSame(['100,000 syslog messages of the last 24 hours were searched, which did not reach back to the start of the window on '
+            . '2 busy devices; shorten the syslog window in the settings to search all of it.'], $limited['evidence']['notices']);
+        $this->assertSame(4, $limited['evidence']['syslog_devices']);
+        $this->assertSame(5, $limited['evidence']['syslog_scope']);
+
+        $truncated = $net->evidence([], ['syslog_truncated' => true, 'syslog_limited' => 3, 'syslog_scanned' => 20000]);
+        $this->assertSame(['More syslog messages of the last 24 hours match the checks than are analyzed at once: only the newest 23, '
+            . 'taken in turns from each device, were.'], $truncated['evidence']['notices']);
     }
 
     public function testMergeIntoTheSpanningTreeResult(): void
@@ -401,12 +573,5 @@ class LoopEvidenceTest extends TestCase
         $this->assertSame('critical', $result['summary']['status']);
         $this->assertSame([1 => 'core1', 2 => 'sw-a', 3 => 'sw-b'], $result['device_names']);
         $this->assertCount(1, $result['loop_evidence']['syslog']);
-
-        // one device: its own ports and messages, and its neighbors' ports toward it
-        $sw = LoopEvidence::forDevice($result['loop_evidence'], 3);
-        $this->assertSame(['sw-a'], array_column($sw['storms'], 'name'));
-        $this->assertSame([3], array_column($sw['syslog'], 'device_id'));
-        $this->assertSame([], LoopEvidence::forDevice($result['loop_evidence'], 9)['syslog']);
-        $this->assertSame([], LoopEvidence::forDevice([], 3));
     }
 }

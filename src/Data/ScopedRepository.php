@@ -24,11 +24,16 @@ abstract class ScopedRepository
     }
 
     /**
-     * The user the repository is scoped to, so another feature's repository can serve the same request.
+     * Another repository of the plugin for the same user.
+     *
+     * @template T of ScopedRepository
+     *
+     * @param  class-string<T>  $class
+     * @return T
      */
-    public function user(): mixed
+    public function sibling(string $class): self
     {
-        return $this->user;
+        return new $class($this->user);
     }
 
     /**

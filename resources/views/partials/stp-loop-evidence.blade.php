@@ -31,7 +31,10 @@
             @php($level = \Agoodley\LibrenmsTopology\Stp\Finding::worst(array_filter([$row['broadcast_level'], $row['multicast_level']])))
             <tr>
                 <td><a href="{{ $deviceUrl($row['device_id']) }}">{{ $row['name'] }}</a></td>
-                <td><a href="{{ $portUrl($row['device_id'], $row['port_id']) }}">{{ $row['port'] }}</a></td>
+                <td>
+                    <a href="{{ $portUrl($row['device_id'], $row['port_id']) }}">{{ $row['port'] }}</a>
+                    @if($row['age'])<span class="text-muted" title="counters of an older poll">&middot; polled {{ \Agoodley\LibrenmsTopology\Stp\StpAnalyzer::duration($row['age']) }} ago</span>@endif
+                </td>
                 <td>
                     @if($row['neighbor']['device_id'])<a href="{{ $deviceUrl($row['neighbor']['device_id']) }}">{{ $row['neighbor']['name'] }}</a>@else{{ $row['neighbor']['name'] ?: '-' }}@endif
                     {{ $row['neighbor']['port'] }}
@@ -51,7 +54,7 @@
                 <td><span class="topo-sev topo-sev-{{ $level }}">{{ $level === 'ok' ? 'ok' : 'storm' }}</span></td>
             </tr>
         @empty
-            <tr><td colspan="7">No inter-switch port has current broadcast / multicast counters. LibreNMS' ports module collects them from devices that report the IF-MIB packet counters.</td></tr>
+            <tr><td colspan="7">No inter-switch port has current broadcast / multicast counters. LibreNMS' ports module collects them from devices that report the IF-MIB packet counters (ifXTable); ports whose counters all stay at 0 do not report them.</td></tr>
         @endforelse
         </tbody>
     </table>

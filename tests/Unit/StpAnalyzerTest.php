@@ -71,6 +71,33 @@ class StpAnalyzerTest extends TestCase
         $this->assertSame('loops', array_column($all['findings'], 'category', 'code')['forwarding_loop']);
     }
 
+    public function testDevicePanelSkipsDisabledChecks(): void
+    {
+        $issues = function (int $deviceId, array $settings): array {
+            $analyzer = new StpAnalyzer(
+                CampusFixture::devices(),
+                new StpIndex(CampusFixture::stpInstances([1 => ['priority' => 32768], 3 => ['topChanges' => 5000, 'timeSinceTopologyChange' => 30]]),
+                    CampusFixture::stpPorts([33 => ['forwardTransitions' => 4000]]), CampusFixture::lagParent()),
+                CampusFixture::links(),
+                CampusFixture::ports(),
+                CampusFixture::lagParent(),
+                new PluginSettings($settings),
+                [],
+                strtotime('2026-10-19 12:00:00'),
+            );
+
+            return array_column($analyzer->deviceSummary($deviceId)['issues'], 'text');
+        };
+
+        $this->assertSame(['VLAN 1 / CST: root bridge with default priority'], $issues(1, []));
+        $this->assertSame([], $issues(1, ['stp_disabled_checks' => 'root_default_priority']));
+        $this->assertSame([], $issues(1, ['stp_disabled_checks' => 'root']));
+        $this->assertSame(['VLAN 1 / CST: 500 topology changes per day', 'VLAN 1 / CST: Gi1/0/1 changed to forwarding 4000 times',
+            'VLAN 1 / CST: topology change 30s ago'], $issues(3, []));
+        $this->assertSame(['VLAN 1 / CST: Gi1/0/1 changed to forwarding 4000 times'], $issues(3, ['stp_disabled_checks' => 'changes']));
+        $this->assertSame(['VLAN 1 / CST: 500 topology changes per day'], $issues(3, ['stp_disabled_checks' => 'port_flapping tc_recent']));
+    }
+
     public function testMlagIsNotALoop(): void
     {
         // leafA(5) and leafB(6) share access(7) Po70 and a peer link: all forwarding is expected
