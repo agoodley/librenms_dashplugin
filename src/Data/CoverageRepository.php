@@ -55,7 +55,12 @@ class CoverageRepository extends ScopedRepository
             return $row;
         };
 
-        return LazyCollection::make(function () use ($ids, $accessible, $everything, $visible) {
+        $allowed = $this->allowsTable('links');
+
+        return LazyCollection::make(function () use ($ids, $accessible, $everything, $visible, $allowed) {
+            if (! $allowed) {
+                return;
+            }
             foreach (array_chunk($ids, 10000) as $chunk) {
                 foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $chunk)
                     ->select(self::LINK_COLUMNS)->lazyById(2000, 'id') as $row) {
@@ -88,7 +93,7 @@ class CoverageRepository extends ScopedRepository
     public function addressNames(array $ids): array
     {
         $names = [];
-        foreach (array_chunk($ids, 10000) as $chunk) {
+        foreach ($this->allowsTable('links') ? array_chunk($ids, 10000) : [] as $chunk) {
             foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $chunk)
                 ->where(fn ($query) => $query->where('remote_hostname', 'like', '%.%.%.%')->orWhere('remote_hostname', 'like', '%:%'))
                 ->distinct()->pluck('remote_hostname') as $name) {
@@ -170,7 +175,7 @@ class CoverageRepository extends ScopedRepository
      */
     public function busyPorts(array $ports, int $min): array
     {
-        if (! $ports || $min < 1) {
+        if (! $ports || $min < 1 || ! $this->allowsTable('ports_fdb')) {
             return [];
         }
 

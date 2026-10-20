@@ -19,6 +19,9 @@
 
         return 'href="' . e($base . $navSuffix) . '" data-topo-nav data-base="' . e($base) . '"';
     };
+    // what the user's LibreNMS role may not read among this page's data
+    $navRoleHidden = (new \Agoodley\LibrenmsTopology\Data\TopologyRepository(auth()->user()))
+        ->hiddenKinds(\Agoodley\LibrenmsTopology\Support\RoleData::PAGES[$active] ?? []);
 @endphp
 <div class="topo-nav">
     <ul class="nav nav-tabs topo-nav-groups">
@@ -38,3 +41,8 @@
         </ul>
     @endif
 </div>
+@if($navRoleHidden)
+    <div class="alert alert-info topo-role-hidden" style="margin: 8px 0">
+        <i class="fa fa-lock"></i> Your LibreNMS role may not view {{ implode(', ', $navRoleHidden) }}: this page leaves them out.
+    </div>
+@endif

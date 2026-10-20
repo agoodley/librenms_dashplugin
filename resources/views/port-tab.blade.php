@@ -10,6 +10,9 @@
         @endif
     </div>
     <div class="panel-body">
+    @if(! empty($hidden))
+        <p class="text-muted"><i class="fa fa-lock"></i> Your LibreNMS role may not view {{ implode(', ', $hidden) }}: they are left out.</p>
+    @endif
     @if(! $tab)
         <p class="text-muted">The topology information of this port could not be loaded, see logs/librenms.log.</p>
     @elseif(! $tab['visible'])
