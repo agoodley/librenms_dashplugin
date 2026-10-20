@@ -5,10 +5,12 @@ namespace Agoodley\LibrenmsTopology;
 use Agoodley\LibrenmsTopology\Hooks\DeviceOverview;
 use Agoodley\LibrenmsTopology\Hooks\MenuEntry;
 use Agoodley\LibrenmsTopology\Hooks\Page;
+use Agoodley\LibrenmsTopology\Hooks\PortTab;
 use Agoodley\LibrenmsTopology\Hooks\Settings;
 use Illuminate\Support\ServiceProvider;
 use LibreNMS\Interfaces\Plugins\Hooks\DeviceOverviewHook;
 use LibreNMS\Interfaces\Plugins\Hooks\MenuEntryHook;
+use LibreNMS\Interfaces\Plugins\Hooks\PortTabHook;
 use LibreNMS\Interfaces\Plugins\Hooks\SettingsHook;
 use LibreNMS\Interfaces\Plugins\Hooks\SinglePageHook;
 use LibreNMS\Interfaces\Plugins\PluginManagerInterface;
@@ -37,6 +39,7 @@ class TopologyServiceProvider extends ServiceProvider
         $pluginManager->publishHook($name, SinglePageHook::class, Page::class);
         $pluginManager->publishHook($name, SettingsHook::class, Settings::class);
         $pluginManager->publishHook($name, DeviceOverviewHook::class, DeviceOverview::class);
+        $pluginManager->publishHook($name, PortTabHook::class, PortTab::class);
 
         $this->loadViewsFrom(__DIR__ . '/../resources/views', $name);
 

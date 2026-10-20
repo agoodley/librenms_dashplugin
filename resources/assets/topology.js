@@ -224,6 +224,10 @@
     /** Unmanaged neighbors that do not pass traffic between their links, by the role of their platform. */
     var END_ROLES = ['server', 'phone', 'wireless'];
 
+    // node and edge ids of the located host (host=<mac>)
+    var HOST_NODE = 'host:located';
+    var HOST_EDGE = 'host:port';
+
     // ------------------------------------------------------------------ the map
 
     function TopologyMap(config) {
@@ -247,6 +251,8 @@
         this.simMap = {nodes: {}, edges: {}};
         this.simResult = null;
         this.outages = {top: {}, behind: {}};
+        // a host found by the host locator (host=<mac> in the URL), drawn next to its switch
+        this.host = {mac: new URLSearchParams(window.location.search).get('host'), data: null, warned: false};
         this.container = document.getElementById('topo-canvas');
         this.panel = document.getElementById('topo-details');
         this.status = document.getElementById('topo-status');
@@ -662,6 +668,7 @@
         this.showLegend();
         this.updateSearchList();
         this.updateSimBox();
+        this.drawHost();
     };
 
     /**
@@ -1485,6 +1492,9 @@
      * Details panel of a device / subnet: properties, STP state, connections (clickable) and actions.
      */
     TopologyMap.prototype.showNode = function (id) {
+        if (id === HOST_NODE) {
+            return this.showHost();
+        }
         var self = this;
         var visNode = this.nodes.get(id);
         if (!visNode) {
@@ -1624,6 +1634,9 @@
      * Details panel of a link: both ends, aggregate members, or routing session details.
      */
     TopologyMap.prototype.showEdge = function (id) {
+        if (id === HOST_EDGE) {
+            return this.showHost();
+        }
         var visEdge = this.edges.get(id);
         if (!visEdge) {
             return;
@@ -1812,6 +1825,115 @@
             select.value = String(deviceId);
             this.load();
         }
+    };
+
+    // ------------------------------------------------------------------ located host (host locator)
+
+    /**
+     * Draw the host of host=<mac> next to the switch it is plugged into, joined by its port, and select it.
+     * Its location comes from the host locator API, once per page; it is drawn again after every redraw.
+     */
+    TopologyMap.prototype.drawHost = function () {
+        var self = this;
+        if (!this.host.mac || this.mode !== 'l2' || !this.config.urls.hosts || !this.network) {
+            return;
+        }
+        if (this.host.data === null) {
+            this.host.data = false; // loading
+            fetch(this.config.urls.hosts + '?q=' + encodeURIComponent(this.host.mac), {
+                credentials: 'same-origin',
+                headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+            }).then(function (response) {
+                return response.ok ? response.json() : null;
+            }).then(function (body) {
+                var host = body && body.hosts && body.hosts[0];
+                self.host.data = host && host.edge ? host : {missing: true};
+                self.drawHost();
+            }).catch(function () {
+                self.host.data = {missing: true};
+                self.drawHost();
+            });
+            return;
+        }
+        if (!this.host.data) {
+            return; // still loading
+        }
+
+        var host = this.host.data;
+        var edge = host.edge;
+        var switchId = edge ? 'd:' + edge.device_id : null;
+        if (host.missing || !this.nodes.get(switchId)) {
+            if (!this.host.warned) {
+                this.host.warned = true;
+                this.flash(host.missing ? 'Host ' + this.host.mac + ' is not in a forwarding table you can see.' :
+                    host.readable + ' is on ' + edge.device + ' ' + edge.port + ', which is not on this map.');
+            }
+            return;
+        }
+
+        var switchNode = this.nodes.get(switchId);
+        var position = this.network.getPositions([switchId])[switchId] || {x: 0, y: 0};
+        var ips = (host.addresses || []).map(function (address) {
+            return address.display;
+        });
+        var tooltip = document.createElement('div');
+        tooltip.className = 'topo-tooltip';
+        tooltip.innerHTML = '<b>' + esc(host.readable) + '</b><br>' + esc(host.vendor || '') + (ips.length ? '<br>' + esc(ips.slice(0, 4).join(', ')) : '') +
+            '<br>' + esc(edge.device + ' ' + edge.port);
+        this.nodes.update({
+            id: HOST_NODE,
+            label: [ips[0], host.vendor, host.readable].filter(Boolean).join('\n'),
+            title: tooltip,
+            shape: 'image',
+            image: iconUrl('other', 'up', false),
+            size: 16,
+            level: switchNode.level !== undefined ? switchNode.level + 1 : undefined,
+            x: position.x + 90,
+            y: position.y + 150,
+            data: {id: HOST_NODE, name: host.readable, type: 'host'}
+        });
+        this.edges.update({
+            id: HOST_EDGE,
+            from: switchId,
+            to: HOST_NODE,
+            dashes: [5, 4],
+            width: 2,
+            color: {color: '#f39c12', highlight: '#f39c12', hover: '#f39c12'},
+            // shaped like a link so the interface label and the switch's connection list show the port
+            data: {id: HOST_EDGE, from: switchId, to: HOST_NODE, kind: 'host', a: {name: edge.port, short: edge.port}, b: null}
+        });
+        this.network.selectNodes([HOST_NODE]);
+        this.network.focus(HOST_NODE, {scale: Math.max(1, this.network.getScale()), animation: {duration: 500}});
+        this.showHost();
+    };
+
+    /**
+     * Details panel of the located host: where it is plugged in and what the locator says about it.
+     */
+    TopologyMap.prototype.showHost = function () {
+        var host = this.host.data;
+        if (!host || !host.edge) {
+            return;
+        }
+        var edge = host.edge;
+        var html = '<h4 class="topo-panel-title"><i class="fa fa-map-marker"></i> ' + esc(host.readable) + '</h4><table class="table table-condensed topo-kv">' +
+            this.row('Vendor', esc(host.vendor || '-')) +
+            this.row('Addresses', esc((host.addresses || []).map(function (address) {
+                return address.display;
+            }).join(', ') || '-')) +
+            this.row('Switch', '<a href="' + esc(edge.device_url) + '">' + esc(edge.device) + '</a>') +
+            this.row('Port', edge.port_url ? '<a href="' + esc(edge.port_url) + '">' + esc(edge.port) + '</a>' : esc(edge.port)) +
+            this.row('VLAN', esc((edge.vlans || []).join(', ') || '-')) +
+            this.row('Last seen', esc(edge.last_seen ? formatDuration(Math.max(0, Date.now() / 1000 - edge.last_seen)) + ' ago' : '-')) +
+            '</table>';
+        (host.notes || []).forEach(function (note) {
+            html += '<div class="topo-host-note topo-host-note-' + esc(note.level) + '">' + esc(note.text) + '</div>';
+        });
+        if (this.config.urls.hostsPage) {
+            html += '<div class="topo-actions"><a class="btn btn-xs btn-default" href="' + esc(this.config.urls.hostsPage + '?q=' + encodeURIComponent(host.readable)) +
+                '"><i class="fa fa-map-marker"></i> Host locator</a></div>';
+        }
+        this.panel.innerHTML = html;
     };
 
     // ------------------------------------------------------------------ layout persistence & export

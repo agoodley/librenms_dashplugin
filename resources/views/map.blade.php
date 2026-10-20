@@ -136,6 +136,8 @@
             'stpPage' => route('topology.stp'),
             'redundancyPage' => route('topology.redundancy'),
             'simulate' => route('topology.api.simulate'),
+            'hosts' => route('topology.api.hosts'),
+            'hostsPage' => route('topology.hosts'),
         ],
     ];
 @endphp

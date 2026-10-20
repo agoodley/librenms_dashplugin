@@ -20,7 +20,7 @@ The plugin's conventions apply to all of them:
 |---|---|---|---|
 | 1 | [Link & VLAN diagnostics](README.md#link--vlan-diagnostics) | **done** | – |
 | 3 | [Redundancy & failure impact](README.md#redundancy--failure-impact) | **done** | – |
-| 2 | [Host locator and port tab](#2-host-locator-where-is-this-plugged-in-and-port-tab) | next | M |
+| 2 | [Host locator and port tab](README.md#host-locator-and-port-tab) | **done** | – |
 | 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
 | 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
 | 4 | [Routing & IP diagnostics](#4-routing--ip-diagnostics) | planned | M |
@@ -43,27 +43,11 @@ on those.
 
 ## What a plugin can do in LibreNMS
 
-* Hooks: menu entry, single page, settings page, device overview panel and **port tab**. The port tab is not used yet.
+* Hooks: menu entry, single page, settings page, device overview panel and **port tab** (used by the host locator).
   There is no hook for dashboard widgets or device tabs.
 * A plugin package can ship routes, views and **database migrations**, and register **scheduled commands**
   (LibreNMS runs Laravel's scheduler).
 * The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (see 6) and the Custom Map widget (see 11).
-
-## Next up
-
-### 2. Host locator ("where is this plugged in?") and port tab
-
-* Enter an IP, MAC or hostname; get the switch port, VLAN, vendor, first/last seen and 802.1X user, highlighted on the
-  L2 map.
-* LibreNMS' own FDB search lists every switch that learned the MAC and only marks a port when it holds exactly one
-  MAC, which misses phones with a PC behind them, APs and VM hosts. The plugin knows which ports are inter-switch
-  links and port-channels, so it can rule them out and find the edge port.
-* **Port tab** on every port page: the device and port at the far end, STP role per VLAN, VLANs, port-channel, MACs and
-  IPs learned on the port. It runs on every port page view, so it must stay cheap.
-* Data: `ipv4_mac` (ARP), `ipv6_nd`, `ports_fdb` (`created_at` / `updated_at` give first/last seen), `ports_nac`
-  (802.1X; the `nac` poller module is off by default), `vendor_ouis`.
-* Caveat: FDB and ARP tables are refreshed at discovery (every 6 hours by default); the `arp-table` poller module (off
-  by default) refreshes ARP every poll. Show "last seen" with every answer.
 
 ## Planned
 

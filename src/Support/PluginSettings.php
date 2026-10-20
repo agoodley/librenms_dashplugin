@@ -30,6 +30,7 @@ class PluginSettings
         'redundancy_core' => '',
         'redundancy_warn_devices' => '2',
         'redundancy_disabled_checks' => '',
+        'hosts_shared_port_macs' => '5',
     ];
 
     /** @var array<string, string> */
