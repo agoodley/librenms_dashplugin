@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsTopology\Routing;
 
 use Agoodley\LibrenmsTopology\Data\RoutingRepository;
+use Agoodley\LibrenmsTopology\Support\InterfaceName;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 
 /**
@@ -55,11 +56,13 @@ class RoutingService
      * related to (LLDP/CDP neighbors, OSPF neighbors and BGP peers in either direction, routers with
      * its router ID or one of its neighbors'), the address of every OSPF neighbor (the OSPF domains
      * and adjacencies of the whole network are made from them, so they come out as without the
-     * device filter) and every address in one of the device's subnets (other devices' own addresses
-     * next to a shared one). RoutingServiceTest checks that a device's view stays the same.
+     * device filter), every address on a linked port or its subinterfaces (they decide which routing
+     * tables each link joins) and every address in one of the device's subnets (other devices' own
+     * addresses next to a shared one). RoutingServiceTest checks that a device's view stays the same.
      *
      * @param  int[]  $all  the devices the user may see
-     * @return array{0: array<int, true>, 1: array<string, true>, 2: array<string, true>} devices, binary addresses, subnet keys
+     * @return array{0: array<int, true>, 1: array<string, true>, 2: array<string, true>, 3: array<int, true>, 4: array<int, array<string, true>>}
+     *                devices, binary addresses, subnet keys, linked ports, linked port names per device
      */
     private function focus(int $device, array $all): array
     {
@@ -72,11 +75,21 @@ class RoutingService
                 $subnets[Address::networkKey($packed, (int) ($row['prefixlen'] ?? strlen($packed) * 8))] = true;
             }
         }
+        $ports = [];
+        $parents = [];
         foreach ($this->repo->links($all) as $link) {
             if ((int) $link['local_device_id'] === $device) {
                 $related[(int) $link['remote_device_id']] = true;
             } elseif ((int) $link['remote_device_id'] === $device) {
                 $related[(int) $link['local_device_id']] = true;
+            }
+            foreach (['local', 'remote'] as $end) {
+                if ((int) ($link[$end . '_port_id'] ?? 0) > 0) {
+                    $ports[(int) $link[$end . '_port_id']] = true;
+                    if (($name = RoutingAnalyzer::portName($link, $end)) !== null) {
+                        $parents[(int) $link[$end . '_device_id']][$name] = true;
+                    }
+                }
             }
         }
 
@@ -136,22 +149,27 @@ class RoutingService
             $related[$deviceId] = true;
         }
 
-        return [$related, $neighbors, $subnets];
+        return [$related, $neighbors, $subnets, $ports, $parents];
     }
 
     /**
-     * The address rows of the related devices, at the addresses and in the subnets.
+     * The address rows of the related devices, at the addresses, in the subnets and on the linked
+     * ports (or their subinterfaces).
      *
      * @param  array<int, true>  $devices
      * @param  array<string, true>  $addresses  binary
      * @param  array<string, true>  $subnets  Address::networkKey()
+     * @param  array<int, true>  $ports
+     * @param  array<int, array<string, true>>  $parents  device => linked port names
      */
-    private static function only(iterable $rows, array $devices, array $addresses, array $subnets): \Generator
+    private static function only(iterable $rows, array $devices, array $addresses, array $subnets, array $ports, array $parents): \Generator
     {
         foreach ($rows as $row) {
             $packed = Address::pack($row['address'] ?? null);
-            if ($packed !== null && (isset($devices[(int) ($row['device_id'] ?? 0)]) || isset($addresses[$packed])
-                || isset($subnets[Address::networkKey($packed, (int) ($row['prefixlen'] ?? strlen($packed) * 8))]))) {
+            $deviceId = (int) ($row['device_id'] ?? 0);
+            if ($packed !== null && (isset($devices[$deviceId]) || isset($addresses[$packed]) || isset($ports[(int) ($row['port_id'] ?? 0)])
+                || isset($subnets[Address::networkKey($packed, (int) ($row['prefixlen'] ?? strlen($packed) * 8))])
+                || (isset($parents[$deviceId]) && isset($parents[$deviceId][RoutingAnalyzer::parentPort(InterfaceName::short(InterfaceName::label($row))) ?? ''])))) {
                 yield $row;
             }
         }

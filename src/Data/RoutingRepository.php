@@ -182,7 +182,7 @@ class RoutingRepository extends ScopedRepository
     }
 
     /**
-     * Active LLDP/CDP links between the devices, with their ports.
+     * Active LLDP/CDP links between the devices, with their ports and the ports' names.
      *
      * @param  int[]  $ids
      */
@@ -193,8 +193,10 @@ class RoutingRepository extends ScopedRepository
         }
 
         try {
-            foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $ids)->whereIntegerInRaw('remote_device_id', $ids)
-                ->select(['local_device_id', 'local_port_id', 'remote_device_id', 'remote_port_id'])->cursor() as $link) {
+            foreach (DB::table('links as l')->leftJoin('ports as lp', 'lp.port_id', '=', 'l.local_port_id')->leftJoin('ports as rp', 'rp.port_id', '=', 'l.remote_port_id')
+                ->where('l.active', 1)->whereIntegerInRaw('l.local_device_id', $ids)->whereIntegerInRaw('l.remote_device_id', $ids)
+                ->select(['l.local_device_id', 'l.local_port_id', 'l.remote_device_id', 'l.remote_port_id', 'lp.ifName as local_ifName', 'lp.ifDescr as local_ifDescr',
+                    'rp.ifName as remote_ifName', 'rp.ifDescr as remote_ifDescr'])->cursor() as $link) {
                 yield (array) $link;
             }
         } catch (\Throwable $e) {

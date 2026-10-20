@@ -97,6 +97,9 @@ class RoutingAnalyzer
      */
     private const LSDB_TOLERANCE = 0.01;
 
+    /** Bridges whose addresses stay inside the host behind NAT (libvirt, Docker, LXC/LXD, Podman, CNI, VirtualBox). */
+    private const HOST_LOCAL = '/^((virbr|docker|lxcbr|lxdbr|podman|cni|vboxnet)\d+|br-[0-9a-f]{12})$/i';
+
     /** @var array<int, true> reported devices (the group / location filter) */
     private array $scope;
 
@@ -111,6 +114,24 @@ class RoutingAnalyzer
 
     /** @var array<int, array{0: int, 1: int, 2: int, 3: int}> port pair (see pair()) => LLDP/CDP link: device, port, device, port */
     private array $links = [];
+
+    /** @var list<array{0: int, 1: int, 2: ?string, 3: int, 4: int, 5: ?string}> LLDP/CDP links: device, port, port name, device, port, port name (0 / null: unknown) */
+    private array $lldp = [];
+
+    /** @var array<int, int> subinterface => the linked port it belongs to ("Gi0/1.100" of "Gi0/1") */
+    private array $linkPort = [];
+
+    /** @var array<int, list<Address>> linked port => the addresses on it and on its subinterfaces */
+    private array $onLink = [];
+
+    /** @var array<string, array<int, array<int, true>>> VRF name (lowercase) => device => devices it is joined to in that routing table */
+    private array $joined = [];
+
+    /** @var array<int, array<int, true>> device => devices it is joined to by links without addresses (in every routing table) */
+    private array $joinedAny = [];
+
+    /** @var array<string, array<int, int>> VRF name (lowercase) => device => its network in that routing table */
+    private array $networks = [];
 
     /** @var array<int, array<string, true>> device => names of its VRFs, lowercase */
     private array $vrfsOf = [];
@@ -130,7 +151,7 @@ class RoutingAnalyzer
     /** @var array<int, string[]> device => its OSPF instance keys */
     private array $instancesOf = [];
 
-    /** @var array<string, array<int, true>> router ID => devices using it */
+    /** @var array<string, array<int, array<string, true>>> router ID => devices using it => the VRFs of their instances with it */
     private array $routersWithId = [];
 
     /** @var list<OspfInterface> */
@@ -196,6 +217,7 @@ class RoutingAnalyzer
         $this->readVrfs($vrfs);
         $this->readLinks($links);
         $this->readAddresses($addresses);
+        $this->joinLinks();
         $this->readOspf($ospf);
         $this->readBgp($bgp);
     }
@@ -334,10 +356,72 @@ class RoutingAnalyzer
             $this->adjacent[$b][$a] = true;
             $portA = (int) ($link['local_port_id'] ?? 0);
             $portB = (int) ($link['remote_port_id'] ?? 0);
+            $this->lldp[] = [$a, $portA, self::portName($link, 'local'), $b, $portB, self::portName($link, 'remote')];
             if ($portA > 0 && $portB > 0 && $portA !== $portB) {
                 $this->links[self::pair($portA, $portB)] ??= [$a, $portA, $b, $portB];
             }
         }
+    }
+
+    /**
+     * The addresses on each linked port and its subinterfaces, and the routing tables each LLDP/CDP
+     * link joins: a link whose ends have addresses in VRFs of different names (a provider edge facing
+     * a customer router) is a routing boundary and joins none, a link without addresses (a trunk
+     * between switches) joins every routing table, any other link the VRFs of its addressed ends.
+     */
+    private function joinLinks(): void
+    {
+        $parents = [];
+        foreach ($this->lldp as [$a, $portA, $nameA, $b, $portB, $nameB]) {
+            foreach ([[$a, $portA, $nameA], [$b, $portB, $nameB]] as [$deviceId, $port, $name]) {
+                if ($port > 0) {
+                    $this->onLink[$port] ??= [];
+                    if ($name !== null) {
+                        $parents[$deviceId][$name] = $port;
+                    }
+                }
+            }
+        }
+        foreach ($this->onLink ? $this->byDevice : [] as $deviceId => $addresses) {
+            foreach ($addresses as $address) {
+                $parent = self::parentPort($address->port);
+                if ($parent !== null && isset($parents[$deviceId][$parent]) && $address->portId !== null) {
+                    $this->linkPort[$address->portId] = $parents[$deviceId][$parent];
+                }
+                $port = $this->linkPort[$address->portId ?? 0] ?? $address->portId;
+                if ($port !== null && isset($this->onLink[$port])) {
+                    $this->onLink[$port][] = $address;
+                }
+            }
+        }
+
+        foreach ($this->lldp as [$a, $portA, , $b, $portB]) {
+            $vrfsA = $this->endVrfs($portA);
+            $vrfsB = $this->endVrfs($portB);
+            if ($vrfsA === null && $vrfsB === null) {
+                $this->joinedAny[$a][$b] = $this->joinedAny[$b][$a] = true;
+
+                continue;
+            }
+            foreach (array_keys($vrfsA === null ? $vrfsB : ($vrfsB === null ? $vrfsA : array_intersect_key($vrfsA, $vrfsB))) as $vrf) {
+                $this->joined[(string) $vrf][$a][$b] = $this->joined[(string) $vrf][$b][$a] = true;
+            }
+        }
+    }
+
+    /**
+     * VRF names (lowercase) of the addresses on a linked port, null when it has none.
+     *
+     * @return array<string, true>|null
+     */
+    private function endVrfs(int $port): ?array
+    {
+        $vrfs = [];
+        foreach ($this->onLink[$port] ?? [] as $address) {
+            $vrfs[strtolower($address->vrf)] = true;
+        }
+
+        return $vrfs ?: null;
     }
 
     /**
@@ -411,7 +495,7 @@ class RoutingAnalyzer
             ];
             $this->instancesOf[$deviceId][] = $key;
             if (self::validRouterId($routerId)) {
-                $this->routersWithId[$routerId][$deviceId] = true;
+                $this->routersWithId[$routerId][$deviceId][$vrf] = true;
             }
         }
 
@@ -464,13 +548,16 @@ class RoutingAnalyzer
             if ($remoteDevice === null && ($remoteDevice = $this->routerWithId($routerId, $deviceId)) !== null) {
                 $remote = $this->ownAddress($remoteDevice, $packed, $vrf);
             }
+            // the neighbor's own instance: the one with its router ID, else the VRF of its address
+            $instances = $remoteDevice !== null ? ($this->routersWithId[$routerId][$remoteDevice] ?? []) : [];
+            $remoteVrf = count($instances) === 1 ? (string) array_key_first($instances) : $remote?->vrf;
             $local = $this->facing($deviceId, $packed, $vrf);
             $interface = $local !== null ? ($this->interfaceAt[$key . '|' . $local->ip()] ?? null) : null;
             if ($interface !== null) {
                 $interface->talking = true;
             }
             $neighbor = new OspfNeighbor($deviceId, $vrf, $ip, $routerId, $this->intern(self::enum($row['ospfNbrState'] ?? null, self::NBR_STATES)),
-                $remoteDevice, $remote, $local, $interface);
+                $remoteDevice, $remoteVrf, $remote, $local, $interface);
             $this->neighbors[] = $neighbor;
             $this->instances[$key]['neighbors']++;
             $this->instances[$key]['full'] += $neighbor->ok() ? 1 : 0;
@@ -478,6 +565,9 @@ class RoutingAnalyzer
             if ($remoteDevice !== null && $remoteDevice !== $deviceId) {
                 $this->adjacent[$deviceId][$remoteDevice] = true;
                 $this->adjacent[$remoteDevice][$deviceId] = true;
+                if ($remoteVrf !== null && strtolower($remoteVrf) === strtolower($vrf)) {
+                    $this->joined[strtolower($vrf)][$deviceId][$remoteDevice] = $this->joined[strtolower($vrf)][$remoteDevice][$deviceId] = true;
+                }
             }
         }
 
@@ -486,7 +576,7 @@ class RoutingAnalyzer
             $graph->addNode($key);
         }
         foreach ($this->neighbors as $neighbor) {
-            $remote = $neighbor->remoteDevice === null ? null : $this->instanceKey($neighbor->remoteDevice, $neighbor->remote->vrf ?? $neighbor->vrf);
+            $remote = $neighbor->remoteDevice === null ? null : $this->instanceKey($neighbor->remoteDevice, $neighbor->remoteVrf ?? $neighbor->vrf);
             if ($remote !== null) {
                 $graph->addEdge($neighbor->device . '|' . $neighbor->vrf, $remote);
             }
@@ -721,14 +811,26 @@ class RoutingAnalyzer
     private function checkInterfaces(): void
     {
         $subnets = [];
+        $pairs = [];
         foreach ($this->interfaces as $interface) {
             if ($interface->address !== null && ! $interface->address->host) {
-                $subnets[$interface->address->key()][] = $interface;
+                $subnets[$key = $interface->address->key()][] = $interface;
+                if (self::pointToPoint($interface->address)) {
+                    $pairs[$key] = [];
+                }
+            }
+        }
+        // devices that are up holding each point-to-point subnet, out of all addresses
+        foreach ($pairs ? $this->byDevice : [] as $deviceId => $addresses) {
+            foreach ($addresses as $address) {
+                if (self::pointToPoint($address) && isset($pairs[$key = $address->key()]) && $this->isUp($deviceId)) {
+                    $pairs[$key][$deviceId] = true;
+                }
             }
         }
 
-        foreach ($subnets as $interfaces) {
-            foreach ($this->links($interfaces) as $link) {
+        foreach ($subnets as $key => $interfaces) {
+            foreach ($this->links($interfaces, count($pairs[$key] ?? []) === 2) as $link) {
                 $this->compareInterfaces($link);
             }
         }
@@ -736,15 +838,17 @@ class RoutingAnalyzer
 
     /**
      * The interfaces of one subnet grouped by link: two interfaces are on one link when their routers
-     * are in one OSPF domain or the interfaces face each other (faces()). Networks that never meet
-     * reuse subnets, so their interfaces are not compared.
+     * are in one OSPF domain or the interfaces face each other (faces()), and all are when the subnet
+     * is a point-to-point one that exactly two devices hold ($pair: the two ends of a circuit without
+     * LLDP and without an adjacency, e.g. because of the mismatch). Networks that never meet reuse
+     * subnets, so their interfaces are not compared.
      *
      * @param  list<OspfInterface>  $interfaces
      * @return list<list<OspfInterface>>
      */
-    private function links(array $interfaces): array
+    private function links(array $interfaces, bool $pair = false): array
     {
-        if (count($interfaces) === 1) {
+        if (count($interfaces) === 1 || $pair) {
             return [$interfaces];
         }
 
@@ -850,8 +954,7 @@ class RoutingAnalyzer
 
         // only prefixes with room for two addresses (a LAN with two routers also has hosts), and only
         // where OSPF talks to a neighbor: a passive interface elects itself without consequence
-        $prefix = $interfaces[0]->address->prefix;
-        $p2p = in_array($prefix, strlen($interfaces[0]->address->packed) === 4 ? [30, 31] : [126, 127], true);
+        $p2p = self::pointToPoint($interfaces[0]->address);
         $talking = count($devices) >= 2 || array_filter($interfaces, fn ($i) => $i->talking);
         $elected = array_filter($interfaces, fn ($i) => in_array($i->type, ['broadcast', 'nbma'], true)
             && (in_array($i->state, ['designatedrouter', 'backupdesignatedrouter', 'otherdesignatedrouter'], true) || ($i->dr !== null && $i->dr !== '0.0.0.0')));
@@ -1168,48 +1271,53 @@ class RoutingAnalyzer
     // ---------------------------------------------------------------- IP checks
 
     /**
-     * The same address in one VRF on several devices of one network (devices joined by LLDP/CDP
-     * links and OSPF adjacencies: networks that never meet reuse addresses), on interfaces that are
-     * up of devices that are up (a down port does not answer for its address, a down device's
-     * addresses are from before it went down). When each device also has its own address in the
-     * subnet it is probably a shared gateway (VRRP, HSRP, anycast gateway) reported as an interface
-     * address; a loopback or host address, or one on three or more devices, is probably anycast.
+     * The same address in one VRF on several devices, on interfaces that are up of devices that are
+     * up (a down port does not answer for its address, a down device's addresses are from before it
+     * went down); host-local bridges (virbr0, docker0...) are left out. When each device also has its
+     * own address in the subnet it is probably a shared gateway (VRRP, HSRP, anycast gateway) reported
+     * as an interface address; a loopback or host address, or one on three or more devices, is
+     * probably anycast. When no two of the devices are in one network of the routing table
+     * (networks()), they may be separate networks that reuse the address: info.
      */
     private function checkDuplicates(): void
     {
-        $networks = $this->networks();
         foreach ($this->byIp as $entries) {
             if (! is_array($entries)) {
                 continue;
             }
             $groups = [];
             foreach ($entries as $address) {
-                if ($address->up && $this->isUp($address->device)) {
-                    $groups[strtolower($address->vrf) . '|' . ($networks[$address->device] ?? 'd' . $address->device)][] = $address;
+                if ($address->up && $this->isUp($address->device) && ! preg_match(self::HOST_LOCAL, $address->port)) {
+                    $groups[strtolower($address->vrf)][] = $address;
                 }
             }
 
-            foreach ($groups as $rows) {
+            foreach ($groups as $vrf => $rows) {
                 $devices = array_values(array_unique(array_map(fn ($a) => $a->device, $rows)));
                 $first = $rows[0];
                 if (count($devices) < 2 || $this->isIgnored($first->ip())) {
                     continue;
                 }
+                $networks = $this->networks((string) $vrf);
+                $separate = count(array_unique(array_map(fn ($deviceId) => $networks[$deviceId] ?? 'd' . $deviceId, $devices))) === count($devices);
                 $shared = ! $first->host && count($devices) === 2 && array_reduce($devices, fn ($all, $deviceId) => $all && $this->hasOtherAddress($deviceId, $first), true);
                 $anycast = count($devices) > 2 || $first->host;
                 $where = $first->vrf !== '' ? ' (VRF ' . $first->vrf . ')' : '';
                 $this->add(new Finding(
-                    $shared || $anycast ? Finding::INFO : Finding::WARNING,
+                    $shared || $anycast || $separate ? Finding::INFO : Finding::WARNING,
                     'ip_duplicate',
                     'duplicate IP address ' . $first->ip() . $where . ' on ' . implode(', ', array_map(fn ($a) => $this->end($a->device, $a->port), $rows)),
                     match (true) {
                         $shared => 'Both devices also have their own address in ' . $first->network() . ', so this is probably a shared gateway address (VRRP, HSRP or an anycast gateway) that the devices report as an interface address.',
                         $anycast => 'The address is on ' . (count($devices) > 2 ? count($devices) . ' devices' : 'a loopback or as a host address on two devices') . ': probably an anycast address on purpose.',
+                        $separate => 'LibreNMS sees no link between these devices in this routing table (LLDP/CDP, OSPF): they may be separate networks that reuse the address (customers, sites, VRFs), then it is no problem. If they are connected through devices LibreNMS does not monitor, both answer for the address and connections break at random.',
                         default => 'Both devices answer for the address: traffic to it reaches whichever device answered ARP / neighbor discovery last, so connections break at random. The L3 map shows only one of them.',
                     },
-                    $shared || $anycast
-                        ? 'If the address is shared on purpose, add it to the ignored addresses in the routing settings.'
-                        : 'Give one of the interfaces another address.',
+                    match (true) {
+                        $shared || $anycast => 'If the address is shared on purpose, add it to the ignored addresses in the routing settings.',
+                        $separate => 'If the networks are connected, give one of the interfaces another address; if they are separate, add the address to the ignored addresses in the routing settings.',
+                        default => 'Give one of the interfaces another address.',
+                    },
                     null,
                     $devices,
                     array_values(array_filter(array_map(fn ($a) => $a->portId, $rows))),
@@ -1291,30 +1399,18 @@ class RoutingAnalyzer
     }
 
     /**
-     * A link that joins two differently named VRFs: the two ports of an LLDP/CDP link, or the two
-     * addresses of an OSPF adjacency, share a subnet but are in VRFs of different names (compared
-     * without case). VRF names are local to each router, so this is only reported when both routers
+     * A link that joins two differently named VRFs: the two ports of an LLDP/CDP link (with their
+     * subinterfaces), or the two addresses of an OSPF adjacency, share a subnet but are in VRFs of
+     * different names (compared without case). VRF names are local to each router, so this is only reported when both routers
      * have both VRFs (the global table is on every router): a provider edge facing a customer router,
      * or inter-AS option A with other names, joins VRFs on purpose.
      */
     private function checkVrfs(): void
     {
         $reported = [];
-        $linked = [];
-        foreach ($this->links as [$deviceA, $portA, $deviceB, $portB]) {
-            $linked[$portA] = $linked[$portB] = true;
-        }
-        $onPort = [];
-        foreach ($linked ? $this->byDevice : [] as $addresses) {
-            foreach ($addresses as $address) {
-                if ($address->portId !== null && isset($linked[$address->portId])) {
-                    $onPort[$address->portId][] = $address;
-                }
-            }
-        }
-        foreach ($this->links as [$deviceA, $portA, $deviceB, $portB]) {
-            foreach ($onPort[$portA] ?? [] as $a) {
-                foreach ($onPort[$portB] ?? [] as $b) {
+        foreach ($this->links as [, $portA, , $portB]) {
+            foreach ($this->onLink[$portA] ?? [] as $a) {
+                foreach ($this->onLink[$portB] ?? [] as $b) {
                     $this->joinedVrfs($a, $b, 'an LLDP/CDP link', $reported);
                 }
             }
@@ -1541,44 +1637,59 @@ class RoutingAnalyzer
 
     /**
      * Do two addresses face each other? Their devices are neighbors (LLDP/CDP, OSPF) and their ports
-     * are the two ends of an LLDP/CDP link, an OSPF adjacency joins them, or they are in VRFs of the
-     * same name.
+     * (or the ports they are subinterfaces of) are the two ends of an LLDP/CDP link, an OSPF adjacency
+     * joins them, or they are in VRFs of the same name that a link or adjacency joins (see joined()).
      */
     private function faces(?Address $a, ?Address $b): bool
     {
         if ($a === null || $b === null || $a->device === $b->device || ! isset($this->adjacent[$a->device][$b->device])) {
             return false;
         }
+        $portA = $this->linkPort[$a->portId ?? 0] ?? $a->portId;
+        $portB = $this->linkPort[$b->portId ?? 0] ?? $b->portId;
 
-        return ($a->portId !== null && $b->portId !== null && isset($this->links[self::pair($a->portId, $b->portId)]))
+        return ($portA !== null && $portB !== null && isset($this->links[self::pair($portA, $portB)]))
             || isset($this->ospfPeers[$a->device][$b->packed]) || isset($this->ospfPeers[$b->device][$a->packed])
-            || strtolower($a->vrf) === strtolower($b->vrf);
+            || (strtolower($a->vrf) === strtolower($b->vrf) && $this->joined($a->device, $b->device, strtolower($a->vrf)));
     }
 
     /**
-     * Networks of devices joined by LLDP/CDP links and OSPF adjacencies (a device without either is a
-     * network of its own and has no entry).
+     * Are two devices directly joined in a routing table: an LLDP/CDP link whose addressed ends are in
+     * that VRF (or without addresses), or an OSPF adjacency between instances in VRFs of that name?
+     */
+    private function joined(int $a, int $b, string $vrf): bool
+    {
+        return isset($this->joined[$vrf][$a][$b]) || isset($this->joinedAny[$a][$b]);
+    }
+
+    /**
+     * Networks of a routing table: devices joined in it (joined()), directly or through others (a
+     * device joined to none is a network of its own and has no entry).
      *
      * @return array<int, int> device => network
      */
-    private function networks(): array
+    private function networks(string $vrf): array
     {
-        $graph = new Graph;
-        foreach ($this->adjacent as $a => $neighbors) {
-            foreach (array_keys($neighbors) as $b) {
-                if ($a < $b) {
-                    $graph->addEdge($a, $b);
+        if (! isset($this->networks[$vrf])) {
+            $graph = new Graph;
+            foreach ([$this->joined[$vrf] ?? [], $this->joinedAny] as $edges) {
+                foreach ($edges as $a => $neighbors) {
+                    foreach (array_keys($neighbors) as $b) {
+                        if ($a < $b) {
+                            $graph->addEdge($a, $b);
+                        }
+                    }
+                }
+            }
+            $this->networks[$vrf] = [];
+            foreach ($graph->components() as $index => $component) {
+                foreach ($component as $deviceId) {
+                    $this->networks[$vrf][(int) $deviceId] = $index;
                 }
             }
         }
-        $networks = [];
-        foreach ($graph->components() as $index => $component) {
-            foreach ($component as $deviceId) {
-                $networks[(int) $deviceId] = $index;
-            }
-        }
 
-        return $networks;
+        return $this->networks[$vrf];
     }
 
     /**
@@ -1836,6 +1947,35 @@ class RoutingAnalyzer
         if (! isset($this->disabled[$code]) && ! isset($this->disabled[self::CHECKS[$code] ?? ''])) {
             $this->findings[] = [$finding, array_values(array_unique(array_map('strval', $vrfs)))];
         }
+    }
+
+    /**
+     * A subnet with room for two addresses: /30, /31 (IPv4) or /126, /127 (IPv6).
+     */
+    private static function pointToPoint(Address $address): bool
+    {
+        return in_array($address->prefix, strlen($address->packed) === 4 ? [30, 31] : [126, 127], true);
+    }
+
+    /**
+     * The port a subinterface belongs to, by name ("Gi0/1" of "Gi0/1.100", "xe-0/0/1" of
+     * "xe-0/0/1.0"), null for a name without a unit.
+     */
+    public static function parentPort(string $port): ?string
+    {
+        $dot = strpos($port, '.');
+
+        return $dot === false || $dot === 0 ? null : substr($port, 0, $dot);
+    }
+
+    /**
+     * Short name of one end's port of a links row ($end: local or remote), null when unknown.
+     */
+    public static function portName(array $link, string $end): ?string
+    {
+        $port = ['ifName' => $link[$end . '_ifName'] ?? null, 'ifDescr' => $link[$end . '_ifDescr'] ?? null];
+
+        return $port['ifName'] || $port['ifDescr'] ? InterfaceName::short(InterfaceName::label($port)) : null;
     }
 
     /**

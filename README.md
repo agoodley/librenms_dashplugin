@@ -100,15 +100,18 @@ addresses of every device you can see are checked against each other:
 | OSPF network type that differs on one link; routers of one area whose LSA counts differ by more than 1 % | warning |
 | **BGP session down** (unless shut down on purpose), with its last error as text ("Cease / Maximum Number of Prefixes Reached (6/1)") and what usually causes it; sessions configured on one router only (never established, while the peer's sessions in that VRF are polled) | warning |
 | Accepted prefixes near (warning) or at (critical) the peer's maximum-prefix limit, per address family | warning / critical |
-| **Duplicate IP address** in one VRF on interfaces that are up; different prefix lengths on two neighbors | warning |
+| **Duplicate IP address** in one VRF on interfaces that are up, within one network; different prefix lengths on two neighbors | warning |
 | BGP session reset recently (with its cause, or the router's own restart); session up without any accepted prefix | info / warning |
 | OSPF cost that differs per direction on a link; DR election on a point-to-point link (/30, /31) | info |
-| Shared addresses on several devices: a gateway address when each device also has its own (VRRP, HSRP, anycast gateway), anycast on loopbacks, host addresses or three or more devices | info |
+| Shared addresses on several devices: a gateway address when each device also has its own (VRRP, HSRP, anycast gateway), anycast on loopbacks, host addresses or three or more devices, or devices LibreNMS sees no link between (separate networks may reuse addresses) | info |
 | A link (LLDP/CDP, or an OSPF adjacency) that joins two differently named VRFs, on routers that both have both VRFs | info |
 
 Subnets are reused by networks that never meet (customers, sites, VRFs), so interfaces and addresses are only compared
-where they are on one link: on two neighbors (LLDP/CDP, OSPF), between the ports of one LLDP/CDP link or, for OSPF
-interfaces, within one OSPF domain; duplicates only between devices of one network (joined by LLDP/CDP or OSPF).
+where they are on one link: the two ports of an LLDP/CDP link (with their subinterfaces), the two ends of an OSPF
+adjacency, neighbors in one routing table, a /30 or /31 that only two devices hold, or, for OSPF interfaces, one OSPF
+domain. A link whose ends are in differently named VRFs (a provider edge facing a customer router) is a routing
+boundary, so a provider and its customers are separate networks; a duplicate address between devices that LibreNMS
+sees no link between in that routing table is only info. Host-local bridges (virbr0, docker0, ...) are left out.
 VRF names are local to each router and compared without case: a provider edge facing a customer router joins VRFs on
 purpose and is not reported. LSA checksum sums are not compared (they change with every LSA refresh), BGP sessions in a
 state outside the BGP state machine (Junos peers that LibreNMS has not matched yet) are listed but not checked.
@@ -291,6 +294,7 @@ vendor/bin/phpunit
   and the address is on that device only; a one-sided session needs the peer's BGP sessions in that VRF to be polled
   (an SNMP context per VRF). A session that has never come up to a confederation peer can be reported as a remote AS
   mismatch, and interfaces on one LAN behind a switch are only compared when their routers are in one OSPF domain.
+  Subinterfaces are matched to the port LLDP/CDP reports by name (Gi0/1.100 to Gi0/1).
 * Servers, access points and phones are recognized by their LibreNMS device type, unmanaged neighbors by their LLDP/CDP
   platform; an unmanaged neighbor without a platform counts as a switch. Down devices without any LLDP/CDP neighbor are
   not listed as outages: nothing tells what they depend on.

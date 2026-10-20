@@ -11,10 +11,13 @@ class RoutingServiceTest extends TestCase
     /**
      * The fixture network with a problem of every kind, PE-CE address reuse, a second network
      * (custA) that reuses a subnet of the first and has many addresses of its own, and neighbors
-     * that only one relation makes known: sw9 only by LLDP, r10 only by its own OSPF neighbor row
+     * that only one relation makes known: sw9 only by LLDP (its address on an SVI), r18 only by its
+     * address (r17 and r18 see other router IDs), r10 only by its own OSPF neighbor row
      * (it sees r2 in Init), r13 only by its router ID (r1's neighbor address is not in LibreNMS),
      * r14 only by r3's neighbor row (r3 sees it in Init, r14's OSPF is not polled), r15 only by its
      * BGP session to r1 (configured on r15 only), and r4 only by sharing a gateway address with r1.
+     * PE-CE links from r4 to custA-r1 and (on a dot1q subinterface) to custA-r2 keep the provider and
+     * custA apart (r2 and custA-r2 share an address).
      */
     private static function busy(): RoutingFixture
     {
@@ -54,7 +57,8 @@ class RoutingServiceTest extends TestCase
             $net->address(12, "Vl$i", "172.20.$i.1/24");
         }
 
-        $net->router(9, 'sw9', null)->link(4, $net->address(4, 'Gi0/0/5', '10.90.0.1/30'), 9, $net->address(9, 'Vl1', '10.90.0.2/24'));
+        $net->router(9, 'sw9', null)->link(4, $net->address(4, 'Gi0/0/5', '10.90.0.1/30'), 9, 909, null, 'Gi1/0/48');
+        $net->address(9, 'Vl1', '10.90.0.2/24');
         $net->router(10, 'r10')->ospfRouter(10, '10.10.10.10');
         $port = $net->address(2, 'Te0/0/8', '10.0.210.1/30');
         $net->ospf['ports'][] = ['device_id' => 2, 'port_id' => $port, 'ospfIfIpAddress' => '10.0.210.1', 'ospfIfAreaId' => '0.0.0.0', 'ospfIfType' => 'pointToPoint',
@@ -72,6 +76,16 @@ class RoutingServiceTest extends TestCase
         $net->address(14, 'Gi0/9', '10.93.0.2/24');
         $net->router(15, 'r15')->address(15, 'Gi0/1', '10.0.115.2/30');
         $net->bgpPeer(15, '1.1.1.1', 65000, ['bgpPeerState' => 'active', 'bgpPeerFsmEstablishedTime' => 0, 'bgpLocalAddr' => '10.0.115.2']);
+        // r18 behind r17 on a circuit without LLDP, neither with the router ID the other sees: only their
+        // addresses resolve the adjacency, which puts r18 into area 0 of the domain
+        $net->router(17, 'r17')->ospfRouter(17, '17.17.17.70')->router(18, 'r18')->ospfRouter(18, '18.18.18.80')->area(18, '0.0.0.0', 12, 400000);
+        $net->ospfLink(4, 'Te0/0/7', 17, 'Te0/0/1', '10.0.147.0/30', '0.0.0.1');
+        $net->ospfLink(17, 'Te0/0/2', 18, 'Te0/0/1', '10.0.178.0/30');
+        array_pop($net->links);
+        // a PE-CE link (r4's end in VRF CUST): a routing boundary between the provider and custA
+        $net->link(4, $net->address(4, 'Gi0/0/9', '10.201.0.1/30', 'CUST'), 11, $net->address(11, 'Gi0/2', '10.201.0.2/30'));
+        $net->address(4, 'Gi0/0/8.300', '10.202.0.1/30', 'CUST2');
+        $net->link(4, 990, 12, $net->address(12, 'Gi0/3', '10.202.0.2/30'), 'Gi0/0/8');
         foreach ([1 => '10.70.0.2/24', 4 => '10.70.0.3/24'] as $device => $own) {
             $net->address($device, 'Vl70', $own);
             $net->address($device, 'Vl70', '10.70.0.1/24');
@@ -96,6 +110,7 @@ class RoutingServiceTest extends TestCase
         }
         $this->assertNotEmpty(array_filter($full['findings'], fn ($f) => $f['code'] === 'ip_duplicate' && $f['severity'] === 'info' && str_contains($f['title'], '10.70.0.1')));
         $this->assertNotEmpty(array_filter($full['findings'], fn ($f) => $f['code'] === 'bgp_one_sided' && str_contains($f['recommendation'], 'Add the neighbor 10.0.115.2 on r1')));
+        $this->assertNotEmpty(array_filter($full['findings'], fn ($f) => $f['code'] === 'ospf_lsdb_mismatch' && str_contains($f['title'], 'r18: 12 LSAs')));
 
         foreach (array_keys($net->devices) as $device) {
             $result = $service->analyze(self::params($device));
@@ -115,11 +130,11 @@ class RoutingServiceTest extends TestCase
             })->call($service);
         };
 
-        $r4 = $kept(4);
-        $this->assertSame([], array_filter($r4, fn ($row) => $row['device_id'] === 12 && str_starts_with($row['address'], '172.20.')), 'custA-r2 is unrelated to r4');
-        $this->assertCount(count(array_filter($net->addresses, fn ($row) => $row['device_id'] === 3)), array_filter($r4, fn ($row) => $row['device_id'] === 3), 'r3 is its neighbor');
-        $this->assertNotEmpty(array_filter($r4, fn ($row) => $row['address'] === '10.0.12.1'), 'the addresses of OSPF neighbors');
-        $this->assertLessThan(count($net->addresses) * 0.6, count($r4));
+        $r3 = $kept(3);
+        $this->assertSame([], array_filter($r3, fn ($row) => $row['device_id'] === 12 && str_starts_with($row['address'], '172.20.')), 'custA-r2 is unrelated to r3');
+        $this->assertCount(count(array_filter($net->addresses, fn ($row) => $row['device_id'] === 4)), array_filter($r3, fn ($row) => $row['device_id'] === 4), 'r4 is its neighbor');
+        $this->assertNotEmpty(array_filter($r3, fn ($row) => $row['address'] === '10.0.12.1'), 'the addresses of OSPF neighbors');
+        $this->assertLessThan(count($net->addresses) * 0.6, count($r3));
 
         $custA = $kept(11);
         $this->assertCount(30, array_filter($custA, fn ($row) => str_starts_with($row['address'], '172.20.')), 'custA-r2 is its neighbor');

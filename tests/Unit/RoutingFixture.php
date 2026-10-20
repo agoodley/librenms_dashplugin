@@ -128,11 +128,16 @@ class RoutingFixture
     }
 
     /**
-     * An LLDP/CDP link between two ports (the port of the remote end may be unknown).
+     * An LLDP/CDP link between two ports (a port may be unknown). The port names are those of the
+     * ports' addresses unless given (a port without an address, e.g. one with subinterfaces).
      */
-    public function link(int $a, ?int $aPort, int $b, ?int $bPort): self
+    public function link(int $a, ?int $aPort, int $b, ?int $bPort, ?string $aName = null, ?string $bName = null): self
     {
-        $this->links[] = ['local_device_id' => $a, 'local_port_id' => $aPort, 'remote_device_id' => $b, 'remote_port_id' => $bPort];
+        $names = array_column($this->addresses, 'ifName', 'port_id');
+        $this->links[] = [
+            'local_device_id' => $a, 'local_port_id' => $aPort, 'local_ifName' => $aName ?? $names[$aPort] ?? null,
+            'remote_device_id' => $b, 'remote_port_id' => $bPort, 'remote_ifName' => $bName ?? $names[$bPort] ?? null,
+        ];
 
         return $this;
     }
