@@ -108,10 +108,13 @@ addresses of every device you can see are checked against each other:
 
 Subnets are reused by networks that never meet (customers, sites, VRFs), so interfaces and addresses are only compared
 where they are on one link: the two ports of an LLDP/CDP link (with their subinterfaces), the two ends of an OSPF
-adjacency, neighbors in one routing table, a /30 or /31 that only two devices hold, or, for OSPF interfaces, one OSPF
-domain. A link whose ends are in differently named VRFs (a provider edge facing a customer router) is a routing
-boundary, so a provider and its customers are separate networks; a duplicate address between devices that LibreNMS
-sees no link between in that routing table is only info. Host-local bridges (virbr0, docker0, ...) are left out.
+adjacency, neighbors in one routing table, the two addresses of a /30 or /31 held by two devices, or, for OSPF
+interfaces, one OSPF domain. A link whose ends are in differently named VRFs (a provider edge facing a customer router)
+is a routing boundary, so a provider and its customers are separate networks; a link end without an address (an L2
+port, a LAG member, a port with SVIs behind it) is in the VRFs of its device's addresses that share a subnet with the
+other end. A duplicate address between devices that LibreNMS sees no link between in that routing table is only info:
+that includes sites joined only through BGP or an MPLS VPN, which count as separate networks. Host-local bridges
+(virbr0, docker0, ...) are left out.
 VRF names are local to each router and compared without case: a provider edge facing a customer router joins VRFs on
 purpose and is not reported. LSA checksum sums are not compared (they change with every LSA refresh), BGP sessions in a
 state outside the BGP state machine (Junos peers that LibreNMS has not matched yet) are listed but not checked.

@@ -56,13 +56,14 @@ class RoutingService
      * related to (LLDP/CDP neighbors, OSPF neighbors and BGP peers in either direction, routers with
      * its router ID or one of its neighbors'), the address of every OSPF neighbor (the OSPF domains
      * and adjacencies of the whole network are made from them, so they come out as without the
-     * device filter), every address on a linked port or its subinterfaces (they decide which routing
-     * tables each link joins) and every address in one of the device's subnets (other devices' own
-     * addresses next to a shared one). RoutingServiceTest checks that a device's view stays the same.
+     * device filter), every address on a linked port or its subinterfaces and all addresses of the
+     * devices with a link end without addresses (they decide which routing tables each link joins),
+     * and every address in one of the device's subnets (other devices' own addresses next to a shared
+     * one). RoutingServiceTest checks that a device's view stays the same.
      *
      * @param  int[]  $all  the devices the user may see
-     * @return array{0: array<int, true>, 1: array<string, true>, 2: array<string, true>, 3: array<int, true>, 4: array<int, array<string, true>>}
-     *                devices, binary addresses, subnet keys, linked ports, linked port names per device
+     * @return array{0: array<int, true>, 1: array<string, true>, 2: array<string, true>, 3: array<int, true>, 4: array<int, array<string, int>>}
+     *                devices, binary addresses, subnet keys, linked ports, linked port names per device (=> port)
      */
     private function focus(int $device, array $all): array
     {
@@ -77,6 +78,7 @@ class RoutingService
         }
         $ports = [];
         $parents = [];
+        $ends = [];
         foreach ($this->repo->links($all) as $link) {
             if ((int) $link['local_device_id'] === $device) {
                 $related[(int) $link['remote_device_id']] = true;
@@ -84,12 +86,28 @@ class RoutingService
                 $related[(int) $link['local_device_id']] = true;
             }
             foreach (['local', 'remote'] as $end) {
-                if ((int) ($link[$end . '_port_id'] ?? 0) > 0) {
-                    $ports[(int) $link[$end . '_port_id']] = true;
+                $port = (int) ($link[$end . '_port_id'] ?? 0);
+                $ends[] = [(int) $link[$end . '_device_id'], $port];
+                if ($port > 0) {
+                    $ports[$port] = true;
                     if (($name = RoutingAnalyzer::portName($link, $end)) !== null) {
-                        $parents[(int) $link[$end . '_device_id']][$name] = true;
+                        $parents[(int) $link[$end . '_device_id']][$name] = $port;
                     }
                 }
+            }
+        }
+        // the devices with a link end that has no address: the VRFs of the end come from all their addresses
+        $addressed = [];
+        foreach ($ends ? $this->repo->addresses($all) : [] as $row) {
+            if (($packed = Address::pack($row['address'] ?? null)) === null || RoutingAnalyzer::ignorable($packed)) {
+                continue;
+            }
+            $parent = isset($parents[(int) $row['device_id']]) ? RoutingAnalyzer::parentPort(InterfaceName::short(InterfaceName::label($row))) : null;
+            $addressed[$parents[(int) $row['device_id']][$parent ?? ''] ?? (int) ($row['port_id'] ?? 0)] = true;
+        }
+        foreach ($ends as [$deviceId, $port]) {
+            if (! isset($addressed[$port]) || $port === 0) {
+                $related[$deviceId] = true;
             }
         }
 
@@ -160,7 +178,7 @@ class RoutingService
      * @param  array<string, true>  $addresses  binary
      * @param  array<string, true>  $subnets  Address::networkKey()
      * @param  array<int, true>  $ports
-     * @param  array<int, array<string, true>>  $parents  device => linked port names
+     * @param  array<int, array<string, int>>  $parents  device => linked port names => port
      */
     private static function only(iterable $rows, array $devices, array $addresses, array $subnets, array $ports, array $parents): \Generator
     {

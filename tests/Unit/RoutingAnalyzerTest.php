@@ -922,6 +922,156 @@ class RoutingAnalyzerTest extends TestCase
         $this->assertSame([], $net->analyzer()->analyze()['findings']);
     }
 
+    public function testProviderEdgeWithTheCustomerAddressOnAnSvi(): void
+    {
+        // a switch-based PE: the LLDP port toward each CE has no address, the PE-CE address is on an SVI in the
+        // customer's VRF; the CEs use a routed port in the global table
+        $net = RoutingFixture::network();
+        $net->router(7, 'ce-a', 65101)->router(8, 'ce-b', 65102);
+        $net->address(1, 'Vlan200', '10.255.254.1/30', 'CUST-A');
+        $net->address(1, 'Vlan300', '10.255.254.1/30', 'CUST-B');
+        $net->link(1, 901, 7, $net->address(7, 'Gi0/0', '10.255.254.2/30'), 'Gi1/0/1');
+        $net->link(1, 902, 8, $net->address(8, 'Gi0/0', '10.255.254.2/30'), 'Gi1/0/2');
+        $this->assertSame('info', self::find($net->analyzer()->analyze(), 'ip_duplicate')['severity']);
+
+        // the provider core /30 reused inside the customer's network behind such a PE-CE link
+        $net = self::overlap();
+        $net->address(1, 'Vlan200', '10.200.0.1/30', 'CUST');
+        $net->link(1, 901, 21, $net->address(21, 'Gi0/0', '10.200.0.2/30'), 'Gi1/0/1');
+        $result = $net->analyzer()->analyze();
+        $this->assertSame(['ip_duplicate', 'ip_duplicate'], self::codes($result), 'no timer or area mismatch');
+        $this->assertSame(['info', 'info'], array_column($result['findings'], 'severity'));
+    }
+
+    public function testProviderEdgeOverAPortChannel(): void
+    {
+        // LLDP runs on the member ports, the addresses are on the port-channels (Po10.100 / Po1)
+        $net = RoutingFixture::network();
+        $net->router(7, 'ce-a', 65101)->router(8, 'ce-b', 65102);
+        $net->address(1, 'Port-channel10.100', '10.255.254.1/30', 'CUST-A');
+        $net->address(1, 'Port-channel20.200', '10.255.254.1/30', 'CUST-B');
+        $net->address(7, 'Port-channel1', '10.255.254.2/30');
+        $net->address(8, 'Port-channel1', '10.255.254.2/30');
+        $net->link(1, 901, 7, 911, 'Gi0/0/1', 'Gi0/1')->link(1, 902, 7, 912, 'Gi0/0/2', 'Gi0/2');
+        $net->link(1, 903, 8, 913, 'Gi0/0/3', 'Gi0/1')->link(1, 904, 8, 914, 'Gi0/0/4', 'Gi0/2');
+        $this->assertSame('info', self::find($net->analyzer()->analyze(), 'ip_duplicate')['severity']);
+
+        $net = self::overlap();
+        $net->address(1, 'Bundle-Ether100.200', '10.200.0.1/30', 'CUST');
+        $net->address(21, 'Port-channel1', '10.200.0.2/30');
+        $net->link(1, 901, 21, 911, 'Te0/0/0/1', 'Gi0/1');
+        $result = $net->analyzer()->analyze();
+        $this->assertSame(['ip_duplicate', 'ip_duplicate'], self::codes($result), 'no timer or area mismatch');
+        $this->assertSame(['info', 'info'], array_column($result['findings'], 'severity'));
+    }
+
+    public function testCustomerRouterRowWithTheProviderPortUnresolved(): void
+    {
+        // dot1q PE-CE links, plus the CEs' own LLDP rows in which LibreNMS could not resolve the PE's port
+        $net = RoutingFixture::network();
+        $net->router(7, 'ce-a', 65101)->router(8, 'ce-b', 65102);
+        $net->address(1, 'Gi0/1.100', '10.255.254.1/30', 'CUST-A');
+        $net->address(1, 'Gi0/2.200', '10.255.254.1/30', 'CUST-B');
+        $ceA = $net->address(7, 'Gi0/0', '10.255.254.2/30');
+        $ceB = $net->address(8, 'Gi0/0', '10.255.254.2/30');
+        $net->link(1, 901, 7, $ceA, 'Gi0/1')->link(1, 902, 8, $ceB, 'Gi0/2');
+        $net->link(7, $ceA, 1, 0)->link(8, $ceB, 1, 0);
+
+        $this->assertSame('info', self::find($net->analyzer()->analyze(), 'ip_duplicate')['severity']);
+    }
+
+    public function testCustomerRoutersOnTheSameProviderEdgeAddress(): void
+    {
+        // an MSP monitors two customers' CEs (not the PEs): both use 10.255.254.2/30 toward their PE, with OSPF in
+        // other areas and timers; a /30 that two devices hold is only a link when they hold its two addresses
+        $net = RoutingFixture::network();
+        $net->router(7, 'ce-a', 65101)->router(8, 'ce-b', 65102)->ospfRouter(7, '7.7.7.7')->ospfRouter(8, '8.8.8.8');
+        foreach ([7 => ['0.0.0.1', 10, 40], 8 => ['0.0.0.2', 5, 20]] as $device => [$area, $hello, $dead]) {
+            $net->ospf['ports'][] = ['device_id' => $device, 'port_id' => $net->address($device, 'Gi0/0', '10.255.254.2/30'), 'ospfIfIpAddress' => '10.255.254.2',
+                'ospfIfAreaId' => $area, 'ospfIfType' => 'pointToPoint', 'ospfIfAdminStat' => 'enabled', 'ospfIfHelloInterval' => $hello,
+                'ospfIfRtrDeadInterval' => $dead, 'context_name' => ''];
+            $net->neighbor($device, '10.255.254.1', '192.0.2.' . $device);
+        }
+
+        $this->assertSame(['ip_duplicate'], self::codes($net->analyzer()->analyze()));
+    }
+
+    public function testGlobalTableSitesStillJoin(): void
+    {
+        // a duplicate between two sites of one network must stay a warning however their link looks
+        $links = [
+            'routed link' => fn (RoutingFixture $n) => $n->link(31, $n->address(31, 'Gi0/0', '10.5.0.1/30'), 32, $n->address(32, 'Gi0/0', '10.5.0.2/30')),
+            'through an L2 switch' => fn (RoutingFixture $n) => $n->router(33, 'sw', null)
+                ->link(31, $n->address(31, 'Gi0/0', '10.5.0.1/24'), 33, 931, null, 'Gi1/0/1')->link(32, $n->address(32, 'Gi0/0', '10.5.0.2/24'), 33, 932, null, 'Gi1/0/2'),
+            'port-channel' => function (RoutingFixture $n) {
+                $n->address(31, 'Port-channel1', '10.5.0.1/30');
+                $n->address(32, 'Port-channel1', '10.5.0.2/30');
+                $n->link(31, 931, 32, 932, 'Gi0/1', 'Gi0/1');
+            },
+            'unnumbered' => fn (RoutingFixture $n) => $n->link(31, 931, 32, 932, 'Gi0/0', 'Gi0/0'),
+            'Junos units' => function (RoutingFixture $n) {
+                $n->address(31, 'ge-0/0/0.0', '10.5.0.1/30');
+                $n->address(32, 'ge-0/0/0.0', '10.5.0.2/30');
+                $n->link(31, 931, 32, 932, 'ge-0/0/0', 'ge-0/0/0');
+            },
+            'dot1q subinterface to an SVI' => function (RoutingFixture $n) {
+                $n->address(31, 'Gi0/0.10', '10.5.0.1/24');
+                $n->address(32, 'Vlan10', '10.5.0.2/24');
+                $n->link(31, 931, 32, 932, 'Gi0/0', 'Gi1/0/48');
+            },
+        ];
+        foreach ($links as $how => $build) {
+            $net = RoutingFixture::network();
+            $net->router(31, 'r-site1')->router(32, 'r-site2');
+            $build($net);
+            $net->address(31, 'Vl50', '172.30.0.1/24');
+            $net->address(32, 'Vl51', '172.30.0.1/24');
+            $this->assertSame('warning', self::find($net->analyzer()->analyze(), 'ip_duplicate', '172.30.0.1')['severity'] ?? null, $how);
+        }
+    }
+
+    public function testNetworksOfManyRoutingTables(): void
+    {
+        // switches joined by trunks without addresses (every table), a router on sw1 in VRF RED only, and one
+        // duplicate address per VRF; between sw3 and the router VRF RED connects them, VRF BLUE does not
+        $net = RoutingFixture::network();
+        $net->router(41, 'sw1', null)->router(42, 'sw2', null)->router(43, 'sw3', null)->router(44, 'r-red');
+        $net->link(41, 941, 42, 942, 'Gi1/0/1', 'Gi1/0/1')->link(42, 943, 43, 944, 'Gi1/0/2', 'Gi1/0/2');
+        $net->link(41, $net->address(41, 'Vlan10', '10.44.0.1/30', 'RED'), 44, $net->address(44, 'Gi0/0', '10.44.0.2/30', 'RED'));
+        $net->vrfs[43]['BLUE'] = null;
+        $net->vrfs[44]['BLUE'] = null;
+        foreach (range(1, 40) as $i) {
+            $net->address(41, "Vlan$i", "10.45.$i.1/24", "T$i");
+            $net->address(43, "Vlan$i", "10.45.$i.1/24", "T$i");
+        }
+        $net->address(43, 'Vlan901', '10.46.0.1/24', 'RED');
+        $net->address(44, 'Gi0/9', '10.46.0.1/24', 'RED');
+        $net->address(43, 'Vlan902', '10.47.0.1/24', 'BLUE');
+        $net->address(44, 'Gi0/8', '10.47.0.1/24', 'BLUE');
+        $result = $net->analyzer()->analyze();
+
+        $duplicates = array_values(array_filter($result['findings'], fn ($f) => $f['code'] === 'ip_duplicate'));
+        $this->assertCount(42, $duplicates);
+        $this->assertSame(['warning'], array_values(array_unique(array_column(array_filter($duplicates, fn ($f) => str_contains($f['title'], '10.45.')), 'severity'))),
+            'sw1 and sw3 are joined in every table by the trunks');
+        $this->assertSame('warning', self::find($result, 'ip_duplicate', '10.46.0.1')['severity'], 'r-red reaches sw3 in RED over sw1');
+        $this->assertSame('info', self::find($result, 'ip_duplicate', '10.47.0.1')['severity'], 'but not in BLUE');
+    }
+
+    /**
+     * Provider r1-r2 core link 10.0.0.0/30 (area 0) and a customer cust-ce/cust-ce2 reusing it (area 5, 5/20 s).
+     */
+    private static function overlap(): RoutingFixture
+    {
+        $net = RoutingFixture::network();
+        $net->router(21, 'cust-ce', 65101)->router(22, 'cust-ce2', 65101)->ospfRouter(21, '172.16.255.1')->ospfRouter(22, '172.16.255.2');
+        $net->ospfLink(1, 'Te0/0/9', 2, 'Te0/0/9', '10.0.0.0/30');
+        $fast = ['ospfIfHelloInterval' => 5, 'ospfIfRtrDeadInterval' => 20];
+        $net->ospfLink(21, 'Gi0/1', 22, 'Gi0/1', '10.0.0.0/30', '0.0.0.5', $fast, $fast);
+
+        return $net;
+    }
+
     public function testBgpErrorsAsText(): void
     {
         $this->assertNull(BgpErrors::describe(0, 0));
