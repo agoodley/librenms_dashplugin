@@ -1,9 +1,9 @@
 # LibreNMS Topology & Spanning Tree plugin
 
-NetBrain-style **Layer 2** and **Layer 3** network diagrams plus **spanning tree**, **link & VLAN**, **routing & IP**
-and **redundancy & failure impact** diagnostics for [LibreNMS](https://www.librenms.org), built entirely from data
-LibreNMS already collects (LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, IP addresses, OSPF,
-BGP, transceiver sensors and the hardware inventory).
+NetBrain-style **Layer 2**, **Layer 3** and **site / WAN** network diagrams plus **spanning tree**, **link & VLAN**,
+**routing & IP** and **redundancy & failure impact** diagnostics for [LibreNMS](https://www.librenms.org), built
+entirely from data LibreNMS already collects (LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, IP
+addresses, OSPF, BGP, transceiver sensors and the hardware inventory).
 
 ![Layer 2 map](docs/images/l2-map.png)
 
@@ -56,6 +56,35 @@ circuits signal, which must match for a pseudowire to come up (RFC 4447): the in
 IOS XR, which counts it (and the VLAN tag of a subinterface): XR 1514, or 1518 on a dot1q subinterface, is IOS XE 1500.
 
 ![L3 map overlays](docs/images/l3-layers.png)
+
+### Site / WAN map
+
+One node per LibreNMS location, with its device count and what is down, and one link per pair of sites that adds up
+everything between their devices: LLDP/CDP links (one per cable, port-channel members included), point-to-point
+subnets, and OSPF adjacencies and BGP sessions (one per circuit, with the state each router reports). A subnet on a
+cable, or on a sub-interface, VLAN interface or port-channel over it, only adds its network to the cable, as does a
+transit VLAN from a VLAN interface to a router behind the switch at the other end; other subnets, such as tunnels or
+carrier circuits (a port without an LLDP/CDP neighbor, also when the subnet is on one of its sub-interfaces), are links
+of their own. BGP sessions to peers LibreNMS does not monitor join the site to a cloud per remote AS, which shows an
+MPLS VPN or internet transit provider and which sites hang off it. A private AS number is a cloud per site, since sites
+often reuse them, unless the sites peer with the same address and it is either not on a subnet of their routers (a
+cloud VPN gateway) or on a tunnel subnet they join with addresses of their own (a DMVPN hub): then they share that cloud.
+
+![Site / WAN map](docs/images/site-map.png)
+
+* A site is orange when some of its devices are down and red when all are; a link is dashed orange when some of its
+  cables or sessions are down, and dashed purple when it is only a routing session (BGP over a provider network). A
+  BGP session shut down by an administrator is grey and does not count as down.
+* Link width and color follow the capacity of its cables (or the busiest cable's utilization, or the status); the
+  details list every cable with both ports, speed, utilization and subnet, and every session with its state. Tunnels
+  (also route-based VPN interfaces such as ipsec, WireGuard, xfrm and OpenVPN ones) and other logical interfaces have
+  no capacity of their own (a tunnel's interface speed is a nominal bandwidth), so a link on them only shows its
+  traffic; a subnet on a sub-interface is measured on the physical port under it.
+* Layouts: hierarchical (the best connected site on top), organic, or **geographic** from the latitude and longitude of
+  the locations (sites in one city are pushed apart, sites without coordinates wait in a grid underneath; when most
+  sites have none, the map is laid out without them).
+* Center on a site to see it with its neighbors within N hops, or filter by device group; double-click a site, or use
+  the buttons in its details, to open its L2 or L3 map, redundancy page or device list.
 
 ### Spanning tree diagnostics
 
@@ -325,9 +354,8 @@ composer config --global repositories.librenms-topology '{"type": "path", "url":
 ./lnms plugin:add agoodley/librenms-topology-plugin @dev
 ```
 
-The plugin is enabled automatically. Open **Overview → Plugins → L2 Topology Map / L3 Topology Map / STP
-Diagnostics / Link & VLAN Diagnostics / Routing & IP Diagnostics / Redundancy & Failure Impact / Rollout Planner / Device
-Dependencies**, or go to `/plugin/topology`. It can be disabled or configured in
+The plugin is enabled automatically. Its maps and diagnostics pages are listed under **Overview → Plugins**, and
+`/plugin/topology` shows them all with a short description. It can be disabled or configured in
 **Overview → Plugins → Plugin Admin → topology → Settings**.
 
 To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
@@ -363,10 +391,12 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 * On the routing page, a BGP session's last error is decoded ("Hold Timer Expired (4/0)": keepalives lost) – look there
   first when a peer flaps. Addresses that are shared on purpose (anycast, VRRP / HSRP virtual addresses that a device
   reports as interface addresses) can be left out of the IP checks in the settings.
-* `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links`, `api/routing`, `api/redundancy`, `api/coverage`,
-  `api/rollout` and `api/dependencies` return the same data as JSON (same query parameters as the pages, e.g.
-  `api/stp?vlan=30&group=2`, `api/links?device=12`, `api/routing?vrf=PROD`) for automation. `api/coverage` cuts each
-  list at the same 500 rows as the page and returns the full counts as `findings_total`, `neighbors_total`,
+* Give the locations a latitude and longitude (LibreNMS can look them up from the address) and the site map can lay
+  the network out geographically; the first visit uses that layout.
+* `plugin/topology/api/l2`, `api/l3`, `api/sites`, `api/stp`, `api/links`, `api/routing`, `api/redundancy`,
+  `api/coverage`, `api/rollout` and `api/dependencies` return the same data as JSON (same query parameters as the
+  pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`, `api/routing?vrf=PROD`) for automation. `api/coverage`
+  cuts each list at the same 500 rows as the page and returns the full counts as `findings_total`, `neighbors_total`,
   `devices_total` and `ports_total`: narrow it with `device`, `group` or `location` for the rest. Phones and servers
   among the neighbors are only counted, in `summary.other_neighbors`.
 
@@ -375,7 +405,7 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Setting | Default | |
 |---|---|---|
 | Default hops | 2 | hops drawn around a centered device |
-| Maximum devices | 400 | larger maps are trimmed to the best connected devices |
+| Maximum devices | 400 | larger maps are trimmed to the best connected devices (on the site map: sites) |
 | Show unmanaged neighbors / Collapse LAGs / Hide stub networks | on | defaults of the map toggles |
 | Point-to-point prefix | 29 | two-device IPv4 subnets this long or longer become direct links |
 | Excluded subnets | – | CIDRs never drawn on the L3 map (e.g. management networks) |
@@ -439,6 +469,10 @@ may view syslog.
 * `src/Redundancy/RedundancyAnalyzer.php` – single points of failure (cut vertices and bridges toward the core,
   `Support\Graph::cuts()`), fake and lost redundancy and outages; `CoreFinder` picks the core, `PortUnits` reads stack
   members and line cards from the hardware inventory.
+* `src/Topology/SiteConnections.php`, `SiteSessions.php`, `SiteBuilder.php` – the site map: the cables and
+  point-to-point subnets between devices at different locations (the L2 map's link de-duplication and the L3 map's
+  subnets, placed on physical ports through the interface stack), their OSPF adjacencies and BGP sessions per circuit,
+  added up per pair of sites.
 * `src/Redundancy/RolloutPlanner.php`, `src/Redundancy/DependencyPlanner.php` – rollout batches and device dependencies
   on the graphs of the redundancy analysis (`Topology\PlanningService`, `Data\DependencyRepository`); `CoreAdvice` names
   a switch cabled like a second core switch.
@@ -455,6 +489,22 @@ vendor/bin/phpunit
 ```
 
 ## Limitations
+
+* The site map knows the links between monitored devices. Unmanaged neighbors, devices the user may not see and OSPF
+  neighbors LibreNMS does not monitor are left out (their location is unknown), as are sessions to devices outside a
+  device group filter; BGP peers LibreNMS does not monitor are grouped by AS, so two providers in the same AS are one
+  cloud. The devices without a location are one site, which the map never walks through (hops, hierarchy).
+* A provider in a private AS with its own PE at every branch (an MPLS L3VPN) looks like the firewalls of the branches,
+  so it is a cloud per site, and so is a hub or route server on a shared Ethernet segment (VPLS): only a tunnel subnet
+  (DMVPN) counts as one network, since a template transit LAN at every branch looks the same. Whether sites share a
+  private AS cloud comes from the routers' addresses: the session's local address, or the router's interface addresses
+  while the session is down, so a shared cloud only splits when LibreNMS has neither.
+* A subnet between two sites only rides the cables between them when both ends reach them through their own site (a
+  VLAN interface, or a port facing a switch that leads to such a cable through switches only; a carrier's CPE, router or
+  firewall in the way makes it a circuit of its own), which needs LLDP/CDP: a router behind a switch
+  that does not show up as its neighbor makes a transit VLAN to it a circuit of its own, counting its traffic twice.
+  Without VLAN data, a carrier circuit (a VPLS backup) between two routers that both sit behind their sites' switches,
+  next to a fiber between those switches, looks like such a transit VLAN and is counted as riding the fiber.
 
 * STP data comes from the BRIDGE-MIB as polled by LibreNMS: MST instances other than the CIST are not
   available, and findings reflect the last poll (a check can fire during re-convergence).
