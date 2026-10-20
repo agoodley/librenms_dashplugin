@@ -8,6 +8,12 @@ namespace Agoodley\LibrenmsTopology\Support;
 class MapParams
 {
     /**
+     * More L3 overlays and whether each is on unless switched off (the map only offers those with data).
+     * MPLS LSPs are off: an RSVP full mesh draws an edge between every two PEs.
+     */
+    public const L3_LAYERS = ['ospfv3' => true, 'isis' => true, 'ipsec' => true, 'mpls' => false, 'pw' => true];
+
+    /**
      * Normalize the query string of a map / STP page or API call. Missing values fall back to the
      * plugin settings; invalid values are ignored.
      *
@@ -30,12 +36,11 @@ class MapParams
             'stubs' => self::bool($query, 'stubs', ! $settings->bool('l3_hide_stubs')),
             'ospf' => self::bool($query, 'ospf', true),
             'bgp' => self::bool($query, 'bgp', true),
-            // more L3 overlays: on unless switched off (the map only offers those with data)
-            'ospfv3' => self::bool($query, 'ospfv3', true),
-            'isis' => self::bool($query, 'isis', true),
-            'ipsec' => self::bool($query, 'ipsec', true),
-            'mpls' => self::bool($query, 'mpls', true),
-            'pw' => self::bool($query, 'pw', true),
+            'ospfv3' => self::bool($query, 'ospfv3', self::L3_LAYERS['ospfv3']),
+            'isis' => self::bool($query, 'isis', self::L3_LAYERS['isis']),
+            'ipsec' => self::bool($query, 'ipsec', self::L3_LAYERS['ipsec']),
+            'mpls' => self::bool($query, 'mpls', self::L3_LAYERS['mpls']),
+            'pw' => self::bool($query, 'pw', self::L3_LAYERS['pw']),
             'ipv6' => self::bool($query, 'ipv6', false),
             'all_devices' => self::bool($query, 'all_devices', false),
         ];

@@ -705,6 +705,9 @@
         if (this.mode === 'l2' && this.data.scope && node.vlanMember === false) {
             visNode.opacity = 0.25;
         }
+        if (this.mode === 'l3' && node.outside) {
+            visNode.opacity = 0.45; // a device outside this map, drawn as the far end of an overlay
+        }
         return visNode;
     };
 
@@ -1145,16 +1148,21 @@
 
     /**
      * Offer the toggles of the L3 overlay layers (OSPFv3, IS-IS, IPsec, MPLS LSPs, pseudowires) only when
-     * the devices of the map have such data: the LibreNMS modules behind them are often off. A hidden
-     * toggle is disabled so that it stays out of the URL.
+     * the devices drawn have such data: the LibreNMS modules behind them are often off. A shown toggle
+     * reflects what the server drew; a hidden one is disabled, so that it stays out of the URL, unless it
+     * keeps a choice that differs from the layer's default (switched off, or MPLS switched on).
      */
     TopologyMap.prototype.updateLayerToggles = function (data) {
         var layers = data.layers || {};
         document.querySelectorAll('#topo-filters [data-layer]').forEach(function (label) {
-            var layer = layers[label.getAttribute('data-layer')];
-            var available = !!(layer && layer.available);
+            var layer = layers[label.getAttribute('data-layer')] || {};
+            var input = label.querySelector('input');
+            var available = layer.available > 0;
             label.style.display = available ? '' : 'none';
-            label.querySelector('input').disabled = !available;
+            if (available) {
+                input.checked = !!layer.shown;
+            }
+            input.disabled = !available && input.checked === !!layer.default;
         });
     };
 
@@ -1220,7 +1228,7 @@
             return '<span class="topo-status-' + esc(status === 'warning' ? 'degraded' : status) + '">' + esc(text) + '</span>';
         };
         var html = '<table class="table table-condensed topo-kv">' + this.row('Layer', esc(L3_LAYERS[edge.kind].name)) +
-            this.row('State', state(edge.status, edge.state));
+            this.row('State', state(edge.status, edge.state) + (edge.kind === 'pw' && !edge.mtu_mismatch ? ' <small>(LibreNMS keeps no pseudowire state)</small>' : ''));
 
         if (edge.kind === 'ospfv3') {
             html += this.row('Router IDs', esc(edge.routerIds.join(', '))) + this.row('Neighbor addresses', esc(edge.addresses.join(', ')));
@@ -1258,7 +1266,8 @@
                 html += '<tr><td title="' + esc(vc.type + ' over ' + vc.psn) + '">' + esc(vc.vc) + (vc.description ? ' <small>' + esc(vc.description) + '</small>' : '') + '</td><td>' +
                     esc(vc.a ? vc.a.port : '') + '</td><td>' + esc(vc.b ? vc.b.port : '') + '</td><td>' + (vc.mismatch ? '<b class="text-danger">' + esc(mtu) + '</b>' : esc(mtu)) + '</td></tr>';
             });
-            html += '</table><p class="text-muted topo-hint">LibreNMS keeps no pseudowire state. A pseudowire whose two ends have different MTUs cannot come up.</p>';
+            html += '</table><p class="text-muted topo-hint">LibreNMS keeps no pseudowire state. MTU: of the two attachment circuits, which must match for a pseudowire ' +
+                'to come up (one Ethernet header more or less between two operating systems is not flagged). Peers that LibreNMS lost are paired by VC ID.</p>';
         }
         return html;
     };
@@ -1278,6 +1287,9 @@
         if (stats.mtu) {
             html += '<div><span class="topo-line topo-line-dashed" style="border-color:#e67e22"></span> Pseudowire MTU mismatch</div>';
         }
+        if (stats.outside) {
+            html += '<div><img src="' + iconUrl('router', 'up', true) + '" width="22" height="22" alt="" style="opacity: 0.45"> Device outside this map (double-click to center on it)</div>';
+        }
         return html;
     };
 
@@ -1286,12 +1298,45 @@
      */
     TopologyMap.prototype.layerStatus = function (stats) {
         var parts = [];
+        var limits = (this.data && this.data.limits) || {};
+        if (stats.outside) {
+            parts.push(stats.outside + ' outside the map');
+        }
         [['ospfv3', 'OSPFv3 adjacencies'], ['isis', 'IS-IS adjacencies'], ['ipsec', 'IPsec peers'], ['mpls', 'LSPs'], ['pw', 'pseudowires']].forEach(function (item) {
             if (stats[item[0]]) {
                 parts.push(stats[item[0]] + ' ' + item[1] + (item[0] === 'pw' && stats.mtu ? ' (<span class="topo-text-warning">' + stats.mtu + ' MTU mismatch</span>)' : ''));
             }
         });
+        if (limits.mpls) {
+            parts.push('<span class="topo-text-warning"><i class="fa fa-exclamation-triangle"></i> LSPs of ' + limits.mpls.shown + ' of ' + limits.mpls.total +
+                ' device pairs drawn (those with LSPs down first). Pick a device, group or location to see the others.</span>');
+        }
         return parts;
+    };
+
+    /**
+     * Tooltip lines of a device outside this map or an external far end of the overlays.
+     */
+    TopologyMap.prototype.layerNodeTooltip = function (node) {
+        if (node.outside) {
+            return '<br><i>Outside this map</i>';
+        }
+        return node.seen && node.seen.length ? '<br>' + esc(node.seen.join(', ')) : '';
+    };
+
+    /**
+     * Details panel rows of a device outside this map or an external far end of the overlays: its
+     * addresses and what saw it (an unmonitored router can be OSPF neighbor, LSP tail and IPsec peer).
+     */
+    TopologyMap.prototype.layerNodeRows = function (node) {
+        if (node.outside) {
+            return this.row('On this map', 'No: far end of an overlay. Double-click it or <i>Center map here</i>.');
+        }
+        var others = (node.addresses || []).filter(function (address) {
+            return address !== node.address;
+        });
+        return this.row('Address', esc(node.address)) + this.row('Other addresses', esc(others.join(', '))) +
+            this.row('Context', esc(node.context)) + this.row('Seen as', esc((node.seen || []).join(', ')));
     };
 
     // ------------------------------------------------------------------ failure simulation & outages
@@ -1620,6 +1665,7 @@
         if (node.platform) html += '<br>' + esc(node.platform);
         if (node.role) html += '<br>Role: ' + esc(node.role);
         if (node.stp && node.stp.root) html += '<br><b>' + (node.stp.suspected ? 'Suspected STP root bridge' : 'STP root bridge') + '</b>';
+        if (this.mode === 'l3') html += this.layerNodeTooltip(node);
         return html;
     };
 
@@ -1674,7 +1720,7 @@
             html += this.row('Status', '<span class="topo-status-' + esc(node.status) + '">' + esc(node.status) + '</span>') +
                 this.row('Role', esc(node.role)) + this.row('Hardware', esc(node.hardware)) + this.row('OS', esc((node.os || '') + ' ' + (node.version || ''))) +
                 this.row('Location', esc(node.location)) + this.row('Platform', esc(node.platform));
-            if (node.address) html += this.row('Address', esc(node.address));
+            if (this.mode === 'l3') html += this.layerNodeRows(node);
             if (node.loopbacks && node.loopbacks.length) html += this.row('Loopbacks', esc(node.loopbacks.join(', ')));
             if (node.bgpLocalAs) html += this.row('BGP AS', esc(node.bgpLocalAs));
             if (node.stubs && node.stubs.length) html += this.row('Stub networks', esc(node.stubs.slice(0, 12).join(', ')) + (node.stubs.length > 12 ? ' &hellip;' : ''));

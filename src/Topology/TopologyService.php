@@ -10,6 +10,7 @@ use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
+use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 
 /**
@@ -125,23 +126,22 @@ class TopologyService
         }
 
         $ids = array_keys($devices);
+        $mapAddresses = array_values(array_filter($addresses, fn ($a) => isset($devices[(int) $a['device_id']])));
+        $ospf = $p['ospf'] ? $this->repo->ospfNeighbors($ids) : [];
+        $bgp = $p['bgp'] ? $this->repo->bgpPeers($ids) : [];
 
-        // overlay layers from modules that are often off: only offered (and loaded) when they have data
+        // overlay layers from modules that are often off: loaded when the scope has rows, offered when the drawn devices do
         $layerRepo = $this->repo->sibling(L3LayerRepository::class);
-        $available = $layerRepo->counts($ids);
-        $loaded = array_filter(L3Builder::LAYERS, fn ($layer) => ($p[$layer] ?? true) && $available[$layer] > 0);
+        $perDevice = $layerRepo->countsByDevice($ids);
+        $loaded = array_values(array_filter(L3Builder::LAYERS, fn ($layer) => ($p[$layer] ?? MapParams::L3_LAYERS[$layer]) && $perDevice[$layer]));
         $layers = $layerRepo->load($ids, $loaded);
 
-        $builder = new L3Builder(
-            $devices,
-            array_values(array_filter($addresses, fn ($a) => isset($devices[(int) $a['device_id']]))),
-            $p['ospf'] ? $this->repo->ospfNeighbors($ids) : [],
-            $p['bgp'] ? $this->repo->bgpPeers($ids) : [],
-            $layers,
-            $layers ? $layerRepo->resolve(L3Builder::layerLookups($layers)) : [],
-        );
+        // far ends among the other devices the user may see become stubs, the rest external nodes
+        $builder = new L3Builder($devices, $mapAddresses, $ospf, $bgp, $layers);
+        $known = $layerRepo->resolve($builder->lookups());
+        $known['devices'] = $this->repo->devices(array_values(array_diff($known['deviceIds'], $ids)), false);
 
-        $result = $builder->build([
+        $result = $builder->withKnown($known)->build([
             'hideStubs' => ! $p['stubs'],
             'p2pPrefix4' => $this->settings->int('l3_p2p_prefix', 8, 32),
             'p2pPrefix6' => 126,
@@ -152,12 +152,20 @@ class TopologyService
             'root' => $root,
             'depth' => $root ? $p['depth'] : null,
         ] + array_fill_keys(L3Builder::LAYERS, true));
+
+        $drawn = [];
+        foreach ($result['nodes'] as $node) {
+            if ($node['type'] === 'device' && empty($node['outside'])) {
+                $drawn[$node['device_id']] = true;
+            }
+        }
         $result['layers'] = [];
         foreach (L3Builder::LAYERS as $layer) {
-            $result['layers'][$layer] = ['available' => $available[$layer], 'shown' => in_array($layer, $loaded, true)];
+            $available = array_sum(array_intersect_key($perDevice[$layer], $drawn));
+            $result['layers'][$layer] = ['available' => $available, 'shown' => $available > 0 && in_array($layer, $loaded, true), 'default' => MapParams::L3_LAYERS[$layer]];
         }
 
-        $shown = count(array_filter($result['nodes'], fn ($n) => $n['type'] === 'device'));
+        $shown = count($drawn);
         if ($root && $shown > $this->maxNodes()) {
             $truncated = true;
         }

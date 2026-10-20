@@ -24,7 +24,7 @@ abstract class ScopedRepository
     }
 
     /**
-     * Another repository of the plugin for the same user.
+     * Another repository of the plugin for the same user, sharing the list of devices it may see.
      *
      * @template T of ScopedRepository
      *
@@ -33,7 +33,10 @@ abstract class ScopedRepository
      */
     public function sibling(string $class): self
     {
-        return new $class($this->user);
+        $sibling = new $class($this->user);
+        $sibling->accessible = $this->accessible();
+
+        return $sibling;
     }
 
     /**

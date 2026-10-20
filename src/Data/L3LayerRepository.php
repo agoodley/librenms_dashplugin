@@ -5,12 +5,13 @@ namespace Agoodley\LibrenmsTopology\Data;
 use Agoodley\LibrenmsTopology\Support\Cidr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Overlay layers of the L3 map beyond OSPF and BGP: OSPFv3 and IS-IS adjacencies, IPsec tunnels,
- * MPLS LSPs and pseudowires, plus the lookups that recognize their far ends among the devices the
- * user may see. The tables belong to LibreNMS modules that are off by default (or newer than some
- * installs): a missing table or column is an empty layer.
+ * MPLS LSPs and pseudowires, plus the lookups that recognize the far ends of every overlay among the
+ * devices the user may see. The tables belong to LibreNMS modules that are off by default (or newer
+ * than some installs): a missing table or column is an empty layer.
  */
 class L3LayerRepository extends ScopedRepository
 {
@@ -23,38 +24,56 @@ class L3LayerRepository extends ScopedRepository
         'pw' => 'pseudowires',
     ];
 
-    /** Columns read per layer; the ports join adds the local interface name where a layer has one. */
+    /** Columns read per layer, all required. */
     private const COLUMNS = [
-        'ospfv3' => ['device_id', 'port_id', 'router_id', 'ospfv3NbrRtrId', 'ospfv3NbrAddress', 'ospfv3NbrState', 'context_name'],
+        'ospfv3' => ['device_id', 'port_id', 'ospfv3NbrRtrId', 'ospfv3NbrAddress', 'ospfv3NbrState', 'context_name'],
         'isis' => ['device_id', 'port_id', 'isisISAdjState', 'isisISAdjNeighSysType', 'isisISAdjNeighSysID', 'isisISAdjAreaAddress',
             'isisISAdjIPAddrAddress', 'isisCircAdminState'],
         'ipsec' => ['device_id', 'peer_addr', 'local_addr', 'tunnel_name', 'tunnel_status'],
         'mpls' => ['device_id', 'mplsLspName', 'mplsLspFromAddr', 'mplsLspToAddr', 'mplsLspAdminState', 'mplsLspOperState', 'mplsLspType',
             'mplsLspFastReroute', 'mplsLspTransitions', 'mplsLspConfiguredPaths', 'mplsLspOperationalPaths'],
-        'pw' => ['device_id', 'port_id', 'peer_device_id', 'peer_ldp_id', 'cpwVcID', 'pw_type', 'pw_psntype', 'pw_local_mtu', 'pw_peer_mtu', 'pw_descr'],
+        'pw' => ['device_id', 'port_id', 'peer_device_id', 'peer_ldp_id', 'cpwVcID', 'pw_type', 'pw_psntype', 'pw_descr'],
     ];
 
-    /** Layers whose port_id is the local interface (OSPFv3's is the neighbour's port, found by its address). */
-    private const LOCAL_PORT = ['isis', 'pw'];
+    /** Columns read when this LibreNMS version has them: ospfv3_nbrs.router_id came in 2025-03. */
+    private const OPTIONAL = ['ospfv3' => ['router_id']];
+
+    /** Columns of the local interface joined per layer (OSPFv3's port_id is the neighbour's, found by its address). */
+    private const LOCAL_PORT = ['isis' => ['ifName', 'ifDescr'], 'pw' => ['ifName', 'ifDescr', 'ifMtu']];
 
     /** Largest IN list sent in one query. */
     private const CHUNK = 1000;
 
+    /** Largest IN list of addresses: their columns have no index, so every query scans the table. */
+    private const ADDRESS_CHUNK = 5000;
+
+    /** @var array<string, string[]> table => its columns (none when it does not exist), read once */
+    private array $present = [];
+
     /**
-     * Rows per layer among the devices: which layer toggles the map offers.
+     * Rows per layer and device among the devices: the map loads the layers with rows in its scope and
+     * offers the toggles of those with rows on the devices it draws.
      *
      * @param  int[]  $ids
-     * @return array<string, int> layer => rows (0 when the table is missing)
+     * @return array<string, array<int, int>> layer => device_id => rows (none when the table or a column is missing)
      */
-    public function counts(array $ids): array
+    public function countsByDevice(array $ids): array
     {
-        $counts = array_fill_keys(array_keys(self::TABLES), 0);
+        $counts = [];
         foreach (self::TABLES as $layer => $table) {
+            $counts[$layer] = [];
+            if ($this->columns($layer) === null) {
+                continue;
+            }
             foreach (array_chunk($ids, self::CHUNK) as $chunk) {
                 try {
-                    $counts[$layer] += DB::table($table)->whereIntegerInRaw('device_id', $chunk)->count();
+                    foreach (DB::table($table)->whereIntegerInRaw('device_id', $chunk)->groupBy('device_id')
+                        ->selectRaw('device_id, COUNT(*) as c')->pluck('c', 'device_id') as $id => $count) {
+                        $counts[$layer][(int) $id] = (int) $count;
+                    }
                 } catch (\Throwable $e) {
                     Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
+                    $counts[$layer] = [];
                     break;
                 }
             }
@@ -64,8 +83,8 @@ class L3LayerRepository extends ScopedRepository
     }
 
     /**
-     * Rows of the given layers for the devices, with the local interface name (ifName, ifDescr) where
-     * the layer has one.
+     * Rows of the given layers for the devices, with the local interface (ifName, ifDescr; ifMtu of a
+     * pseudowire's attachment circuit) where the layer has one.
      *
      * @param  int[]  $ids
      * @param  string[]  $layers  keys of TABLES
@@ -75,17 +94,21 @@ class L3LayerRepository extends ScopedRepository
     {
         $result = [];
         foreach (array_intersect(array_keys(self::TABLES), $layers) as $layer) {
-            $table = self::TABLES[$layer];
-            $local = in_array($layer, self::LOCAL_PORT, true);
-            $columns = array_merge(array_map(fn ($column) => "l.$column", self::COLUMNS[$layer]), $local ? ['p.ifName', 'p.ifDescr'] : []);
             $result[$layer] = [];
+            $columns = $this->columns($layer);
+            if ($columns === null) {
+                continue;
+            }
+            $table = self::TABLES[$layer];
+            $local = self::LOCAL_PORT[$layer] ?? [];
+            $select = array_merge(array_map(fn ($column) => "l.$column", $columns), array_map(fn ($column) => "p.$column", $local));
             foreach (array_chunk($ids, self::CHUNK) as $chunk) {
                 try {
                     $query = DB::table("$table as l")->whereIntegerInRaw('l.device_id', $chunk);
                     if ($local) {
                         $query->leftJoin('ports as p', 'p.port_id', '=', 'l.port_id');
                     }
-                    foreach ($query->get($columns) as $row) {
+                    foreach ($query->get($select) as $row) {
                         $result[$layer][] = (array) $row;
                     }
                 } catch (\Throwable $e) {
@@ -100,54 +123,135 @@ class L3LayerRepository extends ScopedRepository
     }
 
     /**
-     * Recognize far ends among the devices the user may see (see L3Builder::layerLookups()). Addresses
-     * and router IDs found on several devices stay unresolved rather than picking one at random.
+     * Recognize far ends among the devices the user may see (see L3Builder::lookups()): the owner of each
+     * address (and of each loopback / host route), the device of each router ID in its context, the
+     * pseudowire rows with the VC IDs (the other ends) and the devices involved. Addresses and router IDs
+     * found on several devices stay unresolved rather than picking one at random; such router IDs are
+     * listed so that their address is not tried instead.
      *
-     * @param  array{addresses?: string[], routerIds?: string[], ports?: int[], devices?: int[]}  $lookups
-     * @return array{addresses: array<string, int>, routerIds: array<string, int>, ports: array<int, int>, devices: array<int, true>}
+     * @param  array{addresses?: string[], routerIds?: string[], vcs?: int[], devices?: int[]}  $lookups
+     * @return array{addresses: array<string, int>, loopbacks: array<string, int>, routerIds: array<string, int>,
+     *     ambiguousRouterIds: array<string, true>, pseudowires: array<int, array>, deviceIds: int[]}
      */
     public function resolve(array $lookups): array
     {
         $visible = $this->accessible();
 
-        $devices = [];
-        foreach ($lookups['devices'] ?? [] as $deviceId) {
-            if (isset($visible[(int) $deviceId])) {
-                $devices[(int) $deviceId] = true;
-            }
-        }
-
-        $ports = [];
-        $this->each('ports', 'port_id', array_map('intval', $lookups['ports'] ?? []), ['port_id', 'device_id'], function ($row) use (&$ports, $visible) {
-            if (isset($visible[(int) $row->device_id])) {
-                $ports[(int) $row->port_id] = (int) $row->device_id;
-            }
-        }, true);
-
         $owners = [];
-        $v4 = array_values(array_filter($lookups['addresses'] ?? [], fn ($a) => ! str_contains($a, ':')));
-        $v6 = array_values(array_filter($lookups['addresses'] ?? [], fn ($a) => str_contains($a, ':')));
-        foreach ([['ipv4_addresses', 'ipv4_address', $v4], ['ipv6_addresses', 'ipv6_compressed', $v6]] as [$table, $column, $addresses]) {
-            $this->each("$table as a", "a.$column", $addresses, ["a.$column as address", 'p.device_id'], function ($row) use (&$owners, $visible) {
-                if (isset($visible[(int) $row->device_id])) {
-                    $owners[Cidr::canonical((string) $row->address) ?? (string) $row->address][(int) $row->device_id] = true;
-                }
-            }, false, fn ($query) => $query->join('ports as p', 'p.port_id', '=', 'a.port_id')->where('p.deleted', 0));
+        $loopbacks = [];
+        $addresses = $lookups['addresses'] ?? [];
+        foreach ([
+            ['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen', 32, array_filter($addresses, fn ($a) => ! str_contains($a, ':'))],
+            ['ipv6_addresses', 'ipv6_compressed', 'ipv6_prefixlen', 128, array_filter($addresses, fn ($a) => str_contains($a, ':'))],
+        ] as [$table, $column, $prefix, $host, $values]) {
+            $this->each("$table as a", "a.$column", $values, ["a.$column as address", "a.$prefix as prefixlen", 'p.device_id', 'p.ifType'],
+                function ($row) use (&$owners, &$loopbacks, $visible, $host) {
+                    $deviceId = (int) $row->device_id;
+                    if (! isset($visible[$deviceId])) {
+                        return;
+                    }
+                    $address = Cidr::canonical((string) $row->address) ?? (string) $row->address;
+                    $owners[$address][$deviceId] = true;
+                    if ((int) $row->prefixlen >= $host || strtolower((string) $row->ifType) === 'softwareloopback') {
+                        $loopbacks[$address][$deviceId] = true;
+                    }
+                }, false, fn ($query) => $query->join('ports as p', 'p.port_id', '=', 'a.port_id')->where('p.deleted', 0), self::ADDRESS_CHUNK);
         }
 
+        // router IDs per context ("context|10.0.0.1"); OSPFv3 instances older than 2025-03 keep the number
+        $wanted = array_flip($lookups['routerIds'] ?? []);
+        $rids = [];
+        foreach (array_keys($wanted) as $key) {
+            $pos = strrpos($key, '|');
+            $rid = $pos === false ? $key : substr($key, $pos + 1);
+            $rids[$rid] = true;
+            if (($long = ip2long($rid)) !== false) {
+                $rids[(string) $long] = true;
+            }
+        }
         $routers = [];
-        $routerIds = array_values(array_unique($lookups['routerIds'] ?? []));
-        foreach ([['ospfv3_instances', 'router_id'], ['ospf_instances', 'ospfRouterId']] as [$table, $column]) {
-            $this->each($table, $column, $routerIds, [$column . ' as rid', 'device_id'], function ($row) use (&$routers, $visible) {
-                if (isset($visible[(int) $row->device_id])) {
-                    $routers[(string) $row->rid][(int) $row->device_id] = true;
+        foreach (['ospfv3_instances' => ['router_id', 'ospfv3RouterId'], 'ospf_instances' => ['ospfRouterId']] as $table => $candidates) {
+            $column = $wanted ? $this->firstColumn($table, $candidates) : null;
+            if ($column === null) {
+                continue;
+            }
+            $this->each($table, $column, array_map('strval', array_keys($rids)), ["$column as rid", 'context_name', 'device_id'], function ($row) use (&$routers, $visible, $wanted) {
+                $rid = (string) $row->rid;
+                $key = (string) $row->context_name . '|' . (ctype_digit($rid) ? long2ip((int) $rid) : $rid);
+                if (isset($wanted[$key], $visible[(int) $row->device_id])) {
+                    $routers[$key][(int) $row->device_id] = true;
                 }
             });
         }
 
-        $unique = fn (array $sets) => array_map(fn ($set) => (int) array_key_first($set), array_filter($sets, fn ($set) => count($set) === 1));
+        $pseudowires = [];
+        $vcs = array_values(array_unique(array_map('intval', $lookups['vcs'] ?? [])));
+        if ($vcs && $this->columns('pw') !== null) {
+            $this->each('pseudowires as l', 'l.cpwVcID', $vcs, ['l.device_id', 'l.port_id', 'l.peer_device_id', 'l.peer_ldp_id', 'l.cpwVcID', 'p.ifName', 'p.ifDescr', 'p.ifMtu'],
+                function ($row) use (&$pseudowires, $visible) {
+                    if (isset($visible[(int) $row->device_id])) {
+                        $pseudowires[] = (array) $row;
+                    }
+                }, true, fn ($query) => $query->leftJoin('ports as p', 'p.port_id', '=', 'l.port_id'));
+        }
 
-        return ['addresses' => $unique($owners), 'routerIds' => $unique($routers), 'ports' => $ports, 'devices' => $devices];
+        $unique = fn (array $sets) => array_map(fn ($set) => (int) array_key_first($set), array_filter($sets, fn ($set) => count($set) === 1));
+        $result = [
+            'addresses' => $unique($owners),
+            'loopbacks' => $unique($loopbacks),
+            'routerIds' => $unique($routers),
+            'ambiguousRouterIds' => array_fill_keys(array_keys(array_filter($routers, fn ($set) => count($set) > 1)), true),
+            'pseudowires' => $pseudowires,
+        ];
+        $peers = array_filter(array_map('intval', $lookups['devices'] ?? []), fn ($id) => isset($visible[$id]));
+        $result['deviceIds'] = array_values(array_unique(array_merge(array_values($result['addresses']), array_values($result['loopbacks']),
+            array_values($result['routerIds']), array_map(fn ($row) => (int) $row['device_id'], $pseudowires), $peers)));
+
+        return $result;
+    }
+
+    /**
+     * Columns of a layer to read on this LibreNMS version, null when its table or a required column is missing.
+     *
+     * @return string[]|null
+     */
+    private function columns(string $layer): ?array
+    {
+        $present = $this->present(self::TABLES[$layer]);
+        if (array_diff(self::COLUMNS[$layer], $present)) {
+            return null;
+        }
+
+        return array_merge(self::COLUMNS[$layer], array_values(array_intersect(self::OPTIONAL[$layer] ?? [], $present)));
+    }
+
+    /**
+     * The first of the candidate columns a table has, null when it has none (or does not exist).
+     *
+     * @param  string[]  $candidates
+     */
+    private function firstColumn(string $table, array $candidates): ?string
+    {
+        return array_values(array_intersect($candidates, $this->present($table)))[0] ?? null;
+    }
+
+    /**
+     * Columns of a table (none when it does not exist), read once.
+     *
+     * @return string[]
+     */
+    private function present(string $table): array
+    {
+        if (! isset($this->present[$table])) {
+            try {
+                $this->present[$table] = Schema::getColumnListing($table);
+            } catch (\Throwable $e) {
+                Log::debug("topology plugin: cannot list the columns of $table: " . $e->getMessage());
+                $this->present[$table] = [];
+            }
+        }
+
+        return $this->present[$table];
     }
 
     /**
@@ -156,15 +260,15 @@ class L3LayerRepository extends ScopedRepository
      * @param  callable(object): void  $handle
      * @param  (callable(\Illuminate\Database\Query\Builder): mixed)|null  $join
      */
-    private function each(string $table, string $column, array $values, array $columns, callable $handle, bool $integers = false, ?callable $join = null): void
+    private function each(string $table, string $column, array $values, array $columns, callable $handle, bool $integers = false, ?callable $join = null, int $chunk = self::CHUNK): void
     {
-        foreach (array_chunk(array_values(array_unique($values)), self::CHUNK) as $chunk) {
+        foreach (array_chunk(array_values(array_unique($values)), $chunk) as $part) {
             try {
                 $query = DB::table($table);
                 if ($join) {
                     $join($query);
                 }
-                $integers ? $query->whereIntegerInRaw($column, $chunk) : $query->whereIn($column, $chunk);
+                $integers ? $query->whereIntegerInRaw($column, $part) : $query->whereIn($column, $part);
                 foreach ($query->get($columns) as $row) {
                     $handle($row);
                 }

@@ -11,11 +11,17 @@ use Agoodley\LibrenmsTopology\Support\InterfaceName;
  * Builds the Layer 3 map: L3 devices joined through shared IP subnets. Point-to-point subnets
  * become direct links, multi-access subnets become "media" nodes (NetBrain style), and routing
  * adjacencies (OSPF, OSPFv3, IS-IS, BGP), IPsec tunnels, MPLS LSPs and pseudowires can be overlaid.
+ *
+ * The far end of an overlay is the device's node when it is on the map, a stub node of a device the
+ * user may see outside the map, else one external node per address shared by every overlay.
  */
 class L3Builder
 {
     /** Overlay layers beyond OSPF and BGP: build options and edge kinds. */
     public const LAYERS = ['ospfv3', 'isis', 'ipsec', 'mpls', 'pw'];
+
+    /** Most MPLS LSP edges (pairs of devices) drawn: an RSVP full mesh of 200 PEs has 19,900. */
+    public const MAX_LSP_EDGES = 500;
 
     private const ROLE_RANK = [
         DeviceRole::FIREWALL => 5,
@@ -26,8 +32,20 @@ class L3Builder
     /** OSPF / OSPFv3 neighbour states of a working adjacency (2-way between DROthers). */
     private const OSPF_UP = ['full', 'twoway'];
 
+    /** OSPF / OSPFv3 neighbour states from worst to best: the merged state of an adjacency is the worse side's. */
+    private const OSPF_RANK = ['down' => 1, 'attempt' => 2, 'init' => 3, 'exchangestart' => 4, 'exstart' => 4, 'exchange' => 5, 'loading' => 6, 'twoway' => 7, 'full' => 8];
+
+    /** BGP session states from worst to best. */
+    private const BGP_RANK = ['idle' => 1, 'connect' => 2, 'active' => 3, 'opensent' => 4, 'openconfirm' => 5, 'established' => 6];
+
     /** IPsec tunnel states that mean up (Cisco reports "active", other vendors "established"...). */
     private const IPSEC_UP = ['active', 'up', 'established', 'connected'];
+
+    /** LibreNMS keeps peer_ldp_id in a signed INT: every LDP ID from 128.0.0.0 on is stored as this. */
+    private const LDP_CAPPED = 2147483647;
+
+    /** Ethernet header (untagged, one or two VLAN tags) that some systems count in an interface MTU and others do not. */
+    private const L2_HEADERS = [14, 18, 22];
 
     /** @var array<string, array{network: string, vrf: string, family: int, prefix: int, members: array}> */
     private array $subnets = [];
@@ -35,18 +53,35 @@ class L3Builder
     /** @var array<int, string[]> device_id => loopback addresses */
     private array $loopbacks = [];
 
-    /** @var array<string, int> "vrf|ip" and "ip" => device_id */
-    private array $ipIndex = [];
+    /** @var array<string, array<int, array<string, true>>>|null canonical address => device_id => VRFs, on this map */
+    private ?array $owners = null;
+
+    /** @var array<string, array<int, true>> loopback / host route address => device_id, on this map */
+    private array $loopbackOwners = [];
+
+    /** @var array<int, true> indexes of the address rows of this map's devices with a usable address */
+    private array $usable = [];
+
+    /** @var array<string, ?int> deviceByAddress() results */
+    private array $resolved = [];
+
+    /** @var array<string, string> "context|address" (or system ID) => external node id */
+    private array $externals = [];
+
+    /** @var array<string, array{shown: int, total: int}> layers drawn in part */
+    private array $limits = [];
 
     /**
      * @param  array<int, array>  $devices  device_id => device row (with 'role', 'url', 'bgpLocalAs')
      * @param  array<int, array>  $addresses  rows: device_id, port_id, ifName, ifDescr, ifAlias, ifOperStatus, ifType, address, prefixlen, vrf
      * @param  array<int, array>  $ospf  rows of ospf_nbrs
      * @param  array<int, array>  $bgp  rows of bgpPeers
-     * @param  array<string, array<int, array>>  $layers  rows per overlay layer (LAYERS): ospfv3_nbrs, isis_adjacencies,
-     *                                                    ipsec_tunnels, mpls_lsps and pseudowires (with the local ifName)
-     * @param  array{addresses?: array<string, int>, routerIds?: array<string, int>, ports?: array<int, int>, devices?: array<int, true>}  $known
-     *     far ends among the other devices the user may see (L3LayerRepository::resolve() of layerLookups())
+     * @param  array<string, array<int, array>>  $layers  rows per overlay layer (LAYERS): ospfv3_nbrs, isis_adjacencies, ipsec_tunnels,
+     *                                                    mpls_lsps and pseudowires (the last two with the local ifName, pseudowires with its ifMtu)
+     * @param  array{addresses?: array<string, int>, loopbacks?: array<string, int>, routerIds?: array<string, int>,
+     *     ambiguousRouterIds?: array<string, true>, pseudowires?: array<int, array>, devices?: array<int, array>}  $known
+     *     far ends among the other devices the user may see (L3LayerRepository::resolve() of lookups()) and the rows of
+     *     those devices (TopologyRepository::devices())
      */
     public function __construct(
         private array $devices,
@@ -59,8 +94,21 @@ class L3Builder
     }
 
     /**
-     * Build the map data returned by api/l3: nodes (devices, subnets, external routers / AS
-     * clouds / peers), edges (p2p, member, ospf, bgp and the LAYERS), VRFs and statistics.
+     * The same map with its far ends among the other devices the user may see (L3LayerRepository::resolve()
+     * of lookups()), keeping what was indexed.
+     */
+    public function withKnown(array $known): self
+    {
+        $builder = clone $this;
+        $builder->known = $known;
+        $builder->resolved = [];
+
+        return $builder;
+    }
+
+    /**
+     * Build the map data returned by api/l3: nodes (devices, stubs of devices outside the map, subnets, external
+     * routers / AS clouds), edges (p2p, member, ospf, bgp and the LAYERS), VRFs, statistics and the layers drawn in part.
      *
      * @param  array{hideStubs?: bool, p2pPrefix4?: int, p2pPrefix6?: int, exclude?: string[], vrf?: string|null,
      *     ospf?: bool, bgp?: bool, ospfv3?: bool, isis?: bool, ipsec?: bool, mpls?: bool, pw?: bool, root?: int|null, depth?: int|null}  $options
@@ -75,6 +123,8 @@ class L3Builder
         $root = $options['root'] ?? null;
 
         $this->index($options['exclude'] ?? [], $options['vrf'] ?? null);
+        $this->externals = [];
+        $this->limits = [];
 
         // devices joined through subnet nodes (device - subnet - device = one device hop), so every
         // member of a shared LAN is one hop from every other member
@@ -217,7 +267,8 @@ class L3Builder
             'edges' => $edges,
             'vrfs' => $vrfs,
             'stats' => [
-                'devices' => count(array_filter($nodes, fn ($n) => $n['type'] === 'device')),
+                'devices' => count(array_filter($nodes, fn ($n) => $n['type'] === 'device' && empty($n['outside']))),
+                'outside' => count(array_filter($nodes, fn ($n) => ! empty($n['outside']))),
                 'subnets' => count(array_filter($nodes, fn ($n) => $n['type'] === 'subnet')),
                 'p2p' => count($byKind('p2p')),
                 'ospf' => count($byKind('ospf')),
@@ -230,34 +281,59 @@ class L3Builder
                 'mtu' => array_sum(array_column($byKind('pw'), 'mtu_mismatch')),
                 'down' => count(array_filter($edges, fn ($e) => $e['status'] === 'down')),
             ],
+            'limits' => $this->limits,
         ];
     }
 
     /**
-     * What the overlay layers need resolved beyond this map's addresses (L3LayerRepository::resolve()):
-     * far-end addresses (including loopbacks encoded in IS-IS system IDs), OSPFv3 router IDs, the ports
-     * LibreNMS found for global OSPFv3 neighbour addresses and the pseudowire peer devices.
+     * What the overlays need resolved among the other devices the user may see (L3LayerRepository::resolve()):
+     * the far-end addresses that are not on this map (nor link-local), router IDs per context, the VC IDs of the
+     * pseudowires and the peer devices LibreNMS recorded for them.
+     *
+     * @return array{addresses: string[], routerIds: string[], vcs: int[], devices: int[]}
+     */
+    public function lookups(): array
+    {
+        $lookups = self::layerLookups($this->layers, $this->ospf, $this->bgp);
+        $owners = $this->owners();
+        $lookups['addresses'] = array_values(array_filter($lookups['addresses'], fn ($address) => ! isset($owners[$address])));
+
+        return $lookups;
+    }
+
+    /**
+     * Far ends of the overlay rows to recognize: addresses (canonical, link-local and other ignorable ones left
+     * out; including loopbacks encoded in IS-IS system IDs), "context|router ID" of OSPF and OSPFv3 neighbours,
+     * the VC IDs of pseudowires (to find their other end) and the peer devices recorded for them.
      *
      * @param  array<string, array<int, array>>  $layers  see the constructor
-     * @return array{addresses: string[], routerIds: string[], ports: int[], devices: int[]}
+     * @param  array<int, array>  $ospf  rows of ospf_nbrs
+     * @param  array<int, array>  $bgp  rows of bgpPeers
+     * @return array{addresses: string[], routerIds: string[], vcs: int[], devices: int[]}
      */
-    public static function layerLookups(array $layers): array
+    public static function layerLookups(array $layers, array $ospf = [], array $bgp = []): array
     {
         $addresses = [];
         $routerIds = [];
-        $ports = [];
+        $vcs = [];
         $devices = [];
+        $routerId = function (string $rid, string $context) use (&$routerIds, &$addresses): void {
+            if (($rid = self::routerKey($rid)) !== null) {
+                $routerIds[] = $context . '|' . $rid;
+                $addresses[] = $rid; // usually a loopback address
+            }
+        };
+
+        foreach ($ospf as $row) {
+            $addresses[] = (string) ($row['ospfNbrIpAddr'] ?? '');
+            $routerId((string) ($row['ospfNbrRtrId'] ?? ''), (string) ($row['context_name'] ?? ''));
+        }
+        foreach ($bgp as $row) {
+            $addresses[] = (string) ($row['bgpPeerIdentifier'] ?? '');
+        }
         foreach ($layers['ospfv3'] ?? [] as $row) {
-            $rid = self::ospfv3RouterId($row);
-            if ($rid !== '') {
-                $routerIds[] = $rid;
-                $addresses[] = $rid; // the router ID is usually a loopback address
-            }
-            $address = (string) ($row['ospfv3NbrAddress'] ?? '');
-            if ($address !== '' && ! Cidr::isIgnorable($address)) {
-                $addresses[] = $address;
-                $ports[] = (int) ($row['port_id'] ?? 0);
-            }
+            $routerId(self::ospfv3RouterId($row), (string) ($row['context_name'] ?? ''));
+            $addresses[] = (string) ($row['ospfv3NbrAddress'] ?? '');
         }
         foreach ($layers['isis'] ?? [] as $row) {
             $addresses[] = (string) ($row['isisISAdjIPAddrAddress'] ?? '');
@@ -271,21 +347,29 @@ class L3Builder
         }
         foreach ($layers['pw'] ?? [] as $row) {
             $addresses[] = self::ldpAddress($row['peer_ldp_id'] ?? null);
+            $vcs[] = (int) ($row['cpwVcID'] ?? 0);
             $devices[] = (int) ($row['peer_device_id'] ?? 0);
         }
 
+        $canonical = [];
+        foreach (array_unique($addresses) as $address) {
+            $address = Cidr::canonical($address);
+            if ($address !== null && ! Cidr::isIgnorable($address)) {
+                $canonical[$address] = true;
+            }
+        }
+
         return [
-            'addresses' => array_values(array_unique(array_filter(array_map(fn ($a) => Cidr::canonical($a), $addresses)))),
+            'addresses' => array_keys($canonical),
             'routerIds' => array_values(array_unique($routerIds)),
-            'ports' => array_values(array_unique(array_filter($ports))),
-            'devices' => array_values(array_unique(array_filter($devices))),
+            'vcs' => array_values(array_unique(array_filter($vcs))),
+            'devices' => array_values(array_unique(array_filter($devices, fn ($id) => $id > 0))),
         ];
     }
 
     /**
-     * Sort the address rows into subnets (per VRF), loopbacks / host routes and an IP => device
-     * index used to resolve routing neighbours. Link-local, loopback, multicast and excluded
-     * networks are skipped.
+     * Sort the address rows into subnets (per VRF) and loopbacks / host routes. Link-local, loopback,
+     * multicast and excluded networks are skipped.
      *
      * @param  string[]  $exclude  CIDRs never drawn
      * @param  string|null  $vrfFilter  only keep subnets of this VRF (null or '' keeps every VRF)
@@ -294,21 +378,18 @@ class L3Builder
     {
         $this->subnets = [];
         $this->loopbacks = [];
-        $this->ipIndex = [];
+        $this->owners();
 
-        foreach ($this->addresses as $row) {
-            $address = trim((string) ($row['address'] ?? ''));
-            $prefix = (int) ($row['prefixlen'] ?? 0);
-            $deviceId = (int) $row['device_id'];
-            if ($address === '' || ! isset($this->devices[$deviceId]) || Cidr::isIgnorable($address)) {
+        foreach ($this->addresses as $index => $row) {
+            if (! isset($this->usable[$index])) {
                 continue;
             }
+            $address = trim((string) $row['address']);
+            $prefix = (int) ($row['prefixlen'] ?? 0);
+            $deviceId = (int) $row['device_id'];
 
             $family = Cidr::family($address);
             $vrf = (string) ($row['vrf'] ?? '');
-            $this->ipIndex[$vrf . '|' . $address] = $deviceId;
-            $this->ipIndex[$address] ??= $deviceId;
-
             if ($vrfFilter !== null && $vrfFilter !== '' && $vrf !== $vrfFilter) {
                 continue;
             }
@@ -341,6 +422,37 @@ class L3Builder
     }
 
     /**
+     * Owners of the addresses of this map's devices, in every VRF whatever the build options: canonical
+     * address => device_id => VRFs (and the loopback / host route owners, and the usable rows). Link-local,
+     * loopback, multicast and other ignorable addresses have none.
+     *
+     * @return array<string, array<int, array<string, true>>>
+     */
+    private function owners(): array
+    {
+        if ($this->owners === null) {
+            $this->owners = [];
+            $this->loopbackOwners = [];
+            $this->usable = [];
+            foreach ($this->addresses as $index => $row) {
+                $address = Cidr::canonical((string) ($row['address'] ?? ''));
+                $deviceId = (int) ($row['device_id'] ?? 0);
+                if ($address === null || ! isset($this->devices[$deviceId]) || Cidr::isIgnorable($address)) {
+                    continue;
+                }
+                $this->usable[$index] = true;
+                $this->owners[$address][$deviceId][(string) ($row['vrf'] ?? '')] = true;
+                $prefix = (int) ($row['prefixlen'] ?? 0);
+                if ($prefix >= (Cidr::family($address) === 6 ? 128 : 32) || strtolower((string) ($row['ifType'] ?? '')) === 'softwareloopback') {
+                    $this->loopbackOwners[$address][$deviceId] = true;
+                }
+            }
+        }
+
+        return $this->owners;
+    }
+
+    /**
      * Device end of a subnet link: interface name, address(es) and status.
      */
     private function endpoint(array $member): array
@@ -364,10 +476,11 @@ class L3Builder
      * Map node for a monitored L3 device with its loopbacks, stub networks and BGP AS.
      *
      * @param  string[]  $stubs  networks only this device is attached to
+     * @param  array|null  $device  its row when it is not one of the map's devices
      */
-    private function deviceNode(int $deviceId, array $stubs): array
+    private function deviceNode(int $deviceId, array $stubs, ?array $device = null): array
     {
-        $device = $this->devices[$deviceId];
+        $device ??= $this->devices[$deviceId];
         $display = (string) ($device['display'] ?? '') ?: (string) ($device['hostname'] ?? $deviceId);
 
         return [
@@ -392,16 +505,8 @@ class L3Builder
     }
 
     /**
-     * Device owning an IP address, looked up in the same VRF first.
-     */
-    private function lookupIp(string $ip, string $vrf = ''): ?int
-    {
-        return $this->ipIndex[$vrf . '|' . $ip] ?? $this->ipIndex[$ip] ?? null;
-    }
-
-    /**
-     * OSPF adjacencies as overlay edges (both directions merged; the edge is down unless every side
-     * reports full/2-way). Neighbours that are not monitored become external router nodes.
+     * OSPF adjacencies as overlay edges, both directions merged into the worse state (down unless both
+     * sides are full/2-way). The neighbour is found by its interface address, else by router ID.
      */
     private function addOspf(array &$nodes, array &$edges, array $kept): void
     {
@@ -412,66 +517,29 @@ class L3Builder
                 continue;
             }
 
-            $ip = (string) ($row['ospfNbrIpAddr'] ?? '');
-            $remote = $this->lookupIp($ip, (string) ($row['context_name'] ?? ''))
-                ?? $this->lookupIp((string) ($row['ospfNbrRtrId'] ?? ''));
-            if ($remote === $local) {
+            $ip = trim((string) ($row['ospfNbrIpAddr'] ?? ''));
+            $rid = self::routerKey((string) ($row['ospfNbrRtrId'] ?? ''));
+            $context = (string) ($row['context_name'] ?? '');
+            $remote = $this->deviceByAddress($ip, $context) ?? ($rid !== null ? $this->deviceByRouterId($rid, $context) : null);
+            $to = $this->farEnd($nodes, $local, $remote, $rid ?? $ip, 'OSPF neighbor', $context, [$rid, $ip]);
+            if ($to === null) {
                 continue;
             }
 
-            if ($remote && ! isset($nodes['d:' . $remote])) {
-                continue; // known device outside the map scope
-            }
-
-            if ($remote) {
-                $to = 'd:' . $remote;
-            } else {
-                $rid = (string) ($row['ospfNbrRtrId'] ?? $ip);
-                $to = 'x:' . $rid;
-                $nodes[$to] ??= [
-                    'id' => $to,
-                    'type' => 'external',
-                    'managed' => false,
-                    'label' => 'OSPF ' . $rid,
-                    'name' => 'OSPF neighbor ' . $rid,
-                    'role' => DeviceRole::ROUTER,
-                    'status' => 'unknown',
-                    'address' => $ip,
-                ];
-            }
-
-            $from = 'd:' . $local;
-            $key = strcmp($from, $to) < 0 ? "$from|$to" : "$to|$from";
             $state = strtolower((string) ($row['ospfNbrState'] ?? 'unknown'));
-            if (isset($pairs[$key])) {
-                $edge = &$edges[$pairs[$key]];
-                if ($state !== 'full' && $edge['state'] === 'full') {
-                    $edge['state'] = $state;
-                    $edge['status'] = in_array($state, self::OSPF_UP, true) ? 'up' : 'down';
-                }
-                $edge['addresses'][] = $ip;
-                unset($edge);
-                continue;
-            }
-
-            $pairs[$key] = count($edges);
-            $edges[] = [
-                'id' => 'e' . count($edges),
-                'kind' => 'ospf',
-                'from' => $from,
-                'to' => $to,
-                'state' => $state,
-                'status' => in_array($state, ['full', 'twoway'], true) ? 'up' : 'down',
-                'addresses' => [$ip],
-                'a' => null,
-                'b' => null,
-            ];
+            $index = $this->overlayEdge($edges, $pairs, 'ospf', 'd:' . $local, $to, ['state' => $state, 'addresses' => []]);
+            $edge = &$edges[$index];
+            $edge['state'] = self::worse($edge['state'], $state, self::OSPF_RANK);
+            $edge['status'] = in_array($edge['state'], self::OSPF_UP, true) ? 'up' : 'down';
+            $edge['addresses'][] = $ip;
+            unset($edge);
         }
+        $this->uniqueLists($edges, $pairs, ['addresses']);
     }
 
     /**
-     * BGP sessions as overlay edges, iBGP when both sides share the AS. Peers that are not
-     * monitored are grouped into one cloud per remote AS. A pair is down if any session is not established.
+     * BGP sessions as overlay edges, iBGP when both sides share the AS. Peers that are no device the user
+     * may see are grouped into one cloud per remote AS. A pair is down if any session is not established.
      */
     private function addBgp(array &$nodes, array &$edges, array $kept): void
     {
@@ -486,18 +554,13 @@ class L3Builder
             $remoteAs = (int) ($row['bgpPeerRemoteAs'] ?? 0);
             $localAs = (int) ($this->devices[$local]['bgpLocalAs'] ?? 0);
             $type = $remoteAs && $remoteAs === $localAs ? 'iBGP' : 'eBGP';
-            $remote = $this->lookupIp($peerIp, (string) ($row['context_name'] ?? ''));
+            $remote = $this->deviceByAddress($peerIp, (string) ($row['context_name'] ?? ''));
             if ($remote === $local) {
                 continue;
             }
 
-            if ($remote && ! isset($nodes['d:' . $remote])) {
-                continue; // known device outside the map scope
-            }
-
-            if ($remote) {
-                $to = 'd:' . $remote;
-            } else {
+            $to = $remote !== null ? $this->farEnd($nodes, $local, $remote, '', 'BGP peer') : null;
+            if ($to === null) {
                 $to = 'as:' . ($remoteAs ?: $peerIp);
                 $nodes[$to] ??= [
                     'id' => $to,
@@ -517,10 +580,8 @@ class L3Builder
             $state = strtolower((string) ($row['bgpPeerState'] ?? 'unknown'));
             if (isset($pairs[$key])) {
                 $edge = &$edges[$pairs[$key]];
-                if ($state !== 'established') {
-                    $edge['state'] = $state;
-                    $edge['status'] = 'down';
-                }
+                $edge['state'] = self::worse($edge['state'], $state, self::BGP_RANK);
+                $edge['status'] = $edge['state'] === 'established' ? 'up' : 'down';
                 $edge['peers'][] = $peerIp;
                 unset($edge);
                 continue;
@@ -545,10 +606,9 @@ class L3Builder
     }
 
     /**
-     * OSPFv3 adjacencies, merged like OSPF. A neighbour's address is usually link-local (the same on
-     * many routers), so it is found by router ID: of a monitored OSPF / OSPFv3 instance, else a loopback
-     * with that address; a global neighbour address is tried last. Unknown neighbours share the external
-     * router node of OSPF.
+     * OSPFv3 adjacencies, merged like OSPF. A neighbour's address is usually link-local (the same on many
+     * routers), so it is found by router ID in its context: of a monitored OSPF / OSPFv3 instance, else a
+     * loopback with that address; a global neighbour address is tried last.
      */
     private function addOspfv3(array &$nodes, array &$edges, array $kept): void
     {
@@ -559,23 +619,21 @@ class L3Builder
                 continue;
             }
 
-            $rid = self::ospfv3RouterId($row);
-            $address = (string) ($row['ospfv3NbrAddress'] ?? '');
-            $remote = $rid !== '' ? ($this->known['routerIds'][$rid] ?? $this->deviceByAddress($rid)) : null;
-            if ($remote === null && $address !== '' && ! Cidr::isIgnorable($address)) {
-                $remote = $this->known['ports'][(int) ($row['port_id'] ?? 0)] ?? $this->deviceByAddress($address, (string) ($row['context_name'] ?? ''));
-            }
-            $id = $rid !== '' ? $rid : $address;
-            if ($id === '' || ($to = $this->farEnd($nodes, $local, $remote, 'x:' . $id, 'OSPF ' . $id, 'OSPF neighbor ' . $id, $address)) === null) {
+            $rid = self::routerKey(self::ospfv3RouterId($row));
+            $address = trim((string) ($row['ospfv3NbrAddress'] ?? ''));
+            $global = ($canonical = Cidr::canonical($address)) !== null && ! Cidr::isIgnorable($canonical) ? $canonical : '';
+            $context = (string) ($row['context_name'] ?? '');
+            $remote = ($rid !== null ? $this->deviceByRouterId($rid, $context) : null)
+                ?? ($global !== '' ? $this->deviceByAddress($global, $context) : null);
+            $to = $this->farEnd($nodes, $local, $remote, $rid ?? $global, 'OSPFv3 neighbor', $context, [$rid, $global]);
+            if ($to === null) {
                 continue;
             }
 
             $state = strtolower((string) ($row['ospfv3NbrState'] ?? 'unknown'));
             $index = $this->overlayEdge($edges, $pairs, 'ospfv3', 'd:' . $local, $to, ['state' => $state, 'routerIds' => [], 'addresses' => []]);
             $edge = &$edges[$index];
-            if (in_array($edge['state'], self::OSPF_UP, true) && ! in_array($state, self::OSPF_UP, true)) {
-                $edge['state'] = $state;
-            }
+            $edge['state'] = self::worse($edge['state'], $state, self::OSPF_RANK);
             $edge['status'] = in_array($edge['state'], self::OSPF_UP, true) ? 'up' : 'down';
             $edge['routerIds'][] = $rid;
             $edge['addresses'][] = $address;
@@ -585,14 +643,27 @@ class L3Builder
     }
 
     /**
-     * IS-IS adjacencies, merged per pair of routers. The neighbour is found by its interface address,
-     * else by a system ID that encodes a loopback address (0100.0000.0001 for 10.0.0.1, a common
-     * convention). Unknown neighbours become external routers named by system ID.
+     * IS-IS adjacencies, merged per pair of routers. The neighbour is found by its interface address (not a
+     * link-local one), else by its system ID: as learnt from the adjacencies found by address, else a loopback
+     * of a device encoded in it (0100.0000.0001 for 10.0.0.1, a common convention). Unknown neighbours become
+     * external routers named by system ID.
      */
     private function addIsis(array &$nodes, array &$edges, array $kept): void
     {
+        $rows = $this->layers['isis'] ?? [];
+
+        // system ID => device_id (0 when adjacencies disagree), from the neighbours identified by address
+        $learnt = [];
+        foreach ($rows as $row) {
+            $systemId = self::isisSystemId((string) ($row['isisISAdjNeighSysID'] ?? ''));
+            $device = $systemId !== '' ? $this->deviceByAddress((string) ($row['isisISAdjIPAddrAddress'] ?? '')) : null;
+            if ($device !== null && $device !== (int) $row['device_id']) {
+                $learnt[$systemId] = isset($learnt[$systemId]) && $learnt[$systemId] !== $device ? 0 : $device;
+            }
+        }
+
         $pairs = [];
-        foreach ($this->layers['isis'] ?? [] as $row) {
+        foreach ($rows as $row) {
             $local = (int) $row['device_id'];
             if (! isset($kept[$local], $nodes['d:' . $local])) {
                 continue;
@@ -600,10 +671,13 @@ class L3Builder
 
             $systemId = self::isisSystemId((string) ($row['isisISAdjNeighSysID'] ?? ''));
             $address = trim((string) ($row['isisISAdjIPAddrAddress'] ?? ''));
+            $global = ($canonical = Cidr::canonical($address)) !== null && ! Cidr::isIgnorable($canonical) ? $canonical : '';
             $loopback = self::isisSystemIdAddress($systemId);
-            $remote = $this->deviceByAddress($address) ?? ($loopback !== null ? $this->deviceByAddress($loopback) : null);
-            $id = $systemId !== '' ? $systemId : $address;
-            if ($id === '' || ($to = $this->farEnd($nodes, $local, $remote, 'xi:' . $id, 'IS-IS ' . $id, 'IS-IS neighbor ' . $id, $address)) === null) {
+            $remote = $this->deviceByAddress($address)
+                ?? (($learnt[$systemId] ?? 0) ?: null)
+                ?? ($loopback !== null ? $this->deviceByLoopback($loopback) : null);
+            $to = $this->farEnd($nodes, $local, $remote, $systemId !== '' ? $systemId : $global, 'IS-IS neighbor', '', [$global]);
+            if ($to === null) {
                 continue;
             }
 
@@ -643,7 +717,7 @@ class L3Builder
             $local = (int) $row['device_id'];
             $peer = trim((string) ($row['peer_addr'] ?? ''));
             if (! isset($kept[$local], $nodes['d:' . $local]) || $peer === ''
-                || ($to = $this->farEnd($nodes, $local, $this->deviceByAddress($peer), 'xp:' . $peer, $peer, 'IPsec peer ' . $peer, $peer, DeviceRole::FIREWALL)) === null) {
+                || ($to = $this->farEnd($nodes, $local, $this->deviceByAddress($peer), $peer, 'IPsec peer', '', [$peer], DeviceRole::FIREWALL)) === null) {
                 continue;
             }
 
@@ -676,37 +750,65 @@ class L3Builder
     /**
      * MPLS LSPs from the head end to the device owning the tail address, one edge per pair of devices
      * with arrows toward the tails. Down when an LSP that is administratively in service is not in
-     * service; disabled when every LSP is shut down.
+     * service; disabled when every LSP is shut down. Past MAX_LSP_EDGES pairs (an RSVP full mesh) only
+     * the pairs with LSPs down and then the busiest are drawn, reported in limits.
      */
     private function addLsps(array &$nodes, array &$edges, array $kept): void
     {
-        $pairs = [];
+        // group by pair first so that the pairs over the limit create no nodes
+        $groups = [];
         foreach ($this->layers['mpls'] ?? [] as $row) {
             $local = (int) $row['device_id'];
-            $tail = trim((string) ($row['mplsLspToAddr'] ?? ''));
+            $tail = Cidr::canonical((string) ($row['mplsLspToAddr'] ?? '')) ?? '';
             // a point-to-multipoint LSP has no single tail
-            if (! isset($kept[$local], $nodes['d:' . $local]) || $tail === '' || $tail === '0.0.0.0'
-                || ($to = $this->farEnd($nodes, $local, $this->deviceByAddress($tail), 'xm:' . $tail, $tail, 'LSP tail ' . $tail, $tail)) === null) {
+            if (! isset($kept[$local], $nodes['d:' . $local]) || $tail === '' || $tail === '0.0.0.0') {
+                continue;
+            }
+            $remote = $this->deviceByAddress($tail);
+            if ($remote === $local) {
                 continue;
             }
 
-            $index = $this->overlayEdge($edges, $pairs, 'mpls', 'd:' . $local, $to, ['state' => 'up', 'lsps' => [], 'addresses' => []]);
-            $edge = &$edges[$index];
-            $edge['lsps'][] = [
-                'name' => (string) ($row['mplsLspName'] ?? ''),
-                'head' => 'd:' . $local,
-                'tail' => $to,
-                'from' => (string) ($row['mplsLspFromAddr'] ?? ''),
-                'to' => $tail,
-                'admin' => (string) ($row['mplsLspAdminState'] ?? ''),
-                'oper' => (string) ($row['mplsLspOperState'] ?? ''),
-                'type' => (string) ($row['mplsLspType'] ?? ''),
-                'frr' => ($row['mplsLspFastReroute'] ?? '') === 'true',
-                'paths' => (int) ($row['mplsLspOperationalPaths'] ?? 0) . '/' . (int) ($row['mplsLspConfiguredPaths'] ?? 0),
-                'transitions' => (int) ($row['mplsLspTransitions'] ?? 0),
-            ];
-            $edge['addresses'][] = $tail;
-            unset($edge);
+            $from = 'd:' . $local;
+            $far = $remote !== null ? 'd:' . $remote : 'x:' . $tail;
+            $key = strcmp($from, $far) < 0 ? "$from|$far" : "$far|$from";
+            $groups[$key] ??= ['down' => 0, 'rows' => []];
+            $groups[$key]['rows'][] = [$local, $remote, $tail, $row];
+            if (($row['mplsLspAdminState'] ?? '') !== 'outOfService' && ($row['mplsLspOperState'] ?? '') !== 'inService') {
+                $groups[$key]['down']++;
+            }
+        }
+
+        if (count($groups) > self::MAX_LSP_EDGES) {
+            uksort($groups, fn ($a, $b) => [$groups[$b]['down'] > 0, count($groups[$b]['rows']), $a] <=> [$groups[$a]['down'] > 0, count($groups[$a]['rows']), $b]);
+            $this->limits['mpls'] = ['shown' => self::MAX_LSP_EDGES, 'total' => count($groups)];
+            $groups = array_slice($groups, 0, self::MAX_LSP_EDGES, true);
+        }
+
+        $pairs = [];
+        foreach ($groups as $group) {
+            foreach ($group['rows'] as [$local, $remote, $tail, $row]) {
+                $to = $this->farEnd($nodes, $local, $remote, $tail, 'LSP tail', '', [$tail]);
+                if ($to === null) {
+                    continue;
+                }
+
+                $index = $this->overlayEdge($edges, $pairs, 'mpls', 'd:' . $local, $to, ['state' => 'up', 'lsps' => [], 'addresses' => []]);
+                $edges[$index]['lsps'][] = [
+                    'name' => (string) ($row['mplsLspName'] ?? ''),
+                    'head' => 'd:' . $local,
+                    'tail' => $to,
+                    'from' => (string) ($row['mplsLspFromAddr'] ?? ''),
+                    'to' => $tail,
+                    'admin' => (string) ($row['mplsLspAdminState'] ?? ''),
+                    'oper' => (string) ($row['mplsLspOperState'] ?? ''),
+                    'type' => (string) ($row['mplsLspType'] ?? ''),
+                    'frr' => ($row['mplsLspFastReroute'] ?? '') === 'true',
+                    'paths' => (int) ($row['mplsLspOperationalPaths'] ?? 0) . '/' . (int) ($row['mplsLspConfiguredPaths'] ?? 0),
+                    'transitions' => (int) ($row['mplsLspTransitions'] ?? 0),
+                ];
+                $edges[$index]['addresses'][] = $tail;
+            }
         }
 
         foreach ($pairs as $index) {
@@ -728,12 +830,25 @@ class L3Builder
     }
 
     /**
-     * Pseudowires (VCs) between PE devices, both ends paired by VC ID, one edge per pair of devices.
-     * LibreNMS keeps no state for them but does keep both MTUs: a VC whose two ends disagree cannot come
-     * up (RFC 4447), so the edge is flagged. An MTU of 0 is unknown.
+     * Pseudowires (VCs) between PE devices, one edge per pair of devices with both ends of each VC. LibreNMS
+     * loses most peers (peer_device_id is never set, peer_ldp_id is capped at 2147483647 from 128.0.0.0 on),
+     * so a VC without a usable peer is paired with the one other device that has its VC ID; one still unknown
+     * goes to an "unknown peers" node of its PE. LibreNMS keeps no pseudowire state: what can be checked is the
+     * MTU of the two attachment circuits, which must match for a VC to come up (RFC 4447).
      */
     private function addPseudowires(array &$nodes, array &$edges, array $kept): void
     {
+        // the rows of every VC ID: this map's devices and the other devices the user may see
+        $byVc = [];
+        foreach ($this->layers['pw'] ?? [] as $row) {
+            $byVc[(int) ($row['cpwVcID'] ?? 0)][(int) $row['device_id']][] = $row;
+        }
+        foreach ($this->known['pseudowires'] ?? [] as $row) {
+            if (! isset($this->devices[(int) $row['device_id']])) {
+                $byVc[(int) ($row['cpwVcID'] ?? 0)][(int) $row['device_id']][] = $row;
+            }
+        }
+
         $pairs = [];
         $vcs = []; // edge index => VC ID => VC with its ends by node
         foreach ($this->layers['pw'] ?? [] as $row) {
@@ -742,16 +857,14 @@ class L3Builder
                 continue;
             }
 
-            $peer = self::ldpAddress($row['peer_ldp_id'] ?? null);
-            $peerId = (int) ($row['peer_device_id'] ?? 0);
-            $remote = $peerId && (isset($this->devices[$peerId]) || isset($this->known['devices'][$peerId])) ? $peerId : $this->deviceByAddress($peer);
-            if (($remote === null && $peer === '')
-                || ($to = $this->farEnd($nodes, $local, $remote, 'xw:' . $peer, $peer, 'Pseudowire peer ' . $peer, $peer)) === null) {
+            $vcId = (int) ($row['cpwVcID'] ?? 0);
+            [$remote, $ldp] = $this->pseudowirePeer($row, $byVc);
+            if ($remote === $local) {
                 continue;
             }
+            $to = $this->farEnd($nodes, $local, $remote, $ldp, 'Pseudowire peer', '', [$ldp]) ?? $this->unknownPeer($nodes, $local);
 
-            $index = $this->overlayEdge($edges, $pairs, 'pw', 'd:' . $local, $to, ['state' => 'up', 'vcs' => [], 'mtu_mismatch' => 0, 'addresses' => []]);
-            $vcId = (int) ($row['cpwVcID'] ?? 0);
+            $index = $this->overlayEdge($edges, $pairs, 'pw', 'd:' . $local, $to, ['state' => 'not polled', 'vcs' => [], 'mtu_mismatch' => 0, 'addresses' => []]);
             $vcs[$index][$vcId] ??= [
                 'vc' => $vcId,
                 'type' => (string) ($row['pw_type'] ?? ''),
@@ -759,15 +872,12 @@ class L3Builder
                 'description' => (string) ($row['pw_descr'] ?? ''),
                 'ends' => [],
             ];
-            $vcs[$index][$vcId]['ends']['d:' . $local] = [
-                'port_id' => (int) ($row['port_id'] ?? 0) ?: null,
-                'port' => self::portName($row),
-                'mtu' => (int) ($row['pw_local_mtu'] ?? 0) ?: null,
-                'peer_mtu' => (int) ($row['pw_peer_mtu'] ?? 0) ?: null,
-            ];
-            if ($peer !== '') {
-                $edges[$index]['addresses'][] = $peer;
+            $vcs[$index][$vcId]['ends']['d:' . $local] = $this->pseudowireEnd($row);
+            // the other end's own row, also when its device is outside the map
+            if ($remote !== null && ($other = $this->pseudowireRow($byVc[$vcId][$remote] ?? [], $local)) !== null) {
+                $vcs[$index][$vcId]['ends']['d:' . $remote] ??= $this->pseudowireEnd($other);
             }
+            $edges[$index]['addresses'][] = $ldp;
         }
 
         foreach ($vcs as $index => $list) {
@@ -776,10 +886,7 @@ class L3Builder
             foreach ($list as $vc) {
                 $a = $vc['ends'][$edge['from']] ?? null;
                 $b = $vc['ends'][$edge['to']] ?? null;
-                // each end's own MTU, else what the other end learned from it
-                $mtuA = $a['mtu'] ?? $b['peer_mtu'] ?? null;
-                $mtuB = $b['mtu'] ?? $a['peer_mtu'] ?? null;
-                $mismatch = $mtuA !== null && $mtuB !== null && $mtuA !== $mtuB;
+                $mismatch = $a !== null && $b !== null && self::mtuMismatch($a, $b);
                 $edge['vcs'][] = [
                     'vc' => $vc['vc'],
                     'type' => $vc['type'],
@@ -787,42 +894,211 @@ class L3Builder
                     'description' => $vc['description'],
                     'a' => $a ? ['port_id' => $a['port_id'], 'port' => $a['port']] : null,
                     'b' => $b ? ['port_id' => $b['port_id'], 'port' => $b['port']] : null,
-                    'mtu_a' => $mtuA,
-                    'mtu_b' => $mtuB,
+                    'mtu_a' => $a['mtu'] ?? null,
+                    'mtu_b' => $b['mtu'] ?? null,
                     'mismatch' => $mismatch,
                 ];
                 $edge['mtu_mismatch'] += $mismatch ? 1 : 0;
             }
-            $edge['state'] = $edge['mtu_mismatch'] ? 'MTU mismatch' : 'up';
-            $edge['status'] = $edge['mtu_mismatch'] ? 'warning' : 'up';
+            $edge['state'] = $edge['mtu_mismatch'] ? 'MTU mismatch' : 'not polled';
+            $edge['status'] = $edge['mtu_mismatch'] ? 'warning' : 'unknown';
             unset($edge);
         }
         $this->uniqueLists($edges, $pairs, ['addresses']);
     }
 
     /**
-     * Far end of an overlay: the device's node when it is on the map; null (left out, like OSPF and
-     * BGP) when it is the local device or a device the user may see that is not on this map; else an
-     * external node created on first use, which shows only the address of a device the user may not see.
+     * Peer of a pseudowire row: the peer device LibreNMS recorded (should it ever) or the owner of a usable LDP
+     * ID; when the LDP ID is lost, the one other device with this VC ID whose own row can be the other end.
+     *
+     * @param  array<int, array<int, array[]>>  $byVc  VC ID => device_id => pseudowire rows
+     * @return array{0: ?int, 1: string} peer device (null when unknown), LDP address ('' when lost)
      */
-    private function farEnd(array &$nodes, int $local, ?int $remote, string $externalId, string $label, string $name, string $address, string $role = DeviceRole::ROUTER): ?string
+    private function pseudowirePeer(array $row, array $byVc): array
     {
-        if ($remote !== null) {
-            return $remote !== $local && isset($nodes['d:' . $remote]) ? 'd:' . $remote : null;
+        $local = (int) $row['device_id'];
+        $ldp = self::ldpAddress($row['peer_ldp_id'] ?? null);
+        $peer = (int) ($row['peer_device_id'] ?? 0);
+        if ($peer > 0 && (isset($this->devices[$peer]) || isset($this->known['devices'][$peer]))) {
+            return [$peer, $ldp];
+        }
+        if ($ldp !== '') {
+            return [$this->deviceByAddress($ldp), $ldp];
         }
 
-        $nodes[$externalId] ??= [
-            'id' => $externalId,
+        $candidates = [];
+        foreach ($byVc[(int) ($row['cpwVcID'] ?? 0)] ?? [] as $deviceId => $rows) {
+            if ($deviceId !== $local && $this->pseudowireRow($rows, $local) !== null) {
+                $candidates[] = $deviceId;
+            }
+        }
+
+        return [count($candidates) === 1 ? $candidates[0] : null, ''];
+    }
+
+    /**
+     * Among a device's pseudowire rows of one VC ID, the one that can be the other end of a VC of $local: its
+     * LDP ID belongs to $local, else it is lost too.
+     */
+    private function pseudowireRow(array $rows, int $local): ?array
+    {
+        $lost = null;
+        foreach ($rows as $row) {
+            $ldp = self::ldpAddress($row['peer_ldp_id'] ?? null);
+            if ($ldp === '') {
+                $lost ??= $row;
+            } elseif ($this->deviceByAddress($ldp) === $local) {
+                return $row;
+            }
+        }
+
+        return $lost;
+    }
+
+    /**
+     * One end of a pseudowire: its attachment circuit and that port's MTU (null when unknown).
+     */
+    private function pseudowireEnd(array $row): array
+    {
+        $deviceId = (int) $row['device_id'];
+
+        return [
+            'port_id' => (int) ($row['port_id'] ?? 0) ?: null,
+            'port' => self::portName($row),
+            'mtu' => (int) ($row['ifMtu'] ?? 0) ?: null,
+            'os' => (string) ($this->devices[$deviceId]['os'] ?? $this->known['devices'][$deviceId]['os'] ?? ''),
+        ];
+    }
+
+    /**
+     * Do the attachment circuits of a VC have different MTUs? Some systems count the Ethernet header in an
+     * interface MTU and others do not (IOS XR 1514 against IOS XE 1500), so between two operating systems a
+     * difference of exactly one header (untagged, one or two VLAN tags) is no mismatch.
+     *
+     * @param  array{mtu: ?int, os: string}  $a
+     * @param  array{mtu: ?int, os: string}  $b
+     */
+    private static function mtuMismatch(array $a, array $b): bool
+    {
+        if ($a['mtu'] === null || $b['mtu'] === null || $a['mtu'] === $b['mtu']) {
+            return false;
+        }
+
+        return $a['os'] === $b['os'] || ! in_array(abs($a['mtu'] - $b['mtu']), self::L2_HEADERS, true);
+    }
+
+    /**
+     * External node for the pseudowires of a PE whose peer is unknown: one per PE, never shared between PEs.
+     */
+    private function unknownPeer(array &$nodes, int $local): string
+    {
+        $id = 'xu:pw:' . $local;
+        $nodes[$id] ??= [
+            'id' => $id,
             'type' => 'external',
             'managed' => false,
-            'label' => $label,
-            'name' => $name,
-            'role' => $role,
+            'label' => 'unknown peers',
+            'name' => 'Unknown pseudowire peers of ' . ($nodes['d:' . $local]['name'] ?? $local),
+            'role' => DeviceRole::ROUTER,
             'status' => 'unknown',
-            'address' => $address,
+            'address' => '',
+            'context' => '',
+            'seen' => ['Pseudowire peer'],
+            'addresses' => [],
         ];
 
-        return $externalId;
+        return $id;
+    }
+
+    /**
+     * Node of an overlay's far end, created on first use: the device's node when it is on the map; a stub
+     * (outside: true) of a device the user may see that is not on this map (beyond the hops, filtered out by
+     * location, group or role); else an external node (see external()). Null for the local device itself and
+     * for an unknown far end without an address.
+     *
+     * @param  string  $key  what identifies an unknown far end: its address (router ID, peer, tail...) or IS-IS system ID
+     * @param  string  $seen  as what, e.g. "OSPF neighbor"
+     * @param  array<int, string|null>  $addresses  the far end's addresses known from the row
+     */
+    private function farEnd(array &$nodes, int $local, ?int $remote, string $key, string $seen, string $context = '', array $addresses = [], string $role = DeviceRole::ROUTER): ?string
+    {
+        if ($remote === $local) {
+            return null;
+        }
+        if ($remote !== null) {
+            $id = 'd:' . $remote;
+            $device = $this->devices[$remote] ?? $this->known['devices'][$remote] ?? null;
+            if (! isset($nodes[$id]) && $device !== null) {
+                $nodes[$id] = $this->deviceNode($remote, [], $device) + ['outside' => true];
+            }
+            if (isset($nodes[$id])) {
+                return $id;
+            }
+        }
+
+        return $key === '' ? null : $this->external($nodes, $key, $seen, $context, $addresses, $role);
+    }
+
+    /**
+     * External node of a far end that is no device the user may see, keyed by address (in its context): an
+     * unmonitored router seen as OSPF neighbor, LSP tail, pseudowire and IPsec peer is one node. Its other
+     * addresses (an OSPF neighbour's interface address) find it too. A firewall icon only while nothing but
+     * IPsec saw it.
+     *
+     * @param  array<int, string|null>  $addresses
+     */
+    private function external(array &$nodes, string $key, string $seen, string $context, array $addresses, string $role): string
+    {
+        $prefix = $context !== '' ? $context . '|' : '';
+        $key = Cidr::canonical($key) ?? $key;
+        $known = [];
+        foreach ($addresses as $address) {
+            $address = Cidr::canonical((string) $address);
+            if ($address !== null && ! Cidr::isIgnorable($address)) {
+                $known[$address] = true;
+            }
+        }
+        $keys = array_unique(array_merge([$prefix . $key], array_map(fn ($a) => $prefix . $a, array_keys($known))));
+
+        $id = null;
+        foreach ($keys as $lookup) {
+            if (isset($this->externals[$lookup])) {
+                $id = $this->externals[$lookup];
+                break;
+            }
+        }
+        if ($id === null) {
+            $id = 'x:' . $prefix . $key;
+            $nodes[$id] = [
+                'id' => $id,
+                'type' => 'external',
+                'managed' => false,
+                'label' => $key . ($context !== '' ? "\n" . $context : ''),
+                'name' => $key,
+                'role' => $role,
+                'status' => 'unknown',
+                'address' => (string) array_key_first($known),
+                'context' => $context,
+                'seen' => [],
+                'addresses' => [],
+            ];
+        }
+        foreach ($keys as $lookup) {
+            $this->externals[$lookup] ??= $id;
+        }
+
+        $node = &$nodes[$id];
+        if ($node['role'] !== $role) {
+            $node['role'] = DeviceRole::ROUTER;
+        }
+        $node['seen'] = array_values(array_unique(array_merge($node['seen'], [$seen])));
+        $node['addresses'] = array_values(array_unique(array_merge($node['addresses'], array_keys($known))));
+        if ($node['address'] === '' && $known) {
+            $node['address'] = (string) array_key_first($known);
+        }
+        unset($node);
+
+        return $id;
     }
 
     /**
@@ -856,26 +1132,98 @@ class L3Builder
     }
 
     /**
-     * Device owning an address: on this map first (same VRF), then among the other devices the user may see.
+     * Device owning an address: one of this map's devices (in the given VRF first), else one of the other
+     * devices the user may see. Nobody owns an address found on several devices, nor a link-local or other
+     * ignorable one (the same on many routers).
      */
-    private function deviceByAddress(string $address, string $vrf = ''): ?int
+    private function deviceByAddress(string $address, ?string $vrf = null): ?int
     {
-        $address = Cidr::canonical($address);
-        if ($address === null) {
-            return null;
+        $cache = ($vrf === null ? '*' : 'vrf:' . $vrf) . '|' . $address;
+        if (array_key_exists($cache, $this->resolved)) {
+            return $this->resolved[$cache];
         }
 
-        return $this->lookupIp($address, $vrf) ?? $this->known['addresses'][$address] ?? null;
+        $canonical = Cidr::canonical($address);
+        $owners = $canonical !== null ? $this->owners()[$canonical] ?? null : null;
+        $device = null;
+        if ($canonical === null || Cidr::isIgnorable($canonical)) {
+            $device = null;
+        } elseif ($owners === null) {
+            $device = isset($this->known['addresses'][$canonical]) ? (int) $this->known['addresses'][$canonical] : null;
+        } else {
+            $inVrf = $vrf !== null ? array_keys(array_filter($owners, fn ($vrfs) => isset($vrfs[$vrf]))) : [];
+            if ($inVrf) {
+                $device = count($inVrf) === 1 ? (int) $inVrf[0] : null;
+            } else {
+                $device = count($owners) === 1 ? (int) array_key_first($owners) : null;
+            }
+        }
+
+        return $this->resolved[$cache] = $device;
     }
 
     /**
-     * Router ID of an OSPFv3 neighbour as an address (LibreNMS stores both the dotted and the numeric form).
+     * Device with a loopback (or host route) address: an IS-IS system ID is only trusted when the address
+     * it encodes is one.
+     */
+    private function deviceByLoopback(string $address): ?int
+    {
+        $owners = $this->owners();
+        if (isset($this->loopbackOwners[$address])) {
+            return count($this->loopbackOwners[$address]) === 1 ? (int) array_key_first($this->loopbackOwners[$address]) : null;
+        }
+        if (isset($owners[$address])) {
+            return null; // an interface address of this map
+        }
+
+        return isset($this->known['loopbacks'][$address]) ? (int) $this->known['loopbacks'][$address] : null;
+    }
+
+    /**
+     * Device with an OSPF / OSPFv3 router ID in a context: the one whose instance has it, else the owner of
+     * that address (router IDs are usually loopbacks), not when several instances have it.
+     */
+    private function deviceByRouterId(string $rid, string $context): ?int
+    {
+        $key = $context . '|' . $rid;
+        if (isset($this->known['routerIds'][$key])) {
+            return (int) $this->known['routerIds'][$key];
+        }
+
+        return isset($this->known['ambiguousRouterIds'][$key]) ? null : $this->deviceByAddress($rid, $context);
+    }
+
+    /**
+     * The worse of two protocol states by rank (unknown states are the worst): the state of an adjacency or
+     * session merged from both ends, whatever the order of the rows.
+     *
+     * @param  array<string, int>  $rank
+     */
+    private static function worse(string $a, string $b, array $rank): string
+    {
+        return [$rank[$b] ?? 0, $b] < [$rank[$a] ?? 0, $a] ? $b : $a;
+    }
+
+    /**
+     * A router ID as a canonical address, null when there is none (empty, 0.0.0.0...).
+     */
+    private static function routerKey(string $rid): ?string
+    {
+        $rid = Cidr::canonical($rid);
+
+        return $rid !== null && ! Cidr::isIgnorable($rid) ? $rid : null;
+    }
+
+    /**
+     * Router ID of an OSPFv3 neighbour: LibreNMS stores it dotted (router_id) and as a number; before
+     * router_id existed (2025-03) the second column held it.
      */
     private static function ospfv3RouterId(array $row): string
     {
         $rid = trim((string) ($row['router_id'] ?? ''));
-        if ($rid === '' && is_numeric($row['ospfv3NbrRtrId'] ?? null)) {
-            $rid = (string) long2ip((int) $row['ospfv3NbrRtrId']);
+        $other = trim((string) ($row['ospfv3NbrRtrId'] ?? ''));
+        if ($rid === '' && $other !== '') {
+            $rid = ctype_digit($other) ? (string) long2ip((int) $other) : $other;
         }
 
         return $rid;
@@ -910,16 +1258,16 @@ class L3Builder
     }
 
     /**
-     * Peer LDP router ID of a pseudowire as an address: LibreNMS stores it as a (signed) integer.
+     * Peer LDP router ID of a pseudowire as an address, '' when LibreNMS lost it: it stores the ID in a signed
+     * INT, so every ID from 128.0.0.0 on reads 2147483647 (127.255.255.255), and an unknown one 0.
      */
     private static function ldpAddress(mixed $value): string
     {
-        if (! is_numeric($value) || (int) $value === 0) {
+        if (! is_numeric($value) || (int) $value <= 0 || (int) $value >= self::LDP_CAPPED) {
             return '';
         }
-        $long = (int) $value;
 
-        return (string) long2ip($long < 0 ? $long + 4294967296 : $long);
+        return (string) long2ip((int) $value);
     }
 
     /**
@@ -953,7 +1301,7 @@ class L3Builder
     /**
      * Hierarchy levels for the top-down layout: distance through subnets from the centered device,
      * otherwise from the best placed node of each island (external AS clouds on top, then firewalls,
-     * routers and L3 switches).
+     * routers and L3 switches; never a stub of a device outside the map).
      */
     private function assignLevels(array &$nodes, array $edges, ?int $root): void
     {
@@ -982,7 +1330,8 @@ class L3Builder
                 $best = -1;
                 foreach ($component as $id) {
                     $node = $nodes[$id];
-                    $score = ($node['type'] === 'as' ? 9 : ($node['type'] === 'device' ? (self::ROLE_RANK[$node['role']] ?? 1) : 0)) * 10000 + $graph->degree($id);
+                    $rank = $node['type'] === 'as' ? 9 : ($node['type'] === 'device' && empty($node['outside']) ? (self::ROLE_RANK[$node['role']] ?? 1) : 0);
+                    $score = $rank * 10000 + $graph->degree($id);
                     if ($score > $best) {
                         $best = $score;
                         $start = $id;
