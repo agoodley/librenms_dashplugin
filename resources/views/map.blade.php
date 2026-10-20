@@ -127,6 +127,10 @@
                     <li><a href="#" id="topo-export-drawio" title="Opens in draw.io (diagrams.net), which also exports it to Visio"><i class="fa fa-diagram-project fa-fw"></i> draw.io diagram (.drawio)</a></li>
                     <li><a href="#" id="topo-export-graphml" title="Opens in yEd with the positions and labels of this map"><i class="fa fa-share-nodes fa-fw"></i> GraphML for yEd (.graphml)</a></li>
                     <li><a href="#" id="topo-export-csv"><i class="fa fa-table fa-fw"></i> Links as CSV</a></li>
+                    @if($canExportCustomMap)
+                        <li role="separator" class="divider"></li>
+                        <li><a href="#" id="topo-export-custommap" title="A LibreNMS Custom Map of this map, with live status and utilization (admins)"><i class="fa fa-map fa-fw"></i> LibreNMS Custom Map&hellip;</a></li>
+                    @endif
                 </ul>
             </div>
             <button id="topo-fullscreen" type="button" class="btn btn-default" title="Full screen"><i class="fa fa-arrows-alt"></i></button>
@@ -143,6 +147,42 @@
     </div>
     <div id="topo-status" class="topo-status-bar"></div>
 </div>
+
+@if($canExportCustomMap)
+    {{-- Export to a LibreNMS Custom Map (ExportController): preview first, then create or replace. Outside #topo-app,
+         whose full screen mode would put the dialog under its backdrop. --}}
+    <div class="modal fade" id="topo-custommap-modal" tabindex="-1" role="dialog" aria-labelledby="topo-custommap-title">
+        <div class="modal-dialog" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+                    <h4 class="modal-title" id="topo-custommap-title"><i class="fa fa-map"></i> Export to a LibreNMS Custom Map</h4>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted">A Custom Map of this map with its positions. LibreNMS draws it with the live status of the devices and
+                        the utilization of the links, it can be edited in LibreNMS' map editor and shown on a dashboard (Custom Map widget).</p>
+                    <div class="form-group">
+                        <label for="topo-custommap-target">Map</label>
+                        <select id="topo-custommap-target" class="form-control"><option value="">Create a new map</option></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="topo-custommap-name">Name</label>
+                        <input id="topo-custommap-name" class="form-control" maxlength="100" autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label for="topo-custommap-group">Menu group <small class="text-muted">(optional: groups the map in LibreNMS' Maps menu)</small></label>
+                        <input id="topo-custommap-group" class="form-control" maxlength="100" value="Topology" autocomplete="off">
+                    </div>
+                    <div id="topo-custommap-preview" class="topo-custommap-preview"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" id="topo-custommap-create" disabled><i class="fa fa-check"></i> Create map</button>
+                </div>
+            </div>
+        </div>
+    </div>
+@endif
 @endsection
 
 @php
@@ -156,7 +196,10 @@
             'stpPage' => route('topology.stp'),
             'redundancyPage' => route('topology.redundancy'),
             'simulate' => route('topology.api.simulate'),
-        ],
+        ] + ($canExportCustomMap ? [
+            'customMapPreview' => route('topology.api.custom-map.preview'),
+            'customMap' => route('topology.api.custom-map'),
+        ] : []),
     ];
 @endphp
 

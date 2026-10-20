@@ -118,6 +118,8 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-evidence-heading:first-of-type { border-top: 0; }
 .topo-evidence-heading .text-muted { font-weight: normal; }
 .topo-evidence-note { margin: 4px 10px 10px; color: #555; }
+.topo-custommap-preview .topo-kv th { width: 22%; }
+.topo-custommap-notices { margin: 0; padding-left: 18px; font-size: 12px; color: #8a6d3b; }
 
 /* dark mode (LibreNMS toggles html.dark) */
 html.dark .topo-toolbar, html.dark .topo-viewbar { background: #24272c; border-color: #3a3f45; }
@@ -135,6 +137,7 @@ html.dark .topo-config summary { color: #6ea8de; }
 html.dark .topo-stp-table td.topo-mismatch { background: rgba(230, 126, 34, 0.28); }
 html.dark .topo-evidence-heading { border-color: #3a3f45; }
 html.dark .topo-evidence-note { color: #bbb; }
+html.dark .topo-custommap-notices { color: #e0b562; }
 
 @media (max-width: 991px) {
     .topo-body { flex-direction: column; height: auto; }

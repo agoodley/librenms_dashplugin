@@ -81,6 +81,7 @@ class PageController extends Controller
             'filters' => $repo->filterOptions(),
             'deviceName' => $params['device'] ? $repo->deviceName($params['device']) : null,
             'assetVersion' => self::assetVersion(),
+            'canExportCustomMap' => ExportController::allowed($request->user()),
         ]);
     }
 }

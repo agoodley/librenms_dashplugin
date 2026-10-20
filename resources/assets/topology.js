@@ -2252,6 +2252,12 @@
         this.on('topo-export-graphml', function () {
             self.exportDiagram('graphml');
         });
+        if (this.config.urls.customMap) {
+            this.on('topo-export-custommap', function () {
+                self.openCustomMap();
+            });
+            this.bindCustomMap();
+        }
     };
 
     /**
@@ -2566,6 +2572,230 @@
             '<key attr.name="description" attr.type="string" for="node" id="d2"/><key for="edge" id="d3" yfiles.type="edgegraphics"/>' +
             '<key attr.name="description" attr.type="string" for="edge" id="d4"/><key attr.name="node" attr.type="string" for="node" id="d5"/>' +
             '<graph edgedefault="undirected" id="G">' + out.join('') + '</graph></graphml>\n';
+    };
+
+    // ------------------------------------------------------------------ export to a LibreNMS Custom Map (admins)
+
+    /**
+     * Wire the custom map dialog: a change of its fields asks for a new preview (the server only writes
+     * what was previewed); picking a map to replace takes its name.
+     */
+    TopologyMap.prototype.bindCustomMap = function () {
+        var self = this;
+        var target = document.getElementById('topo-custommap-target');
+        var name = document.getElementById('topo-custommap-name');
+        var group = document.getElementById('topo-custommap-group');
+        var create = document.getElementById('topo-custommap-create');
+        if (!target || !name || !group || !create) {
+            return;
+        }
+        var changed = function () {
+            self.customMapPreview = null;
+            create.disabled = true;
+            clearTimeout(self.customMapTimer);
+            self.customMapTimer = setTimeout(function () {
+                self.previewCustomMap();
+            }, 400);
+        };
+        target.addEventListener('change', function () {
+            (self.customMapMaps || []).forEach(function (map) {
+                if (String(map.id) === target.value) {
+                    name.value = map.name;
+                }
+            });
+            changed();
+        });
+        name.addEventListener('input', changed);
+        group.addEventListener('input', changed);
+        create.addEventListener('click', function () {
+            self.writeCustomMap();
+        });
+    };
+
+    /**
+     * Open the custom map dialog for the map as it is now, named after its scope, with the preview.
+     */
+    TopologyMap.prototype.openCustomMap = function () {
+        if (!this.network || !this.data || !window.jQuery) {
+            return;
+        }
+        var name = document.getElementById('topo-custommap-name');
+        if (!name.value || name.value === this.customMapDefault) {
+            name.value = this.customMapDefault = this.customMapName();
+        }
+        document.getElementById('topo-custommap-target').value = '';
+        window.jQuery('#topo-custommap-modal').modal('show');
+        this.previewCustomMap();
+    };
+
+    /**
+     * Name of a new custom map: the map and its scope ("Layer 2 - core1, 2 hops, VLAN 30").
+     */
+    TopologyMap.prototype.customMapName = function () {
+        var form = document.getElementById('topo-filters');
+        var chosen = function (key) {
+            var select = form.querySelector('select[name="' + key + '"]');
+            return select && select.value && select.selectedIndex >= 0 ? select.options[select.selectedIndex].text.trim() : '';
+        };
+        var scope = [];
+        if (this.data.scope && this.data.scope.root_name) {
+            scope.push(this.data.scope.root_name + ', ' + this.data.scope.depth + ' hops');
+        }
+        ['group', 'location'].forEach(function (key) {
+            if (chosen(key)) {
+                scope.push(chosen(key));
+            }
+        });
+        var filter = form.querySelector('select[name="' + (this.mode === 'l2' ? 'vlan' : 'vrf') + '"]');
+        if (filter && filter.value) {
+            scope.push((this.mode === 'l2' ? 'VLAN ' : 'VRF ') + filter.value);
+        }
+        return ((this.mode === 'l2' ? 'Layer 2' : 'Layer 3') + ' - ' + (scope.length ? scope.join(', ') : 'whole network')).slice(0, 100);
+    };
+
+    /**
+     * Request body of a preview or an export: the map's parameters and positions and the dialog's fields.
+     */
+    TopologyMap.prototype.customMapRequest = function (fingerprint) {
+        var positions = {};
+        var all = this.network.getPositions();
+        Object.keys(all).forEach(function (id) {
+            positions[id] = [Math.round(all[id].x * 10) / 10, Math.round(all[id].y * 10) / 10];
+        });
+        var body = {
+            page: this.mode,
+            query: this.query().toString(),
+            positions: positions,
+            name: document.getElementById('topo-custommap-name').value,
+            menu_group: document.getElementById('topo-custommap-group').value,
+            replace: document.getElementById('topo-custommap-target').value || null
+        };
+        if (fingerprint) {
+            body.fingerprint = fingerprint;
+        }
+        return body;
+    };
+
+    /**
+     * POST JSON with LibreNMS' CSRF token; resolves to {status, body} (body {error} when not JSON).
+     */
+    TopologyMap.prototype.postJson = function (url, body) {
+        var token = document.querySelector('meta[name="csrf-token"]');
+        return fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Accept': 'application/json', 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest',
+                'X-CSRF-TOKEN': token ? token.getAttribute('content') : ''},
+            body: JSON.stringify(body)
+        }).then(function (response) {
+            return response.json().catch(function () {
+                return null;
+            }).then(function (data) {
+                return {status: response.status, body: data || {error: 'HTTP ' + response.status + (response.status === 419 ? ': the page expired, reload it' : '')}};
+            });
+        });
+    };
+
+    /**
+     * Ask the server what the export would write and show it; only the latest answer counts.
+     */
+    TopologyMap.prototype.previewCustomMap = function () {
+        var self = this;
+        var box = document.getElementById('topo-custommap-preview');
+        var request = this.customMapRequestId = (this.customMapRequestId || 0) + 1;
+        document.getElementById('topo-custommap-create').disabled = true;
+        box.innerHTML = '<p class="text-muted"><i class="fa fa-spinner fa-spin"></i> Preview&hellip;</p>';
+        this.postJson(this.config.urls.customMapPreview, this.customMapRequest()).then(function (result) {
+            if (request === self.customMapRequestId) {
+                self.showCustomMapPreview(result.body, result.status === 200 ? null : (result.body.error || 'HTTP ' + result.status));
+            }
+        }).catch(function (error) {
+            if (request === self.customMapRequestId) {
+                box.innerHTML = '<div class="alert alert-danger">' + esc(error.message) + '</div>';
+            }
+        });
+    };
+
+    /**
+     * The preview in the dialog: what is written, the nodes and links, the size and the notices; the
+     * maps this plugin made earlier go into the map choice.
+     */
+    TopologyMap.prototype.showCustomMapPreview = function (preview, error) {
+        var box = document.getElementById('topo-custommap-preview');
+        var create = document.getElementById('topo-custommap-create');
+        var target = document.getElementById('topo-custommap-target');
+        this.customMapPreview = error ? null : preview;
+        if (preview && preview.maps) {
+            var current = target.value;
+            this.customMapMaps = preview.maps;
+            target.innerHTML = '<option value="">Create a new map</option>' + preview.maps.map(function (map) {
+                return '<option value="' + esc(map.id) + '"' + (String(map.id) === current ? ' selected' : '') + '>Replace "' + esc(map.name) + '" (' +
+                    esc(String(map.page).toUpperCase()) + ' map, made by this plugin)</option>';
+            }).join('');
+        }
+        if (error) {
+            box.innerHTML = '<div class="alert alert-danger"><i class="fa fa-exclamation-triangle"></i> ' + esc(error) + '</div>';
+            create.disabled = true;
+            return;
+        }
+        var stats = preview.stats;
+        var nodes = [[stats.devices, 'monitored device'], [stats.unmanaged, 'unmanaged neighbor'], [stats.subnets, 'subnet'], [stats.clouds, 'AS cloud']]
+            .filter(function (count) {
+                return count[0] > 0;
+            }).map(function (count) {
+                return count[0] + ' ' + count[1] + (count[0] === 1 ? '' : 's');
+            }).join(', ');
+        var html = '<table class="table table-condensed topo-kv">' +
+            this.row('Writes', preview.replace
+                ? 'Replaces the ' + preview.replace.nodes + ' nodes and ' + preview.replace.edges + ' links of &ldquo;' + esc(preview.replace.name) + '&rdquo; (#' +
+                    esc(preview.replace.id) + '), also changes made to them in LibreNMS&rsquo; editor; its settings, legend and background stay'
+                : 'A new custom map' + (preview.menu_group ? ' in the menu group &ldquo;' + esc(preview.menu_group) + '&rdquo;' : '')) +
+            this.row('Nodes', esc(nodes || 'none')) +
+            this.row('Links', esc(stats.edges + (stats.edges ? ', ' + stats.ports + ' with live utilization' : ''))) +
+            this.row('Size', esc(preview.width + ' × ' + preview.height + ' px')) + '</table>';
+        if (preview.notices && preview.notices.length) {
+            html += '<ul class="topo-custommap-notices">' + preview.notices.map(function (notice) {
+                return '<li>' + esc(notice) + '</li>';
+            }).join('') + '</ul>';
+        }
+        box.innerHTML = html;
+        create.innerHTML = '<i class="fa fa-check"></i> ' + (preview.replace ? 'Replace map' : 'Create map');
+        create.disabled = false;
+    };
+
+    /**
+     * Write the previewed custom map; a map that changed since the preview is previewed again instead.
+     */
+    TopologyMap.prototype.writeCustomMap = function () {
+        var self = this;
+        var preview = this.customMapPreview;
+        var box = document.getElementById('topo-custommap-preview');
+        var create = document.getElementById('topo-custommap-create');
+        if (!preview) {
+            return;
+        }
+        create.disabled = true;
+        this.postJson(this.config.urls.customMap, this.customMapRequest(preview.fingerprint)).then(function (result) {
+            var body = result.body;
+            if (result.status === 200) {
+                self.customMapPreview = null;
+                box.innerHTML = '<div class="alert alert-success topo-custommap-done"><i class="fa fa-check"></i> Custom map &ldquo;' + esc(body.name) + '&rdquo; ' +
+                    (body.replaced ? 'replaced' : 'created') + ': <a href="' + esc(body.url) + '" target="_blank" rel="noopener">open it</a> or ' +
+                    '<a href="' + esc(body.edit_url) + '" target="_blank" rel="noopener">edit it in LibreNMS</a>.</div>';
+                self.flash('Custom map "' + body.name + '" ' + (body.replaced ? 'replaced.' : 'created.'));
+                return;
+            }
+            if (result.status === 409 && body.preview) {
+                self.showCustomMapPreview(body.preview, null);
+                box.insertAdjacentHTML('afterbegin', '<div class="alert alert-warning">' + esc(body.error) + '</div>');
+                return;
+            }
+            box.insertAdjacentHTML('afterbegin', '<div class="alert alert-danger"><i class="fa fa-exclamation-triangle"></i> ' + esc(body.error || 'HTTP ' + result.status) + '</div>');
+            create.disabled = false;
+        }).catch(function (error) {
+            box.insertAdjacentHTML('afterbegin', '<div class="alert alert-danger">' + esc(error.message) + '</div>');
+            create.disabled = false;
+        });
     };
 
     window.TopologyMap = {

@@ -2,6 +2,7 @@
 
 use Agoodley\LibrenmsTopology\Http\Controllers\ApiController;
 use Agoodley\LibrenmsTopology\Http\Controllers\AssetController;
+use Agoodley\LibrenmsTopology\Http\Controllers\ExportController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PlanningController;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
@@ -32,6 +33,10 @@ Route::middleware(['web', 'auth'])
         Route::get('dependencies', [PlanningController::class, 'dependencies'])->name('dependencies');
         Route::post('dependencies', [PlanningController::class, 'applyDependencies'])->name('dependencies.apply');
         Route::get('api/dependencies', [PlanningController::class, 'dependenciesApi'])->name('api.dependencies');
+
+        // sharing & export
+        Route::post('api/custom-map/preview', [ExportController::class, 'preview'])->name('api.custom-map.preview');
+        Route::post('api/custom-map', [ExportController::class, 'create'])->name('api.custom-map');
 
         Route::get('assets/{file}', AssetController::class)
             ->where('file', '[A-Za-z0-9_-]+\.(js|css)')

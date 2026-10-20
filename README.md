@@ -73,6 +73,21 @@ simulation is left out: the files show the network as it is.
 
 ![Export menu](docs/images/export-menu.png)
 
+**LibreNMS Custom Map** (Export → *LibreNMS Custom Map…*, LibreNMS admins) turns the map into a native LibreNMS Custom
+Map (*Maps → Custom Maps*): LibreNMS draws it with the live status of the devices and the utilization of every link, it
+can be changed in LibreNMS' map editor and put on a dashboard with the Custom Map widget. The dialog previews what will
+be written (nodes, links, size) before anything is saved:
+
+* devices keep their positions; switches, routers and firewalls get LibreNMS' icons of their role, other devices and
+  unmanaged neighbors a role icon, subnets of the L3 map a box;
+* each link takes its utilization from the port of the first device (the port-channel of a collapsed LAG); OSPF/BGP
+  adjacencies and the other L3 overlays have no port and are drawn without utilization;
+* *Map* can replace a custom map this plugin made before: its nodes and links are written again (also changes made in
+  the editor), its id, settings, legend and background stay, so dashboards keep showing it. Maps made in LibreNMS are
+  never changed. The export is noted in the eventlog.
+
+![Custom map export](docs/images/custom-map-export.png)
+
 ### Spanning tree diagnostics
 
 One page (plus a JSON API) that analyzes every STP instance (802.1D/RSTP/MST CIST and Cisco PVST+/Rapid-PVST+ per VLAN):
@@ -239,6 +254,9 @@ every change is written to the device's eventlog with the parents it had before.
   (`ipv6-addresses`), `ospf`, `bgp-peers`, `fdb-table` (rogue root tracing), `transceivers` and `sensors`
   (optical levels), `entity-physical` (stack members and line cards). The maps and checks work with whatever subset
   is available.
+* The custom map export keeps a list of the maps it made in a table of the plugin (`topology_*`), created by a database
+  migration of the plugin. `./validate.php` warns about that migration; read [Installation](#installation) before acting
+  on it.
 
 ## Installation
 
@@ -271,7 +289,27 @@ Diagnostics / Link & VLAN Diagnostics / Redundancy & Failure Impact / Rollout Pl
 `/plugin/topology`. It can be disabled or configured in
 **Overview → Plugins → Plugin Admin → topology → Settings**.
 
-To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
+The plugin keeps its own data in tables of the plugin: create them once with `./lnms migrate` (LibreNMS updates run it
+too, so later versions of the plugin update them).
+
+`./validate.php` then warns that the database schema "has extra migrations
+(2026_10_20_100000_create_topology_custom_maps_table)" and is "between releases": that is the plugin's migration, and the
+warning stays while the plugin is installed. While it warns, validate.php skips its checks of LibreNMS' own schema
+(structure and collation). **Do not delete the plugin's row from the `migrations` table** to silence it: validate.php then
+lists the `topology_*` tables as extra tables and offers to drop them. **Never apply that fix**: it deletes the plugin's
+data.
+
+To remove the plugin and its tables:
+
+```bash
+# drops the topology_* tables and removes their row from the migrations table
+# (it lists LibreNMS' own migrations as "Migration not found" and leaves them alone)
+./lnms migrate:reset --path=vendor/agoodley/librenms-topology-plugin/database/migrations
+./lnms plugin:remove agoodley/librenms-topology-plugin
+```
+
+`./lnms plugin:remove` alone keeps the tables, so a reinstall keeps the plugin's data. Custom maps the plugin made are
+LibreNMS' own: they stay either way.
 
 ## Usage tips
 
@@ -339,7 +377,8 @@ Every map and diagnostic only uses devices the logged-in user may see (LibreNMS 
 Neighbors on devices the user cannot see are shown as unmanaged neighbors (their LLDP/CDP name only), and a
 root bridge on such a device is not reported as a rogue switch. Only LibreNMS admins can apply derived device
 dependencies; other users see the page read only. The syslog evidence of the spanning tree page is only shown to users
-whose LibreNMS role may view syslog.
+whose LibreNMS role may view syslog. Only LibreNMS admins who may create custom maps can export a map to a LibreNMS Custom
+Map; the map is built with their permissions.
 
 ## How it works
 
@@ -364,6 +403,9 @@ whose LibreNMS role may view syslog.
   a switch cabled like a second core switch.
 * `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS. It also
   writes the draw.io and GraphML files, in the browser, from the map as drawn.
+* `src/Sharing/CustomMapLayout.php` – the custom map of an L2 or L3 map (nodes, icons, positions, the port of each
+  link); `Data\CustomMapRepository` checks LibreNMS' custom map schema and writes it, `database/migrations` creates the
+  plugin's tables.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
 
@@ -386,6 +428,10 @@ vendor/bin/phpunit
 * Stacks / virtual chassis that are not modelled as one device, and MLAG pairs without a detected
   port-channel, can produce a "possible bridging loop" warning – the finding says so.
 * Saved layouts live in the browser's local storage, they are not shared between users.
+* The custom map export is verified against LibreNMS 26.10, whose custom map tables have not changed since November 2024.
+  On other versions it writes only the columns that exist, and refuses with a message when a column it needs is missing
+  or one it does not know must be filled. The custom map shows the map as the admin who exported it sees it; LibreNMS
+  shows a custom map to the users who may see all of its devices.
 * The draw.io file uses draw.io's Cisco shapes, which draw.io loads from its own shape library (built into draw.io
   desktop). yEd has no Cisco icons: the GraphML file draws the roles as basic shapes (rectangle for a switch, ellipse for
   a router, octagon for a firewall, triangle for an access point), colored like the map.
