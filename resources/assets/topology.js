@@ -2186,10 +2186,10 @@
             }).join(', ');
             html += this.row('Status', '<span class="topo-status-' + esc(node.status) + '">' + esc(node.status) + '</span>') +
                 this.row('Devices', esc(node.devices + (roles ? ' (' + roles + ')' : ''))) +
-                this.row('Down', node.down_devices.map(function (device) {
+                this.row('Down', node.down_devices.slice(0, 25).map(function (device) {
                     return (device.url ? '<a href="' + esc(device.url) + '">' + esc(device.name) + '</a>' : esc(device.name)) +
                         (device.since ? ' <small class="text-muted">' + esc(formatDuration(Math.max(0, Math.round(now - device.since)))) + '</small>' : '');
-                }).join(', ')) +
+                }).join(', ') + (node.down_devices.length > 25 ? ' &hellip; and ' + (node.down_devices.length - 25) + ' more' : '')) +
                 this.row('Coordinates', node.lat !== null ? esc(node.lat + ', ' + node.lng) : '<span class="text-muted">not set</span>');
         } else {
             html += this.row('Remote AS', esc(node.remote_as)) +
