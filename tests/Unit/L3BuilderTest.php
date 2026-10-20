@@ -134,9 +134,15 @@ class L3BuilderTest extends TestCase
 
         $ospf = [['device_id' => 2, 'ospfNbrIpAddr' => '10.0.0.1', 'ospfNbrRtrId' => '10.255.0.1', 'ospfNbrState' => 'full']];
         $result = (new L3Builder($devices, $addresses, $ospf))->build(['root' => 5, 'depth' => 1, 'bgp' => false]);
-        $ids = array_column(array_filter($result['nodes'], fn ($n) => $n['type'] === 'device'), 'device_id');
+        $ids = array_column(array_filter($result['nodes'], fn ($n) => $n['type'] === 'device' && empty($n['outside'])), 'device_id');
         sort($ids);
         $this->assertSame([2, 5], $ids);
         $this->assertEmpty(array_filter($result['nodes'], fn ($n) => $n['type'] === 'external'), 'out-of-scope OSPF peer is not drawn as unknown');
+
+        // the OSPF neighbour beyond the hops is a stub of rtr1, outside the map
+        $nodes = array_column($result['nodes'], null, 'id');
+        $this->assertSame(['rtr1', true], [$nodes['d:1']['name'], $nodes['d:1']['outside']]);
+        $this->assertSame(['d:2', 'd:1'], array_values(array_map(fn ($e) => [$e['from'], $e['to']], array_filter($result['edges'], fn ($e) => $e['kind'] === 'ospf')))[0]);
+        $this->assertSame(1, $result['stats']['outside']);
     }
 }

@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Topology;
 
+use Agoodley\LibrenmsTopology\Data\L3LayerRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
 use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
@@ -9,6 +10,7 @@ use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpAnalyzer;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
+use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 
 /**
@@ -92,7 +94,8 @@ class TopologyService
     }
 
     /**
-     * @param  array{device: ?int, depth: int, group: ?int, location: ?int, vrf: ?string, stubs: bool, ospf: bool, bgp: bool, ipv6: bool, all_devices: bool}  $p
+     * @param  array{device: ?int, depth: int, group: ?int, location: ?int, vrf: ?string, stubs: bool, ospf: bool, bgp: bool, ospfv3?: bool,
+     *     isis?: bool, ipsec?: bool, mpls?: bool, pw?: bool, ipv6: bool, all_devices: bool}  $p
      */
     public function l3(array $p): array
     {
@@ -123,14 +126,22 @@ class TopologyService
         }
 
         $ids = array_keys($devices);
-        $builder = new L3Builder(
-            $devices,
-            array_values(array_filter($addresses, fn ($a) => isset($devices[(int) $a['device_id']]))),
-            $p['ospf'] ? $this->repo->ospfNeighbors($ids) : [],
-            $p['bgp'] ? $this->repo->bgpPeers($ids) : [],
-        );
+        $mapAddresses = array_values(array_filter($addresses, fn ($a) => isset($devices[(int) $a['device_id']])));
+        $ospf = $p['ospf'] ? $this->repo->ospfNeighbors($ids) : [];
+        $bgp = $p['bgp'] ? $this->repo->bgpPeers($ids) : [];
 
-        $result = $builder->build([
+        // overlay layers from modules that are often off: loaded when the scope has rows, offered when the drawn devices do
+        $layerRepo = $this->repo->sibling(L3LayerRepository::class);
+        $perDevice = $layerRepo->countsByDevice($ids);
+        $loaded = array_values(array_filter(L3Builder::LAYERS, fn ($layer) => ($p[$layer] ?? MapParams::L3_LAYERS[$layer]) && $perDevice[$layer]));
+        $layers = $layerRepo->load($ids, $loaded);
+
+        // far ends among the other devices the user may see become stubs, the rest external nodes
+        $builder = new L3Builder($devices, $mapAddresses, $ospf, $bgp, $layers);
+        $known = $layerRepo->resolve($builder->lookups());
+        $known['devices'] = $this->repo->devices(array_values(array_diff($known['deviceIds'], $ids)), false);
+
+        $result = $builder->withKnown($known)->build([
             'hideStubs' => ! $p['stubs'],
             'p2pPrefix4' => $this->settings->int('l3_p2p_prefix', 8, 32),
             'p2pPrefix6' => 126,
@@ -140,9 +151,22 @@ class TopologyService
             'bgp' => $p['bgp'],
             'root' => $root,
             'depth' => $root ? $p['depth'] : null,
-        ]);
+            'maxNodes' => $this->maxNodes(),
+        ] + array_fill_keys(L3Builder::LAYERS, true));
 
-        $shown = count(array_filter($result['nodes'], fn ($n) => $n['type'] === 'device'));
+        $drawn = [];
+        foreach ($result['nodes'] as $node) {
+            if ($node['type'] === 'device' && empty($node['outside'])) {
+                $drawn[$node['device_id']] = true;
+            }
+        }
+        $result['layers'] = [];
+        foreach (L3Builder::LAYERS as $layer) {
+            $available = array_sum(array_intersect_key($perDevice[$layer], $drawn));
+            $result['layers'][$layer] = ['available' => $available, 'shown' => $available > 0 && in_array($layer, $loaded, true), 'default' => MapParams::L3_LAYERS[$layer]];
+        }
+
+        $shown = count($drawn);
         if ($root && $shown > $this->maxNodes()) {
             $truncated = true;
         }
@@ -314,12 +338,13 @@ class TopologyService
     }
 
     /**
-     * Redundancy analysis of every device the user may see, reporting on $scope.
+     * Redundancy analysis of every device the user may see, reporting on $scope. Also the base of the
+     * rollout planner and the device dependencies (PlanningService), so they see the same links.
      *
      * @param  int[]  $scope
      * @param  bool  $details  also read stack members / line cards and outage start times
      */
-    private function redundancyAnalyzer(array $scope, bool $details): RedundancyAnalyzer
+    public function redundancyAnalyzer(array $scope, bool $details): RedundancyAnalyzer
     {
         $all = $this->repo->deviceIds();
         $links = $this->repo->links($all);

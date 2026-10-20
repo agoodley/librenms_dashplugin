@@ -140,12 +140,13 @@ class RedundancyFixture
     }
 
     /**
-     * An LLDP/CDP neighbour LibreNMS does not monitor, seen on a device's port.
+     * An LLDP/CDP neighbour LibreNMS does not monitor, seen on a device's port: CDP reports a platform,
+     * LLDP only a system description (stored as remote_version).
      */
-    public function neighbor(int $deviceId, string $port, string $host, string $platform = ''): self
+    public function neighbor(int $deviceId, string $port, string $host, string $platform = '', string $description = ''): self
     {
         $portId = $this->port($deviceId, $port);
-        $this->links[] = self::row($deviceId, $portId, 0, null, $host, 'eth0', $platform);
+        $this->links[] = self::row($deviceId, $portId, 0, null, $host, 'eth0', $platform, $description);
 
         return $this;
     }
@@ -181,11 +182,11 @@ class RedundancyFixture
     /**
      * A links table row.
      */
-    public static function row(int $ld, int $lp, int $rd, ?int $rp, string $host, string $remotePort, string $platform = ''): array
+    public static function row(int $ld, int $lp, int $rd, ?int $rp, string $host, string $remotePort, string $platform = '', string $description = ''): array
     {
         return [
             'local_device_id' => $ld, 'local_port_id' => $lp, 'remote_device_id' => $rd, 'remote_port_id' => $rp, 'remote_hostname' => $host,
-            'remote_port' => $remotePort, 'remote_platform' => $platform, 'remote_version' => '', 'protocol' => 'lldp',
+            'remote_port' => $remotePort, 'remote_platform' => $platform, 'remote_version' => $description, 'protocol' => 'lldp',
         ];
     }
 }
