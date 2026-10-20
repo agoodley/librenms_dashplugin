@@ -52,7 +52,7 @@ class SiteRepository extends ScopedRepository
      */
     public function siteLinks(array $ids): array
     {
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('links')) {
             return [];
         }
 
@@ -91,7 +91,7 @@ class SiteRepository extends ScopedRepository
         $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
         $wanted = array_flip($portIds);
         $neighbors = [];
-        foreach (array_chunk($portIds, self::CHUNK) as $chunk) {
+        foreach ($this->allowsTable('links') ? array_chunk($portIds, self::CHUNK) : [] as $chunk) {
             foreach (DB::table('links as l')
                 ->join('devices as a', 'a.device_id', '=', 'l.local_device_id')
                 ->join('devices as b', 'b.device_id', '=', 'l.remote_device_id')
@@ -126,7 +126,7 @@ class SiteRepository extends ScopedRepository
     {
         $ids = array_values(array_filter(array_unique(array_map('intval', $locationIds))));
         $none = in_array(0, array_map('intval', $locationIds), true);
-        if (! $ids && ! $none) {
+        if ((! $ids && ! $none) || ! $this->allowsTable('links')) {
             return [];
         }
 

@@ -427,7 +427,7 @@ class HostService
 
         $locator = new HostLocator($locatorPorts, $neighbors, $lag, $since,
             array_map(fn ($device) => ['name' => $device['name'], 'role' => $device['role']], $devices),
-            $this->settings->int('hosts_shared_port_macs', 2, 10000), $switchMacs, [
+            $this->settings->sharedPortMacs(), $switchMacs, [
                 'macs' => fn (array $ids) => $this->repo->macCounts($ids, $since),
                 'behind' => fn (int $deviceId, array $exclude) => $this->devicesBehind($deviceId, $exclude),
                 'routes' => fn (int $deviceId, array $vlans, array $ips) => $this->routes($deviceId, $vlans, $ips),

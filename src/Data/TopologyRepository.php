@@ -111,7 +111,7 @@ class TopologyRepository extends ScopedRepository
      */
     public function links(array $ids): array
     {
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('links')) {
             return [];
         }
 
@@ -141,7 +141,7 @@ class TopologyRepository extends ScopedRepository
      */
     public function linksWhere(array $ids, callable $keep): array
     {
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('links')) {
             return [];
         }
 
@@ -161,6 +161,27 @@ class TopologyRepository extends ScopedRepository
         }
 
         return $links;
+    }
+
+    /**
+     * How many LLDP/CDP links of these devices lead to devices the user may not see (links() hides their far end).
+     *
+     * @param  int[]  $ids
+     */
+    public function hiddenLinkCount(array $ids): int
+    {
+        if (! $ids || ! $this->allowsTable('links')) {
+            return 0;
+        }
+
+        $accessible = $this->accessible();
+        $count = 0;
+        foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $ids)->where('remote_device_id', '>', 0)
+            ->pluck('remote_device_id') as $remote) {
+            $count += isset($accessible[(int) $remote]) ? 0 : 1;
+        }
+
+        return $count;
     }
 
     /**
@@ -514,7 +535,7 @@ class TopologyRepository extends ScopedRepository
      */
     public function stpInstances(array $ids): array
     {
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('stp')) {
             return [];
         }
 
@@ -533,7 +554,7 @@ class TopologyRepository extends ScopedRepository
         $keys = [];
         $bridges = [];
         $count = 0;
-        if ($ids) {
+        if ($ids && $this->allowsTable('stp')) {
             foreach (DB::table('stp')->whereIntegerInRaw('device_id', $ids)->select(['device_id', 'vlan', 'bridgeAddress'])->cursor() as $row) {
                 $count++;
                 $keys[(int) $row->device_id][StpIndex::vlanKey($row->vlan)] = true;
@@ -554,6 +575,10 @@ class TopologyRepository extends ScopedRepository
      */
     public function stpInstancesFor(array $keys): array
     {
+        if (! $this->allowsTable('stp')) {
+            return [];
+        }
+
         $devicesByKey = [];
         foreach ($keys as $deviceId => $key) {
             $devicesByKey[$key][] = (int) $deviceId;
@@ -584,7 +609,7 @@ class TopologyRepository extends ScopedRepository
      */
     public function stpInstanceRows(array $ids): iterable
     {
-        return $ids ? DB::table('stp')->whereIntegerInRaw('device_id', $ids)->cursor() : [];
+        return $ids && $this->allowsTable('stp') ? DB::table('stp')->whereIntegerInRaw('device_id', $ids)->cursor() : [];
     }
 
     /**
@@ -597,7 +622,7 @@ class TopologyRepository extends ScopedRepository
      */
     public function stpPorts(array $ids, ?array $keys = null): array
     {
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('ports_stp')) {
             return [];
         }
 
@@ -635,7 +660,7 @@ class TopologyRepository extends ScopedRepository
      */
     public function stpPortCount(array $ids): int
     {
-        return $ids ? DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids)->count() : 0;
+        return $ids && $this->allowsTable('ports_stp') ? DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids)->count() : 0;
     }
 
     /**
@@ -646,7 +671,7 @@ class TopologyRepository extends ScopedRepository
      */
     public function stpVlans(array $ids): array
     {
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('stp')) {
             return [];
         }
 
@@ -736,13 +761,40 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
+     * Whether a device takes part in routing, for the device overview panel: OSPF neighbors, BGP
+     * sessions, or addresses on two or more of its ports. Existence checks only, as the panel shows on
+     * every device page.
+     *
+     * @return array{ospf: bool, bgp: bool, routed: bool}
+     */
+    public function routingPresence(int $deviceId): array
+    {
+        $check = function (string $table, callable $query): bool {
+            try {
+                return (bool) $query();
+            } catch (\Throwable $e) {
+                Log::debug("topology plugin: cannot read $table: " . $e->getMessage());
+
+                return false;
+            }
+        };
+
+        return [
+            'ospf' => $this->allowsTable('ospf_nbrs') && $check('ospf_nbrs', fn () => DB::table('ospf_nbrs')->where('device_id', $deviceId)->exists()),
+            'bgp' => $this->allowsTable('bgpPeers') && $check('bgpPeers', fn () => DB::table('bgpPeers')->where('device_id', $deviceId)->exists()),
+            'routed' => $check('ipv4_addresses', fn () => DB::table('ipv4_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
+                ->where('p.device_id', $deviceId)->distinct()->limit(2)->pluck('a.port_id')->count() >= 2),
+        ];
+    }
+
+    /**
      * Recent spanning tree eventlog entries (designated root / root port / topology changes).
      *
      * @param  int[]  $ids
      */
     public function stpEvents(array $ids, int $days): array
     {
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('eventlog')) {
             return [];
         }
 
@@ -765,7 +817,7 @@ class TopologyRepository extends ScopedRepository
     public function rootLookups(array $macs, bool $deep = true): array
     {
         $macs = array_values(array_unique(array_map('strval', $macs)));
-        if (! $macs) {
+        if (! $macs || ! $this->allowsTable('stp')) {
             return [];
         }
 
@@ -789,7 +841,7 @@ class TopologyRepository extends ScopedRepository
             }
         }
 
-        if ($deep) {
+        if ($deep && $this->allowsTable('ports_fdb')) {
             try {
                 foreach (DB::table('ports_fdb as f')
                     ->leftJoin('vlans as v', 'v.vlan_id', '=', 'f.vlan_id')
@@ -858,7 +910,7 @@ class TopologyRepository extends ScopedRepository
 
         $withStp = [];
         $deviceIds = array_values(array_unique(array_map(fn ($p) => (int) $p['device_id'], $ports)));
-        foreach (array_chunk(array_keys($ports), 5000) as $chunk) {
+        foreach ($this->allowsTable('ports_stp') ? array_chunk(array_keys($ports), 5000) : [] as $chunk) {
             // device_id first so the (device_id, vlan, port_index) index is used
             foreach (DB::table('ports_stp')->whereIntegerInRaw('device_id', $deviceIds)->whereIntegerInRaw('port_id', $chunk)
                 ->distinct()->pluck('port_id') as $portId) {
@@ -955,7 +1007,7 @@ class TopologyRepository extends ScopedRepository
      */
     public function outageStarts(array $deviceIds): array
     {
-        if (! $deviceIds) {
+        if (! $deviceIds || ! $this->allowsTable('device_outages')) {
             return [];
         }
 
@@ -980,6 +1032,9 @@ class TopologyRepository extends ScopedRepository
     public function stpPriorities(array $ids): array
     {
         $best = [];
+        if (! $this->allowsTable('stp')) {
+            return $best;
+        }
         foreach (array_chunk($ids, 5000) as $chunk) {
             foreach (DB::table('stp')->whereIntegerInRaw('device_id', $chunk)->select(['device_id', 'vlan', 'priority'])->cursor() as $row) {
                 $deviceId = (int) $row->device_id;

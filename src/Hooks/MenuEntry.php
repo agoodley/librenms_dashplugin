@@ -22,6 +22,6 @@ class MenuEntry implements MenuEntryHook
      */
     public function handle(string $pluginName): array
     {
-        return ["$pluginName::menu", []];
+        return ["$pluginName::menu", ['overview' => url('plugin/' . $pluginName)]];
     }
 }

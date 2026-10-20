@@ -71,7 +71,7 @@ class HostRepository extends ScopedRepository
     public function fdbSince(array $deviceIds, array $rows = []): array
     {
         $deviceIds = $this->visible($deviceIds);
-        if (! $deviceIds) {
+        if (! $deviceIds || ! $this->readable('ports_fdb')) {
             return [];
         }
 
@@ -126,7 +126,7 @@ class HostRepository extends ScopedRepository
     public function macCounts(array $portIds, array $since): array
     {
         $portIds = self::ids($portIds);
-        if (! $portIds) {
+        if (! $portIds || ! $this->readable('ports_fdb')) {
             return [];
         }
 
@@ -165,7 +165,7 @@ class HostRepository extends ScopedRepository
     {
         $portIds = self::ids($portIds);
         $deviceIds = $this->visible($deviceIds);
-        if (! $portIds || ! $deviceIds) {
+        if (! $portIds || ! $deviceIds || ! $this->readable('ports_fdb')) {
             return [];
         }
 
@@ -316,7 +316,7 @@ class HostRepository extends ScopedRepository
     {
         $macs = array_values(array_unique(array_filter($macs, fn ($mac) => strlen($mac) === 12)));
         $deviceIds = $this->visible($deviceIds);
-        if (! $macs || ! $deviceIds) {
+        if (! $macs || ! $deviceIds || ! $this->allowsTable('ports')) {
             return [];
         }
 
@@ -339,7 +339,7 @@ class HostRepository extends ScopedRepository
     public function deviceMacs(array $deviceIds, int $limit = 200): array
     {
         $deviceIds = $this->visible($deviceIds);
-        if (! $deviceIds) {
+        if (! $deviceIds || ! $this->allowsTable('ports')) {
             return [];
         }
 
@@ -366,7 +366,7 @@ class HostRepository extends ScopedRepository
     public function neighbors(array $portIds): array
     {
         $portIds = self::ids($portIds);
-        if (! $portIds) {
+        if (! $portIds || ! $this->readable('links')) {
             return [];
         }
 
@@ -467,7 +467,7 @@ class HostRepository extends ScopedRepository
     public function linkedDevices(array $deviceIds): array
     {
         $deviceIds = $this->visible($deviceIds);
-        if (! $deviceIds) {
+        if (! $deviceIds || ! $this->allowsTable('links')) {
             return [];
         }
 
@@ -528,7 +528,7 @@ class HostRepository extends ScopedRepository
     {
         $deviceIds = $this->visible($deviceIds);
         $routing = [];
-        foreach ($deviceIds ? ['ospf_nbrs', 'bgpPeers'] : [] as $table) {
+        foreach ($deviceIds ? array_filter(['ospf_nbrs', 'bgpPeers'], fn ($table) => $this->allowsTable($table)) : [] as $table) {
             try {
                 foreach (DB::table($table)->whereIntegerInRaw('device_id', $deviceIds)->distinct()->pluck('device_id') as $deviceId) {
                     $routing[(int) $deviceId] = true;
@@ -614,8 +614,8 @@ class HostRepository extends ScopedRepository
     {
         try {
             return [
-                DB::table('stp')->where('device_id', $deviceId)->get()->map(fn ($row) => (array) $row)->all(),
-                $portIds ? DB::table('ports_stp')->where('device_id', $deviceId)->whereIntegerInRaw('port_id', $portIds)->get()->map(fn ($row) => (array) $row)->all() : [],
+                $this->allowsTable('stp') ? DB::table('stp')->where('device_id', $deviceId)->get()->map(fn ($row) => (array) $row)->all() : [],
+                $portIds && $this->allowsTable('ports_stp') ? DB::table('ports_stp')->where('device_id', $deviceId)->whereIntegerInRaw('port_id', $portIds)->get()->map(fn ($row) => (array) $row)->all() : [],
             ];
         } catch (\Throwable $e) {
             Log::debug('topology plugin: cannot read spanning tree rows: ' . $e->getMessage());
@@ -633,7 +633,7 @@ class HostRepository extends ScopedRepository
     public function ports(array $portIds): array
     {
         $portIds = self::ids($portIds);
-        if (! $portIds) {
+        if (! $portIds || ! $this->allowsTable('ports')) {
             return [];
         }
 
@@ -772,11 +772,23 @@ class HostRepository extends ScopedRepository
     }
 
     /**
+     * May the user's role read this table and the ports its rows are about? The host locator's answers are
+     * switch ports, so its forwarding, ARP and 802.1X data also needs the permission to view ports.
+     */
+    private function readable(string $table): bool
+    {
+        return $this->allowsTable($table) && $this->allowsTable('ports');
+    }
+
+    /**
      * @param  \Illuminate\Database\Query\Builder  $query  ports_fdb as f
      */
     private function fdbRows($query): array
     {
         $rows = [];
+        if (! $this->readable('ports_fdb')) {
+            return $rows;
+        }
         try {
             foreach ($query->leftJoin('vlans as v', 'v.vlan_id', '=', 'f.vlan_id')
                 ->get(['f.mac_address', 'f.device_id', 'f.port_id', 'v.vlan_vlan', 'v.vlan_name', 'f.created_at', 'f.updated_at']) as $row) {
@@ -808,6 +820,9 @@ class HostRepository extends ScopedRepository
     private function addressRows(string $table, string $column, callable $where, int $family): array
     {
         $rows = [];
+        if (! $this->readable($table)) {
+            return $rows;
+        }
         try {
             $query = $this->scoped(DB::table($table));
             $where($query);
@@ -841,6 +856,9 @@ class HostRepository extends ScopedRepository
     private function nacRows($query): array
     {
         $rows = [];
+        if (! $this->readable('ports_nac')) {
+            return $rows;
+        }
         try {
             foreach ($this->scoped($query)->limit(200)->get() as $row) {
                 $row = (array) $row;

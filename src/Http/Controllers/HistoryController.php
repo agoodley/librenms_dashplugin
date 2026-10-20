@@ -59,7 +59,8 @@ class HistoryController extends Controller
 
     /**
      * POST plugin/topology/changes/baseline (admins): action=save saves the topology of the last
-     * snapshot as the baseline of the page's scope, action=clear forgets it, action=accept takes
+     * snapshot as the baseline of the page's scope (422 for another action, or a device, group or location
+     * of the scope that does not resolve), action=clear forgets it, action=accept takes
      * one missing fact (hash) out of it, action=accept_roots accepts a change of root bridges
      * (root_from, root_to, vlans) on all its switches. The page's scope and window (window, or the
      * dates from and to) come back in the redirect.
@@ -74,19 +75,22 @@ class HistoryController extends Controller
             'window' => $request->input('window'), 'from' => $request->input('from'), 'to' => $request->input('to')], fn ($value) => is_scalar($value) && $value !== '');
         $user = (string) ($request->user()->username ?? '');
 
+        $action = $request->input('action');
+        abort_unless(in_array($action, ['save', 'clear', 'accept', 'accept_roots'], true), 422, 'Unknown baseline action.');
+
         try {
             $service = $this->history($request, $settings);
             $hash = $request->input('hash');
-            if ($request->input('action') === 'clear') {
+            if ($action === 'clear') {
                 $removed = $service->clearBaseline($params);
                 $message = "Baseline cleared: $removed facts removed.";
-            } elseif ($request->input('action') === 'accept') {
+            } elseif ($action === 'accept') {
                 abort_unless(is_string($hash) && preg_match('/^[0-9a-f]{40}$/', $hash), 422);
                 $vlans = $request->has('vlans') ? Baseline::parseVlans($request->input('vlans')) : null;
                 abort_if($request->has('vlans') && $vlans === null, 422);
                 $message = $service->acceptMissing($params, $hash, $vlans) ? 'Removed from the baseline: it is no longer expected.' : 'Nothing to remove: the baseline has changed.';
                 $message .= " ($hash)";
-            } elseif ($request->input('action') === 'accept_roots') {
+            } elseif ($action === 'accept_roots') {
                 [$from, $to] = [$request->input('root_from', ''), $request->input('root_to', '')];
                 $vlans = Baseline::parseVlans($request->input('vlans'));
                 abort_unless($vlans !== null && is_string($from) && is_string($to) && preg_match('/^([0-9a-f]{12})?$/', $from)
@@ -104,6 +108,9 @@ class HistoryController extends Controller
             return redirect()->route('topology.changes', $back)->with('topology_status', $message);
         } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
             throw $e;
+        } catch (\InvalidArgumentException $e) {
+            // a device, group or location of the page that no longer resolves: never widen a write to everything
+            abort(422, $e->getMessage());
         } catch (\Throwable $e) {
             return redirect()->route('topology.changes', $back)->with('topology_error', $this->failure('baseline update', $e));
         }

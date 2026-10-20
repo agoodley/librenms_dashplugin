@@ -205,7 +205,7 @@ class RoutingRepository extends ScopedRepository
      */
     public function links(array $ids): \Generator
     {
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('links')) {
             return;
         }
 
@@ -241,7 +241,7 @@ class RoutingRepository extends ScopedRepository
      */
     private function stream(string $table, array $ids, array $columns): \Generator
     {
-        if (! $ids || ! $columns) {
+        if (! $ids || ! $columns || ! $this->allowsTable($table)) {
             return;
         }
 

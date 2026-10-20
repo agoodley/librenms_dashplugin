@@ -460,6 +460,8 @@ class TopologyService
         }
         $result['notice'] = $notice;
         $result['filter'] = $p;
+        // with no link to show, whether that is because the far ends are outside the user's permissions
+        $result['hidden_links'] = ($result['summary']['links'] ?? 0) === 0 ? $this->repo->hiddenLinkCount($scope) : 0;
 
         return $result;
     }
@@ -581,6 +583,7 @@ class TopologyService
             'neighbors' => count($neighbors),
             'links' => count(array_unique(array_filter(array_map(fn ($l) => (int) $l['local_port_id'], $links)))),
             'stp' => null,
+            'routing' => $this->repo->routingPresence($deviceId),
         ];
 
         if ($instances) {

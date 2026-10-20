@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\Data\ViewRepository;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
 use Agoodley\LibrenmsTopology\Sharing\SavedView;
 use Agoodley\LibrenmsTopology\Support\MapParams;
+use Agoodley\LibrenmsTopology\Support\RoleData;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -31,6 +32,8 @@ class ViewController extends Controller
         return view('topology::views', [
             'available' => $views->available(),
             'views' => $views->visible(),
+            // per map: what the user's role may not view of its data (the view shows the map without it)
+            'roleHidden' => array_map(fn ($tables) => $views->hiddenKinds($tables), array_intersect_key(RoleData::PAGES, SavedView::PAGES)),
             'pages' => SavedView::PAGES,
             'done' => $request->session()->get('topology_views'),
             'assetVersion' => self::assetVersion(),

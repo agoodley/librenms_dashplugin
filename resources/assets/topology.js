@@ -316,6 +316,7 @@
     TopologyMap.prototype.bindControls = function () {
         var self = this;
         var form = document.getElementById('topo-filters');
+        labelControls();
 
         form.addEventListener('submit', function (event) {
             event.preventDefault();
@@ -1371,9 +1372,9 @@
         if (stats.outside) {
             parts.push(stats.outside + ' outside the map');
         }
-        [['ospfv3', 'OSPFv3 adjacencies'], ['isis', 'IS-IS adjacencies'], ['ipsec', 'IPsec peers'], ['mpls', 'LSPs'], ['pw', 'pseudowires']].forEach(function (item) {
+        [['ospfv3', 'OSPFv3 adjacency', 'OSPFv3 adjacencies'], ['isis', 'IS-IS adjacency', 'IS-IS adjacencies'], ['ipsec', 'IPsec peer'], ['mpls', 'LSP'], ['pw', 'pseudowire']].forEach(function (item) {
             if (stats[item[0]]) {
-                parts.push(stats[item[0]] + ' ' + item[1] + (item[0] === 'pw' && stats.mtu ? ' (<span class="topo-text-warning">' + stats.mtu + ' MTU mismatch</span>)' : ''));
+                parts.push(plural(stats[item[0]], item[1], item[2]) + (item[0] === 'pw' && stats.mtu ? ' (<span class="topo-text-warning">' + stats.mtu + ' MTU mismatch</span>)' : ''));
             }
         });
         if (limits.mpls) {
@@ -1932,7 +1933,7 @@
         }
         if (endpoint.stp) {
             var stp = endpoint.stp;
-            html += this.row('STP', esc(stp.state + ' / ' + stp.role + (stp.via_lag ? ' (on aggregate)' : '') + ' cost ' + stp.cost) +
+            html += this.row('STP', esc(stp.state + ' / ' + stp.role + (stp.via_lag ? ' (on the port-channel)' : '') + ' cost ' + stp.cost) +
                 ' <small>' + esc(stp.transitions + ' fwd transitions') + '</small>');
         }
         return html;
@@ -1981,7 +1982,7 @@
                 this.row('Discovered by', esc((edge.protocols || []).join(', ').toUpperCase())) +
                 this.row('Common VLANs', edge.vlans && edge.vlans.length ? '<span class="topo-vlans">' + esc(edge.vlans.length > 60 ? edge.vlans.slice(0, 60).join(',') + ' (' + edge.vlans.length + ')' : edge.vlans.join(',')) + '</span>' : '');
             if (edge.lag) {
-                html += this.row('Aggregate', esc((edge.lag.a || '-') + ' / ' + (edge.lag.b || '-') + ' (' + edge.lag.up + '/' + edge.lag.members + ' members up)'));
+                html += this.row('Port-channel', esc((edge.lag.a || '-') + ' / ' + (edge.lag.b || '-') + ' (' + edge.lag.up + '/' + edge.lag.members + ' members up)'));
             }
         } else {
             html += this.row('Network', esc(edge.network)) + this.row('VRF', esc(edge.vrf)) + this.row('Type', esc(edge.kind === 'p2p' ? 'point-to-point' : 'segment member'));
@@ -2090,21 +2091,21 @@
         var scope = this.data.scope || {};
         var parts = [];
         if (this.mode === 'l2') {
-            parts.push(stats.devices + ' devices', stats.unmanaged + ' unmanaged neighbors', stats.links + ' links');
+            parts.push(plural(stats.devices, 'device'), plural(stats.unmanaged, 'unmanaged neighbor'), plural(stats.links, 'link'));
             if (stats.down) parts.push('<span class="text-danger">' + stats.down + ' down</span>');
             if (stats.blocked) parts.push('<span class="topo-text-warning">' + stats.blocked + ' STP blocked</span>');
             var outages = Object.keys(this.outages.top).length;
-            if (outages) parts.push('<span class="text-danger">' + outages + ' outage' + (outages === 1 ? '' : 's') + '</span>');
+            if (outages) parts.push('<span class="text-danger">' + plural(outages, 'outage') + '</span>');
         } else {
-            parts.push(stats.devices + ' L3 devices', stats.subnets + ' subnets', stats.p2p + ' point-to-point links');
-            if (stats.ospf) parts.push(stats.ospf + ' OSPF adjacencies');
-            if (stats.bgp) parts.push(stats.bgp + ' BGP sessions');
+            parts.push(plural(stats.devices, 'L3 device'), plural(stats.subnets, 'subnet'), plural(stats.p2p, 'point-to-point link'));
+            if (stats.ospf) parts.push(plural(stats.ospf, 'OSPF adjacency', 'OSPF adjacencies'));
+            if (stats.bgp) parts.push(plural(stats.bgp, 'BGP session'));
             parts = parts.concat(this.layerStatus(stats));
             if (stats.down) parts.push('<span class="text-danger">' + stats.down + ' down</span>');
         }
         var html = parts.join(' &middot; ');
         if (scope.root_name) {
-            html = 'Centered on <b>' + esc(scope.root_name) + '</b> (' + esc(scope.depth) + ' hops) &middot; ' + html;
+            html = 'Centered on <b>' + esc(scope.root_name) + '</b> (' + esc(plural(Number(scope.depth), 'hop')) + ') &middot; ' + html;
         }
         if (scope.truncated) {
             html += ' &middot; <span class="topo-text-warning"><i class="fa fa-exclamation-triangle"></i> Showing ' + scope.shown + ' of ' + scope.total +
@@ -2390,7 +2391,7 @@
         if (this.mode === 'sites') {
             rows = this.siteCsvRows();
         } else if (this.mode === 'l2') {
-            rows = [['Device A', 'Interface A', 'Device B', 'Interface B', 'Speed', 'Status', 'Aggregate', 'Common VLANs', 'STP A', 'STP B', 'Protocols']];
+            rows = [['Device A', 'Interface A', 'Device B', 'Interface B', 'Speed', 'Status', 'Port-channel', 'Common VLANs', 'STP A', 'STP B', 'Protocols']];
             this.data.edges.forEach(function (e) {
                 rows.push([self.nodeName(e.from), e.a && e.a.name, self.nodeName(e.to), e.b && e.b.name, formatSpeed(e.speed), e.status,
                     e.lag ? (e.lag.a || '') + '/' + (e.lag.b || '') + ' x' + e.lag.members : '', (e.vlans || []).join(' '),
@@ -3266,9 +3267,25 @@
     // ------------------------------------------------------------------ site / WAN map
 
     /**
+     * Accessible names of the toolbar's icon buttons and of the search box, from their tooltip and placeholder.
+     */
+    function labelControls() {
+        document.querySelectorAll('.topo-toolbar button[title], .topo-viewbar button[title]').forEach(function (button) {
+            if (!button.getAttribute('aria-label')) {
+                button.setAttribute('aria-label', button.getAttribute('title'));
+            }
+        });
+        var search = document.getElementById('topo-search');
+        if (search && !search.getAttribute('aria-label')) {
+            search.setAttribute('aria-label', (search.getAttribute('placeholder') || 'Find').replace(/\u2026$/, ''));
+        }
+    }
+
+    /**
      * "1 site", "3 sites".
      */
     function plural(count, word, words) {
+        count = Number(count) || 0;
         return count + ' ' + (count === 1 ? word : (words || word + 's'));
     }
 

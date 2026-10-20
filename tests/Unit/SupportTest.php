@@ -9,6 +9,7 @@ use Agoodley\LibrenmsTopology\Support\Graph;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
+use Agoodley\LibrenmsTopology\Support\Text;
 use PHPUnit\Framework\TestCase;
 
 class SupportTest extends TestCase
@@ -217,6 +218,32 @@ class SupportTest extends TestCase
         $this->assertFalse($params['lag']);
         $this->assertFalse($params['unmanaged']); // from settings
         $this->assertTrue($params['ospf']);
+    }
+
+    public function testCheckboxGroupsAreStoredAsLists(): void
+    {
+        // LibreNMS stores settings[history_checks][] as a list; the hidden empty entry keeps "none checked" apart from unset
+        $this->assertSame('stp routing', (new PluginSettings(['history_checks' => ['', 'stp', 'routing']]))->all()['history_checks']);
+        $this->assertSame('', (new PluginSettings(['history_checks' => ['']]))->all()['history_checks']);
+        $this->assertSame('stp links redundancy routing', (new PluginSettings())->all()['history_checks']);
+    }
+
+    public function testOneSharedPortThresholdForCoverageAndHostLocator(): void
+    {
+        $this->assertSame(4, (new PluginSettings())->sharedPortMacs());
+        $this->assertSame(0, (new PluginSettings(['shared_port_macs' => '0']))->sharedPortMacs(), '0 switches it off');
+        $this->assertSame(2, (new PluginSettings(['shared_port_macs' => '1']))->sharedPortMacs(), 'one MAC is every port');
+        $this->assertSame(12, (new PluginSettings(['shared_port_macs' => '12']))->sharedPortMacs());
+        $this->assertArrayNotHasKey('hosts_shared_port_macs', PluginSettings::DEFAULTS);
+        $this->assertArrayNotHasKey('coverage_mac_threshold', PluginSettings::DEFAULTS);
+    }
+
+    public function testCountsAgreeWithTheirNoun(): void
+    {
+        $this->assertSame('1 warning', Text::count(1, 'warning'));
+        $this->assertSame('0 warnings', Text::count(0, 'warning'));
+        $this->assertSame('1,242 switches', Text::count(1242, 'switch', 'switches'));
+        $this->assertSame('2 L2 domains', Text::count('2', 'L2 domain'));
     }
 
     public function testIntegerSetsWithRanges(): void

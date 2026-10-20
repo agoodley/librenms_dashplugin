@@ -35,6 +35,13 @@ class HistoryService
     private const LISTED = 200;
 
     /**
+     * The LibreNMS table each kind of fact comes from: a user whose role may not read it does not see those
+     * facts on the Changes page either (port-channel members are ports).
+     */
+    private const FACT_TABLES = [FactCollector::LINK => 'links', FactCollector::LAG => 'ports', FactCollector::STP_ROOT => 'stp',
+        FactCollector::STP_BLOCKED => 'ports_stp', FactCollector::OSPF => 'ospf_nbrs', FactCollector::BGP => 'bgpPeers'];
+
+    /**
      * @param  RoutingRepository|null  $routing  data of the routing check (default: TopologyRepository's scope)
      */
     public function __construct(
@@ -210,7 +217,7 @@ class HistoryService
         $text = new FactText($this->history->names(array_keys($visible)), $visible);
 
         $window = $this->history->windowFacts($from, $to, $ids);
-        $rows = $window['rows'];
+        $rows = array_values(array_filter($window['rows'], fn ($row) => $this->factAllowed($row['kind'])));
         $since = null;
         if ($window['since'] !== null) {
             // too many changes: those after the boundary of the rows read are listed, with both halves of each; the
@@ -240,6 +247,7 @@ class HistoryService
         $hidden = $this->history->sibling(LoopEvidenceRepository::class)->canViewSyslog()
             ? [] : ['stp' => array_keys(array_filter(LoopEvidence::CHECKS, fn ($category) => $category === 'syslog'))];
         $windowFindings = $this->history->windowFindings($from, $to, $ids, $hidden);
+        $windowFindings['rows'] = array_values(array_filter($windowFindings['rows'], fn ($row) => $this->findingAllowed($row['analysis'], $row['code'])));
         $findings = array_map(function (array $finding) use ($text) {
             $finding['device_names'] = array_combine($finding['devices'], array_map(fn ($id) => $text->device($id, null), $finding['devices']));
 
@@ -291,7 +299,7 @@ class HistoryService
      */
     public function saveBaseline(array $p, ?string $user): array
     {
-        return $this->history->replaceBaseline($this->scopeIds($p), Carbon::now(), $user);
+        return $this->history->replaceBaseline($this->scopeIds($p, true), Carbon::now(), $user);
     }
 
     /**
@@ -301,7 +309,7 @@ class HistoryService
      */
     public function clearBaseline(array $p): int
     {
-        return $this->history->clearBaseline($this->scopeIds($p));
+        return $this->history->clearBaseline($this->scopeIds($p, true));
     }
 
     /**
@@ -316,7 +324,7 @@ class HistoryService
      */
     public function acceptRootChange(array $p, string $from, string $to, array $vlans, ?string $user): ?array
     {
-        $ids = $this->scopeIds($p);
+        $ids = $this->scopeIds($p, true);
         sort($vlans);
         // the baseline's root bridge facts are read under a lock: an admin accepting an overlapping change at the same
         // time waits, then sees this change applied
@@ -346,7 +354,7 @@ class HistoryService
      */
     public function acceptMissing(array $p, string $hash, ?array $vlans = null): int
     {
-        return $this->history->forgetBaselineFact($hash, $this->scopeIds($p), $vlans);
+        return $this->history->forgetBaselineFact($hash, $this->scopeIds($p, true), $vlans);
     }
 
     /**
@@ -402,6 +410,29 @@ class HistoryService
      *
      * @param  int[]  $ids
      */
+    /**
+     * May the user's role read the LibreNMS data this kind of fact comes from?
+     */
+    private function factAllowed(string $kind): bool
+    {
+        return $this->history->allowsTable(self::FACT_TABLES[$kind] ?? '');
+    }
+
+    /**
+     * May the user's role read the data this finding is about? OSPF and BGP findings need those, the other
+     * routing findings (addresses) nothing more; the link and redundancy checks need the LLDP/CDP links.
+     */
+    private function findingAllowed(string $analysis, string $code): bool
+    {
+        return match (true) {
+            $analysis === 'stp' => $this->history->allowsTable('stp'),
+            $analysis === 'links', $analysis === 'redundancy' => $this->history->allowsTable('links'),
+            $analysis === 'routing' && str_starts_with($code, 'ospf_') => $this->history->allowsTable('ospf_nbrs'),
+            $analysis === 'routing' && str_starts_with($code, 'bgp_') => $this->history->allowsTable('bgpPeers'),
+            default => true,
+        };
+    }
+
     private function baselineComparison(array $ids, FactText $text): array
     {
         $info = $this->history->baselineInfo($ids);
@@ -409,15 +440,16 @@ class HistoryService
             return ['saved' => null, 'missing' => [], 'missing_total' => 0, 'new' => [], 'new_total' => 0];
         }
 
-        // root bridges per switch and VLAN (one fact holds the VLANs of a root bridge), the rest by identity
-        $kinds = array_values(array_diff(Baseline::KINDS, [FactCollector::STP_ROOT]));
-        $baseline = array_filter($this->history->baselineHashes($ids), fn ($kind) => $kind !== FactCollector::STP_ROOT);
-        $current = $this->history->currentHashes($ids, $kinds);
+        // root bridges per switch and VLAN (one fact holds the VLANs of a root bridge), the rest by identity; only the
+        // kinds the user's role may read
+        $kinds = array_values(array_filter(array_diff(Baseline::KINDS, [FactCollector::STP_ROOT]), fn ($kind) => $this->factAllowed($kind)));
+        $baseline = array_filter($this->history->baselineHashes($ids), fn ($kind) => $kind !== FactCollector::STP_ROOT && $this->factAllowed($kind));
+        $current = $kinds ? $this->history->currentHashes($ids, $kinds) : [];
         $missingHashes = array_keys(array_diff_key($baseline, $current));
         $newHashes = array_keys(array_diff_key($current, $baseline));
         // a root bridge change is one item for all the switches that see it (an admin accepts it at once)
-        $roots = Baseline::rootChanges($this->history->baselineFactsOfKind($ids, FactCollector::STP_ROOT),
-            $this->history->currentFactsOfKind($ids, FactCollector::STP_ROOT));
+        $roots = $this->factAllowed(FactCollector::STP_ROOT) ? Baseline::rootChanges($this->history->baselineFactsOfKind($ids, FactCollector::STP_ROOT),
+            $this->history->currentFactsOfKind($ids, FactCollector::STP_ROOT)) : [];
         $rootItem = fn (array $change) => [
             'kind' => FactCollector::STP_ROOT,
             'hash' => FactCollector::hash(FactCollector::STP_ROOT, 'd' . $change['devices'][0] . '|' . ($change['from']['root'] ?? '')),
@@ -456,9 +488,16 @@ class HistoryService
      * @param  array{device: ?int, group: ?int, location: ?int}  $p
      * @return int[]
      */
-    private function scopeIds(array $p): array
+    /**
+     * Devices of the page's scope: the centered device, else the group / location filter. For a write
+     * ($strict), a device, group or location that was given but does not resolve (disabled, deleted, not
+     * permitted) is refused rather than widened to every device.
+     *
+     * @throws \InvalidArgumentException
+     */
+    private function scopeIds(array $p, bool $strict = false): array
     {
-        [$scope, $device] = $this->history->scope($p);
+        [$scope, $device] = $strict ? $this->history->strictScope($p) : $this->history->scope($p);
 
         return $device ? [$device] : $scope;
     }

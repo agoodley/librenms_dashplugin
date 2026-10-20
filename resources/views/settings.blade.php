@@ -2,13 +2,13 @@
 @php
     $fields = [
         'Maps' => [
-            ['default_depth', 'number', 'Default hops around a centered device', '1-10'],
-            ['max_nodes', 'number', 'Maximum devices drawn on one map (sites on the site map)', '10-5000; larger maps are trimmed to the best connected devices or sites'],
+            ['default_depth', 'number', 'Default hops around a centered device', ''],
+            ['max_nodes', 'number', 'Maximum devices drawn on one map (sites on the site map)', 'larger maps are trimmed to the best connected devices or sites'],
             ['show_unmanaged', 'bool', 'Show unmanaged LLDP/CDP neighbors by default', ''],
-            ['collapse_lag', 'bool', 'Draw LAG / port-channel members as one link by default', ''],
+            ['collapse_lag', 'bool', 'Draw port-channel members as one link by default', ''],
             ['l3_hide_stubs', 'bool', 'Hide stub networks (subnets with a single device) on the L3 map by default', ''],
-            ['l3_p2p_prefix', 'number', 'IPv4 prefix length from which a two-device subnet is drawn as a direct link', 'default 29 (/29, /30, /31)'],
-            ['l3_exclude', 'text', 'Subnets excluded from the L3 map', 'comma or space separated CIDRs, e.g. 10.255.0.0/16 192.168.100.0/24'],
+            ['l3_p2p_prefix', 'number', 'IPv4 prefix length from which a two-device subnet is drawn as a direct link', 'on the L3 and site maps; 29 draws /29, /30 and /31 subnets with two devices as links'],
+            ['l3_exclude', 'text', 'Subnets excluded from the L3 and site maps', 'comma or space separated CIDRs, e.g. 10.255.0.0/16 192.168.100.0/24'],
         ],
         'Spanning tree diagnostics' => [
             ['stp_preferred_roots', 'text', 'Designated root bridges', 'hostnames, sysNames or device ids; warn when another bridge is root'],
@@ -55,25 +55,36 @@
             ['redundancy_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (outages, lost, fake, spof), e.g. uplinks_same_device spof_link'],
         ],
         'Host locator' => [
-            ['hosts_shared_port_macs', 'number', 'Flag an access port without LLDP/CDP neighbor from this many MACs', 'an unmanaged switch, hub or virtualization host is probably connected to it'],
             ['hosts_dns', 'bool', 'Look up hostnames that are not LibreNMS devices in DNS', 'with the server\'s resolver (getent), 2 seconds per name and 4 per search, cached for 5 minutes, 20 lookups per user and minute'],
         ],
         'Monitoring coverage' => [
-            ['coverage_mac_threshold', 'number', 'Report access ports without LLDP/CDP neighbor from this many MAC addresses', 'in the last discovery: a likely unmanaged switch or hub (a phone on the port does not count as a neighbor); 0 disables the count'],
+            ['shared_port_macs', 'number', 'Probable hub or unmanaged switch from this many MAC addresses', 'access port with at least this many MAC addresses and no LLDP/CDP neighbor: probably a hub or unmanaged switch (a phone on the port does not count as a neighbor); used by the coverage report and the host locator; 0 switches it off'],
             ['coverage_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (unmonitored, devices, ports), e.g. not_linked hub_suspected'],
         ],
         'Topology history & background checks' => [
             ['history_enabled', 'bool', 'Record the topology history', 'every interval below, through the LibreNMS scheduler; needs the plugin tables (./lnms migrate)'],
             ['history_interval', 'number', 'History interval (minutes)', '15, 30, 60, 120, 240, 360, 720 or 1440; LibreNMS refreshes LLDP/CDP neighbors at discovery (every 6 hours by default)'],
             ['history_retention_days', 'number', 'Keep changes for (days)', 'facts and findings that ended earlier are deleted'],
-            ['history_checks', 'text', 'Background checks', 'analyses run with every snapshot, one after the other: stp, links, redundancy, routing; empty disables them'],
-            ['history_eventlog_severity', 'text', 'Eventlog from severity', 'a device gets an eventlog entry when it gets or loses a background finding from this severity, confirmed by two runs in a row: critical, warning, info or none'],
+            ['history_checks', 'checks', 'Background checks', 'run with every snapshot, one after the other; none checked switches them off',
+                ['stp' => 'Spanning tree', 'links' => 'Link & VLAN', 'redundancy' => 'Redundancy', 'routing' => 'Routing & IP']],
+            ['history_eventlog_severity', 'select', 'Eventlog from severity', 'a device gets an eventlog entry when it gets or loses a background finding from this severity, confirmed by two runs in a row',
+                ['critical' => 'Critical', 'warning' => 'Warning', 'info' => 'Info', 'none' => 'None (no eventlog entries)']],
             ['history_eventlog_skip', 'text', 'Checks kept out of the eventlog', 'check codes whose findings follow the counters of the last poll or a time window, e.g. link_errors lag_imbalance multicast_storm (the multicast rate of the last poll: routing protocols and video streams send multicast too) bgp_recent_reset; code:severity keeps one severity of a check out, e.g. ip_duplicate:info (addresses that are probably shared on purpose or in separate networks). They stay on the pages and still count for the eventlog entries of the other severities'],
         ],
         'Rollout planner & device dependencies' => [
             ['rollout_batch_size', 'number', 'Default number of devices per rollout batch', '0: no limit; the planner page can change it per plan'],
             ['dependencies_outage_days', 'number', 'Days of outage history to check the derived dependencies against', 'outages of devices and their parents in this window (1-3650)'],
         ],
+    ];
+    // the ranges the code clamps each number to: [minimum, maximum or null]
+    $limits = [
+        'default_depth' => [1, 10], 'max_nodes' => [10, 5000], 'l3_p2p_prefix' => [8, 32],
+        'stp_tc_recent_minutes' => [1, null], 'stp_tc_rate_per_day' => [1, null], 'stp_flap_transitions' => [1, null], 'stp_max_diameter' => [1, null],
+        'stp_event_days' => [1, 365], 'stp_storm_pps' => [0, null], 'stp_storm_percent' => [1, 100], 'stp_syslog_hours' => [1, 720],
+        'links_error_threshold' => [0, null], 'links_discard_percent' => [0, 100], 'links_lag_imbalance' => [0, 100], 'links_rx_margin' => [0, 20],
+        'routing_bgp_reset_hours' => [0, 8760], 'routing_prefix_warn_percent' => [0, 100], 'redundancy_warn_devices' => [1, 100000],
+        'shared_port_macs' => [0, 1000000], 'history_interval' => [5, 1440], 'history_retention_days' => [1, 3650],
+        'rollout_batch_size' => [0, 10000], 'dependencies_outage_days' => [1, 3650],
     ];
     // entries of the eventlog skip list that name no check (they keep nothing out)
     $warnings = ['history_eventlog_skip' => \Agoodley\LibrenmsTopology\History\FindingHistory::unknownSkips((string) ($settings['history_eventlog_skip'] ?? ''),
@@ -87,7 +98,10 @@
         @foreach($fields as $section => $items)
             <fieldset style="margin-bottom: 18px;">
                 <legend style="font-size: 15px;">{{ $section }}</legend>
-                @foreach($items as [$name, $type, $label, $help])
+                @foreach($items as $item)
+                    @php([$name, $type, $label, $help] = $item)
+                    @php($options = $item[4] ?? [])
+                    @php($default = \Agoodley\LibrenmsTopology\Support\PluginSettings::DEFAULTS[$name] ?? '')
                     <div class="form-group row">
                         <label class="col-sm-5 control-label" for="topo-setting-{{ $name }}" style="font-weight: normal">{{ $label }}</label>
                         <div class="col-sm-7">
@@ -96,14 +110,39 @@
                                 <input id="topo-setting-{{ $name }}" type="checkbox" name="settings[{{ $name }}]" value="1" @checked(($settings[$name] ?? '0') === '1')>
                             @elseif($type === 'pattern')
                                 {{-- empty unless changed, so an improved default of a later version applies --}}
-                                @php($default = \Agoodley\LibrenmsTopology\Support\PluginSettings::DEFAULTS[$name] ?? '')
                                 <input id="topo-setting-{{ $name }}" type="text" class="form-control input-sm" name="settings[{{ $name }}]" value="{{ ($settings[$name] ?? '') === $default ? '' : $settings[$name] }}" placeholder="{{ $default }}" title="Default: {{ $default }}">
                             @elseif($type === 'number')
-                                <input id="topo-setting-{{ $name }}" type="number" min="0" class="form-control input-sm" style="max-width: 140px" name="settings[{{ $name }}]" value="{{ $settings[$name] ?? '' }}">
+                                @php([$min, $max] = $limits[$name] ?? [0, null])
+                                <input id="topo-setting-{{ $name }}" type="number" min="{{ $min }}" @if($max !== null) max="{{ $max }}" @endif class="form-control input-sm" style="max-width: 140px" name="settings[{{ $name }}]" value="{{ $settings[$name] ?? '' }}">
+                            @elseif($type === 'select')
+                                <select id="topo-setting-{{ $name }}" class="form-control input-sm" style="max-width: 240px" name="settings[{{ $name }}]">
+                                    @php($current = strtolower($settings[$name] ?? $default))
+                                    @unless(array_key_exists($current, $options))
+                                        <option value="{{ $current }}" selected>{{ $current }} (not valid: no eventlog entries)</option>
+                                    @endunless
+                                    @foreach($options as $value => $text)
+                                        <option value="{{ $value }}" @selected($current === $value)>{{ $text }}</option>
+                                    @endforeach
+                                </select>
+                            @elseif($type === 'checks')
+                                {{-- posted as a list (settings[name][]); the hidden empty entry keeps "none checked" from falling back to the default --}}
+                                @php($checked = preg_split('/[\s,;]+/', strtolower($settings[$name] ?? ''), -1, PREG_SPLIT_NO_EMPTY))
+                                <input type="hidden" name="settings[{{ $name }}][]" value="">
+                                <div id="topo-setting-{{ $name }}" role="group" aria-label="{{ $label }}">
+                                    @foreach($options as $value => $text)
+                                        <label class="checkbox-inline" style="font-weight: normal">
+                                            <input type="checkbox" name="settings[{{ $name }}][]" value="{{ $value }}" @checked(in_array($value, $checked, true))> {{ $text }}
+                                        </label>
+                                    @endforeach
+                                </div>
                             @else
                                 <input id="topo-setting-{{ $name }}" type="text" class="form-control input-sm" name="settings[{{ $name }}]" value="{{ $settings[$name] ?? '' }}">
                             @endif
-                            @if($help)<span class="help-block" style="margin: 2px 0 0; font-size: 12px">{{ $help }}</span>@endif
+                            @if($type === 'number')
+                                <span class="help-block" style="margin: 2px 0 0; font-size: 12px">{{ $help }}{{ $help !== '' ? ' · ' : '' }}default: {{ $default }}</span>
+                            @elseif($help)
+                                <span class="help-block" style="margin: 2px 0 0; font-size: 12px">{{ $help }}</span>
+                            @endif
                             @if(! empty($warnings[$name]))
                                 <span class="help-block text-warning topo-setting-warning" style="margin: 2px 0 0; font-size: 12px"><i class="fa fa-exclamation-triangle"></i>
                                     Not a check code or code:severity (critical, warning or info), so it keeps nothing out: {{ implode(' ', $warnings[$name]) }}</span>

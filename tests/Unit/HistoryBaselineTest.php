@@ -232,7 +232,8 @@ class HistoryBaselineTest extends TestCase
         $many = self::finding('no_stp_data', range(1, 14));
         $capped = self::simulate([[], [$many], [$many]])[2];
         $this->assertCount(FindingHistory::EVENTLOG_DEVICES, $capped);
-        $this->assertStringEndsWith('(also on 4 more devices)', $capped[0]['message']);
+        $this->assertStringEndsWith('(and on other devices)', $capped[0]['message'], 'no count: a reader of one eventlog may not see the others');
+        $this->assertDoesNotMatchRegularExpression('/\d+ more/', $capped[0]['message']);
         $this->assertSame([], self::simulate([[], [$many], [$many]], 'critical')[2]);
         $this->assertSame([], self::simulate([[], [$many], [$many]], 'none')[2]);
     }

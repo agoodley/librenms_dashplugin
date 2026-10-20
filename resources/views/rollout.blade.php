@@ -123,7 +123,7 @@
                             @if(count($batch['devices']) > $listed) &hellip; and {{ count($batch['devices']) - $listed }} more @endif
                             <details class="topo-rollout-hosts">
                                 <summary>{{ count($batch['devices']) }} hostname{{ count($batch['devices']) === 1 ? '' : 's' }}</summary>
-                                <textarea class="form-control input-sm" rows="3" readonly>{{ implode("\n", $batch['hostnames']) }}</textarea>
+                                <textarea class="form-control input-sm" rows="3" readonly aria-label="Hostnames of batch {{ $batch['number'] }}">{{ implode("\n", $batch['hostnames']) }}</textarea>
                             </details>
                         </td>
                         <td>{{ $where($batch['tier']) }}</td>
@@ -157,6 +157,7 @@
         @if($result['skipped'])
             <div class="panel panel-default">
                 <div class="panel-heading"><strong>Left out</strong> <span class="text-muted">({{ count($result['skipped']) }}: nothing tells what depends on them, plan them by hand)</span></div>
+                <div class="table-responsive">
                 <table class="table table-condensed topo-stp-table">
                     <tbody>
                     @foreach($result['skipped'] as $skipped)
@@ -173,6 +174,7 @@
                     @endforeach
                     </tbody>
                 </table>
+                </div>
             </div>
         @endif
 

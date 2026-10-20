@@ -65,7 +65,7 @@ class HostLocator
      * @param  array<int, int>  $since  device_id => start of its last forwarding table read: older entries are from an
      *                                  earlier read; a device missing here has no forwarding table data
      * @param  array<int, array{name: string, role?: string}>  $devices  monitored devices
-     * @param  int  $sharedPortMacs  MACs on an access port without a neighbor from which it is flagged as shared
+     * @param  int  $sharedPortMacs  MACs on an access port without a neighbor from which it is flagged as shared (0: never)
      * @param  array<int, int[]>  $switchMacs  port_id => monitored devices whose own MAC the port learned at the last read
      * @param  array<string, \Closure>  $lookups  data asked for only when an answer needs it:
      *         macs (int[] port_ids => array<int, int> current MACs per port): of trail ends;
@@ -80,7 +80,7 @@ class HostLocator
         private readonly array $lagParent,
         private readonly array $since,
         private readonly array $devices,
-        private readonly int $sharedPortMacs = 5,
+        private readonly int $sharedPortMacs = 4,
         private readonly array $switchMacs = [],
         private readonly array $lookups = [],
     ) {
@@ -549,7 +549,7 @@ class HostLocator
             'not-listed' => [self::note('warning', 'The trail ends at ' . $neighbor['name'] . ': its forwarding table does not list the host. The host was silent when the table was read'
                 . ' (switches forget idle hosts after about 5 minutes) or connected after that, or the address belongs to ' . $neighbor['name'] . ' itself.')],
             'unknown-port' => [self::note('warning', 'Learned on a port LibreNMS could not map (bridge port without ifIndex).')],
-            default => $edge['macs'] >= $this->sharedPortMacs
+            default => $this->sharedPortMacs > 0 && $edge['macs'] >= $this->sharedPortMacs
                 ? [self::note('info', $edge['macs'] . ' MACs are learned on this port and it has no LLDP/CDP neighbor: an unmanaged switch, hub or virtualization host is probably connected to it.')]
                 : [],
         });
