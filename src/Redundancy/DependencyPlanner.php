@@ -4,15 +4,19 @@ namespace Agoodley\LibrenmsTopology\Redundancy;
 
 /**
  * LibreNMS device dependencies derived from the topology. LibreNMS suppresses a device's alerts
- * while all its parent devices are down; here the parents of a device are its neighbours one hop
- * closer to the core in the design graph of the redundancy analysis (every link, also those down
+ * while all its parent devices are down (a disabled parent never counts as down); here the parents
+ * of a device come from the design graph of the redundancy analysis (every link, also those down
  * now):
- *  - a dual-homed device gets both uplink devices, so its alerts are only suppressed when both are
- *    down;
- *  - parents are always closer to the core, so the dependencies never form a loop;
- *  - an unmanaged device in between (an unmonitored switch) is skipped to the next monitored device
- *    toward the core, since LibreNMS parents must be monitored devices.
- * Core devices and devices without a path to a core get no parents: their current ones are kept.
+ *  - its neighbours one hop closer to the core, through unmanaged devices (LibreNMS parents must be
+ *    monitored devices, so an unmonitored switch is skipped to the next monitored one);
+ *  - its switches, routers and firewalls at the same distance from the core that rank before it:
+ *    lower spanning tree bridge priority, then more central (fewer hops to the other switches),
+ *    then lower device id. A switch cabled to both switches of a core pair whose second switch is
+ *    not set as core gets that second switch too when it has the lower bridge priority (as a
+ *    secondary root bridge does), and of two peer-linked switches the later one gets the first.
+ * Parents always rank before their children in one strict order (distance, then that rank), so the
+ * dependencies never form a loop; more parents only make suppression rarer, the safe side. Core
+ * devices and devices without a path to a core get no parents: their current ones are kept.
  */
 class DependencyPlanner
 {
@@ -26,6 +30,9 @@ class DependencyPlanner
     /** Seconds between a device and its parents going down that still count as one outage (about one poll). */
     public const OUTAGE_TOLERANCE = 300;
 
+    /** Bridge priority of devices without spanning tree data (the IEEE default). */
+    private const DEFAULT_PRIORITY = 32768;
+
     /** @var array<string, array> node id => node, see RedundancyAnalyzer::nodes() */
     private array $nodes;
 
@@ -38,6 +45,12 @@ class DependencyPlanner
     /** @var array<string, array<int, int>> graph node => monitored devices toward the core (memo) */
     private array $resolved = [];
 
+    /** @var array<int, int> device_id => bridge priority without the VLAN bits */
+    private array $priority = [];
+
+    /** @var array<string, int> node => hops to every switch, router and firewall it reaches (memo) */
+    private array $hopTotal = [];
+
     public function __construct(private RedundancyAnalyzer $analyzer)
     {
         $this->nodes = $analyzer->nodes();
@@ -46,13 +59,16 @@ class DependencyPlanner
             $this->adjacency[(string) $node] = array_map('strval', $graph->neighbours($node));
         }
         $this->distance = array_map('intval', $graph->distances(RedundancyAnalyzer::CORE));
+        foreach ($analyzer->bridgePriorities() as $deviceId => $priority) {
+            $this->priority[(int) $deviceId] = (int) $priority & 0xF000;
+        }
     }
 
     /**
      * Parents of every monitored device.
      *
      * @return array<int, array{status: string, parents: int[], hops: ?int}> device_id => status (CORE, DERIVED or
-     *                                                                         NONE), parent device ids and hops from the core
+     *                                                                         NONE), parent device ids and hops from the core (0 for core devices)
      */
     public function derive(): array
     {
@@ -65,14 +81,16 @@ class DependencyPlanner
             }
             $id = (string) $id;
             $deviceId = (int) $node['device_id'];
-            $graphNodes = $copies[$id] ?? [$id];
             $hops = null;
             $parents = [];
-            foreach ($graphNodes as $graphNode) {
+            foreach ($copies[$id] ?? [$id] as $graphNode) {
                 if (isset($this->distance[$graphNode])) {
-                    $hops = $hops === null ? $this->distance[$graphNode] : min($hops, $this->distance[$graphNode]);
+                    $hops = $hops === null ? $this->distance[$graphNode] - 1 : min($hops, $this->distance[$graphNode] - 1);
                     $parents += array_fill_keys($this->toward($graphNode), true);
                 }
+            }
+            if ($node['network'] && isset($this->distance[$id])) {
+                $parents += array_fill_keys($this->peers($id), true);
             }
             unset($parents[$deviceId]);
             $parents = array_keys($parents);
@@ -118,6 +136,67 @@ class DependencyPlanner
     }
 
     /**
+     * Switches, routers and firewalls next to a network device, at the same distance from the core,
+     * that rank before it.
+     *
+     * @return array<int, int> device ids
+     */
+    private function peers(string $node): array
+    {
+        $peers = [];
+        foreach ($this->adjacency[$node] ?? [] as $next) {
+            $info = $this->nodes[$next] ?? null;
+            if ($info && $info['managed'] && $info['network'] && ! isset($info['of'])
+                && ($this->distance[$next] ?? null) === $this->distance[$node] && $this->ranksBefore($next, $node)) {
+                $peers[] = (int) $info['device_id'];
+            }
+        }
+
+        return $peers;
+    }
+
+    /**
+     * Strict order of two network devices at the same distance from the core: lower bridge priority,
+     * then fewer hops to the other switches (more central), then lower device id.
+     */
+    private function ranksBefore(string $a, string $b): bool
+    {
+        $deviceA = (int) $this->nodes[$a]['device_id'];
+        $deviceB = (int) $this->nodes[$b]['device_id'];
+        $order = ($this->priority[$deviceA] ?? self::DEFAULT_PRIORITY) <=> ($this->priority[$deviceB] ?? self::DEFAULT_PRIORITY)
+            ?: $this->hopTotal($a) <=> $this->hopTotal($b)
+            ?: $deviceA <=> $deviceB;
+
+        return $order < 0;
+    }
+
+    /**
+     * Hops from the node to every switch, router and firewall it reaches without the core node: the
+     * centrality CoreFinder ranks automatic core candidates by.
+     */
+    private function hopTotal(string $node): int
+    {
+        if (! isset($this->hopTotal[$node])) {
+            $hops = [$node => 0];
+            $queue = [$node];
+            $total = 0;
+            for ($i = 0; $i < count($queue); $i++) {
+                foreach ($this->adjacency[$queue[$i]] as $next) {
+                    if ($next !== RedundancyAnalyzer::CORE && ! isset($hops[$next])) {
+                        $hops[$next] = $hops[$queue[$i]] + 1;
+                        $queue[] = $next;
+                        $info = $this->nodes[$next] ?? null;
+                        $total += $info && $info['managed'] && $info['network'] ? $hops[$next] : 0;
+                    }
+                }
+            }
+            $this->hopTotal[$node] = $total;
+        }
+
+        return $this->hopTotal[$node];
+    }
+
+    /**
      * Derived dependencies next to the current ones, one row per device of $scope.
      *
      * @param  array<int, array{status: string, parents: int[], hops: ?int}>  $derived  see derive()
@@ -144,6 +223,174 @@ class DependencyPlanner
         }
 
         return $rows;
+    }
+
+    /**
+     * device_id => derived parents of the rows that change something.
+     *
+     * @param  array<int, array>  $rows  see compare()
+     * @return array<int, int[]>
+     */
+    public static function changes(array $rows): array
+    {
+        $changes = [];
+        foreach ($rows as $row) {
+            if ($row['change'] === 'new' || $row['change'] === 'changed') {
+                $changes[$row['device_id']] = $row['derived'];
+            }
+        }
+        ksort($changes);
+
+        return $changes;
+    }
+
+    /**
+     * What to write for a selection: the changes of the selected rows, except devices whose derived
+     * parents are not the ones the admin saw (stale: the topology changed since the preview) and
+     * devices that would be on a loop of dependencies afterwards (refused). Refusing a change keeps
+     * the device's current parents, which can put another device on a loop: checked again until
+     * none is left.
+     *
+     * @param  array<int, array>  $rows  see compare(), of the selected devices
+     * @param  array<int, int[]|null>  $previewed  device_id => parents shown in the preview, null when not known
+     * @param  array<int, int[]>  $current  every device's current parents
+     * @return array{apply: array<int, int[]>, stale: int[], refused: int[], loops: array<int, int[]>} loops: one
+     *     through each refused device, see loops()
+     */
+    public static function select(array $rows, array $previewed, array $current): array
+    {
+        $changes = self::changes($rows);
+        $apply = [];
+        $stale = [];
+        foreach ($rows as $row) {
+            $deviceId = $row['device_id'];
+            $seen = $previewed[$deviceId] ?? null;
+            if ($seen !== null) {
+                $seen = array_values(array_unique(array_map('intval', $seen)));
+                sort($seen);
+            }
+            if ($seen !== null && $seen !== $row['derived']) {
+                $stale[] = $deviceId; // also a change that is no longer derived at all
+            } elseif (isset($changes[$deviceId])) {
+                $apply[$deviceId] = $changes[$deviceId];
+            }
+        }
+        sort($stale);
+
+        $refused = [];
+        $loops = [];
+        while ($apply) {
+            $after = self::after($current, $apply);
+            $cyclic = array_intersect_key($apply, self::onLoops($after));
+            if (! $cyclic) {
+                break;
+            }
+            foreach (array_keys($cyclic) as $deviceId) {
+                $loop = self::loopThrough($after, $deviceId);
+                $loops[implode('>', $loop)] = $loop;
+                $refused[] = $deviceId;
+                unset($apply[$deviceId]);
+            }
+        }
+        sort($refused);
+
+        return ['apply' => $apply, 'stale' => $stale, 'refused' => $refused, 'loops' => array_values($loops)];
+    }
+
+    /**
+     * Devices on a loop of dependencies: in a strongly connected component of several devices, or
+     * their own parent (Tarjan's algorithm without recursion).
+     *
+     * @param  array<int, int[]>  $parents  device_id => parents
+     * @return array<int, true>
+     */
+    private static function onLoops(array $parents): array
+    {
+        $index = [];
+        $low = [];
+        $stack = [];
+        $onStack = [];
+        $result = [];
+        $counter = 0;
+        foreach (array_keys($parents) as $start) {
+            if (isset($index[$start])) {
+                continue;
+            }
+            $index[$start] = $low[$start] = $counter++;
+            $stack[] = $start;
+            $onStack[$start] = true;
+            $work = [[$start, 0]]; // device, position in its parents
+            while ($work) {
+                $top = count($work) - 1;
+                [$device, $position] = $work[$top];
+                $next = array_values($parents[$device] ?? []);
+                if ($position < count($next)) {
+                    $work[$top][1]++;
+                    $parent = (int) $next[$position];
+                    if ($parent === $device) {
+                        $result[$device] = true;
+                    } elseif (! isset($index[$parent])) {
+                        $index[$parent] = $low[$parent] = $counter++;
+                        $stack[] = $parent;
+                        $onStack[$parent] = true;
+                        $work[] = [$parent, 0];
+                    } elseif (isset($onStack[$parent])) {
+                        $low[$device] = min($low[$device], $index[$parent]);
+                    }
+                    continue;
+                }
+                array_pop($work);
+                if ($work) {
+                    $low[$work[$top - 1][0]] = min($low[$work[$top - 1][0]], $low[$device]);
+                }
+                if ($low[$device] === $index[$device]) {
+                    $component = [];
+                    do {
+                        $member = array_pop($stack);
+                        unset($onStack[$member]);
+                        $component[] = $member;
+                    } while ($member !== $device);
+                    if (count($component) > 1) {
+                        $result += array_fill_keys($component, true);
+                    }
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * A shortest loop of dependencies through a device that is on one, as loops() lists them.
+     *
+     * @param  array<int, int[]>  $parents  device_id => parents
+     * @return int[]
+     */
+    private static function loopThrough(array $parents, int $device): array
+    {
+        $from = [];
+        $queue = [$device];
+        for ($i = 0; $i < count($queue); $i++) {
+            foreach ($parents[$queue[$i]] ?? [] as $next) {
+                $next = (int) $next;
+                if ($next === $device) {
+                    $path = [];
+                    for ($at = $queue[$i]; $at !== $device; $at = $from[$at]) {
+                        $path[] = $at;
+                    }
+                    $loop = [$device, ...array_reverse($path)];
+                    $first = (int) array_search(min($loop), $loop, true);
+
+                    return array_merge(array_slice($loop, $first), array_slice($loop, 0, $first));
+                }
+                if (! isset($from[$next])) {
+                    $from[$next] = $queue[$i];
+                    $queue[] = $next;
+                }
+            }
+        }
+
+        return [$device];
     }
 
     /**
@@ -208,43 +455,70 @@ class DependencyPlanner
     }
 
     /**
-     * Outages of each device since $since and how many of them a set of dependencies explains: all
-     * its parents were down when it went down, so LibreNMS would have suppressed its alerts.
+     * Outages of each device since $since and how many of them each set of dependencies explains: all
+     * the device's parents were down when it went down, so LibreNMS would have suppressed its alerts.
+     * The outages of every device are indexed once (sorted starts, binary search).
      *
-     * @param  array<int, int[]>  $parents  device_id => parents
+     * @param  array<string, array<int, int[]>>  $sets  name => device_id => parents
      * @param  array<int, array<int, array{0: int, 1: ?int}>>  $outages  device_id => [going down, up again or null]
-     * @return array<int, array{outages: int, explained: int, last: ?int}> device_id => counts and the last explained outage start
+     * @return array<int, array{outages: int, explained: array<string, int>}> devices with outages since $since
      */
-    public static function explained(array $parents, array $outages, int $since): array
+    public static function explained(array $sets, array $outages, int $since): array
     {
-        $down = function (int $deviceId, int $at) use ($outages): bool {
-            foreach ($outages[$deviceId] ?? [] as [$start, $end]) {
-                if ($start <= $at + self::OUTAGE_TOLERANCE && ($end === null || $end >= $at - self::OUTAGE_TOLERANCE)) {
-                    return true;
+        // per device: starts in order and the latest end so far (an open outage never ends)
+        $index = [];
+        foreach ($outages as $deviceId => $list) {
+            usort($list, fn ($a, $b) => $a[0] <=> $b[0]);
+            $starts = [];
+            $ends = [];
+            $latest = PHP_INT_MIN;
+            foreach ($list as [$start, $end]) {
+                $starts[] = (int) $start;
+                $latest = max($latest, $end === null ? PHP_INT_MAX : (int) $end);
+                $ends[] = $latest;
+            }
+            $index[$deviceId] = [$starts, $ends];
+        }
+        $down = function (int $deviceId, int $at) use ($index): bool {
+            if (! isset($index[$deviceId])) {
+                return false;
+            }
+            [$starts, $ends] = $index[$deviceId];
+            // the last outage that started by $at (give or take the tolerance)
+            $low = 0;
+            $high = count($starts) - 1;
+            $found = -1;
+            while ($low <= $high) {
+                $middle = intdiv($low + $high, 2);
+                if ($starts[$middle] <= $at + self::OUTAGE_TOLERANCE) {
+                    $found = $middle;
+                    $low = $middle + 1;
+                } else {
+                    $high = $middle - 1;
                 }
             }
 
-            return false;
+            return $found >= 0 && $ends[$found] >= $at - self::OUTAGE_TOLERANCE;
         };
 
         $result = [];
         foreach ($outages as $deviceId => $list) {
+            $counts = array_fill_keys(array_keys($sets), 0);
             $count = 0;
-            $explained = 0;
-            $last = null;
             foreach ($list as [$start]) {
                 if ($start < $since) {
                     continue;
                 }
                 $count++;
-                $own = $parents[$deviceId] ?? [];
-                if ($own && ! array_filter($own, fn ($parent) => ! $down((int) $parent, $start))) {
-                    $explained++;
-                    $last = max($last ?? 0, $start);
+                foreach ($sets as $name => $parents) {
+                    $own = $parents[$deviceId] ?? [];
+                    if ($own && ! array_filter($own, fn ($parent) => ! $down((int) $parent, (int) $start))) {
+                        $counts[$name]++;
+                    }
                 }
             }
             if ($count) {
-                $result[$deviceId] = ['outages' => $count, 'explained' => $explained, 'last' => $last];
+                $result[$deviceId] = ['outages' => $count, 'explained' => $counts];
             }
         }
 

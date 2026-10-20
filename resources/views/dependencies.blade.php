@@ -11,6 +11,7 @@
     $names = $result['device_names'] ?? [];
     $name = fn ($id) => $names[$id] ?? '#' . $id;
     $deviceUrl = fn ($id) => url('device/' . $id);
+    $disabled = array_flip($result['disabled'] ?? []);
     $changes = [
         'changed' => ['warning', 'changed', 'the derived parents differ from the current ones'],
         'new' => ['info', 'new', 'no parents now'],
@@ -21,6 +22,7 @@
         \Agoodley\LibrenmsTopology\Redundancy\DependencyPlanner::CORE => 'core device',
         \Agoodley\LibrenmsTopology\Redundancy\DependencyPlanner::NONE => 'no path to a core',
     ];
+    $coreModes = ['configured' => 'configured', 'stp' => 'spanning tree root', 'automatic' => 'automatic'];
 @endphp
 
 @section('content')
@@ -57,7 +59,9 @@
     </form>
 
     @if($applied)
-        <div class="alert alert-{{ $applied['error'] ? 'danger' : 'success' }}"><i class="fa fa-{{ $applied['error'] ? 'exclamation-triangle' : 'check' }}"></i> {{ $applied['message'] }}</div>
+        <div class="alert alert-{{ $applied['error'] ? 'danger' : (($applied['stale'] ?? []) || ($applied['refused'] ?? []) ? 'warning' : 'success') }} topo-applied">
+            <i class="fa fa-{{ $applied['error'] ? 'exclamation-triangle' : 'check' }}"></i> {{ $applied['message'] }}
+        </div>
     @endif
     @if($error)
         <div class="alert alert-danger"><i class="fa fa-exclamation-triangle"></i> {{ $error }}</div>
@@ -67,7 +71,19 @@
         @php
             $summary = $result['summary'];
             $changing = $summary['new'] + $summary['changed'];
+            $filterFields = array_filter(['device' => $params['device'], 'group' => $params['group'], 'location' => $params['location']]);
         @endphp
+        @foreach($result['advice'] as $advice)
+            @if($advice['lookalike'])
+                <div class="alert alert-warning topo-core-advice">
+                    <i class="fa fa-exclamation-triangle"></i> <strong>{{ $name($advice['lookalike']) }}</strong> is cabled like a core switch
+                    ({{ $advice['shared'] }} switches have links to both it and <strong>{{ $name($advice['core']) }}</strong>, the only core device of its part of the network):
+                    add it to <i>Core devices</i> in the plugin settings. Until then it gets {{ $name($advice['core']) }} as its only parent, and LibreNMS suppresses
+                    its alerts whenever {{ $name($advice['core']) }} is down.
+                </div>
+            @endif
+        @endforeach
+
         <div class="topo-cards">
             <div class="topo-card topo-info">
                 <h4>Devices</h4>
@@ -84,6 +100,18 @@
                 <div class="topo-card-value">{{ $summary['kept'] }}</div>
                 <p>core devices and devices without a path to a core keep their parents</p>
             </div>
+            <div class="topo-card topo-info">
+                <h4>Core</h4>
+                <div class="topo-card-value" style="font-size: 16px; line-height: 31px">
+                    @forelse(array_slice($result['core'], 0, 4) as $core)
+                        <a href="{{ $deviceUrl($core['device_id']) }}">{{ $name($core['device_id']) }}</a>@if(! $loop->last), @endif
+                    @empty
+                        <span class="text-muted">none</span>
+                    @endforelse
+                    @if(count($result['core']) > 4) <small>+{{ count($result['core']) - 4 }}</small> @endif
+                </div>
+                <p>parents point toward it ({{ implode(', ', array_unique(array_map(fn ($core) => $coreModes[$core['mode']] ?? $core['mode'], $result['core']))) ?: 'no switches with neighbors found' }})</p>
+            </div>
             <div class="topo-card topo-{{ $summary['explained_after'] > $summary['explained_now'] ? 'info' : 'ok' }}">
                 <h4>Outages ({{ $result['days'] }} days)</h4>
                 <div class="topo-card-value">{{ $summary['outages'] }}</div>
@@ -92,35 +120,52 @@
         </div>
 
         @if($result['loops'])
-            <div class="alert alert-warning">
-                <i class="fa fa-exclamation-triangle"></i> Applying every change would make a loop of dependencies, because a device kept its
-                current parents:
+            <div class="alert alert-warning topo-dependency-loops">
+                <i class="fa fa-exclamation-triangle"></i> Applying every change of this view would make a loop of dependencies with parents that stay as they are:
                 @foreach($result['loops'] as $cycle)
                     <strong>{{ implode(' → ', array_map($name, [...$cycle, $cycle[0]])) }}</strong>@if(! $loop->last); @endif
                 @endforeach
-                . The changes in a loop are refused; fix the current dependencies of these devices in LibreNMS first.
+                . The changes of the devices on a loop are refused, the others are applied; change the current dependencies of these devices in LibreNMS first.
             </div>
         @endif
 
-        <form method="post" action="{{ route('topology.dependencies.apply') }}">
+        @if($canApply && $changing)
+            {{-- every change of this view: the filter and the fingerprint of the changes shown, so the checkboxes need not all be posted --}}
+            <form id="topo-dependencies-every" method="post" action="{{ route('topology.dependencies.apply') }}">
+                @csrf
+                <input type="hidden" name="all" value="1">
+                <input type="hidden" name="fingerprint" value="{{ $result['fingerprint'] }}">
+                @foreach($filterFields as $key => $value)
+                    <input type="hidden" name="filter[{{ $key }}]" value="{{ $value }}">
+                @endforeach
+            </form>
+        @endif
+
+        <form id="topo-dependencies-form" method="post" action="{{ route('topology.dependencies.apply') }}">
             @csrf
-            @foreach(['device', 'group', 'location'] as $key)
-                @if($params[$key])<input type="hidden" name="filter[{{ $key }}]" value="{{ $params[$key] }}">@endif
+            {{-- before the checkboxes: PHP drops the inputs beyond max_input_vars, this tells how many were sent --}}
+            <input type="hidden" name="selected" id="topo-dependencies-selected" value="">
+            @foreach($filterFields as $key => $value)
+                <input type="hidden" name="filter[{{ $key }}]" value="{{ $value }}">
             @endforeach
             <div class="panel panel-default">
                 <div class="panel-heading">
                     <strong>Parents</strong>
                     <span class="text-muted">(LibreNMS suppresses a device's alerts while all its parents are down)</span>
                     @if($canApply && $changing)
-                        <button type="submit" class="btn btn-xs btn-primary pull-right" onclick="return confirm('Set the derived parents of the selected devices?')"><i class="fa fa-check"></i> Apply selected</button>
+                        <span class="pull-right">
+                            <button type="submit" class="btn btn-xs btn-primary" onclick="return confirm('Set the derived parents of the selected devices?')"><i class="fa fa-check"></i> Apply selected</button>
+                            <button type="submit" form="topo-dependencies-every" class="btn btn-xs btn-default" id="topo-dependencies-apply-every"
+                                    onclick="return confirm('Set the derived parents of all {{ $changing }} devices that change in this view?')"><i class="fa fa-check-double"></i> Apply every change of this view ({{ $changing }})</button>
+                        </span>
                     @endif
                 </div>
                 <div class="table-responsive">
                 <table class="table table-condensed table-hover topo-stp-table">
                     <thead>
                     <tr>
-                        @if($canApply)<th style="width: 28px"><input type="checkbox" id="topo-dependencies-all" title="Select every change" @disabled(! $changing)></th>@endif
-                        <th>Device</th><th>Hops</th><th>Current parents</th><th>Derived parents</th><th>Change</th><th>Outages</th>
+                        @if($canApply)<th style="width: 28px"><input type="checkbox" id="topo-dependencies-all" title="Select every change shown" @disabled(! $changing)></th>@endif
+                        <th>Device</th><th title="hops from the core devices">Hops</th><th>Current parents</th><th>Derived parents</th><th>Change</th><th>Outages</th>
                     </tr>
                     </thead>
                     <tbody>
@@ -130,7 +175,7 @@
                             @if($canApply)
                                 <td>
                                     @if($row['change'] === 'new' || $row['change'] === 'changed')
-                                        <input type="checkbox" name="devices[]" value="{{ $row['device_id'] }}" class="topo-dependencies-pick">
+                                        <input type="checkbox" name="devices[]" value="{{ $row['device_id'] }}:{{ implode(',', $row['derived']) }}" class="topo-dependencies-pick">
                                     @endif
                                 </td>
                             @endif
@@ -138,7 +183,7 @@
                             <td>{{ $row['hops'] ?? '-' }}</td>
                             <td class="topo-wrap">
                                 @foreach($row['current'] as $parent)
-                                    <a href="{{ $deviceUrl($parent) }}">{{ $name($parent) }}</a>@if(! $loop->last), @endif
+                                    <a href="{{ $deviceUrl($parent) }}">{{ $name($parent) }}</a>@if(isset($disabled[$parent])) <small class="text-muted" title="a disabled device never counts as down: it never suppresses alerts">(disabled)</small>@endif{{ $loop->last ? '' : ',' }}
                                 @endforeach
                                 @if($row['hidden'])<small class="text-muted">{{ $row['current'] ? '+' : '' }}{{ $row['hidden'] }} you cannot see</small>@endif
                                 @if(! $row['current'] && ! $row['hidden'])<span class="text-muted">none</span>@endif
@@ -169,11 +214,18 @@
             </div>
         </form>
 
+        @php $single = array_column(array_filter($result['advice'], fn ($advice) => ! $advice['lookalike']), 'core'); @endphp
         <p class="text-muted" style="font-size: 12px">
-            Parents are the neighbors one hop closer to the core of the redundancy page, over every LLDP/CDP link (also links that are down now):
-            dual-homed devices get both uplinks, unmonitored switches in between are skipped to the next monitored device, and parents are always closer
-            to the core so they never make a loop. Outages: started while all parents were down (within {{ \Agoodley\LibrenmsTopology\Redundancy\DependencyPlanner::OUTAGE_TOLERANCE / 60 }}
-            minutes), now / with the derived parents.
+            Parents are the neighbors one hop closer to the core, over every LLDP/CDP link (also links that are down now): dual-homed devices get both
+            uplinks, and unmonitored switches in between are skipped to the next monitored device. A switch also gets the switches next to it at the
+            same distance from the core that rank before it (lower spanning tree bridge priority, then more central, then lower device id). Parents
+            always come first in that order, so they never make a loop.
+            Outages: started while all parents were down (within {{ \Agoodley\LibrenmsTopology\Redundancy\DependencyPlanner::OUTAGE_TOLERANCE / 60 }}
+            minutes), now / with the derived parents. A disabled parent never counts as down; applying a change removes it.
+            @if($single)
+                {{ implode(', ', array_map($name, array_slice($single, 0, 6))) }} {{ count($single) === 1 ? 'is the only core device of its' : 'are the only core devices of their' }} part of the network.
+            @endif
+            Change the core with <i>Core devices</i> in the plugin settings.
             @unless($canApply) Only LibreNMS admins can apply the changes. @endunless
         </p>
     @endif
@@ -189,6 +241,13 @@
                 document.querySelectorAll('.topo-dependencies-pick').forEach(function (box) {
                     box.checked = all.checked;
                 });
+            });
+        }
+        var form = document.getElementById('topo-dependencies-form');
+        var selected = document.getElementById('topo-dependencies-selected');
+        if (form && selected) {
+            form.addEventListener('submit', function () {
+                selected.value = document.querySelectorAll('.topo-dependencies-pick:checked').length;
             });
         }
         if (!$ || !$.fn || !$.fn.select2) {

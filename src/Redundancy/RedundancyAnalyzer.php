@@ -288,6 +288,26 @@ class RedundancyAnalyzer
     }
 
     /**
+     * Part of the network (connected component of the design graph) of every graph node.
+     *
+     * @return array<string, int>
+     */
+    public function parts(): array
+    {
+        return $this->part;
+    }
+
+    /**
+     * Bridge priority of the default spanning tree instance of the devices that report one.
+     *
+     * @return array<int, int> device_id => priority
+     */
+    public function bridgePriorities(): array
+    {
+        return $this->stpPriority;
+    }
+
+    /**
      * What the given failures cut off the core now, on top of what is down already: the failure
      * simulation of the map, computed on the whole network. References: node ids of the map
      * (d:<device_id>, u:<neighbour>), p:<port_id> for a link by one of its ports (a port-channel

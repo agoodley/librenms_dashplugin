@@ -15,17 +15,25 @@ namespace Agoodley\LibrenmsTopology\Redundancy;
  * searched again when its devices could together cut off something more: the device closest to the
  * core among those cut off has all its links toward the core on the batch or on what it cuts off
  * anyway (see conflict()).
- * Core devices count strictly: with every core device of a part down, the whole part has lost the
- * core (the map's failure simulation instead lets the largest remaining piece carry on, which suits
- * a failure but not a plan that takes both core switches down at once).
+ * Whether devices back each other up is decided strictly: with every core device of a part down, the
+ * whole part has lost the core, so the core devices of a part never share a batch. What a core batch
+ * takes down is reported like the map's failure simulation (the largest remaining piece carries on).
+ * Devices without a path to the core now, or without any LLDP/CDP neighbor, are left out: nothing
+ * tells what depends on them, they are planned by hand.
  */
 class RolloutPlanner
 {
-    /** Tier of the devices that have no path to the core now: planned first, nothing depends on them. */
-    public const UNCONNECTED = 'unconnected';
-
     /** Tier of the core devices: planned last. */
     public const CORE = 'core';
+
+    /** Reasons a device is left out of the plan. */
+    public const UNKNOWN = 'unknown';
+
+    public const DOWN = 'down';
+
+    public const ISOLATED = 'isolated';
+
+    public const UNCONNECTED = 'unconnected';
 
     /** @var array<string, array> node id => node, see RedundancyAnalyzer::nodes() */
     private array $nodes;
@@ -57,6 +65,9 @@ class RolloutPlanner
     /** @var array<string, array<string, true>> device node => devices that lose the core when it alone is down */
     private array $aloneDevices = [];
 
+    /** @var array<string, int> graph node => number of its links in the design graph (also those down now) */
+    private array $designDegree = [];
+
     public function __construct(private RedundancyAnalyzer $analyzer)
     {
         $this->nodes = $analyzer->nodes();
@@ -84,6 +95,11 @@ class RolloutPlanner
             }
         }
         $this->cuts = $graph->cuts(RedundancyAnalyzer::CORE);
+
+        $design = $analyzer->graph();
+        foreach ($design->nodes() as $node) {
+            $this->designDegree[(string) $node] = $design->degree($node);
+        }
     }
 
     /**
@@ -92,7 +108,10 @@ class RolloutPlanner
      * @param  int[]  $deviceIds  monitored devices to change
      * @param  int  $batchSize  most devices in one batch, 0 for no limit
      * @return array{batches: array<int, array{tier: int|string, devices: int[], lost: int[], network: int, unmanaged: int,
-     *     refs: string[]}>, skipped: array<int, array{device_id: int, reason: string}>}
+     *     refs: string[], reference: string}>, skipped: array<int, array{device_id: int, reason: string}>} tier: hops from the
+     *     core devices (1 for a switch cabled to one) or CORE; reference: 'core', or 'largest part' when a core batch
+     *     leaves a part without core device; skipped: UNKNOWN (not analyzed), DOWN, ISOLATED (no LLDP/CDP neighbor) or
+     *     UNCONNECTED (no path to the core now)
      */
     public function plan(array $deviceIds, int $batchSize = 0): array
     {
@@ -101,20 +120,19 @@ class RolloutPlanner
         foreach (array_values(array_unique(array_map('intval', $deviceIds))) as $deviceId) {
             $device = 'd:' . $deviceId;
             if (! isset($this->nodes[$device]) || isset($this->nodes[$device]['of'])) {
-                $skipped[] = ['device_id' => $deviceId, 'reason' => 'unknown'];
+                $skipped[] = ['device_id' => $deviceId, 'reason' => self::UNKNOWN];
             } elseif (! $this->nodes[$device]['up']) {
-                $skipped[] = ['device_id' => $deviceId, 'reason' => 'down'];
+                $skipped[] = ['device_id' => $deviceId, 'reason' => self::DOWN];
+            } elseif (($tier = $this->tier($device)) === null) {
+                $links = array_sum(array_map(fn ($node) => $this->designDegree[$node] ?? 0, $this->graphNodesOf($device)));
+                $skipped[] = ['device_id' => $deviceId, 'reason' => $links ? self::UNCONNECTED : self::ISOLATED];
             } else {
-                $tiers[(string) $this->tier($device)][] = $device;
+                $tiers[(string) $tier][] = $device;
             }
         }
 
-        // unconnected first, then the farthest from the core, the core last
-        $rank = fn (string $tier) => match ($tier) {
-            self::UNCONNECTED => PHP_INT_MAX,
-            self::CORE => -1,
-            default => (int) $tier,
-        };
+        // the farthest from the core first, the core last
+        $rank = fn (string $tier) => $tier === self::CORE ? -1 : (int) $tier;
         uksort($tiers, fn ($a, $b) => $rank((string) $b) <=> $rank((string) $a));
 
         $batches = [];
@@ -130,21 +148,22 @@ class RolloutPlanner
     }
 
     /**
-     * Hops from the core now (the device's closest link), the core tier, or unconnected.
+     * Hops from the core node now (its closest link; 1 for a core device), the core tier, or null
+     * without a path to the core.
      */
-    private function tier(string $device): int|string
+    private function tier(string $device): int|string|null
     {
-        if (isset($this->analyzer->coreNodes()[$device])) {
-            return self::CORE;
-        }
         $hops = null;
         foreach ($this->graphNodesOf($device) as $node) {
             if (isset($this->distance[$node])) {
                 $hops = $hops === null ? $this->distance[$node] : min($hops, $this->distance[$node]);
             }
         }
+        if ($hops !== null && isset($this->analyzer->coreNodes()[$device])) {
+            return self::CORE;
+        }
 
-        return $hops ?? self::UNCONNECTED;
+        return $hops;
     }
 
     /**
@@ -186,11 +205,6 @@ class RolloutPlanner
      */
     private function add(string $tier, array $batch, string $device): ?array
     {
-        if ($tier === self::UNCONNECTED) {
-            $batch['devices'][] = $device; // no path to the core: nothing to lose
-
-            return $batch;
-        }
         // what the device cuts off alone, and whether the batch could cut off more together
         $new = [];
         foreach ($this->graphNodesOf($device) as $node) {
@@ -385,33 +399,59 @@ class RolloutPlanner
     }
 
     /**
-     * Result row of a batch: its devices, what loses the core while it is down and the references
-     * of the map's failure simulation.
+     * Does the batch take down every core device that is up in a part of the network?
+     *
+     * @param  array<int, string>  $devices
+     */
+    private function takesWholeCore(array $devices): bool
+    {
+        $parts = $this->analyzer->parts();
+        $batch = array_flip($devices);
+        $left = [];
+        foreach (array_keys($this->analyzer->coreNodes()) as $core) {
+            if ($this->nodes[$core]['up'] && isset($parts[$core])) {
+                $left[$parts[$core]] = ($left[$parts[$core]] ?? 0) + (isset($batch[$core]) ? 0 : 1);
+            }
+        }
+
+        return in_array(0, $left, true);
+    }
+
+    /**
+     * Result row of a batch: its devices, what loses its path to the core while it is down and the
+     * references of the map's failure simulation. A core batch is described by the simulation
+     * itself, which lets the largest remaining piece carry on when no core device is left.
      *
      * @param  array{devices: array<int, string>, lost: array<string, true>}  $batch
-     * @return array{tier: int|string, devices: int[], lost: int[], network: int, unmanaged: int, refs: string[]}
+     * @return array{tier: int|string, devices: int[], lost: int[], network: int, unmanaged: int, refs: string[], reference: string}
      */
     private function describe(string $tier, array $batch): array
     {
-        $leaves = $this->analyzer->leaves();
-        $unmanaged = 0;
-        foreach ($batch['devices'] as $device) {
-            $unmanaged += count($leaves[$device] ?? []);
+        $reference = 'core';
+        if ($tier === self::CORE) {
+            $simulated = $this->analyzer->simulate($batch['devices']);
+            $lostNodes = array_column($simulated['lost'], 'node');
+            $unmanaged = $simulated['unmanaged'];
+            $reference = $this->takesWholeCore($batch['devices']) ? 'largest part' : 'core';
+        } else {
+            $leaves = $this->analyzer->leaves();
+            $lostNodes = array_values(array_diff(array_map('strval', array_keys($batch['lost'])), $batch['devices']));
+            $unmanaged = 0;
+            foreach ($batch['devices'] as $device) {
+                $unmanaged += count($leaves[$device] ?? []);
+            }
+            foreach ($lostNodes as $device) {
+                $unmanaged += count($leaves[$device] ?? []) + ($this->nodes[$device]['managed'] ? 0 : 1);
+            }
         }
+
         $lost = [];
         $network = 0;
-        foreach (array_keys($batch['lost']) as $device) {
-            $device = (string) $device;
-            if (in_array($device, $batch['devices'], true)) {
-                continue;
-            }
+        foreach ($lostNodes as $device) {
             $node = $this->nodes[$device];
-            $unmanaged += count($leaves[$device] ?? []);
             if ($node['managed']) {
                 $lost[] = (int) $node['device_id'];
                 $network += $node['network'] ? 1 : 0;
-            } else {
-                $unmanaged++;
             }
         }
         // switches, routers and firewalls first, as in the failure simulation
@@ -419,12 +459,13 @@ class RolloutPlanner
         usort($lost, fn ($a, $b) => $key($a) <=> $key($b));
 
         return [
-            'tier' => is_numeric($tier) ? (int) $tier : $tier,
+            'tier' => $tier === self::CORE ? self::CORE : (int) $tier - 1,
             'devices' => array_map(fn ($device) => (int) $this->nodes[$device]['device_id'], $batch['devices']),
             'lost' => $lost,
             'network' => $network,
             'unmanaged' => $unmanaged,
             'refs' => $batch['devices'],
+            'reference' => $reference,
         ];
     }
 }

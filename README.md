@@ -122,10 +122,14 @@ switches, routers and firewalls by default), and optionally the most devices per
   unmonitored switch, and two core switches always land in different batches.
 * **What goes down while a batch runs**: the monitored devices it cuts off and the unmanaged neighbors (phones, access
   points) that go down with it – what its maintenance window must cover. Each batch has its hostnames ready to copy and
-  a *Simulate* button that fails the batch on the L2 map.
+  a *Simulate* button that fails the batch on the L2 map. A batch that takes down the last core device of a part of
+  the network is counted like that simulation: the largest remaining piece carries on.
 
-Devices that are down now are left out. `api/rollout?devices=12,13` (or `group`, `location`, `size`, `network=0`)
-returns the plan as JSON.
+Picked devices are planned as they are. Devices that are down now, without any LLDP/CDP neighbor or without a path to
+the core now are left out and listed to plan by hand (nothing tells what depends on them), and so are picked ids that
+are unknown, disabled or not visible to you. When a part of the network has a single core device and another switch
+is cabled like a second core switch, the page names it: add both to *Core devices*. `api/rollout?devices=12,13` (or
+`group`, `location`, `size`, `network=0`) returns the plan as JSON.
 
 ![Rollout planner](docs/images/rollout.png)
 
@@ -136,14 +140,21 @@ LibreNMS suppresses a device's alerts while **all** its parent devices are down,
 the core over every LLDP/CDP link, also links that are down now.
 
 * Dual-homed devices get both uplink devices, so their alerts are only suppressed when both are down.
-* Parents are always closer to the core, so the dependencies never form a loop.
+* A switch also gets the switches next to it at the same distance from the core that rank before it: lower spanning
+  tree bridge priority, then more central (fewer hops to the other switches), then lower device id. So a switch cabled
+  to both switches of a core pair gets both even when only one of them is set as core, as long as the other one has the
+  lower bridge priority.
+* Parents always come first in that order (closer to the core, then by rank), so derived dependencies never form a loop.
 * An unmonitored switch in between is skipped to the next monitored device toward the core.
 * Core devices and devices without a path to a core keep their current parents.
 
-The page lists the current and the derived parents of each device (changed, new, same or kept), and how many of its
-outages in the last 30 days started while all its parents were down – with the current and with the derived parents:
-the alerts LibreNMS suppresses. Admins can apply all or selected changes; changes that would make a loop with
-dependencies kept by hand are refused, and every change is written to the device's eventlog.
+The page shows the core, the current and the derived parents of each device (changed, new, same or kept), and how many
+of its outages in the last 30 days started while all its parents were down – with the current and with the derived
+parents: the alerts LibreNMS suppresses. A disabled parent is labelled as such: it never counts as down. Admins apply
+selected changes, or every change of the view at once (also for thousands of devices). What the preview showed goes
+with the request: a device whose derived parents changed since is skipped, a view whose changes changed is not applied.
+A device that would end up on a loop with dependencies kept by hand is refused, the other changes are applied, and
+every change is written to the device's eventlog with the parents it had before.
 
 ![Device dependencies](docs/images/dependencies.png)
 
@@ -207,8 +218,8 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   same as JSON).
 * If the automatic core is not your core, set **Core devices** in the settings; the switches next to the LibreNMS
   poller are a good choice when you want "what can the poller still reach". Set both switches of a core pair: with only
-  one, devices that are also cabled to the other get one parent on the dependencies page, and the rollout planner
-  treats the other one as an ordinary switch.
+  one, the other one depends on it alone on the dependencies page and the rollout planner plans it like an access
+  switch (both pages name a switch that is cabled like a second core switch).
 * Before a firmware rollout, plan it on **Rollout Planner** for the device group or location, then put each batch and
   the devices listed under it in a LibreNMS maintenance window while it runs.
 * `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links`, `api/redundancy`, `api/rollout` and `api/dependencies`
@@ -263,7 +274,8 @@ dependencies; other users see the page read only.
   `Support\Graph::cuts()`), fake and lost redundancy and outages; `CoreFinder` picks the core, `PortUnits` reads stack
   members and line cards from the hardware inventory.
 * `src/Redundancy/RolloutPlanner.php`, `src/Redundancy/DependencyPlanner.php` – rollout batches and device dependencies
-  on the graphs of the redundancy analysis (`Topology\PlanningService`, `Data\DependencyRepository`).
+  on the graphs of the redundancy analysis (`Topology\PlanningService`, `Data\DependencyRepository`); `CoreAdvice` names
+  a switch cabled like a second core switch.
 * `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
@@ -291,9 +303,12 @@ vendor/bin/phpunit
   platform; an unmanaged neighbor without a platform counts as a switch. Down devices without any LLDP/CDP neighbor are
   not listed as outages: nothing tells what they depend on.
 * The rollout planner and the device dependencies follow the same LLDP/CDP links: devices without neighbor data get no
-  parents and are planned with nothing depending on them. A batch with every core device of a part cuts off that whole
-  part (the map's failure simulation instead lets the largest remaining piece carry on). LibreNMS parents must be
-  monitored devices, so a device behind an unmonitored switch depends on the next monitored one.
+  parents and are left out of rollout plans. Whether devices back each other up is decided strictly (a part without
+  its core devices counts as cut off as a whole), so the core devices of a part never share a batch.
+* Derived parents never form a loop, so of two switches at the same distance from the core only one can depend on the
+  other, and in a mesh a device can keep a path through switches farther from the core while all its parents are down:
+  LibreNMS then suppresses its alerts although it may still be reachable. LibreNMS parents must be monitored devices,
+  so a device behind an unmonitored switch depends on the next monitored one.
 
 ## Roadmap
 

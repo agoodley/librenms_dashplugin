@@ -15,30 +15,47 @@ use LibreNMS\Enum\Severity;
 class DependencyRepository extends ScopedRepository
 {
     /**
-     * Current parents of the given devices; parents the user may not see are counted, not named.
+     * Current parents of the given devices: the ones the user may see (disabled ones too, by name: a
+     * disabled parent never counts as down, so LibreNMS then never suppresses the device's alerts)
+     * and a count of the ones the user may not see.
      *
      * @param  int[]  $ids
-     * @return array{0: array<int, int[]>, 1: array<int, int>} child device_id => parent device ids, child => hidden parents
+     * @return array{parents: array<int, int[]>, disabled: array<int, string>, hidden: array<int, int>} child => parent ids
+     *     (enabled and disabled), disabled parent => name, child => parents the user may not see
      */
     public function parents(array $ids): array
     {
+        $result = ['parents' => [], 'disabled' => [], 'hidden' => []];
         $ids = array_values(array_filter($ids, fn ($id) => $this->canSee((int) $id)));
-        $parents = [];
-        $hidden = [];
         if (! $ids) {
-            return [$parents, $hidden];
+            return $result;
         }
-        foreach (DB::table('device_relationships')->whereIntegerInRaw('child_device_id', $ids)->get(['child_device_id', 'parent_device_id']) as $row) {
+
+        $rows = DB::table('device_relationships')->whereIntegerInRaw('child_device_id', $ids)->get(['child_device_id', 'parent_device_id']);
+        $unknown = [];
+        foreach ($rows as $row) {
+            if (! $this->canSee((int) $row->parent_device_id)) {
+                $unknown[(int) $row->parent_device_id] = true;
+            }
+        }
+        // parents that are no enabled device the user sees: disabled devices the user may see, or hidden
+        if ($unknown) {
+            foreach (Device::hasAccess($this->user)->whereIntegerInRaw('devices.device_id', array_keys($unknown))->where('devices.disabled', 1)
+                ->get(['devices.device_id', 'devices.hostname', 'devices.display']) as $device) {
+                $result['disabled'][(int) $device->device_id] = (string) ($device->display ?: $device->hostname);
+            }
+        }
+        foreach ($rows as $row) {
             $child = (int) $row->child_device_id;
             $parent = (int) $row->parent_device_id;
-            if ($this->canSee($parent)) {
-                $parents[$child][] = $parent;
+            if ($this->canSee($parent) || isset($result['disabled'][$parent])) {
+                $result['parents'][$child][] = $parent;
             } else {
-                $hidden[$child] = ($hidden[$child] ?? 0) + 1;
+                $result['hidden'][$child] = ($result['hidden'][$child] ?? 0) + 1;
             }
         }
 
-        return [$parents, $hidden];
+        return $result;
     }
 
     /**
@@ -71,15 +88,16 @@ class DependencyRepository extends ScopedRepository
     }
 
     /**
-     * Replace the parents of devices and note each change in the device's eventlog. Only for users
-     * who may change device dependencies (checked by the caller); devices the user may not see are
-     * left alone.
+     * Replace the parents of devices and note each change, with the parents it had before, in the
+     * device's eventlog. Only for users who may change device dependencies (checked by the caller);
+     * devices the user may not see are left alone.
      *
      * @param  array<int, int[]>  $parents  child device_id => new parent device ids
+     * @param  array<int, int[]>  $before  child device_id => parent device ids before the change
      * @param  array<int, string>  $names  device_id => display name, for the eventlog text
      * @return int[] the devices changed
      */
-    public function setParents(array $parents, array $names): array
+    public function setParents(array $parents, array $before, array $names): array
     {
         $parents = array_filter($parents, fn ($ids, $child) => $this->canSee((int) $child) && ! array_filter($ids, fn ($id) => ! $this->canSee((int) $id)),
             ARRAY_FILTER_USE_BOTH);
@@ -88,12 +106,13 @@ class DependencyRepository extends ScopedRepository
         }
 
         $username = $this->user->username ?? 'unknown';
-        DB::transaction(function () use ($parents, $names, $username): void {
+        $list = fn (array $ids) => $ids ? implode(', ', array_map(fn ($id) => $names[$id] ?? "#$id", $ids)) : 'none';
+        DB::transaction(function () use ($parents, $before, $list, $username): void {
             foreach (Device::whereIntegerInRaw('device_id', array_keys($parents))->get() as $device) {
                 $ids = array_values(array_map('intval', $parents[(int) $device->device_id]));
                 $device->parents()->sync($ids);
-                $list = implode(', ', array_map(fn ($id) => $names[$id] ?? "#$id", $ids));
-                Eventlog::log("Device dependencies set from the topology by $username: parents $list", $device, 'system', Severity::Info);
+                Eventlog::log("Device dependencies set from the topology by $username: parents " . $list($ids)
+                    . ' (before: ' . $list($before[(int) $device->device_id] ?? []) . ')', $device, 'system', Severity::Info);
             }
         });
 
