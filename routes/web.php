@@ -2,6 +2,7 @@
 
 use Agoodley\LibrenmsTopology\Http\Controllers\ApiController;
 use Agoodley\LibrenmsTopology\Http\Controllers\AssetController;
+use Agoodley\LibrenmsTopology\Http\Controllers\CoverageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PlanningController;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
@@ -25,6 +26,9 @@ Route::middleware(['web', 'auth'])
         Route::get('api/links', [ApiController::class, 'links'])->name('api.links');
         Route::get('api/redundancy', [ApiController::class, 'redundancy'])->name('api.redundancy');
         Route::get('api/simulate', [ApiController::class, 'simulate'])->name('api.simulate');
+
+        Route::get('coverage', [CoverageController::class, 'index'])->name('coverage');
+        Route::get('api/coverage', [CoverageController::class, 'api'])->name('api.coverage');
 
         // rollout planner and device dependencies
         Route::get('rollout', [PlanningController::class, 'rollout'])->name('rollout');

@@ -164,6 +164,38 @@ opens the L2 map with that failure applied.
 
 ![Failure simulation on the L2 map](docs/images/failure-simulation.png)
 
+### Coverage report
+
+What LibreNMS does not see, so the gaps in the maps and the checks are known:
+
+| Check | Severity |
+|---|---|
+| **Not monitored**: an LLDP/CDP neighbor whose CDP platform, LLDP system description or name says switch, router, firewall or access point, with every port it is seen on (its LLDP and CDP sightings merged) and an *Add* button for users who may add devices | warning (access points and wireless controllers: info) |
+| **Not linked**: a neighbor whose name or address is that of one monitored device, but LibreNMS did not link the two (the name it advertises is not the device's hostname or sysName, or the link is older than the device), so the link is missing from the maps | info |
+| **Name of several devices**: a neighbor named like several monitored devices (and the hostname of none of them): LibreNMS cannot tell which one it is and links none | info |
+| **Disabled**: a neighbor that is a device disabled in LibreNMS, so it is not polled | info |
+| **No LLDP/CDP neighbors reported**: a monitored switch, router, firewall or access point that other devices see but that reports no neighbors itself, so its links come from the other end only (the Link & VLAN page reports it too; it says when LibreNMS' `discovery-protocols` module is off for the device) | info |
+| **No neighbor data**: a monitored switch, router, firewall or access point that reports no neighbors and that no monitored device sees: it stands alone on the maps | warning for switches and routers that are up, else info |
+| **Several neighbors on one port**: two or more LLDP/CDP neighbors on one port (two that are not phones, or two phones): something LibreNMS does not see connects them | info |
+| **Possible unmanaged switch or hub**: an Ethernet access port with 4 or more MAC addresses (setting) in its device's last forwarding table discovery and no LLDP/CDP neighbor that explains them (a phone only explains the PC behind it) – an unmanaged switch or hub, or a server, hypervisor or access point that bridges without announcing itself | info |
+
+The type of a neighbor comes from its CDP platform or, for LLDP, its system description, which names the software: Cisco
+IOS (the model in it tells a C2960 switch from a C2900 router), IOS XE, NX-OS and IOS XR, Arista EOS, Juniper, Aruba
+(CX switches and access points), ExtremeXOS, Dell OS10, MikroTik, VyOS, FortiGate and Firepower, Catalyst 9800 wireless
+controllers and UniFi access points, for example. Neighbors of unknown type are listed (folded away) without a finding,
+phones and servers are only counted. A neighbor LibreNMS linked to a device you may not see is listed as monitored,
+without a finding. Servers, printers, other devices that usually run no LLDP/CDP and firewalls whose OS supports neither
+(Cisco ASA and FTD) are listed without a finding among the monitored devices without neighbors; a device that is down is
+info.
+Factory default names (`Switch`, `MikroTik`, ...) are one neighbor per port and never match a monitored device. Trunks,
+port-channels, ports that are not Ethernet (such as an access point's radio) and ports whose MAC addresses are in three or
+more VLANs (access points, hypervisors) are not counted as a possible unmanaged switch. The advice for an unmonitored
+neighbor depends on LibreNMS' LLDP/CDP autodiscovery: off (`autodiscovery.xdp`), on without discovery networks (`nets`
+is empty by default, then it adds nothing), or on (then the eventlog of the device that sees the neighbor says why adding
+it failed). Each list stops at 500 rows (the most important first) and says how many there are; the summary counts all.
+
+![Monitoring coverage](docs/images/coverage.png)
+
 ### Rollout planner
 
 **Tools → Rollout Planner** puts the devices of a firmware upgrade, a reboot or a configuration change in batches, using
@@ -274,6 +306,8 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   including devices that are not on the map. Add more failures to check a pair, *Reset* to start over.
   `l2?fail=d:12,p:345` opens the map with device 12 and the link of port 345 failed (`api/simulate?fail=...` returns the
   same as JSON).
+* The **Coverage** page lists the network devices LibreNMS only knows as LLDP/CDP neighbors: adding them (or turning on
+  LLDP/CDP autodiscovery, `autodiscovery.xdp`) fills the gaps in the maps and in the redundancy analysis.
 * When the STP page reports a broadcast storm, start with the MAC flapping messages in **Loop evidence**: the ports a
   switch names are the two sides of the loop. A sudden storm with clean spanning tree data usually means an unmanaged
   switch or a hub on an access port.
@@ -283,9 +317,12 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   (both pages name a switch that is cabled like a second core switch).
 * Before a firmware rollout, plan it on **Rollout Planner** for the device group or location, then put each batch and
   the devices listed under it in a LibreNMS maintenance window while it runs.
-* `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links`, `api/redundancy`, `api/rollout` and `api/dependencies`
-  return the same data as JSON (same query parameters as the pages, e.g. `api/stp?vlan=30&group=2`,
-  `api/links?device=12`) for automation.
+* `plugin/topology/api/l2`, `api/l3`, `api/stp`, `api/links`, `api/redundancy`, `api/coverage`, `api/rollout` and
+  `api/dependencies` return the same data as JSON (same query parameters as the pages, e.g. `api/stp?vlan=30&group=2`,
+  `api/links?device=12`) for automation. `api/coverage` cuts each list at the same 500 rows as the page and returns the
+  full counts as `findings_total`, `neighbors_total`, `devices_total` and `ports_total`: narrow it with `device`,
+  `group` or `location` for the rest. Phones and servers among the neighbors are only counted, in
+  `summary.other_neighbors`.
 
 ## Settings
 
@@ -314,6 +351,8 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 | Core devices | – | hostnames/sysNames/ids every device should keep a path to; empty: designated root bridges, else automatic |
 | Warn from | 2 | switches, routers or firewalls cut off by one failure before a single point of failure is a warning |
 | Disabled redundancy checks | – | check codes or categories (`outages`, `lost`, `fake`, `spof`), e.g. `spof_link uplinks_same_device` |
+| Ports with many MAC addresses | 4 | MAC addresses in the last discovery on an access port without a neighbor that explains them before it is reported as a possible unmanaged switch (0 disables the count, several neighbors on one port are still reported) |
+| Disabled coverage checks | – | check codes or categories (`unmonitored`, `devices`, `ports`), e.g. `not_linked hub_suspected` |
 | Rollout batch size | 0 | default most devices per rollout batch (0: no limit); the planner page can change it |
 | Outage history | 30 days | outages the derived dependencies are checked against |
 
@@ -321,9 +360,12 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 
 Every map and diagnostic only uses devices the logged-in user may see (LibreNMS device permissions).
 Neighbors on devices the user cannot see are shown as unmanaged neighbors (their LLDP/CDP name only), and a
-root bridge on such a device is not reported as a rogue switch. Only LibreNMS admins can apply derived device
-dependencies; other users see the page read only. The syslog evidence of the spanning tree page is only shown to users
-whose LibreNMS role may view syslog.
+root bridge on such a device is not reported as a rogue switch. The coverage report lists a neighbor LibreNMS linked to
+such a device as monitored without naming the device (LibreNMS shows the neighbor's name on the device's neighbors tab
+too), and compares the names of neighbors LibreNMS did not link only with the devices the user may see (also disabled
+ones), so it tells nothing else about the others. Only LibreNMS admins can apply derived device dependencies; other
+users see the page read only. The syslog evidence of the spanning tree page is only shown to users whose LibreNMS role
+may view syslog.
 
 ## How it works
 
@@ -346,6 +388,9 @@ whose LibreNMS role may view syslog.
 * `src/Redundancy/RolloutPlanner.php`, `src/Redundancy/DependencyPlanner.php` – rollout batches and device dependencies
   on the graphs of the redundancy analysis (`Topology\PlanningService`, `Data\DependencyRepository`); `CoreAdvice` names
   a switch cabled like a second core switch.
+* `src/Coverage/CoverageAnalyzer.php` – the coverage report (unmonitored, unlinked and ambiguous neighbors, devices
+  without neighbor data, ports with several neighbors or many MAC addresses); `Links\NeighborReports` is the index of
+  which device reports which neighbor, shared with the link checks.
 * `resources/assets/topology.js` – the map client, drawn with the vis-network library bundled with LibreNMS.
 
 The builders and analyzer are plain PHP with no LibreNMS dependency and are covered by unit tests:
@@ -382,6 +427,16 @@ vendor/bin/phpunit
   at the next discovery, so "redundancy lost" covers failures since the last discovery run; a link that has been down
   for longer is simply missing (roadmap item 5 keeps a baseline). It looks at device and link failures, not at VLANs:
   a backup trunk that does not carry a VLAN is a link & VLAN finding.
+* The coverage report only knows what LLDP/CDP and the forwarding tables report: a switch that sends no LLDP/CDP shows
+  up at best as a port with many MAC addresses. LibreNMS does not keep the management address a neighbor advertises, so
+  *Add* opens the Add Device page without it. Neighbors LibreNMS did not link are matched to monitored devices by
+  hostname, sysName, display name (a name without domain matches the same first label with any domain) and interface
+  address; LibreNMS itself also links by MAC address, which the report cannot check. A neighbor whose platform,
+  description and name tell nothing is listed as of unknown type, without a finding. MAC addresses are those of each
+  device's last discovery (LibreNMS keeps older ones for `ports_fdb_purge` days): when that discovery found none on a
+  port, the port is not reported. The LLDP/CDP rows are read from the database in chunks and phones and servers are
+  only counted, so the whole network of 1,200 switches with 36,000 phones and 2.8 million forwarding table entries takes
+  about 2 seconds and 30 MB of PHP memory.
 * Servers, access points and phones are recognized by their LibreNMS device type, unmanaged neighbors by their CDP
   platform or, for LLDP (which has no platform), their system description; a neighbor with neither counts as a switch. Down devices without any LLDP/CDP neighbor are
   not listed as outages: nothing tells what they depend on.

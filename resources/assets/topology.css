@@ -98,6 +98,8 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-rollout-hosts textarea { margin-top: 3px; font-family: monospace; font-size: 11px; }
 .topo-finding-detail { color: #555; }
 .topo-finding-rec { color: #2c6e49; font-size: 12px; margin-top: 3px; }
+.topo-details { border-top: 1px solid #ddd; }
+.topo-details > summary { padding: 6px 10px; cursor: pointer; color: #555; }
 .topo-stp-table td, .topo-stp-table th { font-size: 12px; white-space: nowrap; }
 .topo-stp-table td.topo-wrap { white-space: normal; }
 .topo-mono { font-family: monospace; font-size: 11px; }
@@ -129,6 +131,8 @@ html.dark .topo-fullscreen { background: #1d2024; }
 html.dark .topo-kv th, html.dark .topo-toolbar .topo-group-label, html.dark .topo-viewbar .topo-group-label { color: #aaa; }
 html.dark .topo-status-bar, html.dark .topo-finding-detail, html.dark .topo-card p { color: #bbb; }
 html.dark .topo-finding-rec { color: #7fc79a; }
+html.dark .topo-details { border-color: #3a3f45; }
+html.dark .topo-details > summary { color: #bbb; }
 html.dark .topo-subnet { background: #3b3524; }
 html.dark .topo-config pre { background: #24272c; border-color: #3a3f45; color: #ddd; }
 html.dark .topo-config summary { color: #6ea8de; }
