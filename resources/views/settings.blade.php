@@ -31,6 +31,13 @@
             ['redundancy_warn_devices', 'number', 'Warn when one failure cuts off at least this many switches, routers or firewalls', 'smaller single points of failure are info'],
             ['redundancy_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (outages, lost, fake, spof), e.g. uplinks_same_device spof_link'],
         ],
+        'Topology history & background checks' => [
+            ['history_enabled', 'bool', 'Record the topology history', 'every interval below, through the LibreNMS scheduler; needs the plugin tables (./lnms migrate)'],
+            ['history_interval', 'number', 'History interval (minutes)', '15, 30, 60, 120, 240, 360, 720 or 1440; LibreNMS refreshes LLDP/CDP neighbors at discovery (every 6 hours by default)'],
+            ['history_retention_days', 'number', 'Keep changes for (days)', 'facts and findings that ended earlier are deleted'],
+            ['history_checks', 'text', 'Background checks', 'analyses run with every snapshot: stp, links, redundancy; empty disables them'],
+            ['history_eventlog_severity', 'text', 'Eventlog from severity', 'new and resolved background findings from this severity go to the eventlog of their devices: critical, warning, info or none'],
+        ],
     ];
 @endphp
 

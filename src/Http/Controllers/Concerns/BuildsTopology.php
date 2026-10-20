@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Http\Controllers\Concerns;
 
+use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
@@ -38,7 +39,7 @@ trait BuildsTopology
      */
     protected function service(Request $request, ?PluginSettings $settings = null): TopologyService
     {
-        return new TopologyService(new TopologyRepository($request->user()), $settings ?? $this->settings());
+        return new TopologyService(new TopologyRepository($request->user()), $settings ?? $this->settings(), new HistoryRepository($request->user()));
     }
 
     /**

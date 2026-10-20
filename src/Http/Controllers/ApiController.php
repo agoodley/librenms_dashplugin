@@ -2,6 +2,8 @@
 
 namespace Agoodley\LibrenmsTopology\Http\Controllers;
 
+use Agoodley\LibrenmsTopology\Data\HistoryRepository;
+use Agoodley\LibrenmsTopology\History\FindingBadges;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Illuminate\Http\JsonResponse;
@@ -77,6 +79,6 @@ class ApiController extends Controller
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json("$map view", fn () => $this->service($request, $settings)->$map($params));
+        return $this->json("$map view", fn () => FindingBadges::annotate($map, $this->service($request, $settings)->$map($params), new HistoryRepository($request->user())));
     }
 }

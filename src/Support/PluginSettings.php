@@ -30,6 +30,11 @@ class PluginSettings
         'redundancy_core' => '',
         'redundancy_warn_devices' => '2',
         'redundancy_disabled_checks' => '',
+        'history_enabled' => '1',
+        'history_interval' => '60',
+        'history_retention_days' => '90',
+        'history_checks' => 'stp links redundancy',
+        'history_eventlog_severity' => 'warning',
     ];
 
     /** @var array<string, string> */

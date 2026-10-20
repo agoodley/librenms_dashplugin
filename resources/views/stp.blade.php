@@ -104,6 +104,7 @@
                         <td><span class="topo-sev topo-sev-{{ $finding['severity'] }}">{{ $finding['severity'] }}</span></td>
                         <td class="topo-wrap">
                             <strong>@if($finding['vlan_label']){{ $finding['vlan_label'] }}: @endif{{ ucfirst($finding['title']) }}</strong>
+                            @include('topology::partials.finding-age')
                             @if($finding['vlan'] !== null)
                                 <a href="{{ $mapUrl($finding['vlan'], $finding['devices'][0] ?? null) }}" title="Show on the L2 map with STP overlay"><i class="fa fa-sitemap"></i></a>
                             @endif

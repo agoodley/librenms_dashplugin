@@ -2,6 +2,7 @@
 
 use Agoodley\LibrenmsTopology\Http\Controllers\ApiController;
 use Agoodley\LibrenmsTopology\Http\Controllers\AssetController;
+use Agoodley\LibrenmsTopology\Http\Controllers\HistoryController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PageController;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use Illuminate\Support\Facades\Route;
@@ -17,6 +18,8 @@ Route::middleware(['web', 'auth'])
         Route::get('stp', [PageController::class, 'stp'])->name('stp');
         Route::get('links', [PageController::class, 'links'])->name('links');
         Route::get('redundancy', [PageController::class, 'redundancy'])->name('redundancy');
+        Route::get('changes', [HistoryController::class, 'changes'])->name('changes');
+        Route::post('changes/baseline', [HistoryController::class, 'baseline'])->name('changes.baseline');
 
         Route::get('api/l2', [ApiController::class, 'l2'])->name('api.l2');
         Route::get('api/l3', [ApiController::class, 'l3'])->name('api.l3');
@@ -24,6 +27,7 @@ Route::middleware(['web', 'auth'])
         Route::get('api/links', [ApiController::class, 'links'])->name('api.links');
         Route::get('api/redundancy', [ApiController::class, 'redundancy'])->name('api.redundancy');
         Route::get('api/simulate', [ApiController::class, 'simulate'])->name('api.simulate');
+        Route::get('api/changes', [HistoryController::class, 'api'])->name('api.changes');
 
         Route::get('assets/{file}', AssetController::class)
             ->where('file', '[A-Za-z0-9_-]+\.(js|css)')

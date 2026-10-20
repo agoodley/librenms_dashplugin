@@ -16,11 +16,30 @@ abstract class ScopedRepository
     /** @var array<int, true>|null */
     private ?array $accessible = null;
 
+    /** Every device, for the scheduled jobs (see system()). */
+    private bool $system = false;
+
     /**
      * @param  mixed  $user  the logged in LibreNMS user (App\Models\User); every query is limited to what it may see
      */
     public function __construct(protected readonly mixed $user)
     {
+    }
+
+    /**
+     * Repository that sees every enabled device, for the scheduled jobs that keep the topology
+     * history. Refused outside the console, so no web request can widen its scope this way.
+     */
+    public static function system(): static
+    {
+        if (! app()->runningInConsole()) {
+            throw new \LogicException('the system scope is only available to console commands');
+        }
+
+        $repository = new static(null);
+        $repository->system = true;
+
+        return $repository;
     }
 
     /**
@@ -30,7 +49,7 @@ abstract class ScopedRepository
      */
     public function deviceIds(?int $groupId = null, ?int $locationId = null): array
     {
-        $query = Device::hasAccess($this->user)->where('devices.disabled', 0);
+        $query = ($this->system ? Device::query() : Device::hasAccess($this->user))->where('devices.disabled', 0);
         if ($groupId) {
             $query->inDeviceGroup($groupId);
         }

@@ -305,7 +305,7 @@ class RedundancyAnalyzer
             }
             foreach ($edge['members'] as $member) {
                 if (! isset($ports[(int) $member['a_port']]) && ! isset($ports[(int) $member['b_port']])
-                    && L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port']))) {
+                    && $this->memberUp($member)) {
                     return false;
                 }
             }
@@ -622,7 +622,7 @@ class RedundancyAnalyzer
         foreach ($groups as $key => $group) {
             $up = 0;
             foreach ($group['members'] as $member) {
-                $up += L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port'])) ? 1 : 0;
+                $up += $this->memberUp($member) ? 1 : 0;
             }
             $this->edges[$key] = ['key' => $key, 'from' => $group['from'], 'to' => $group['to'], 'members' => $group['members'], 'up' => $up];
             $this->design->addEdge($group['from'], $group['to'], $key);
@@ -1246,7 +1246,7 @@ class RedundancyAnalyzer
         $down = [];
         $ports = [];
         foreach ($edge['members'] as $member) {
-            if (! L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port']))) {
+            if (! $this->memberUp($member)) {
                 $down[] = $member['a_port']
                     ? $this->nodeName($edge['from']) . ' ' . $this->portName((int) $member['a_port'])
                     : $this->nodeName($edge['to']) . ' ' . $this->portName((int) $member['b_port']);
@@ -1754,6 +1754,13 @@ class RedundancyAnalyzer
      */
     private function edgeState(array $edge): string
     {
+        $missing = array_column($edge['members'], 'missing');
+        if (count(array_filter($missing, fn ($since) => $since !== null)) === count($edge['members'])) {
+            $since = max($missing);
+
+            return 'missing' . ($since !== '' ? ' since ' . substr($since, 0, 16) : '') . ': in the baseline, no longer reported by LLDP/CDP';
+        }
+
         foreach ([$edge['from'], $edge['to']] as $node) {
             if (! $this->nodes[$node]['up']) {
                 return $this->nodeName($node) . ' is down';
@@ -1766,6 +1773,15 @@ class RedundancyAnalyzer
         }
 
         return 'link down';
+    }
+
+    /**
+     * Is a cable of a link up? A baseline link that LLDP/CDP no longer reports is down whatever its
+     * ports say (they may be up and cabled elsewhere).
+     */
+    private function memberUp(array $member): bool
+    {
+        return ($member['missing'] ?? null) === null && L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port']));
     }
 
     /**

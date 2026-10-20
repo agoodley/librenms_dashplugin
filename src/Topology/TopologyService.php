@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Topology;
 
+use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
 use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
@@ -27,9 +28,14 @@ class TopologyService
     /** Port columns the redundancy analysis needs (it loads every link port of the network). */
     private const REDUNDANCY_PORT_COLUMNS = ['port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifOperStatus', 'ifAdminStatus'];
 
+    /**
+     * @param  HistoryRepository|null  $history  topology history: with a saved baseline, the redundancy analysis also
+     *                                          knows the baseline links that LLDP/CDP no longer reports
+     */
     public function __construct(
         private readonly TopologyRepository $repo,
         private readonly PluginSettings $settings,
+        private readonly ?HistoryRepository $history = null,
     ) {
     }
 
@@ -335,6 +341,13 @@ class TopologyService
         $lag = $this->repo->lagParents($all);
         $aggregates = array_values(array_unique(array_intersect_key($lag, array_flip($linkPorts))));
         $ports = $this->repo->ports(array_merge($linkPorts, $aggregates), self::REDUNDANCY_PORT_COLUMNS);
+
+        // baseline links that LLDP/CDP no longer reports are down links of the design
+        $missing = $this->history?->missingBaselineLinks($links, $ports, $all) ?? [];
+        if ($missing) {
+            $links = array_merge($links, $missing);
+            $ports += $this->repo->ports(array_diff(array_merge(array_column($missing, 'local_port_id'), array_column($missing, 'remote_port_id')), array_keys($ports)), self::REDUNDANCY_PORT_COLUMNS);
+        }
 
         $devices = $this->repo->devices($all, roles: false);
         $entityUnits = [];

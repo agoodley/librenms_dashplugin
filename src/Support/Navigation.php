@@ -42,6 +42,10 @@ class Navigation
             'route' => 'topology.redundancy', 'group' => 'diagnostics', 'tab' => 'Redundancy', 'title' => 'Redundancy & Failure Impact', 'icon' => 'fa-code-branch',
             'description' => 'Single points of failure, uplinks that only look redundant (same switch, same stack member), redundancy lost right now, and outages with the devices behind them.',
         ],
+        'changes' => [
+            'route' => 'topology.changes', 'group' => 'history', 'tab' => 'Changes', 'title' => 'Topology Changes', 'icon' => 'fa-history',
+            'description' => 'What changed over the last day or week (moved cables, new neighbors, root bridge moves, lost adjacencies), what is missing compared with a saved baseline, and findings that came or went.',
+        ],
     ];
 
     /**
