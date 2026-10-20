@@ -11,6 +11,9 @@ use Agoodley\LibrenmsTopology\Stp\StpIndex;
  */
 class FactText
 {
+    /** Groups of VLANs (by their number of switches) a change of root bridges names one by one. */
+    private const VLAN_GROUPS = 6;
+
     /**
      * @param  array<int, string>  $names  device_id => current name of the devices the user may see
      * @param  array<int, true>|null  $visible  devices the user may see, null for all
@@ -60,7 +63,7 @@ class FactText
      */
     public function rootChange(array $change): string
     {
-        $vlans = self::vlanList($change['vlans']);
+        $vlans = self::changeVlans($change);
         $on = $this->deviceList($change['devices']);
 
         return match (true) {
@@ -68,6 +71,37 @@ class FactText
             $change['from'] !== null => "$vlans: root bridge " . $this->root($change['from']) . " no longer reported on $on",
             default => "$vlans: root bridge " . $this->root($change['to']) . " on $on",
         };
+    }
+
+    /**
+     * VLANs of a change of root bridges: "VLAN 31" when each of its switches has them all, else with
+     * the number of switches of each ("VLAN 31 on 1,242 switches, VLAN 33 on 1 switch", VLANs with
+     * the same number together): one Accept takes them all.
+     */
+    public static function changeVlans(array $change): string
+    {
+        $switches = [];
+        foreach ($change['device_vlans'] ?? [] as $vlans) {
+            foreach ($vlans as $vlan) {
+                $switches[$vlan] = ($switches[$vlan] ?? 0) + 1;
+            }
+        }
+        if (! $switches || min($switches) === count($change['devices'])) {
+            return self::vlanList($change['vlans']);
+        }
+
+        ksort($switches);
+        $groups = [];
+        foreach ($switches as $vlan => $count) {
+            $groups[$count][] = $vlan;
+        }
+        $parts = [];
+        foreach (array_slice($groups, 0, self::VLAN_GROUPS, true) as $count => $vlans) {
+            $parts[] = self::vlanList($vlans) . ' on ' . number_format($count) . ($count === 1 ? ' switch' : ' switches') . (count($vlans) > 1 ? ' each' : '');
+        }
+        $more = count(array_merge([], ...array_values(array_slice($groups, self::VLAN_GROUPS, null, true))));
+
+        return implode(', ', $parts) . ($more > 0 ? ' and ' . $more . ($more === 1 ? ' more VLAN' : ' more VLANs') : '');
     }
 
     /**
