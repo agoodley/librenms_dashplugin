@@ -113,6 +113,7 @@
                         <td><span class="topo-sev topo-sev-{{ $finding['severity'] }}">{{ $finding['severity'] }}</span></td>
                         <td class="topo-wrap">
                             <strong>{{ ucfirst($finding['title']) }}</strong>
+                            @include('topology::partials.finding-age')
                             @if($finding['devices'])
                                 <a href="{{ $mapUrl($finding['devices'][0], $finding['vlan']) }}" title="Show on the L2 map"><i class="fa fa-sitemap"></i></a>
                             @endif

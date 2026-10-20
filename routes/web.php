@@ -3,10 +3,12 @@
 use Agoodley\LibrenmsTopology\Http\Controllers\ApiController;
 use Agoodley\LibrenmsTopology\Http\Controllers\AssetController;
 use Agoodley\LibrenmsTopology\Http\Controllers\CoverageController;
+use Agoodley\LibrenmsTopology\Http\Controllers\HistoryController;
 use Agoodley\LibrenmsTopology\Http\Controllers\HostController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PathController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PlanningController;
+use Agoodley\LibrenmsTopology\Http\Controllers\RoutingController;
 use Agoodley\LibrenmsTopology\Http\Controllers\SiteController;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use Illuminate\Support\Facades\Route;
@@ -23,6 +25,9 @@ Route::middleware(['web', 'auth'])
         Route::get('stp', [PageController::class, 'stp'])->name('stp');
         Route::get('links', [PageController::class, 'links'])->name('links');
         Route::get('redundancy', [PageController::class, 'redundancy'])->name('redundancy');
+        Route::get('routing', [RoutingController::class, 'index'])->name('routing');
+        Route::get('changes', [HistoryController::class, 'changes'])->name('changes');
+        Route::post('changes/baseline', [HistoryController::class, 'baseline'])->name('changes.baseline');
         Route::get('hosts', [HostController::class, 'index'])->name('hosts');
 
         Route::get('api/l2', [ApiController::class, 'l2'])->name('api.l2');
@@ -32,6 +37,8 @@ Route::middleware(['web', 'auth'])
         Route::get('api/links', [ApiController::class, 'links'])->name('api.links');
         Route::get('api/redundancy', [ApiController::class, 'redundancy'])->name('api.redundancy');
         Route::get('api/simulate', [ApiController::class, 'simulate'])->name('api.simulate');
+        Route::get('api/routing', [RoutingController::class, 'api'])->name('api.routing');
+        Route::get('api/changes', [HistoryController::class, 'api'])->name('api.changes');
         Route::get('api/hosts', [HostController::class, 'api'])->name('api.hosts');
 
         Route::get('path', [PathController::class, 'index'])->name('path');

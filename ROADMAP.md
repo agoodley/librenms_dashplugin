@@ -20,6 +20,9 @@ The plugin's conventions apply to all of them:
 |---|---|---|---|
 | 1 | [Link & VLAN diagnostics](README.md#link--vlan-diagnostics) | **done** | – |
 | 3 | [Redundancy & failure impact](README.md#redundancy--failure-impact) | **done** | – |
+| 4 | [Routing & IP diagnostics](README.md#routing--ip-diagnostics) | **done** | – |
+| 5 | [Topology history, diff and baseline](README.md#topology-history-baseline-and-background-checks) | **done** | – |
+| 6 | [Background diagnostics → eventlog](README.md#topology-history-baseline-and-background-checks) | **done** | – |
 | 2 | [Host locator and port tab](README.md#host-locator-and-port-tab) | **done** | – |
 | 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
 | 7 | [Automatic device dependencies](README.md#device-dependencies) | **done** | – |
@@ -28,16 +31,11 @@ The plugin's conventions apply to all of them:
 | 12 | [Coverage report](README.md#coverage-report) | **done** | – |
 | 8 | [Site / WAN map](README.md#site--wan-map) | **done** | – |
 | 13 | [A→B path trace](README.md#path-trace) | **done** | – |
-| 5 | [Topology history, diff and baseline](#5-topology-history-diff-and-baseline) | planned | M–L |
-| 6 | [Background diagnostics → eventlog](#6-background-diagnostics--eventlog) | planned, after 5 | S |
-| 4 | [Routing & IP diagnostics](#4-routing--ip-diagnostics) | planned | M |
 | 11 | [Sharing & export](#11-sharing--export) | later | M each |
+| 15 | [Maps at a point in time](#15-maps-at-a-point-in-time) | later | M |
 
 Effort: S = new checks or an overlay on data the plugin already loads; M = new queries plus a page or tab;
 L = several new parts (tables, jobs, UI).
-
-**Why this order:** 5 and 6 share the same scheduled job and tables and turn every check into something that runs
-without anyone opening a page. The rest builds on those.
 
 ## What a plugin can do in LibreNMS
 
@@ -45,52 +43,9 @@ without anyone opening a page. The rest builds on those.
   There is no hook for dashboard widgets or device tabs.
 * A plugin package can ship routes, views and **database migrations**, and register **scheduled commands**
   (LibreNMS runs Laravel's scheduler).
-* The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (see 6) and the Custom Map widget (see 11).
+* The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (the background checks write their
+  findings there) and the Custom Map widget (see 11).
 
-## Planned
-
-### 5. Topology history, diff and baseline
-
-* A scheduled job snapshots links, port-channels, STP roots and blocked ports, and OSPF/BGP adjacencies into plugin
-  tables (store changes, not full copies).
-* **What changed since yesterday / last week:** links added or removed, a port whose neighbor changed (moved cable),
-  a new unmanaged switch or AP, root bridge moved, adjacency lost.
-* **Baseline:** save the current topology as the expected one and report what is missing. LibreNMS deletes LLDP rows
-  that are no longer seen, so a redundant uplink that disappears leaves no trace today: the redundancy page reports a
-  lost uplink only until the next discovery. With a baseline it can keep reporting it.
-* Later: show the maps as they were at a given time.
-* Needs: migrations, a scheduled command, a retention setting.
-
-### 6. Background diagnostics → eventlog
-
-* Run the STP and link checks on a schedule and write new and resolved findings to the LibreNMS eventlog. They then
-  show on device pages and in the eventlog dashboard widget, and alert rules can match them.
-* Keep a findings history (first seen, resolved) and mark "new since the last run" on the pages.
-* A finding's identity is its code, devices, ports and VLAN.
-* Builds on the scheduled job and tables of 5.
-
-### 4. Routing & IP diagnostics
-
-The L3 counterpart of the spanning tree page.
-
-* **OSPF**
-  * duplicate router IDs (`ospf_instances.ospfRouterId`)
-  * neighbors stuck in ExStart / Exchange, which usually means an MTU mismatch (compare `ports.ifMtu` of both ends)
-  * hello / dead interval, area or network type mismatch on one subnet (`ospf_ports`)
-  * different costs in each direction (`ospfIfMetricValue`)
-  * routers of one area whose databases disagree (`ospf_areas.ospfAreaLsaCount` / `ospfAreaLsaCksumSum`)
-  * DR/BDR elections on point-to-point links
-* **BGP**
-  * last error decoded to text (`bgpPeerLastErrorCode` / `SubCode`, e.g. "hold timer expired")
-  * recent session resets (`bgpPeerFsmEstablishedTime`)
-  * peer configured with a remote AS that is not the peer's `bgpLocalAs`
-  * sessions configured on one side only
-  * accepted prefixes near the configured limit, or none at all (`bgpPeers_cbgp`)
-* **IP**
-  * duplicate addresses (the L3 map currently keeps one of them silently)
-  * different subnet masks on the two ends of a link
-  * the same subnet in two VRFs on neighboring devices
-* Builds on: the subnet index of `L3Builder`, the `Finding` format and the layout of the diagnostics pages.
 
 ## Later
 
@@ -102,6 +57,13 @@ The L3 counterpart of the spanning tree page.
 * **Export to a LibreNMS Custom Map** (`custom_maps`, `custom_map_nodes`, `custom_map_edges`): a native, editable map
   with live utilization that can go on a dashboard through the Custom Map widget. The schema changes between LibreNMS
   versions, so guard it by version.
+
+### 15. Maps at a point in time
+
+* Draw the L2/L3 maps as they were at a given time, or mark on today's map what changed since then, from the facts
+  the topology history keeps (`topology_facts`: links, port-channel members, root bridges, adjacencies with their
+  first seen and removed times).
+* Ports, VLANs and device details are not in the history: the past map shows them as they are now.
 
 ## Ideas for separate plugins
 

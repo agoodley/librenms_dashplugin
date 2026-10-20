@@ -203,31 +203,40 @@ class HostLocator
 
         // a current 802.1X / MAB session (its switch polls sessions and was polled recently) gives the port when the trail ends without one:
         // on the switch the trail leads to or behind it, or among the switches of a trail that only finds uplinks; and it
-        // replaces a forwarding table answer on another port when it started after that sighting (the host moved since)
+        // replaces a forwarding table answer on another port when the host moved since that sighting. LibreNMS keeps one
+        // session row per MAC and switch and moves it to the new port (keeping when it was created), so on the edge's own
+        // switch an update after the sighting tells; on another switch only the start does (a phone can keep an old one up)
         if ($session !== null && in_array($status, ['located', 'behind', 'uplinks'], true)) {
             $lastSighting = $edge['last_seen'] ?? max(array_column($working, 'last_seen'));
             $newer = (int) $session['last_seen'] > $lastSighting;
             $same = $edge !== null && $edge['port_id'] === (int) $session['port_id'];
+            $sameSwitch = $edge !== null && $edge['device_id'] === (int) $session['device_id'];
             $use = match (true) {
                 $status === 'behind' => $this->sessionBehind($session, (int) $device, $learned),
                 $status === 'uplinks' => isset($learned[(int) $session['device_id']]),
                 $same => false,
+                $sameSwitch => $newer,
                 default => self::sessionStart($session) > $edge['last_seen'],
             };
             if ($use) {
-                $why = match ($status) {
-                    'behind' => ': the forwarding tables lead to ' . $this->deviceName((int) $device) . ', which '
+                $why = match (true) {
+                    $status === 'behind' => ': the forwarding tables lead to ' . $this->deviceName((int) $device) . ', which '
                         . ($edge['via'] === 'monitored' ? 'has no forwarding table data.' : 'does not list it.'),
-                    'uplinks' => ': the forwarding tables only list it on links between switches.',
+                    $status === 'uplinks' => ': the forwarding tables only list it on links between switches.',
+                    $sameSwitch => ', which LibreNMS updated after the forwarding tables last saw the host on ' . $this->portName($edge['port_id'])
+                        . ' of the same switch: the host moved since.',
                     default => ', which started after the forwarding tables last saw the host on ' . $this->deviceName($edge['device_id']) . ' '
                         . $this->portName($edge['port_id']) . ': the host moved since.',
                 };
                 if ($edge !== null) {
-                    $seen[] = $edge + ($status === 'behind'
-                        ? ['reason' => 'behind-monitored', 'detail' => 'toward ' . $edge['neighbor']['name'] . ', '
-                            . ($edge['via'] === 'monitored' ? 'which has no forwarding table data' : 'whose forwarding table does not list it')]
-                        : ['reason' => 'earlier', 'detail' => 'seen here ' . StpAnalyzer::duration(max(0, self::sessionStart($session) - $edge['last_seen']))
-                            . ' before its 802.1X / MAB session elsewhere started: the host moved since']);
+                    $seen[] = $edge + match (true) {
+                        $status === 'behind' => ['reason' => 'behind-monitored', 'detail' => 'toward ' . $edge['neighbor']['name'] . ', '
+                            . ($edge['via'] === 'monitored' ? 'which has no forwarding table data' : 'whose forwarding table does not list it')],
+                        $sameSwitch => ['reason' => 'earlier', 'detail' => 'seen here ' . StpAnalyzer::duration(max(0, (int) $session['last_seen'] - $edge['last_seen']))
+                            . ' before its 802.1X / MAB session on ' . $this->portName((int) $session['port_id']) . ' was updated: the host moved since'],
+                        default => ['reason' => 'earlier', 'detail' => 'seen here ' . StpAnalyzer::duration(max(0, self::sessionStart($session) - $edge['last_seen']))
+                            . ' before its 802.1X / MAB session elsewhere started: the host moved since'],
+                    };
                 }
                 $notes[] = self::note('info', 'Located by its current 802.1X / MAB session on ' . $this->sessionPort($session) . $why);
                 $edge = $this->sessionEdge($session, $ownerPorts);
@@ -238,9 +247,11 @@ class HostLocator
                 // a session updated after the forwarding table entry shows the host is still there
                 $stale = $stale && ! $newer;
             } else {
-                $notes[] = self::note('info', 'An 802.1X / MAB session of this MAC is on ' . $this->sessionPort($session) . ($status === 'located'
-                    ? ', but it started before the forwarding tables saw the host here: the switch keeps an old session (a phone or hub keeps the port up).'
-                    : ', where the forwarding tables do not lead: it is not used as the location.'));
+                $notes[] = self::note('info', 'An 802.1X / MAB session of this MAC is on ' . $this->sessionPort($session) . match (true) {
+                    $status !== 'located' => ', where the forwarding tables do not lead: it is not used as the location.',
+                    $sameSwitch => ', but LibreNMS last updated it before the forwarding tables saw the host here: it is not used as the location.',
+                    default => ', but it started before the forwarding tables saw the host here: the switch keeps an old session (a phone or hub keeps the port up).',
+                });
             }
         }
 
@@ -447,7 +458,8 @@ class HostLocator
     /**
      * Why another trail end is not the answer.
      *
-     * @param  array  $notes  host notes, extended with a warning when two access ports learned it at the same time
+     * @param  array  $notes  host notes, extended when two access ports learned it at the same time (a warning), or an
+     *                        access port and a port toward a switch that cannot be followed
      * @return array{reason: string, detail: string}
      */
     private function otherEnd(array $end, array $edge, array &$notes): array
@@ -469,15 +481,24 @@ class HostLocator
             return ['reason' => 'earlier', 'detail' => 'seen here ' . StpAnalyzer::duration($edge['last_seen'] - $end['last_seen'])
                 . ' before the newest sighting: the host moved or roamed since'];
         }
-        if ($end['via'] === 'access' && ($end['uplink'] || self::uplinkLike($end['macs'], $edge['macs']))) {
-            return ['reason' => 'uplink', 'detail' => 'carries ' . $end['macs'] . ' MACs: probably an uplink to a switch without LLDP/CDP'];
+        // a neighbor that forwards but cannot be followed: not monitored, or a switch the user may not see (both look the
+        // same, so they are treated the same). With many MACs it is a switch on the way, like an uplink without LLDP/CDP
+        $unmanaged = $end['via'] === 'unmanaged';
+        if (($end['via'] === 'access' || $unmanaged) && ($end['uplink'] || self::uplinkLike($end['macs'], $edge['macs']))) {
+            return ['reason' => 'uplink', 'detail' => $unmanaged
+                ? 'toward ' . $neighbor['name'] . ' (not monitored by LibreNMS, or not visible to you), which carries ' . $end['macs'] . ' MACs: probably a switch on the way'
+                : 'carries ' . $end['macs'] . ' MACs: probably an uplink to a switch without LLDP/CDP'];
         }
 
-        $notes[] = self::note('warning', 'Also learned on another access port (' . $this->deviceName($end['device_id']) . ' ' . $this->portName($end['port_id'])
-            . ') at about the same time: a loop, a bridge or an unmanaged switch joins the two ports, or the host moved between the two readings.');
+        $where = $this->deviceName($end['device_id']) . ' ' . $this->portName($end['port_id']);
+        $notes[] = $unmanaged
+            ? self::note('info', 'Also learned at about the same time on ' . $where . ' toward ' . $neighbor['name'] . ', which LibreNMS does not monitor or you cannot see:'
+                . ' the trail cannot be followed past it, so it may lead here; else a loop or bridge joins the two ports.')
+            : self::note('warning', 'Also learned on another access port (' . $where . ') at about the same time: a loop, a bridge or an unmanaged switch joins the two ports,'
+                . ' or the host moved between the two readings.');
 
         return ['reason' => 'access', 'detail' => 'also learned here (' . $end['macs'] . ' MAC' . ($end['macs'] === 1 ? '' : 's') . ' on the port'
-            . ($neighbor ? ', behind ' . $neighbor['name'] : '') . ')'];
+            . ($neighbor ? ($unmanaged ? ', toward ' : ', behind ') . $neighbor['name'] : '') . ')'];
     }
 
     /**

@@ -255,7 +255,7 @@ class L2Builder
 
     /**
      * Normalized link: side a is the reporting (local) device, side b the neighbour; b_device is
-     * null for unmanaged neighbours.
+     * null for unmanaged neighbours; missing is set for baseline links LLDP/CDP no longer reports.
      */
     private static function rawLink(array $link, int $ld, int $lp, int $rd, int $rp): array
     {
@@ -270,6 +270,8 @@ class L2Builder
             'b_platform' => (string) ($link['remote_platform'] ?? ''),
             'b_version' => (string) ($link['remote_version'] ?? ''),
             'protocols' => array_filter([strtolower((string) ($link['protocol'] ?? ''))]),
+            // a baseline link that LLDP/CDP no longer reports: since when ('' if unknown)
+            'missing' => isset($link['missing']) ? (string) $link['missing'] : null,
         ];
     }
 

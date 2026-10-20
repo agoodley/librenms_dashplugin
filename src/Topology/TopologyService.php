@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Topology;
 
+use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\L3LayerRepository;
 use Agoodley\LibrenmsTopology\Data\LoopEvidenceRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
@@ -32,9 +33,14 @@ class TopologyService
     /** Port columns the redundancy analysis needs (it loads every link port of the network). */
     private const REDUNDANCY_PORT_COLUMNS = ['port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifOperStatus', 'ifAdminStatus'];
 
+    /**
+     * @param  HistoryRepository|null  $history  topology history: with a saved baseline, the redundancy analysis also
+     *                                          knows the baseline links that LLDP/CDP no longer reports
+     */
     public function __construct(
         private readonly TopologyRepository $repo,
         private readonly PluginSettings $settings,
+        private readonly ?HistoryRepository $history = null,
     ) {
     }
 
@@ -231,6 +237,52 @@ class TopologyService
     }
 
     /**
+     * Spanning tree findings of the devices in scope for the background checks, one instance
+     * (VLAN) at a time: a PVST network has an instance per VLAN and ports_stp rows per port and
+     * VLAN, too many to analyze at once. The instance rows, links, link ports and root bridge
+     * lookups are read once; the page's bridge, port and domain rows are left out. The loop
+     * evidence of the page (storms, loop messages in syslog) is part of it.
+     *
+     * @param  array{group: ?int, location: ?int}  $p
+     * @return array{findings: array<int, array>}
+     */
+    public function stpFindings(array $p): array
+    {
+        $scope = $this->repo->deviceIds($p['group'] ?? null, $p['location'] ?? null);
+        $lag = $this->repo->lagParents($scope);
+        $base = new StpIndex($this->repo->stpInstanceRows($scope), [], $lag);
+        $links = $this->repo->links($scope);
+        $linkPorts = array_merge(array_keys($lag), array_values($lag));
+        foreach ($links as $link) {
+            $linkPorts[] = (int) $link['local_port_id'];
+            $linkPorts[] = (int) $link['remote_port_id'];
+        }
+        // has_stp of a link port covers every instance (portHasStp() trusts it)
+        $linkPortRows = $this->repo->analysisPorts($linkPorts);
+        $devices = $this->repo->devices($scope);
+        $analyzer = new StpAnalyzer($devices, $base, $links, $linkPortRows, $lag, $this->settings,
+            $this->repo->stpEvents($scope, $this->settings->int('stp_event_days', 1, 365)));
+        $lookups = $this->repo->rootLookups($base->unknownRootMacs());
+
+        $findings = [];
+        $networkWide = true;
+        foreach ($this->repo->stpVlans($scope) ?: [0] as $key) {
+            $keys = [];
+            foreach ($base->deviceIds() as $deviceId) {
+                if ($base->instance($deviceId, $key) !== null) {
+                    $keys[$deviceId] = $key;
+                }
+            }
+            $index = $base->withPorts($this->repo->stpPorts(array_keys($keys), $keys));
+            $ports = $linkPortRows + $this->repo->analysisPorts(array_values(array_diff($index->portIds(), array_keys($linkPortRows))));
+            array_push($findings, ...$analyzer->withInstance($index, $ports)->instanceFindings($lookups, $key, $networkWide));
+            $networkWide = false;
+        }
+
+        return ['findings' => array_merge(StpAnalyzer::mergeAcrossVlans($findings), $this->loopEvidence($devices, $links, null)['findings'])];
+    }
+
+    /**
      * Loop evidence of the devices in scope: broadcast / multicast counters of their inter-switch
      * ports and the loop related syslog messages of their switches and routers (when the user may
      * read syslog). For one device: its ports, its neighbors' ports toward it and its own messages.
@@ -403,6 +455,13 @@ class TopologyService
         $lag = $this->repo->lagParents($all);
         $aggregates = array_values(array_unique(array_intersect_key($lag, array_flip($linkPorts))));
         $ports = $this->repo->ports(array_merge($linkPorts, $aggregates), self::REDUNDANCY_PORT_COLUMNS);
+
+        // baseline links that LLDP/CDP no longer reports are down links of the design
+        $missing = $this->history?->missingBaselineLinks($all) ?? [];
+        if ($missing) {
+            $links = array_merge($links, $missing);
+            $ports += $this->repo->ports(array_diff(array_merge(array_column($missing, 'local_port_id'), array_column($missing, 'remote_port_id')), array_keys($ports)), self::REDUNDANCY_PORT_COLUMNS);
+        }
 
         $devices = $this->repo->devices($all, roles: false);
         $entityUnits = [];

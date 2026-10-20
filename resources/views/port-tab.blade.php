@@ -109,10 +109,10 @@
                 <thead><tr><th>MAC address</th><th>User</th><th>Status</th><th>Method</th><th>Host mode</th><th>VLAN</th></tr></thead>
                 <tbody>
                 @foreach($tab['nac'] as $session)
-                    <tr class="{{ $session['historical'] ? 'text-muted' : '' }}">
+                    <tr class="{{ $session['historical'] || ! empty($session['inactive']) ? 'text-muted' : '' }}">
                         <td class="topo-mono">{{ $session['readable'] }}</td>
                         <td>{{ $session['username'] ?: '-' }}</td>
-                        <td>{{ $session['status'] ?: '-' }}@if($session['historical']) <small>(earlier session)</small>@endif</td>
+                        <td>{{ $session['status'] ?: '-' }}@if($session['historical']) <small>(earlier session)</small>@elseif(! empty($session['inactive'])) <small>(not current: {{ $session['inactive'] }})</small>@endif</td>
                         <td>{{ $session['method'] ?: '-' }}</td>
                         <td>{{ $session['host_mode'] ?: '-' }}</td>
                         <td>{{ $session['vlan'] ?? '-' }}</td>

@@ -46,7 +46,7 @@ class HostLocatorTest extends TestCase
             204 => [2, 'Te1/0/1', 40], 205 => [2, 'Te1/0/3', 30], 220 => [2, 'Te1/0/6', 5], 221 => [2, 'Te1/0/7', 8], 222 => [2, 'Te1/0/8', 2],
             302 => [3, 'Te1/1/1', 300], 305 => [3, 'Gi1/0/1', 1], 307 => [3, 'Gi1/0/10', 25], 320 => [3, 'Po10', 3, true], 321 => [3, 'Gi1/0/20', 0],
             404 => [4, 'Gi1/0/48', 12], 405 => [4, 'Gi1/0/5', 2], 406 => [4, 'Gi1/0/47', 300], 412 => [4, 'Gi1/0/12', 30], 420 => [4, 'Po10', 3, true], 421 => [4, 'Gi1/0/20', 0],
-            503 => [5, 'Gi1/0/1', 1], 505 => [5, 'Gi1/0/24', 6], 506 => [5, 'Gi1/0/48', 3],
+            503 => [5, 'Gi1/0/1', 1], 505 => [5, 'Gi1/0/24', 6], 506 => [5, 'Gi1/0/48', 3], 508 => [5, 'Gi1/0/5', 1], 512 => [5, 'Gi1/0/12', 1],
             603 => [6, 'ge-0/0/1', 7], 701 => [7, 'Gi1/1/1', 200], 703 => [7, 'Gi2/0/1', 2], 803 => [8, 'Gi1/0/2', 12], 1005 => [10, 'Gi1/0/5', 1],
             1201 => [12, 'Gi1/0/1', 1], 223 => [2, 'Te1/0/9', 12], 224 => [2, 'Te1/0/10', 30], 225 => [2, 'Te1/0/11', 2],
             10011 => [100, 'Gi1/0/5', 1], 10012 => [100, 'Gi1/0/6', 29],
@@ -512,6 +512,50 @@ class HostLocatorTest extends TestCase
 
         $this->assertSame(['located', 3, 305, 'nac', false], [$result['status'], $result['edge']['device_id'], $result['edge']['port_id'], $result['edge']['via'], $result['stale']]);
         $this->assertStringContainsString('Located by its current 802.1X / MAB session on acc-sw1 Gi1/0/1, which started after the forwarding tables last saw the host on acc-sw3 Gi1/0/1: the host moved since.', self::texts($result));
+    }
+
+    public function testAMoveToAnotherPortOfTheSameSwitch(): void
+    {
+        // the laptop moved an hour ago from acc-sw3 Gi1/0/5 to the hot desk on Gi1/0/12. LibreNMS keeps the MAC's one
+        // session row on the switch and moves it to the new port: the row was created yesterday (Cisco and ArubaOS-CX
+        // report no session time, so that is its start) and updated when it moved. The forwarding tables were read 3
+        // hours ago.
+        $read = self::NOW - 3 * 3600;
+        $locator = self::locator(array_fill_keys([1, 5], $read - HostLocator::STALE_AFTER));
+        $rows = [self::row(1, 108, 10, $read), self::row(5, 508, 10, $read)];
+        $result = $locator->locate('d4bed9010220', $rows, [], [self::session(5, 512, self::NOW - 3600, false, self::NOW - 86400)]);
+
+        $this->assertSame(['located', 5, 512, 'nac', false], [$result['status'], $result['edge']['device_id'], $result['edge']['port_id'], $result['edge']['via'], $result['stale']]);
+        $this->assertStringContainsString('Located by its current 802.1X / MAB session on acc-sw3 Gi1/0/12, which LibreNMS updated after the forwarding tables last saw the host on Gi1/0/5 of the same switch: the host moved since.', self::texts($result));
+        $earlier = array_values(array_filter($result['seen'], fn ($seen) => $seen['reason'] === 'earlier'));
+        $this->assertSame([[5, 508, 'seen here 2h before its 802.1X / MAB session on Gi1/0/12 was updated: the host moved since']],
+            array_map(fn ($seen) => [$seen['device_id'], $seen['port_id'], $seen['detail']], $earlier));
+
+        // not updated since the forwarding tables saw the host on Gi1/0/5: the host is there (the switch keeps one session
+        // per MAC, so no old session on another port is to blame)
+        $result = $locator->locate('d4bed9010220', $rows, [], [self::session(5, 512, $read - 600, false, self::NOW - 86400)]);
+        $this->assertSame(['located', 5, 508, 'access'], [$result['status'], $result['edge']['device_id'], $result['edge']['port_id'], $result['edge']['via']]);
+        $this->assertStringContainsString('An 802.1X / MAB session of this MAC is on acc-sw3 Gi1/0/12, but LibreNMS last updated it before the forwarding tables saw the host here', self::texts($result));
+        $this->assertStringNotContainsString('phone or hub', self::texts($result));
+    }
+
+    public function testATrailThroughASwitchThatCannotBeFollowedIsNoLoop(): void
+    {
+        // a user who may not see core1 sees acc-sw1's uplink toward it as an unmanaged neighbor (like a switch LibreNMS does
+        // not monitor): the uplink carries 300 MACs, so it is a switch on the way to acc-sw3, where the host is
+        $hidden = [302 => [self::lldp('core1.example.net', 'Cisco IOS Software, Catalyst L3 Switch Software (CAT9K_IOSXE)', 'Te1/0/1')]];
+        $result = self::locator([], $hidden)->locate('d4bed9010230', [self::row(3, 302), self::row(5, 503)]);
+
+        $this->assertSame(['located', 5, 503], [$result['status'], $result['edge']['device_id'], $result['edge']['port_id']]);
+        $this->assertSame([['uplink', 'toward core1 (not monitored by LibreNMS, or not visible to you), which carries 300 MACs: probably a switch on the way']],
+            array_map(fn ($seen) => [$seen['reason'], $seen['detail']], $result['seen']));
+        $this->assertSame([], array_filter($result['notes'], fn ($note) => $note['level'] === 'warning'), 'no loop warning');
+
+        // with few MACs on that port it may still be a loop, or the host may be behind it: said without alarm
+        $result = self::locator([], $hidden, [], [], [302 => 2])->locate('d4bed9010230', [self::row(3, 302), self::row(5, 503)]);
+        $this->assertSame([], array_filter($result['notes'], fn ($note) => $note['level'] === 'warning'));
+        $this->assertStringContainsString('Also learned at about the same time on acc-sw1 Te1/1/1 toward core1, which LibreNMS does not monitor or you cannot see', self::texts($result));
+        $this->assertSame([['access', 'also learned here (2 MACs on the port, toward core1)']], array_map(fn ($seen) => [$seen['reason'], $seen['detail']], $result['seen']));
     }
 
     public function testAnOlderSessionDoesNotRefreshAHostThatWasNotSeenRecently(): void

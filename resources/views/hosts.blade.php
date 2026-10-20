@@ -63,7 +63,8 @@
                 }
                 $edge = $host['edge'];
                 $answer = in_array($host['status'], ['owner', 'gateway'], true) ? $host['device'] : null;
-                $users = array_values(array_unique(array_filter(array_column(array_filter($host['nac'], fn ($n) => ! $n['historical']), 'username'))));
+                // the users of sessions that count: not historical, on a switch that LibreNMS still polls for them
+                $users = array_values(array_unique(array_filter(array_column(array_filter($host['nac'], fn ($n) => ! empty($n['current'])), 'username'))));
             @endphp
             <div class="panel panel-default topo-host" data-mac="{{ $host['mac'] }}" data-status="{{ $host['status'] }}">
                 <div class="panel-heading">
@@ -149,9 +150,9 @@
                             <thead><tr><th>User</th><th>Status</th><th>Method</th><th>Switch port</th><th>VLAN</th><th>Updated</th></tr></thead>
                             <tbody>
                             @foreach($host['nac'] as $session)
-                                <tr class="{{ $session['historical'] ? 'text-muted' : '' }}">
+                                <tr class="{{ $session['historical'] || ! empty($session['inactive']) ? 'text-muted' : '' }}">
                                     <td>{{ $session['username'] ?: '-' }}@if($session['domain'] && $session['domain'] !== 'other') <small class="text-muted">{{ $session['domain'] }}</small>@endif</td>
-                                    <td>{{ $session['status'] ?: '-' }}@if($session['historical']) <small>(earlier session)</small>@endif</td>
+                                    <td>{{ $session['status'] ?: '-' }}@if($session['historical']) <small>(earlier session)</small>@elseif(! empty($session['inactive'])) <small>(not current: {{ $session['inactive'] }})</small>@endif</td>
                                     <td>{{ $session['method'] ?: '-' }}</td>
                                     <td><a href="{{ url('device/' . $session['device_id']) }}">{{ $session['device'] }}</a>
                                         @if($session['port_url'])<a href="{{ $session['port_url'] }}">{{ $session['port'] }}</a>@else{{ $session['port'] }}@endif</td>
