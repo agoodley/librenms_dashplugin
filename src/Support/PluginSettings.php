@@ -30,6 +30,10 @@ class PluginSettings
         'redundancy_core' => '',
         'redundancy_warn_devices' => '2',
         'redundancy_disabled_checks' => '',
+        'routing_bgp_reset_hours' => '24',
+        'routing_prefix_warn_percent' => '80',
+        'routing_ignore_addresses' => '',
+        'routing_disabled_checks' => '',
     ];
 
     /** @var array<string, string> */

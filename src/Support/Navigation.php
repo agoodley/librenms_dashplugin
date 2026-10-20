@@ -38,6 +38,10 @@ class Navigation
             'route' => 'topology.links', 'group' => 'diagnostics', 'tab' => 'Link & VLAN', 'title' => 'Link & VLAN Diagnostics', 'icon' => 'fa-link',
             'description' => 'Both ends of every link compared: speed, duplex, MTU, trunk/native/allowed VLANs and port-channels, plus split VLANs, errors, optical levels and port descriptions.',
         ],
+        'routing' => [
+            'route' => 'topology.routing', 'group' => 'diagnostics', 'tab' => 'Routing & IP', 'title' => 'Routing & IP Diagnostics', 'icon' => 'fa-route',
+            'description' => 'OSPF router IDs, adjacencies, interface settings and area databases, BGP sessions with their last error as text and prefix limits, and IP problems: duplicate addresses, mask mismatches, subnets split between VRFs.',
+        ],
         'redundancy' => [
             'route' => 'topology.redundancy', 'group' => 'diagnostics', 'tab' => 'Redundancy', 'title' => 'Redundancy & Failure Impact', 'icon' => 'fa-code-branch',
             'description' => 'Single points of failure, uplinks that only look redundant (same switch, same stack member), redundancy lost right now, and outages with the devices behind them.',
