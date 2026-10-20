@@ -117,30 +117,49 @@ class SiteRepository extends ScopedRepository
     }
 
     /**
-     * Neighbor links among the devices the user may see at one location (null: the devices without
-     * one), as device adjacency.
+     * Neighbor links among the devices the user may see at each of the given locations, as device
+     * adjacency per location (location 0: the devices without one).
      *
-     * @return array<int, int[]> device_id => devices it has a link with
+     * @param  int[]  $locationIds
+     * @return array<int, array<int, int[]>> location id => device_id => devices at the same location it has a link with
      */
-    public function siteAdjacency(?int $locationId): array
+    public function siteAdjacency(array $locationIds): array
     {
-        $ids = array_values(array_filter(array_map('intval', DB::table('devices as d')->leftJoin('locations as l', 'l.id', '=', 'd.location_id')
-            ->when($locationId === null, fn ($query) => $query->whereNull('l.id'), fn ($query) => $query->where('l.id', $locationId))
-            ->pluck('d.device_id')->all()), fn (int $id) => $this->canSee($id)));
-        $here = array_flip($ids);
+        $ids = array_values(array_filter(array_unique(array_map('intval', $locationIds))));
+        $none = in_array(0, array_map('intval', $locationIds), true);
+        if (! $ids && ! $none) {
+            return [];
+        }
+
+        $at = [];
+        foreach (DB::table('devices as d')->leftJoin('locations as l', 'l.id', '=', 'd.location_id')
+            ->where(function ($query) use ($ids, $none): void {
+                if ($ids) {
+                    $query->whereIntegerInRaw('l.id', $ids);
+                }
+                if ($none) {
+                    $query->orWhereNull('l.id');
+                }
+            })
+            ->get(['d.device_id', 'l.id as location_id']) as $row) {
+            if ($this->canSee((int) $row->device_id)) {
+                $at[(int) $row->device_id] = (int) ($row->location_id ?? 0);
+            }
+        }
+
         $adjacency = [];
-        foreach (array_chunk($ids, self::CHUNK) as $chunk) {
+        foreach (array_chunk(array_keys($at), self::CHUNK) as $chunk) {
             foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $chunk)
                 ->get(['local_device_id', 'remote_device_id']) as $link) {
                 [$a, $b] = [(int) $link->local_device_id, (int) $link->remote_device_id];
-                if ($a !== $b && isset($here[$b])) {
-                    $adjacency[$a][$b] = true;
-                    $adjacency[$b][$a] = true;
+                if ($a !== $b && isset($at[$b]) && $at[$a] === $at[$b]) {
+                    $adjacency[$at[$a]][$a][$b] = true;
+                    $adjacency[$at[$a]][$b][$a] = true;
                 }
             }
         }
 
-        return array_map('array_keys', $adjacency);
+        return array_map(fn (array $devices) => array_map('array_keys', $devices), $adjacency);
     }
 
     /**

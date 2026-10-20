@@ -13,10 +13,19 @@ use PHPUnit\Framework\TestCase;
  */
 class SiteConnectionsTest extends TestCase
 {
+    /**
+     * A device of the map, its role by its name: switches (sw-, core, acc-), carrier CPEs (other), routers.
+     */
     private static function device(int $id, string $name, int $location): array
     {
+        $role = match (true) {
+            (bool) preg_match('/^(sw|core|acc)/', $name) => 'switch',
+            str_starts_with($name, 'cpe') => 'other',
+            default => 'router',
+        };
+
         return [
-            'device_id' => $id, 'display' => $name, 'hostname' => $name, 'status' => 1, 'disabled' => 0, 'role' => 'router', 'url' => "/device/$id",
+            'device_id' => $id, 'display' => $name, 'hostname' => $name, 'status' => 1, 'disabled' => 0, 'role' => $role, 'url' => "/device/$id",
             'location_id' => $location, 'location' => "Site $location", 'bgpLocalAs' => 0, 'lat' => null, 'lng' => null,
         ];
     }
@@ -52,8 +61,10 @@ class SiteConnectionsTest extends TestCase
      * @param  array<int, array>  $ports  every port, by id
      * @param  array<int, array{0: array, 1: string, 2: int, 3?: string}>  $addresses  [port, address, prefix, vrf]
      * @param  array<int, array{0: int, 1: int}>  $pairs  ports_stack rows as [high_port_id, low_port_id]
+     * @param  array<int, string[]>|null  $asked  receives the site lists the links inside sites were asked for
      */
-    private static function connections(array $devices, array $ports, array $links, array $addresses, array $lag = [], array $pairs = []): array
+    private static function connections(array $devices, array $ports, array $links, array $addresses, array $lag = [], array $pairs = [],
+        ?array &$asked = null): array
     {
         $connections = (new SiteConnections($devices))->addLinks(L2Builder::uniqueLinks($links, $devices, $ports), $ports, $lag);
         $rows = array_map(fn ($a) => self::address(...$a), $addresses);
@@ -83,7 +94,14 @@ class SiteConnectionsTest extends TestCase
             }
         }
 
-        return $connections->addSubnets($l3, $ports, $stack, $neighbors, fn (string $site) => $inside[$site] ?? [])->all();
+        $asked = [];
+        $siteLinks = function (array $sites) use ($inside, &$asked) {
+            $asked[] = $sites;
+
+            return array_intersect_key($inside, array_flip($sites));
+        };
+
+        return $connections->addSubnets($l3, $ports, $stack, $neighbors, $siteLinks)->all();
     }
 
     private static function ports(array ...$ports): array
@@ -338,11 +356,64 @@ class SiteConnectionsTest extends TestCase
         $addresses = [[$ports[12], '10.9.0.1', 29], [$ports[42], '10.9.0.2', 29]];
         $this->assertSame([['l2', '10.9.0.0/29']], array_map(fn ($c) => [$c['kind'], $c['network']], self::connections($devices, $ports, $links, $addresses, [], [[41, 42]])));
 
+        // the same with the CPEs' management ports cabled to the switches with the fiber: the search goes no further
+        // than the CPE, which is no switch
+        $ports += self::ports(self::port(52, 5, 'mgmt0', 'ethernetCsmacd', 100000000), self::port(62, 6, 'mgmt0', 'ethernetCsmacd', 100000000),
+            self::port(32, 3, 'GigabitEthernet1/0/10', 'ethernetCsmacd', 1000000000), self::port(42, 4, 'GigabitEthernet1/0/10', 'ethernetCsmacd', 1000000000));
+        $cpes = [1 => self::device(1, 'rtr-a', 1), 2 => self::device(2, 'rtr-b', 2), 3 => self::device(3, 'sw-a', 1), 4 => self::device(4, 'sw-b', 2),
+            5 => self::device(5, 'cpe-hq', 1), 6 => self::device(6, 'cpe-br', 2)];
+        $connections = self::connections($cpes, $ports, [self::lldp(1, 11, 5, 51), self::lldp(2, 21, 6, 61), self::lldp(3, 31, 4, 41),
+            self::lldp(5, 52, 3, 32), self::lldp(6, 62, 4, 42)], [[$ports[11], '10.0.1.1', 30], [$ports[21], '10.0.1.2', 30]]);
+        $this->assertSame([['l2', ''], ['p2p', '10.0.1.0/30']], array_map(fn ($c) => [$c['kind'], (string) $c['network']], $connections));
+
         // the access switch only reaches the fiber through the router itself (cabled to the core-b behind it): not by its site
         $links = [self::lldp(1, 11, 2, 21), self::lldp(4, 41, 3, 32), self::lldp(4, 43, 2, 22)];
         $ports += self::ports(self::port(43, 4, 'GigabitEthernet0/0/2', 'ethernetCsmacd', 1000000000));
         $this->assertSame([['l2', ''], ['p2p', '10.9.0.0/29']],
             array_map(fn ($c) => [$c['kind'], (string) $c['network']], self::connections($devices, $ports, $links, $addresses, [], [[41, 42]])));
+    }
+
+    public function testTheLinksInsideSitesAreAskedForOnce(): void
+    {
+        // two branches, each router behind an access switch behind the branch core with the fiber to HQ: one request
+        // for the links inside both branches
+        $devices = [1 => self::device(1, 'core', 1), 2 => self::device(2, 'rtr-hq', 1)];
+        $ports = self::ports(self::port(11, 1, 'GigabitEthernet1/0/1'), self::port(21, 2, 'GigabitEthernet0/0/0'));
+        $links = [self::lldp(2, 21, 1, 11)];
+        $addresses = [];
+        foreach ([2, 3] as $k) {
+            [$core, $acc, $rtr] = [10 * $k, 10 * $k + 1, 10 * $k + 2];
+            $devices += [$core => self::device($core, "core-$k", $k), $acc => self::device($acc, "acc-$k", $k), $rtr => self::device($rtr, "rtr-$k", $k)];
+            $ports += self::ports(self::port(100 * $k + 1, $core, 'TenGigabitEthernet1/1/1'), self::port(100 * $k + 2, 1, "TenGigabitEthernet1/1/$k"),
+                self::port(100 * $k + 3, $acc, 'GigabitEthernet1/0/49'), self::port(100 * $k + 4, $core, 'GigabitEthernet1/0/1'),
+                self::port(100 * $k + 5, $rtr, 'GigabitEthernet0/0/0', 'ethernetCsmacd', 1000000000), self::port(100 * $k + 6, $acc, 'GigabitEthernet1/0/1'),
+                self::port(100 * $k + 7, $rtr, 'GigabitEthernet0/0/0.900', 'l2vlan', 1000000000), self::port(100 * $k + 8, 2, "GigabitEthernet0/0/0.9$k", 'l2vlan', 1000000000));
+            $links = array_merge($links, [self::lldp($core, 100 * $k + 1, 1, 100 * $k + 2), self::lldp($acc, 100 * $k + 3, $core, 100 * $k + 4),
+                self::lldp($rtr, 100 * $k + 5, $acc, 100 * $k + 6)]);
+            $addresses = array_merge($addresses, [[$ports[100 * $k + 8], "10.9.$k.1", 30], [$ports[100 * $k + 7], "10.9.$k.2", 30]]);
+        }
+        $pairs = [[21, 208], [21, 308], [205, 207], [305, 307]];
+        $connections = self::connections($devices, $ports, $links, $addresses, [], $pairs, $asked);
+
+        $this->assertSame([['site:2', 'site:3']], $asked);
+        $this->assertSame([['l2', '10.9.2.0/30'], ['l2', '10.9.3.0/30']], array_map(fn ($c) => [$c['kind'], $c['network']], $connections));
+    }
+
+    public function testRouteBasedVpnInterfacesAreTunnels(): void
+    {
+        // a /30 between two firewalls on such interfaces carries 50 Mbit/s: traffic only, whatever their ifType and ifSpeed
+        $devices = [1 => self::device(1, 'fw-a', 1), 2 => self::device(2, 'fw-b', 2)];
+        foreach ([['ipsec0', 'ethernetCsmacd', 10000000], ['ipsec1', 'other', 0], ['wg0', 'other', 0], ['wg: hub', 'other', 0], ['wireguard1', 'other', 0],
+            ['xfrm0', 'other', 0], ['ovpns1', 'other', 0], ['ovpnc1', 'other', 0], ['GRE-TUNNEL-1', 'propVirtual', 0], ['gre0', 'other', 0],
+            ['Virtual-Access2', 'propVirtual', 0], ['st0.1', 'propVirtual', 0]] as [$name, $type, $speed]) {
+            $ports = self::ports(self::port(11, 1, $name, $type, $speed, 'up', 6250000, 3125000), self::port(21, 2, $name, $type, $speed));
+            $this->assertTrue(SiteConnections::isTunnel($ports[11]), $name);
+            $connections = self::connections($devices, $ports, [], [[$ports[11], '10.0.0.1', 30], [$ports[21], '10.0.0.2', 30]]);
+            $this->assertSame([0, null, 50000000], [$connections[0]['speed'], $connections[0]['util'], $connections[0]['in_bps']], $name);
+        }
+        foreach (['GigabitEthernet0/0/1', 'green0', 'wan1', 'tunnelbroker'] as $name) {
+            $this->assertSame($name === 'tunnelbroker', SiteConnections::isTunnel(self::port(1, 1, $name)), $name);
+        }
     }
 
     public function testInterfaceStackHelpers(): void

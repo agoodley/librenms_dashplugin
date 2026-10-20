@@ -64,7 +64,7 @@ class SiteService
             $stack = $this->stack($ports);
             $below = SiteConnections::below($subnetPorts, $stack);
             $connections->addSubnets($l3, $ports + $this->repo->ports($below), $stack, $this->sites->portNeighbors(array_merge($subnetPorts, $below)),
-                fn (string $site) => $this->sites->siteAdjacency($site === SiteBuilder::NO_LOCATION ? null : (int) substr($site, strlen('site:'))));
+                fn (array $sites) => $this->siteLinks($sites));
         }
 
         // OSPF adjacencies and BGP sessions
@@ -96,6 +96,23 @@ class SiteService
             'truncated' => $result['truncated'],
             'max_nodes' => $maxSites,
         ];
+
+        return $result;
+    }
+
+    /**
+     * Device adjacency inside the given sites, in one query (SiteConnections::addSubnets()).
+     *
+     * @param  string[]  $sites  site ids
+     * @return array<string, array<int, int[]>>
+     */
+    private function siteLinks(array $sites): array
+    {
+        $byLocation = $this->sites->siteAdjacency(array_map(fn (string $site) => $site === SiteBuilder::NO_LOCATION ? 0 : (int) substr($site, strlen('site:')), $sites));
+        $result = [];
+        foreach ($byLocation as $location => $adjacency) {
+            $result[$location === 0 ? SiteBuilder::NO_LOCATION : 'site:' . $location] = $adjacency;
+        }
 
         return $result;
     }
