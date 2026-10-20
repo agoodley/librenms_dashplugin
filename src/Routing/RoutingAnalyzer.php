@@ -100,6 +100,9 @@ class RoutingAnalyzer
     /** Bridges whose addresses stay inside the host behind NAT (libvirt, Docker, LXC/LXD, Podman, CNI, VirtualBox). */
     private const HOST_LOCAL = '/^((virbr|docker|lxcbr|lxdbr|podman|cni|vboxnet)\d+|br-[0-9a-f]{12})$/i';
 
+    /** The vendors' out-of-band management VRFs (IOS-XE routers, Catalyst switches, NX-OS, Junos), lowercase. */
+    private const MANAGEMENT_VRFS = ['mgmt-intf' => true, 'mgmt-vrf' => true, 'management' => true, 'mgmt_junos' => true];
+
     /** @var array<int, true> reported devices (the group / location filter) */
     private array $scope;
 
@@ -136,8 +139,14 @@ class RoutingAnalyzer
     /** @var array<int, array<int, array<int, array<string, list<Address>>>>> device => address length => prefix length => its addresses of longer prefixes by their subnet of that length (see sharing()) */
     private array $inside = [];
 
-    /** @var array<int, true> devices with addresses in a VRF of their own (not the global table) */
+    /** @var array<int, true> devices with addresses in a VRF of their own (not the global table, not out-of-band management) */
     private array $inVrf = [];
+
+    /** @var array<string, true> the vendors' out-of-band management VRFs in the data (see MANAGEMENT_VRFS) */
+    private array $managementVrfs = [];
+
+    /** @var array<int, true> dedicated out-of-band management ports with addresses (see managementPort()) */
+    private array $managementPorts = [];
 
     /** @var array<int, int>|null device => its network over the links that join every routing table (made once, see network()) */
     private ?array $anyNetworks = null;
@@ -470,13 +479,15 @@ class RoutingAnalyzer
 
     /**
      * The routing tables a link without addresses on either end joins, from the subnets its two devices
-     * share (loopbacks and the ports of links to third devices left out). It is one L2 domain that joins
-     * every table (null), switches sharing a management subnet or VRF-lite trunks, unless a shared
-     * subnet is evidence of a routing boundary: no VRF name holds it on both devices, and it is a
-     * point-to-point subnet (/30, /31, /126, /127: a provider edge facing a customer router over a
-     * port-channel) or both devices have addresses in VRFs of their own (a VRF that is only defined,
-     * like the management VRF of an access switch managed in-band, does not count). Then it joins the
-     * VRFs that hold a shared subnet on both devices, possibly none.
+     * share (loopbacks, the ports of links to third devices and out-of-band management, which never
+     * crosses the link, left out: the vendors' management VRFs and dedicated management ports). It is one
+     * L2 domain that joins every table (null), switches sharing a management subnet or VRF-lite trunks,
+     * unless a shared subnet is evidence of a routing boundary: no VRF name holds it on both devices, and
+     * it is a point-to-point subnet (/30, /31, /126, /127: a provider edge facing a customer router over a
+     * port-channel) or both devices have addresses in VRFs of their own (a VRF that is only defined, like
+     * the management VRF of an access switch managed in-band, does not count, nor do out-of-band
+     * management VRFs and ports). Then it joins the VRFs that hold a shared subnet on both devices,
+     * possibly none.
      *
      * @param  array<int, array<int, true>>  $peers  linked port => devices at its other ends
      * @return array<string, true>|null
@@ -487,11 +498,11 @@ class RoutingAnalyzer
         [$small, $big] = count($this->byDevice[$a] ?? []) <= count($this->byDevice[$b] ?? []) ? [$a, $b] : [$b, $a];
         $shared = [];
         foreach ($this->byDevice[$small] ?? [] as $mine) {
-            if (! $this->usable($mine, $big, $peers)) {
+            if (isset($this->managementVrfs[$mine->vrf]) || ! $this->usable($mine, $big, $peers)) {
                 continue;
             }
             foreach ($this->sharing($big, $mine) as [$key, $prefix, $their]) {
-                if ($this->usable($their, $small, $peers)) {
+                if (! isset($this->managementVrfs[$their->vrf]) && $this->usable($their, $small, $peers)) {
                     $shared[$key][0] = $prefix >= strlen($mine->packed) * 8 - 2;
                     $shared[$key][1][strtolower($mine->vrf)] = true;
                     $shared[$key][2][strtolower($their->vrf)] = true;
@@ -570,8 +581,9 @@ class RoutingAnalyzer
     }
 
     /**
-     * Can an address stand for a link to $peer? Not a loopback, and not on a port linked to devices
-     * other than $peer (the address belongs to those links).
+     * Can an address stand for a link to $peer? Not a loopback, not on a port linked to devices other
+     * than $peer (the address belongs to those links), and not on a dedicated management port that is
+     * not linked to $peer.
      *
      * @param  array<int, array<int, true>>  $peers  linked port => devices at its other ends
      */
@@ -579,7 +591,20 @@ class RoutingAnalyzer
     {
         $port = $this->linkPort[$address->portId ?? 0] ?? $address->portId ?? 0;
 
-        return ! $address->host && (! isset($peers[$port]) || isset($peers[$port][$peer]));
+        return ! $address->host && (isset($peers[$port]) ? isset($peers[$port][$peer]) : ! isset($this->managementPorts[$port]));
+    }
+
+    /**
+     * Is a port a dedicated out-of-band management port? By name: mgmt0 (NX-OS; mgmt1/1/1 on OS10),
+     * Management1 (EOS; Management0/0 on ASA), MgmtEth0/RP0/CPU0/0 (IOS XR), MEth0/0/1 (VRP),
+     * M-GigabitEthernet0/0/0 (Comware), re0:mgmt-0 (Junos Evolved); fxp0, em0, me0 and vme only on Junos,
+     * GigabitEthernet0 and 0/0 (IOS-XE) only in a management VRF: elsewhere those are ordinary ports.
+     */
+    private static function managementPort(string $name, string $vrf, string $os): bool
+    {
+        return preg_match('#^(mgmt\d*(/\d+)*|Management\d+(/\d+)*|MgmtEth\S+|MEth\S+|M-GigabitEthernet\S+|re\d:mgmt-\d+)$#i', $name)
+            || (str_starts_with($os, 'junos') && preg_match('#^(fxp0|em0|me0|vme)(\.\d+)?$#', $name))
+            || ($vrf !== '' && isset(self::MANAGEMENT_VRFS[strtolower($vrf)]) && preg_match('#^(GigabitEthernet|Gi)0(/0)?$#i', $name));
     }
 
     /**
@@ -631,7 +656,16 @@ class RoutingAnalyzer
             );
 
             $this->byDevice[$deviceId][] = $address;
-            if ($vrf !== '') {
+            // out-of-band management is not a VRF of the device's own
+            $outOfBand = $vrf !== '' && isset(self::MANAGEMENT_VRFS[strtolower($vrf)]);
+            if ($outOfBand) {
+                $this->managementVrfs[$vrf] = true;
+            }
+            $management = self::managementPort(InterfaceName::label($row), $vrf, (string) ($this->devices[$deviceId]['os'] ?? ''));
+            if ($management && $address->portId !== null) {
+                $this->managementPorts[$address->portId] = true;
+            }
+            if ($vrf !== '' && ! $outOfBand && ! $management) {
                 $this->inVrf[$deviceId] = true;
             }
             if (! isset($this->byIp[$packed])) {

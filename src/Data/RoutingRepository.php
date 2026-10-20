@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\Schema;
  */
 class RoutingRepository extends ScopedRepository
 {
-    private const DEVICE_COLUMNS = ['device_id', 'hostname', 'sysName', 'display', 'status', 'uptime', 'bgpLocalAs'];
+    private const DEVICE_COLUMNS = ['device_id', 'hostname', 'sysName', 'display', 'os', 'status', 'uptime', 'bgpLocalAs'];
 
     private const OSPF_COLUMNS = [
         'instances' => ['ospf_instances', ['device_id', 'ospfRouterId', 'ospfAdminStat', 'ospfAreaBdrRtrStatus', 'ospfASBdrRtrStatus', 'context_name']],
