@@ -51,7 +51,7 @@ class PluginSettings
         'history_retention_days' => '90',
         'history_checks' => 'stp links redundancy',
         'history_eventlog_severity' => 'warning',
-        'history_eventlog_skip' => 'link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent',
+        'history_eventlog_skip' => 'link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent multicast_storm',
         'rollout_batch_size' => '0',
         'dependencies_outage_days' => '30',
     ];

@@ -60,8 +60,9 @@ class HistoryController extends Controller
     /**
      * POST plugin/topology/changes/baseline (admins): action=save saves the topology of the last
      * snapshot as the baseline of the page's scope, action=clear forgets it, action=accept takes
-     * one missing fact (hash) out of it, action=accept_roots accepts a change of root bridges (from,
-     * to, vlans) on all its switches.
+     * one missing fact (hash) out of it, action=accept_roots accepts a change of root bridges
+     * (root_from, root_to, vlans) on all its switches. The page's scope and window (window, or the
+     * dates from and to) come back in the redirect.
      */
     public function baseline(Request $request): RedirectResponse
     {
@@ -86,7 +87,7 @@ class HistoryController extends Controller
                 $message = $service->acceptMissing($params, $hash, $vlans) ? 'Removed from the baseline: it is no longer expected.' : 'Nothing to remove: the baseline has changed.';
                 $message .= " ($hash)";
             } elseif ($request->input('action') === 'accept_roots') {
-                [$from, $to] = [$request->input('from', ''), $request->input('to', '')];
+                [$from, $to] = [$request->input('root_from', ''), $request->input('root_to', '')];
                 $vlans = Baseline::parseVlans($request->input('vlans'));
                 abort_unless($vlans !== null && is_string($from) && is_string($to) && preg_match('/^([0-9a-f]{12})?$/', $from)
                     && preg_match('/^([0-9a-f]{12})?$/', $to) && $from . $to !== '', 422);

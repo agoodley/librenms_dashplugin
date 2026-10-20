@@ -74,6 +74,40 @@ class Window
         return ['rows' => array_values($rows), 'truncated' => $since !== null, 'since' => $since];
     }
 
+    /**
+     * Snapshots a cut window (merge()) leaves out, up to and with `since`, newest first: the facts
+     * that started or ended per kind for the $lines newest of them, and those of all earlier ones
+     * together.
+     *
+     * @param  array<int, array{time: int, kind: string, facts: int}>  $counts  facts per snapshot and kind, complete for
+     *                                                                         the $lines newest snapshots at least
+     * @param  array<string, int>  $totals  facts per kind of all the snapshots left out
+     * @return array{snapshots: array<int, array{time: int, kinds: array<string, int>, facts: int}>,
+     *     earlier: array{kinds: array<string, int>, facts: int}|null}
+     */
+    public static function dropped(array $counts, array $totals, int $lines): array
+    {
+        $snapshots = [];
+        foreach ($counts as $count) {
+            $snapshots[$count['time']][$count['kind']] = ($snapshots[$count['time']][$count['kind']] ?? 0) + $count['facts'];
+        }
+        krsort($snapshots);
+        $order = array_flip(FactCollector::KINDS);
+        $sorted = fn (array $kinds) => array_filter(array_replace(array_intersect_key($order, $kinds), $kinds));
+
+        $listed = [];
+        foreach (array_slice($snapshots, 0, $lines, true) as $time => $kinds) {
+            $kinds = $sorted($kinds);
+            $listed[] = ['time' => $time, 'kinds' => $kinds, 'facts' => array_sum($kinds)];
+            foreach ($kinds as $kind => $facts) {
+                $totals[$kind] = ($totals[$kind] ?? 0) - $facts;
+            }
+        }
+        $earlier = $sorted(array_filter($totals, fn ($facts) => $facts > 0));
+
+        return ['snapshots' => $listed, 'earlier' => $earlier ? ['kinds' => $earlier, 'facts' => array_sum($earlier)] : null];
+    }
+
     private static function time(mixed $value): ?int
     {
         if (! is_string($value) || trim($value) === '') {

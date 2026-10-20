@@ -8,6 +8,7 @@ use Agoodley\LibrenmsTopology\History\FindingHistory;
 use Agoodley\LibrenmsTopology\History\HistoryService;
 use Agoodley\LibrenmsTopology\History\Window;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
+use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
@@ -26,6 +27,9 @@ class HistoryRepository extends ScopedRepository
 
     /** Facts that started, and facts that ended, read for one window of the Changes page (newest first). */
     public const WINDOW_LIMIT = 5000;
+
+    /** Snapshots a cut window of the Changes page counts one by one (newest first), the earlier ones together. */
+    public const DROPPED_LINES = 10;
 
     /** Findings that came or went shown for one window of the Changes page (newest first). */
     public const WINDOW_FINDINGS = 1000;
@@ -328,19 +332,37 @@ class HistoryRepository extends ScopedRepository
     /**
      * Facts of the devices that started (not with the first snapshot of their kind) or ended in
      * [$from, $to], with their data decoded: the newest WINDOW_LIMIT of each, cut at a common
-     * boundary when there were more (Window::merge()).
+     * boundary when there were more (Window::merge()). The snapshots the cut leaves out are
+     * counted per kind of fact (`dropped`, Window::dropped()).
      *
      * @param  int[]  $ids
-     * @return array{rows: array<int, array>, truncated: bool, since: ?int}
+     * @return array{rows: array<int, array>, truncated: bool, since: ?int, dropped: ?array}
      */
     public function windowFacts(CarbonInterface $from, CarbonInterface $to, array $ids): array
     {
+        $started = fn (CarbonInterface $until) => $this->touching(DB::table('topology_facts'), $ids)->whereBetween('first_seen', [$from, $until])
+            ->where('initial', 0);
+        $ended = fn (CarbonInterface $until) => $this->touching(DB::table('topology_facts'), $ids)->whereBetween('removed_at', [$from, $until]);
         $read = fn (Builder $query, string $column) => $query->orderByDesc($column)->orderByDesc('id')->limit(self::WINDOW_LIMIT)->get()
             ->map(fn ($row) => self::factRow((array) $row))->all();
-        $added = $read($this->touching(DB::table('topology_facts'), $ids)->whereBetween('first_seen', [$from, $to])->where('initial', 0), 'first_seen');
-        $removed = $read($this->touching(DB::table('topology_facts'), $ids)->whereBetween('removed_at', [$from, $to]), 'removed_at');
+        $window = Window::merge($read($started($to), 'first_seen'), $read($ended($to), 'removed_at'), self::WINDOW_LIMIT);
+        $window['dropped'] = null;
+        if ($window['since'] !== null) {
+            $until = Carbon::createFromTimestamp($window['since'], $from->getTimezone());
+            // per snapshot and kind for the newest snapshots left out (a snapshot has a row per kind at most), per kind for all
+            $perSnapshot = fn (Builder $query, string $column) => $query->groupBy($column, 'kind')->orderByDesc($column)
+                ->limit((self::DROPPED_LINES + 1) * count(FactCollector::KINDS))->get([$column . ' as time', 'kind', DB::raw('count(*) as facts')])
+                ->map(fn ($row) => ['time' => (int) strtotime((string) $row->time), 'kind' => (string) $row->kind, 'facts' => (int) $row->facts])->all();
+            $perKind = fn (Builder $query) => array_map('intval', $query->groupBy('kind')->select('kind', DB::raw('count(*) as facts'))->pluck('facts', 'kind')->all());
+            $totals = $perKind($started($until));
+            foreach ($perKind($ended($until)) as $kind => $facts) {
+                $totals[$kind] = ($totals[$kind] ?? 0) + $facts;
+            }
+            $window['dropped'] = Window::dropped(array_merge($perSnapshot($started($until), 'first_seen'), $perSnapshot($ended($until), 'removed_at')),
+                $totals, self::DROPPED_LINES);
+        }
 
-        return Window::merge($added, $removed, self::WINDOW_LIMIT);
+        return $window;
     }
 
     /**
@@ -484,15 +506,20 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
-     * Baseline facts of one kind that involve the devices, decoded.
+     * Baseline facts of one kind that involve the devices, decoded; with $lock read for update
+     * (inside transaction()), so a concurrent change of them waits for this one.
      *
      * @param  int[]  $ids
      * @return array<string, array> hash => fact
      */
-    public function baselineFactsOfKind(array $ids, string $kind): array
+    public function baselineFactsOfKind(array $ids, string $kind, bool $lock = false): array
     {
+        $query = $this->touching(DB::table('topology_baseline'), $ids)->where('kind', $kind);
+        if ($lock) {
+            $query->lockForUpdate();
+        }
         $facts = [];
-        foreach ($this->touching(DB::table('topology_baseline'), $ids)->where('kind', $kind)->get() as $row) {
+        foreach ($query->get() as $row) {
             $fact = self::baselineRow((array) $row);
             $facts[$fact['hash']] = $fact;
         }
@@ -622,17 +649,28 @@ class HistoryRepository extends ScopedRepository
      */
     public function forgetBaselineFact(string $hash, array $ids, ?array $vlans = null): int
     {
-        $query = $this->touching(DB::table('topology_baseline'), $ids)->where('hash', $hash);
-        $row = $vlans !== null ? (clone $query)->first() : null;
-        if ($row !== null) {
-            $data = json_decode((string) $row->data, true) ?: [];
-            $left = array_values(array_diff(array_map('intval', $data['vlans'] ?? []), array_map('intval', $vlans)));
-            if ($left) {
-                return DB::table('topology_baseline')->where('id', $row->id)->update(['data' => FactCollector::json(['vlans' => $left] + $data)]);
+        return $this->transaction(function () use ($hash, $ids, $vlans) {
+            $query = $this->touching(DB::table('topology_baseline'), $ids)->where('hash', $hash);
+            // read for update: another admin taking other VLANs out of the same fact at once waits for this one
+            $row = $vlans !== null ? (clone $query)->lockForUpdate()->first() : null;
+            if ($row !== null) {
+                $data = json_decode((string) $row->data, true) ?: [];
+                $left = array_values(array_diff(array_map('intval', $data['vlans'] ?? []), array_map('intval', $vlans)));
+                if ($left) {
+                    return DB::table('topology_baseline')->where('id', $row->id)->update(['data' => FactCollector::json(['vlans' => $left] + $data)]);
+                }
             }
-        }
 
-        return $query->delete();
+            return $query->delete();
+        });
+    }
+
+    /**
+     * Run $callback in one transaction, again when it ran into a deadlock (at most three times).
+     */
+    public function transaction(callable $callback): mixed
+    {
+        return DB::transaction($callback, 3);
     }
 
     /**
@@ -821,12 +859,15 @@ class HistoryRepository extends ScopedRepository
      * Confirmed findings that started or were resolved in [$from, $to], involve the devices and only devices
      * the user may see (their titles name devices: the diagnostics pages show the user's own); the
      * newest WINDOW_FINDINGS of them, read page by page so a restricted view is not left empty.
+     * Checks in $hidden (analysis => codes) are left out.
      *
      * @param  int[]  $ids
+     * @param  array<string, string[]>  $hidden
      * @return array{rows: array<int, array>, truncated: bool}
      */
-    public function windowFindings(CarbonInterface $from, CarbonInterface $to, array $ids): array
+    public function windowFindings(CarbonInterface $from, CarbonInterface $to, array $ids, array $hidden = []): array
     {
+        $hidden = array_map('array_flip', $hidden);
         $wanted = array_flip($ids);
         $visible = $this->accessible();
         $rows = [];
@@ -844,7 +885,8 @@ class HistoryRepository extends ScopedRepository
             foreach ($page as $row) {
                 $before = (int) $row->id;
                 $devices = array_map('intval', json_decode((string) $row->devices, true) ?: []);
-                if (! array_filter($devices, fn ($id) => isset($wanted[$id])) || array_filter($devices, fn ($id) => ! isset($visible[$id]))) {
+                if (isset($hidden[$row->analysis][$row->code]) || ! array_filter($devices, fn ($id) => isset($wanted[$id]))
+                    || array_filter($devices, fn ($id) => ! isset($visible[$id]))) {
                     continue;
                 }
                 if (count($rows) === self::WINDOW_FINDINGS) {

@@ -7,13 +7,17 @@ use Agoodley\LibrenmsTopology\Stp\Finding;
 /**
  * Findings history of the background checks. A finding is the same finding while its code,
  * devices, ports and VLAN stay the same; its wording and severity may change. A finding is
- * confirmed once two runs in a row reported it, or when the previous run reported a finding of the
- * same check on one of its devices that this run no longer reports (it takes its place: a finding
- * whose ports change from run to run is confirmed on its second run like any other), and resolved
- * once two runs in a row did not report it, so a check that flickers from run to run (error
- * counters of the last poll) does not fill the eventlog; a finding that was never confirmed ends at
- * its first absence. If it comes back later it starts a new period. Another finding of the same
- * check that stays on a shared device (a core switch with several lost uplinks) confirms nothing.
+ * confirmed once two runs in a row reported it, or when it takes the place of a finding of the same
+ * check about the same devices that is still open and that this run no longer reports (a finding
+ * whose ports change from run to run is confirmed on its second run like any other). The devices a
+ * finding is about are those its title names ("redundancy lost: acc-sw7" is about acc-sw7, not
+ * about the core switch at the other end of the lost uplink, which the findings of other access
+ * switches share); two findings are about the same devices when the devices one names are all
+ * named by the other. A finding whose title names none of its devices is about all of them and
+ * shares any of them. A finding is resolved once two runs in a row did not report it, so a check
+ * that flickers from run to run (error counters of the last poll) does not fill the eventlog; a
+ * finding that was never confirmed ends at its first absence. If it comes back later it starts a
+ * new period.
  *
  * The eventlog of a device gets an entry when the device gets its first confirmed finding of a
  * check or loses its last one. The entry names the check only: findings are computed over the
@@ -101,33 +105,43 @@ class FindingHistory
      * @param  array<int, array>  $findings  findings of this run
      * @param  string  $time  time of this run (Y-m-d H:i:s)
      * @param  bool  $initial  first successful run of the analysis: its findings existed before and are confirmed
+     * @param  array<int, string>  $names  device id => name of the devices of the findings, as their titles name them
      * @return array{insert: array<string, array>, confirmed: string[], resolve: array<int, string>, miss: int[], unmiss: int[],
      *     confirm: int[], update: array<int, array>, before: array<int, array>, after: array<int, array>} findings to insert
      *     (hash => finding) and the hashes of those inserted as confirmed, id => resolved_at, ids missed by this run, ids
      *     back after one miss, ids confirmed now, id => finding with another severity or wording, and the confirmed
      *     findings (code, severity, devices) before and after the run
      */
-    public static function run(string $analysis, array $open, array $findings, string $time, bool $initial): array
+    public static function run(string $analysis, array $open, array $findings, string $time, bool $initial, array $names = []): array
     {
         $current = [];
         foreach ($findings as $finding) {
             $current[self::hash($analysis, $finding)] ??= $finding;
         }
 
-        // check and device of every finding the previous run reported (open, not missed by it) that this run no longer
-        // reports: a finding of the same check on one of its devices takes its place
+        // findings still open (missed by the previous run or not) that this run no longer reports, by check and device they
+        // are about: a new finding of the same check about the same devices takes the place of one
         $gone = [];
         foreach ($open as $row) {
-            if ($row['missed_at'] === null && ! isset($current[$row['hash']])) {
-                foreach ($row['devices'] as $device) {
-                    $gone[$row['code'] . '|' . $device] = true;
+            if (! isset($current[$row['hash']])) {
+                $subjects = self::subjects($row, $names);
+                foreach ($subjects['devices'] as $device) {
+                    $gone[$row['code'] . '|' . $device][($subjects['named'] ? 'n' : 'a') . implode(',', $subjects['devices'])] = $subjects;
                 }
             }
         }
-        $succeeds = function (array $finding) use ($gone): bool {
-            foreach ($finding['devices'] ?? [] as $device) {
-                if (isset($gone[$finding['code'] . '|' . (int) $device])) {
-                    return true;
+        $succeeds = function (array $finding) use ($gone, $names): bool {
+            if (! $gone) {
+                return false;
+            }
+            $subjects = self::subjects($finding, $names);
+            foreach ($subjects['devices'] as $device) {
+                foreach ($gone[$finding['code'] . '|' . $device] ?? [] as $other) {
+                    // one names all the devices the other names; a title that names none shares any of them
+                    if (! $subjects['named'] || ! $other['named'] || ! array_diff($subjects['devices'], $other['devices'])
+                        || ! array_diff($other['devices'], $subjects['devices'])) {
+                        return true;
+                    }
                 }
             }
 
@@ -154,8 +168,8 @@ class FindingHistory
                 unset($result['insert'][$hash]);
                 if ($row['missed_at'] !== null) {
                     $result['unmiss'][] = $id; // back after one run without it
-                } elseif (! $row['confirmed'] && ($row['first_seen'] < $time || $succeeds($finding))) {
-                    $result['confirm'][] = $id; // reported by the previous run and this one
+                } elseif (! $row['confirmed']) {
+                    $result['confirm'][] = $id; // reported by the previous run (whenever it ran) and this one
                 }
                 if ($row['severity'] !== $finding['severity'] || $row['title'] !== self::title($finding)) {
                     $result['update'][$id] = $finding;
@@ -262,6 +276,28 @@ class FindingHistory
         }
 
         return array_values($rows);
+    }
+
+    /**
+     * Devices a finding (or a row of the findings history) is about: those of its devices its title
+     * names, as whole names in any case, or all of them when it names none (`named` false).
+     *
+     * @param  array<int, string>  $names  device id => name
+     * @return array{devices: int[], named: bool}
+     */
+    public static function subjects(array $finding, array $names): array
+    {
+        $devices = array_values(array_unique(array_map('intval', $finding['devices'] ?? [])));
+        sort($devices);
+        $title = (string) ($finding['title'] ?? '');
+        $named = array_values(array_filter($devices, function (int $device) use ($names, $title) {
+            $name = (string) ($names[$device] ?? '');
+
+            return $name !== '' && stripos($title, $name) !== false
+                && preg_match('/(?<![\w.-])' . preg_quote($name, '/') . '(?![\w.-])/iu', $title) === 1;
+        }));
+
+        return $named ? ['devices' => $named, 'named' => true] : ['devices' => $devices, 'named' => false];
     }
 
     /**

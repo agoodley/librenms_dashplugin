@@ -235,24 +235,33 @@ changed in the last day, week or month, or between two dates:
 An admin can **save the baseline**: the topology as it should be (links, port-channel members, root bridges, OSPF
 adjacencies, BGP sessions), for everything or for the devices of the current filter. The page then lists what is missing
 compared to the baseline, with since when, and what is new; root bridges are compared per switch and VLAN and listed
-per change ("VLAN 30: root bridge core1 → core2 on 1,242 switches"). **Accept** takes one missing item out of the
-baseline when it is gone on purpose, or makes a root bridge change the expected one on all its switches. The redundancy
+per old and new root bridge with the VLANs of all their switches ("VLANs 10-29: root bridge core1 → core2 on 1,242
+switches", whichever of those VLANs each access switch carries). **Accept** takes one missing item out of the baseline
+when it is gone on purpose, or makes a root bridge change the expected one on all its switches, each for its own VLANs
+(two admins accepting overlapping changes at once take turns). The redundancy
 page uses it too: a baseline link that LLDP/CDP no longer reports counts as a down link,
 so a lost uplink is still reported after LibreNMS deleted its neighbor at the next discovery (a port that now has another
 cable is a moved cable, not a lost path).
 
-After each snapshot the **background checks** run the spanning tree (one VLAN at a time, with the loop evidence of storms
-and syslog messages), link and redundancy checks over all devices, one after the other and each in its own process, and
-keep a findings history. A finding counts once two runs in a row report it, or when it takes the place of a finding of the
-same check on one of its devices that is gone (findings whose ports change from run to run go on), and is resolved once
-two runs in a row do not report it, so a check that flickers from run to run does not flood anything; the Changes page
-lists the findings that count. A device gets an entry in its
-eventlog (type `topology`) when it gets its first such finding of a check or loses its last one, from *Eventlog from
-severity* (warning by default) and except the *Checks kept out of the eventlog* (those that follow the counters of the last
-poll); the entries then show on the device pages and in the eventlog widget, and alert rules can match them. An entry names
-the check only ("Topology warning: Redundancy lost (redundancy check), details: plugin/topology/redundancy?device=12"):
-findings name other devices, and everyone who may see a device reads its eventlog. The diagnostics pages mark findings
-that are **new** since the previous run, and the Changes page lists the confirmed findings that came or went.
+After each snapshot the **background checks** run the spanning tree (one VLAN at a time, with the loop evidence of
+storms and syslog messages), link and redundancy checks over all devices, one after the other and each in its own
+process, and keep a findings history. A finding counts once two runs in a row report it, or when it takes the place of a
+finding of the same check about the same devices that is gone (findings whose ports change from run to run go on). The
+devices a finding is about are those its title names: "redundancy lost: acc-sw7" is about acc-sw7, so a one-run blip of
+another access switch behind the same core counts for nothing. A finding is resolved once two runs in a row do not
+report it, so a check that flickers from run to run does not flood anything; the Changes page lists the findings that
+count. A device gets an entry in its eventlog (type `topology`) when it gets its first such finding of a check or loses
+its last one, from *Eventlog from severity* (warning by default) and except the *Checks kept out of the eventlog* (those
+that follow the counters of the last poll); the entries then show on the device pages and in the eventlog widget, and
+alert rules can match them. An entry names the check only ("Topology warning: Redundancy lost (redundancy check),
+details: plugin/topology/redundancy?device=12"): findings name other devices, and everyone who may see a device reads
+its eventlog. Entries of the spanning tree check can name its syslog based checks ("Topology warning: MAC flapping
+(spanning tree check)"), also for users whose role may not view syslog; the Changes page leaves the findings of those
+checks out for them, as the spanning tree page does. The diagnostics pages mark findings that are **new** since the
+previous run, and the Changes page lists the confirmed findings that came or went. When a window holds more changes than
+the page reads (5,000 facts that started and 5,000 that ended), it lists the changes after the snapshot where that limit
+fell and counts the facts of that snapshot and the earlier ones per kind, the ten newest one by one ("Oct 20 10:07:
+6,000 root bridge facts changed, not listed"); a filter by device, group or location lists them.
 
 ![Topology changes](docs/images/topology-changes.png)
 
@@ -392,7 +401,7 @@ To remove the plugin and its tables:
 | Keep changes for | 90 days | facts and findings that ended earlier are deleted |
 | Background checks | `stp links redundancy` | analyses run every *History interval*; empty disables them |
 | Eventlog from severity | warning | a device gets an eventlog entry when it gets or loses a background finding from this severity (`critical`, `warning`, `info` or `none`) |
-| Checks kept out of the eventlog | `link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent` | check codes that follow the counters of the last poll; they stay on the pages |
+| Checks kept out of the eventlog | `link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent multicast_storm` | check codes that follow the counters of the last poll (`multicast_storm`: the multicast rate of the last poll, which routing protocols and video streams raise too); they stay on the pages |
 
 ## Permissions
 
@@ -402,7 +411,9 @@ root bridge on such a device is not reported as a rogue switch. The topology his
 Changes page shows a user the changes of their devices, names other devices by their LLDP/CDP name or as "another
 device", and only lists background findings about their devices alone. Only LibreNMS admins can apply derived device
 dependencies and save, clear or accept items of the baseline; other users see those pages read only. The syslog evidence
-of the spanning tree page is only shown to users whose LibreNMS role may view syslog.
+of the spanning tree page, and the findings of its syslog based checks on the Changes page, are only shown to users
+whose LibreNMS role may view syslog (the eventlog entries of the spanning tree check name those checks to everyone who may
+see the device).
 
 ## How it works
 

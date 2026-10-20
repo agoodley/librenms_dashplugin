@@ -19,13 +19,16 @@
         'blocking_stopped' => 'forwarding', 'ospf_lost' => 'adjacency lost', 'ospf_up' => 'adjacency up', 'bgp_lost' => 'session down',
         'bgp_up' => 'session up',
     ];
-    $kinds = ['link' => 'link', 'lag' => 'port-channel member', 'stp_root' => 'root bridge', 'ospf' => 'OSPF adjacency', 'bgp' => 'BGP session'];
+    $kinds = ['link' => 'link', 'lag' => 'port-channel member', 'stp_root' => 'root bridge', 'stp_blocked' => 'blocked port', 'ospf' => 'OSPF adjacency', 'bgp' => 'BGP session'];
     $kindsPlural = ['link' => 'links', 'lag' => 'port-channel members', 'stp_root' => 'root bridges', 'ospf' => 'OSPF adjacencies', 'bgp' => 'BGP sessions'];
     $scope = array_filter(['device' => $params['device'], 'group' => $params['group'], 'location' => $params['location']]);
     // the page's scope and window, kept by the baseline links and forms
     $keep = $scope + ($window === 'custom' ? array_filter(['from' => request()->query('from'), 'to' => request()->query('to')], 'is_string') : ['window' => $window]);
     $count = fn (array $types) => array_sum(array_intersect_key($result['counts'] ?? [], array_flip($types)));
     $number = fn (int $n, string $one, string $many) => $n . ' ' . ($n === 1 ? $one : $many);
+    // "6,000 root bridge facts, 2 link facts" for the facts per kind of snapshots a cut window does not list
+    $factCounts = fn (array $byKind) => implode(', ', array_map(fn ($kind, $n) => number_format($n) . ' ' . ($kinds[$kind] ?? $kind) . ($n === 1 ? ' fact' : ' facts'),
+        array_keys($byKind), $byKind));
 @endphp
 
 @section('content')
@@ -103,9 +106,9 @@
         @endif
 
         <div class="topo-cards">
-            <div class="topo-card topo-{{ count($result['events']) ? 'warning' : 'ok' }}">
+            <div class="topo-card topo-{{ count($result['events']) || ! empty($result['truncated']) ? 'warning' : 'ok' }}">
                 <h4>Changes</h4>
-                <div class="topo-card-value">{{ count($result['events']) }}</div>
+                <div class="topo-card-value">{{ count($result['events']) }}{{ ! empty($result['truncated']) ? '+' : '' }}</div>
                 <p>{{ $window === 'custom' ? 'from ' . $from->format('Y-m-d H:i') . ' to ' . $to->format('Y-m-d H:i') : 'in the ' . $windows[$window][0] }}</p>
             </div>
             <div class="topo-card topo-{{ $count(['cable_moved', 'link_removed', 'unmanaged_new', 'lag_member_removed']) ? 'warning' : 'info' }}">
@@ -152,7 +155,8 @@
             <table class="table table-condensed table-hover topo-stp-table">
                 <thead><tr><th>When</th><th>Change</th><th>What</th><th>Devices</th></tr></thead>
                 <tbody>
-                @forelse($result['events'] as $event)
+                @php $dropped = $result['dropped'] ?? null; @endphp
+                @foreach($result['events'] as $event)
                     <tr>
                         <td title="{{ date('Y-m-d H:i:s', $event['time']) }}">{{ date('M j H:i', $event['time']) }}</td>
                         <td><span class="topo-sev topo-sev-{{ $event['level'] }}">{{ $types[$event['type']] ?? $event['type'] }}</span></td>
@@ -167,15 +171,33 @@
                             @endif
                         </td>
                     </tr>
-                @empty
+                @endforeach
+                {{-- snapshots a cut window leaves out, counted --}}
+                @foreach($dropped['snapshots'] ?? [] as $snapshot)
+                    <tr class="text-muted">
+                        <td title="{{ date('Y-m-d H:i:s', $snapshot['time']) }}">{{ date('M j H:i', $snapshot['time']) }}</td>
+                        <td><span class="topo-sev topo-sev-info">not listed</span></td>
+                        <td class="topo-wrap" colspan="2">{{ $factCounts($snapshot['kinds']) }} changed, not listed; filter by device, group or location to see them</td>
+                    </tr>
+                @endforeach
+                @if(! empty($dropped['earlier']))
+                    <tr class="text-muted">
+                        <td>earlier</td>
+                        <td><span class="topo-sev topo-sev-info">not listed</span></td>
+                        <td class="topo-wrap" colspan="2">{{ $factCounts($dropped['earlier']['kinds']) }} changed in earlier snapshots of the window, not listed;
+                            filter by device, group or location or choose a shorter window to see them</td>
+                    </tr>
+                @endif
+                @if(! $result['events'] && empty($dropped['snapshots']))
                     <tr><td colspan="4"><span class="topo-sev topo-sev-ok">ok</span> No topology changes in this window.</td></tr>
-                @endforelse
+                @endif
                 </tbody>
             </table>
             </div>
             @if(! empty($result['truncated']))
-                <div class="panel-footer text-warning"><i class="fa fa-exclamation-triangle"></i> Too many changes: only those since
-                    {{ $result['since'] }} are shown. Choose a shorter window or filter by device, group or location.</div>
+                <div class="panel-footer text-warning"><i class="fa fa-exclamation-triangle"></i> Too many changes: those after
+                    {{ $result['since'] }} are listed, that snapshot and the earlier ones are only counted. Choose a shorter window or
+                    filter by device, group or location.</div>
             @endif
         </div>
 

@@ -117,16 +117,17 @@ class HistoryBaselineTest extends TestCase
      * Runs of one analysis over the findings history, like HistoryService::checks() with the database.
      *
      * @param  array<int, array<int, array>>  $runs  findings of each run; the first run is the initial one
+     * @param  array<int, string>  $names  device id => name, as the titles name the devices
      * @return array<int, array<int, array>> eventlog entries of each run
      */
-    private static function simulate(array $runs, string $minimum = 'warning', array $skip = []): array
+    private static function simulate(array $runs, string $minimum = 'warning', array $skip = [], array $names = []): array
     {
         $rows = [];
         $entries = [];
         foreach ($runs as $index => $findings) {
             $time = sprintf('2026-10-20 %02d:07:00', $index);
             $open = array_values(array_filter($rows, fn ($row) => $row['resolved_at'] === null));
-            $run = FindingHistory::run('links', $open, $findings, $time, $index === 0);
+            $run = FindingHistory::run('links', $open, $findings, $time, $index === 0, $names);
             foreach ($run['insert'] as $hash => $finding) {
                 $id = count($rows) + 1;
                 $rows[$id] = ['id' => $id, 'hash' => $hash, 'code' => $finding['code'], 'severity' => $finding['severity'], 'title' => FindingHistory::title($finding),
@@ -250,6 +251,16 @@ class HistoryBaselineTest extends TestCase
         $this->assertSame([], $run['miss']);
     }
 
+    public function testFindingReportedAgainIsConfirmedWhenTheRunsShareASecond(): void
+    {
+        // ./lnms topology:checks right after the checks of a snapshot: both runs in the same second
+        $finding = self::finding('speed_mismatch', [3, 1], [31, 12]);
+        $open = [['id' => 7, 'hash' => FindingHistory::hash('links', $finding), 'code' => 'speed_mismatch', 'severity' => 'warning', 'title' => 'A finding',
+            'devices' => [3, 1], 'confirmed' => false, 'missed_at' => null, 'first_seen' => '2026-10-20 10:07:00']];
+
+        $this->assertSame([7], FindingHistory::run('links', $open, [$finding], '2026-10-20 10:07:00', false)['confirm']);
+    }
+
     public function testInitialRunsAreTheFirstSuccessfulOnes(): void
     {
         $this->assertTrue(Runs::initial(null, 'stp'));
@@ -361,6 +372,58 @@ class HistoryBaselineTest extends TestCase
         $this->assertSame(['r3 10 warning', 'r5 10 ok'], self::flatten($twice), 'two runs in a row: new, and resolved after two runs without it');
     }
 
+    public function testSuccessorIsAFindingAboutTheSameDevicesAsItsTitleNamesThem(): void
+    {
+        // access switches behind core2: a lost uplink of one names that switch, not core2
+        $names = [1 => 'dist1', 2 => 'core2', 3 => 'acc1', 4 => 'acc2', 6 => 'acc-sw4', 10 => 'acc-sw7', 12 => 'acc-sw9', 13 => 'core3'];
+        $lost = fn (int $device, int $core, string $name) => self::finding('redundancy_lost', [$device, $core], [$device * 10 + 1, $core * 10 + 1], 'warning', "redundancy lost: $name");
+        [$acc4, $acc7, $acc9] = [$lost(6, 2, 'acc-sw4'), $lost(10, 2, 'acc-sw7'), $lost(12, 2, 'acc-sw9')];
+        $run = fn (array $runs) => self::flatten(self::simulate($runs, 'warning', [], $names));
+
+        $this->assertSame([], $run([[], [], [$acc7], [$acc9], [], [], []]), 'one-run blips of two switches behind the same core are no news');
+        $this->assertSame([], $run([[], [$acc7], [$acc9], [$acc7], [$acc9], [$acc7], [], [], []]), 'nor when they alternate');
+        $this->assertSame(['r3 2 ok', 'r3 6 ok'], $run([[$acc4], [$acc4], [$acc7], [], [], []]),
+            'acc4 repaired in the run acc7 blips: acc7 does not go on in its place');
+
+        // the same switch is about the same devices whichever link of it is down, and so is a list with it and more
+        $this->assertSame(['r2 10 warning', 'r2 13 warning'], $run([[], [$acc7], [$lost(10, 13, 'acc-sw7')], [$lost(10, 13, 'acc-sw7')]]));
+        $both = self::finding('redundancy_lost', [10, 12, 2], [101, 121, 21], 'warning', 'redundancy lost: acc-sw7, acc-sw9');
+        $this->assertSame(['r2 2 warning', 'r2 10 warning', 'r2 12 warning'], $run([[], [$acc7], [$both], [$both]]));
+
+        // a link names both ends: another access switch's link to the same distribution switch is another link
+        $pair = fn (int $device, string $name, int $port) => self::finding('speed_mismatch', [$device, 1], [$device * 10, $port], 'warning',
+            "speed mismatch: $name Gi1/0/49 ↔ dist1 Te1/0/$port");
+        $this->assertSame([], $run([[], [], [$pair(3, 'acc1', 3)], [$pair(4, 'acc2', 4)], [], [], []]));
+        $this->assertSame(['r2 1 warning', 'r2 3 warning'], $run([[], [$pair(3, 'acc1', 3)], [$pair(3, 'acc1', 5)], [$pair(3, 'acc1', 5)]]),
+            'the same link on other ports goes on');
+    }
+
+    public function testSubjectsAreTheDevicesTheTitleNames(): void
+    {
+        $names = [2 => 'core2', 3 => 'acc1', 10 => 'acc-sw7', 30 => 'acc10', 40 => 'sw(4)'];
+        $subjects = fn (string $title, array $devices) => FindingHistory::subjects(['title' => $title, 'devices' => $devices], $names);
+
+        $this->assertSame(['devices' => [10], 'named' => true], $subjects('Redundancy lost: ACC-SW7', [10, 2]), 'in any case');
+        $this->assertSame(['devices' => [30], 'named' => true], $subjects('speed mismatch on acc10', [3, 30]), 'whole names only');
+        $this->assertSame(['devices' => [3, 30], 'named' => true], $subjects('MTU mismatch: acc1 Gi1/0/49 ↔ acc10 Gi1/0/1', [30, 3]));
+        $this->assertSame(['devices' => [40], 'named' => true], $subjects('single point of failure: sw(4)', [40, 2]));
+        $this->assertSame(['devices' => [2, 3], 'named' => false], $subjects('ports in broken state', [3, 2, 3]), 'a title without names: all its devices');
+        $this->assertSame(['devices' => [2, 10], 'named' => false], FindingHistory::subjects(['title' => 'redundancy lost: acc-sw7', 'devices' => [10, 2]], []),
+            'without names: all its devices');
+    }
+
+    public function testFindingThatChurnsAcrossAnEmptyRunGoesOn(): void
+    {
+        // the check missed acc1 once, then reports it on other ports every run: still open, so taken over
+        $runs = [[self::finding('speed_mismatch', [3], [31])], [self::finding('speed_mismatch', [3], [31])], []];
+        foreach ([32, 33, 34] as $port) {
+            $runs[] = [self::finding('speed_mismatch', [3], [$port])];
+        }
+
+        $this->assertSame([], self::flatten(self::simulate($runs)), 'no false "resolved" and "new" around the empty run');
+        $this->assertSame(['r7 3 ok'], self::flatten(self::simulate(array_merge($runs, [[], []]))));
+    }
+
     /**
      * @param  array<int, array<int, array>>  $entries  eventlog entries of each run
      * @return string[] "r<run> <device> <severity>"
@@ -412,6 +475,60 @@ class HistoryBaselineTest extends TestCase
         $after += $ops['insert'];
         $this->assertSame([[null, '00ab02000001', [41], [3]]],
             array_map(fn ($c) => [$c['from']['root'] ?? null, $c['to']['root'] ?? null, $c['vlans'], $c['devices']], Baseline::rootChanges($after, $now)));
+    }
+
+    public function testRootBridgeMoveIsOneChangeWhateverVlansEachSwitchCarries(): void
+    {
+        $names = [1 => 'core1', 2 => 'core2', 3 => 'acc3', 4 => 'acc4', 5 => 'acc5'];
+        $collector = new FactCollector($names, []);
+        $stp = fn (array $vlansOf, callable $root) => $collector->stpRoots(array_merge(...array_map(fn ($device) => array_map(fn ($vlan) => ['device_id' => $device,
+            'vlan' => $vlan, 'designatedRoot' => $root($vlan), 'bridgeAddress' => "00ab0{$device}000001"], $vlansOf[$device]), array_keys($vlansOf))));
+        // the cores carry VLAN 1 and the user VLANs 10-14, each access switch VLAN 1 and some of them
+        $vlans = [1 => [1, 10, 11, 12, 13, 14], 2 => [1, 10, 11, 12, 13, 14], 3 => [1, 10, 11, 12], 4 => [1, 11, 13], 5 => [1, 12, 14]];
+        $baseline = $stp($vlans, fn ($vlan) => '00ab01000001');
+        $now = $stp($vlans, fn ($vlan) => $vlan === 1 ? '00ab01000001' : '00ab02000001');
+
+        $changes = Baseline::rootChanges($baseline, $now);
+
+        $this->assertCount(1, $changes, 'one move of the user VLANs from core1 to core2');
+        $this->assertSame([10, 11, 12, 13, 14], $changes[0]['vlans']);
+        $this->assertSame([1, 2, 3, 4, 5], $changes[0]['devices']);
+        $this->assertSame([3 => [10, 11, 12], 4 => [11, 13], 5 => [12, 14]], array_intersect_key($changes[0]['device_vlans'], [3 => 1, 4 => 1, 5 => 1]));
+        $this->assertSame('VLANs 10-14: root bridge core1 (00:ab:01:00:00:01) → core2 (00:ab:02:00:00:01) on acc3, acc4, acc5, core1, core2',
+            (new FactText($names))->rootChange($changes[0]), 'the text has the VLANs of all its switches');
+
+        // one Accept moves the VLANs of each switch, and only those
+        $ops = Baseline::acceptRootChange($baseline, $now, $changes[0]);
+        $after = $baseline;
+        foreach ($ops['update'] as $hash => $data) {
+            $after[$hash]['data'] = $data;
+        }
+        foreach ($ops['delete'] as $hash) {
+            unset($after[$hash]);
+        }
+        $after += $ops['insert'];
+        $this->assertSame([], Baseline::rootChanges($after, $now), 'nothing left to accept');
+        $core2 = fn (int $device) => FactText::vlans($after[FactCollector::hash(FactCollector::STP_ROOT, "d$device|00ab02000001")]['data']);
+        $this->assertSame([[10, 11, 12], [11, 13], [12, 14]], [$core2(3), $core2(4), $core2(5)]);
+        $this->assertSame([0], FactText::vlans($after[FactCollector::hash(FactCollector::STP_ROOT, 'd4|00ab01000001')]['data']), 'VLAN 1 / CST stays');
+    }
+
+    public function testSnapshotsACutWindowLeavesOutAreCounted(): void
+    {
+        // one snapshot at 10:07 moved the root bridge of 3,000 switch / VLAN pairs (3,000 facts gone, 3,000 new)
+        $added = array_map(fn ($id) => ['id' => $id, 'first_seen' => 1007, 'removed_at' => null], range(6000, 1001, -1));
+        $window = Window::merge($added, array_map(fn ($id) => ['id' => $id, 'first_seen' => 1, 'removed_at' => 1007], range(5000, 1, -1)), 5000);
+        $this->assertSame([[], true, 1007], [$window['rows'], $window['truncated'], $window['since']], 'nothing of it can be listed');
+
+        $counts = [['time' => 1007, 'kind' => 'stp_root', 'facts' => 3000], ['time' => 905, 'kind' => 'stp_root', 'facts' => 1],
+            ['time' => 1007, 'kind' => 'stp_root', 'facts' => 3000], ['time' => 905, 'kind' => 'link', 'facts' => 2], ['time' => 803, 'kind' => 'bgp', 'facts' => 1]];
+        $totals = ['stp_root' => 6001, 'link' => 9, 'bgp' => 1];
+
+        $this->assertSame(['snapshots' => [['time' => 1007, 'kinds' => ['stp_root' => 6000], 'facts' => 6000],
+            ['time' => 905, 'kinds' => ['link' => 2, 'stp_root' => 1], 'facts' => 3], ['time' => 803, 'kinds' => ['bgp' => 1], 'facts' => 1]],
+            'earlier' => ['kinds' => ['link' => 7], 'facts' => 7]], Window::dropped($counts, $totals, 10), 'newest first, kinds in their order');
+        $this->assertSame(['snapshots' => [['time' => 1007, 'kinds' => ['stp_root' => 6000], 'facts' => 6000]],
+            'earlier' => ['kinds' => ['link' => 9, 'stp_root' => 1, 'bgp' => 1], 'facts' => 11]], Window::dropped($counts, $totals, 1), 'the earlier ones together');
     }
 
     public function testVlansOfAFormAreStrict(): void

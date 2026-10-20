@@ -3,7 +3,9 @@
 namespace Agoodley\LibrenmsTopology\History;
 
 use Agoodley\LibrenmsTopology\Data\HistoryRepository;
+use Agoodley\LibrenmsTopology\Data\LoopEvidenceRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
+use Agoodley\LibrenmsTopology\Stp\LoopEvidence;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use Agoodley\LibrenmsTopology\Topology\TopologyService;
@@ -115,7 +117,17 @@ class HistoryService
 
         // the first successful run records what is there already: only later changes are news
         $initial = Runs::initial($previous['stats'] ?? null, $analysis);
-        $changes = FindingHistory::run($analysis, $this->history->openFindings($analysis), $findings, $started->toDateTimeString(), $initial);
+        $open = $this->history->openFindings($analysis);
+        $devices = [];
+        foreach ([$open, $findings] as $list) {
+            foreach ($list as $finding) {
+                foreach ($finding['devices'] ?? [] as $device) {
+                    $devices[(int) $device] = true;
+                }
+            }
+        }
+        // the names their titles use tell which devices a finding is about
+        $changes = FindingHistory::run($analysis, $open, $findings, $started->toDateTimeString(), $initial, $this->history->names(array_keys($devices)));
         $this->history->applyFindings($analysis, $changes, $started, $initial);
         $entries = $initial ? [] : FindingHistory::eventlog($analysis, $changes['before'], $changes['after'],
             strtolower($this->settings->all()['history_eventlog_severity'] ?? 'warning'), array_map('strtolower', $this->settings->list('history_eventlog_skip')));
@@ -151,9 +163,12 @@ class HistoryService
 
         $window = $this->history->windowFacts($from, $to, $ids);
         $rows = $window['rows'];
+        $since = null;
         if ($window['since'] !== null) {
-            // too many changes: only those since the boundary of the rows read, with both halves of each
-            $from = Carbon::createFromTimestamp(max($from->getTimestamp(), $window['since']), $from->getTimezone());
+            // too many changes: those after the boundary of the rows read are listed, with both halves of each; the
+            // snapshots up to it are counted (dropped)
+            $since = Carbon::createFromTimestamp($window['since'], $from->getTimezone());
+            $from = $since->copy()->addSecond();
         }
         $nodes = [];
         $firstFacts = []; // device => when its first new fact of the window was seen
@@ -173,7 +188,10 @@ class HistoryService
         $report = ChangeReport::build($rows, $from->getTimestamp(), $to->getTimestamp(), $text,
             $this->history->newToHistory(array_intersect_key($firstFacts, $added)), $this->history->priorNodes($nodes, $from));
 
-        $windowFindings = $this->history->windowFindings($from, $to, $ids);
+        // findings of the syslog checks only for users who may read syslog, as on the spanning tree page
+        $hidden = $this->history->sibling(LoopEvidenceRepository::class)->canViewSyslog()
+            ? [] : ['stp' => array_keys(array_filter(LoopEvidence::CHECKS, fn ($category) => $category === 'syslog'))];
+        $windowFindings = $this->history->windowFindings($from, $to, $ids, $hidden);
         $findings = array_map(function (array $finding) use ($text) {
             $finding['device_names'] = array_combine($finding['devices'], array_map(fn ($id) => $text->device($id, null), $finding['devices']));
 
@@ -187,7 +205,8 @@ class HistoryService
             'events' => $report['events'],
             'counts' => $report['counts'],
             'truncated' => $window['truncated'],
-            'since' => $window['since'] !== null ? $from->toDateTimeString() : null,
+            'since' => $since?->toDateTimeString(),
+            'dropped' => $window['dropped'],
             'baseline' => $this->baselineComparison($ids, $text),
             'findings' => $findings,
             'findings_truncated' => $windowFindings['truncated'],
@@ -239,29 +258,35 @@ class HistoryService
 
     /**
      * Accept a change of root bridges (Baseline::rootChanges()) in the baseline of the page's scope,
-     * on all the switches that see it.
+     * on all the switches that see it, each with its own VLANs.
      *
      * @param  array{device: ?int, group: ?int, location: ?int}  $p
      * @param  string  $from  root bridge MAC in the baseline, '' for a new instance
      * @param  string  $to  root bridge MAC now, '' for an instance that is gone
-     * @param  int[]  $vlans
+     * @param  int[]  $vlans  VLANs of the change as the page showed it (all its switches)
      * @return array|null the change accepted with its text, null when the page's change is no longer there
      */
     public function acceptRootChange(array $p, string $from, string $to, array $vlans, ?string $user): ?array
     {
         $ids = $this->scopeIds($p);
-        $baseline = $this->history->baselineFactsOfKind($ids, FactCollector::STP_ROOT);
-        $current = $this->history->currentFactsOfKind($ids, FactCollector::STP_ROOT);
         sort($vlans);
-        foreach (Baseline::rootChanges($baseline, $current) as $change) {
-            if (($change['from']['root'] ?? '') === $from && ($change['to']['root'] ?? '') === $to && $change['vlans'] === $vlans) {
-                $this->history->applyBaselineChange(Baseline::acceptRootChange($baseline, $current, $change), Carbon::now(), $user);
+        // the baseline's root bridge facts are read under a lock: an admin accepting an overlapping change at the same
+        // time waits, then sees this change applied
+        $accepted = $this->history->transaction(function () use ($ids, $from, $to, $vlans, $user) {
+            $baseline = $this->history->baselineFactsOfKind($ids, FactCollector::STP_ROOT, true);
+            $current = $this->history->currentFactsOfKind($ids, FactCollector::STP_ROOT);
+            foreach (Baseline::rootChanges($baseline, $current) as $change) {
+                if (($change['from']['root'] ?? '') === $from && ($change['to']['root'] ?? '') === $to && $change['vlans'] === $vlans) {
+                    $this->history->applyBaselineChange(Baseline::acceptRootChange($baseline, $current, $change), Carbon::now(), $user);
 
-                return $change + ['text' => (new FactText($this->history->names($change['devices'])))->rootChange($change)];
+                    return $change;
+                }
             }
-        }
 
-        return null;
+            return null;
+        });
+
+        return $accepted !== null ? $accepted + ['text' => (new FactText($this->history->names($accepted['devices'])))->rootChange($accepted)] : null;
     }
 
     /**
@@ -345,7 +370,8 @@ class HistoryService
         $rootItem = fn (array $change) => [
             'kind' => FactCollector::STP_ROOT,
             'hash' => FactCollector::hash(FactCollector::STP_ROOT, 'd' . $change['devices'][0] . '|' . ($change['from']['root'] ?? '')),
-            'change' => ['from' => $change['from']['root'] ?? '', 'to' => $change['to']['root'] ?? '', 'vlans' => implode(',', $change['vlans'])],
+            // the fields of its Accept form (the window's from / to are the page's own)
+            'change' => ['root_from' => $change['from']['root'] ?? '', 'root_to' => $change['to']['root'] ?? '', 'vlans' => implode(',', $change['vlans'])],
             'switches' => count($change['devices']),
             'text' => $text->rootChange($change),
             'devices' => array_values(array_filter(array_slice($change['devices'], 0, 6), fn ($id) => $text->visible($id))),
