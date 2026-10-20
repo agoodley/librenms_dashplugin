@@ -1,0 +1,94 @@
+<?php
+
+namespace Agoodley\LibrenmsTopology\Support;
+
+/**
+ * Classifies devices into diagram roles (router, L3 switch, switch, firewall...) which
+ * select the icon drawn on the map.
+ */
+class DeviceRole
+{
+    public const ROUTER = 'router';
+    public const L3SWITCH = 'l3switch';
+    public const SWITCH = 'switch';
+    public const FIREWALL = 'firewall';
+    public const WIRELESS = 'wireless';
+    public const SERVER = 'server';
+    public const PHONE = 'phone';
+    public const OTHER = 'other';
+    public const UNKNOWN = 'unknown';
+
+    private const ROUTER_OS = ['iosxr', 'junos', 'vrp', 'routeros', 'vyos', 'edgeos', 'timos', 'ironware', 'xos-router', 'iosxe-router'];
+
+    /**
+     * @param  array  $device  devices row (type, os, hardware)
+     * @param  array{bridge?: bool, l3_interfaces?: int, routing?: bool, vlans?: int}  $facts
+     */
+    public static function classify(array $device, array $facts = []): string
+    {
+        $type = strtolower((string) ($device['type'] ?? ''));
+        $os = strtolower((string) ($device['os'] ?? ''));
+        $hardware = strtolower((string) ($device['hardware'] ?? ''));
+
+        switch ($type) {
+            case 'firewall':
+                return self::FIREWALL;
+            case 'wireless':
+                return self::WIRELESS;
+            case 'server':
+            case 'workstation':
+            case 'storage':
+            case 'appliance':
+            case 'loadbalancer':
+                return self::SERVER;
+            case 'collaboration':
+                return self::PHONE;
+            case 'power':
+            case 'environment':
+            case 'printer':
+            case 'timing':
+            case 'management':
+                return self::OTHER;
+        }
+
+        $bridge = ($facts['bridge'] ?? false) || ($facts['vlans'] ?? 0) > 1;
+        $l3 = ($facts['l3_interfaces'] ?? 0) >= 2 || ($facts['routing'] ?? false);
+
+        if ($bridge && $l3) {
+            return self::L3SWITCH;
+        }
+
+        if ($bridge) {
+            return self::SWITCH;
+        }
+
+        if ($l3 || in_array($os, self::ROUTER_OS, true) || preg_match('/\b(isr|asr|router|mx\d|srx|ptx|ncs)/', $hardware)) {
+            return self::ROUTER;
+        }
+
+        if (preg_match('/switch|catalyst|ws-c|c9[2-5]\d{2}|nexus|ex\d{4}|qfx/', $hardware)) {
+            return self::SWITCH;
+        }
+
+        return $type === 'network' || $type === '' ? self::SWITCH : self::OTHER;
+    }
+
+    /**
+     * Guess the role of an unmanaged LLDP/CDP neighbour from its platform/description string.
+     */
+    public static function fromPlatform(?string $platform, ?string $hostname = null): string
+    {
+        $text = strtolower(trim(($platform ?? '') . ' ' . ($hostname ?? '')));
+
+        return match (true) {
+            $text === '' => self::UNKNOWN,
+            (bool) preg_match('/phone|^sep[0-9a-f]{6}|polycom|yealink|avaya|mitel|cp-\d{4}|grandstream/', $text) => self::PHONE,
+            (bool) preg_match('/\bair-|access ?point|\bap\b|\buap|aironet|\bmr\d{2}|meraki mr|aruba ap|\bcap\b|unifi ap|ruckus/', $text) => self::WIRELESS,
+            (bool) preg_match('/firewall|fortigate|palo ?alto|\bpa-\d|asa\d|sonicwall|checkpoint|\bsrx/', $text) => self::FIREWALL,
+            (bool) preg_match('/router|\bisr|\basr|mikrotik|routeros|\bmx\d/', $text) => self::ROUTER,
+            (bool) preg_match('/switch|ws-c|catalyst|c9[2-5]\d{2}|nexus|procurve|aruba ?\d{4}|\bex\d{4}|comware|dell.*n\d{4}|unifi ?switch|\busw/', $text) => self::SWITCH,
+            (bool) preg_match('/linux|windows|vmware|esxi|ubuntu|debian|red ?hat|centos|server|hyper-v|proxmox|truenas|synology/', $text) => self::SERVER,
+            default => self::UNKNOWN,
+        };
+    }
+}

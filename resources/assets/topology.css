@@ -1,0 +1,100 @@
+/* LibreNMS Topology plugin */
+.topo-page { padding-bottom: 10px; }
+.topo-nav { margin-bottom: 10px; }
+.topo-nav .nav-tabs > li > a { padding: 6px 14px; }
+
+.topo-toolbar, .topo-viewbar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+    padding: 6px 10px; margin-bottom: 6px;
+    border: 1px solid #ddd; border-radius: 4px; background: #f8f9fa;
+}
+.topo-toolbar label, .topo-viewbar label { margin: 0; font-weight: normal; white-space: nowrap; }
+.topo-toolbar .form-control, .topo-viewbar .form-control { display: inline-block; width: auto; height: 28px; padding: 2px 6px; }
+.topo-toolbar .select2-container { vertical-align: middle; }
+.topo-toolbar .topo-group-label, .topo-viewbar .topo-group-label { font-weight: 600; color: #666; margin-right: 2px; }
+.topo-viewbar .btn-group .btn { padding: 3px 8px; }
+.topo-spacer { flex: 1 1 auto; }
+
+.topo-body { display: flex; gap: 8px; height: calc(100vh - 290px); min-height: 480px; }
+.topo-canvas-wrap { position: relative; flex: 1 1 auto; min-width: 0; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; }
+#topo-canvas { position: absolute; inset: 0; }
+.topo-loading {
+    position: absolute; inset: 0; z-index: 5; display: none; align-items: center; justify-content: center;
+    background: rgba(255, 255, 255, 0.6); font-size: 16px; color: #555;
+}
+.topo-panel {
+    flex: 0 0 340px; overflow-y: auto; padding: 8px 10px;
+    border: 1px solid #ddd; border-radius: 4px; background: #fff; font-size: 12px;
+}
+.topo-panel-title { margin: 2px 0 8px; font-size: 15px; word-break: break-all; }
+.topo-panel h5 { margin: 12px 0 4px; font-weight: 600; }
+.topo-kv { margin-bottom: 6px; }
+.topo-kv th { width: 34%; color: #666; font-weight: 600; }
+.topo-kv td, .topo-kv th { padding: 2px 4px !important; vertical-align: top; word-break: break-word; }
+.topo-kv .topo-section { background: rgba(31, 111, 178, 0.08); color: #1f6fb2; padding-top: 4px !important; }
+.topo-neighbors tr { cursor: pointer; }
+.topo-neighbors tr:hover td { background: rgba(243, 156, 18, 0.12); }
+.topo-vlans { font-family: monospace; font-size: 11px; word-break: break-all; }
+.topo-actions { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+.topo-legend > div { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+.topo-legend { margin-bottom: 8px; }
+.topo-line { display: inline-block; width: 28px; height: 3px; border-radius: 2px; }
+.topo-line-dashed { height: 0; border-top: 3px dashed; background: none !important; }
+.topo-marker { color: #f1c40f; font-size: 16px; text-shadow: 0 0 1px #b7950b; width: 28px; text-align: center; }
+.topo-subnet { display: inline-block; padding: 0 4px; border: 1.5px solid #c9a227; background: #fff6d5; font-family: monospace; font-size: 10px; border-radius: 3px; }
+.topo-hint { margin-top: 10px; font-size: 11px; }
+.topo-status-bar { padding: 6px 2px; font-size: 12px; color: #555; }
+.topo-status-up { color: #2e9e44; font-weight: 600; }
+.topo-status-down, .topo-status-lowerLayerDown { color: #c0392b; font-weight: 600; }
+.topo-status-degraded { color: #e67e22; font-weight: 600; }
+.topo-status-disabled, .topo-status-unknown, .topo-status-notPresent { color: #8a949e; }
+.topo-text-warning { color: #d35400; }
+.topo-tooltip { font-size: 12px; line-height: 1.4; max-width: 320px; }
+
+.topo-fullscreen { position: fixed; inset: 0; z-index: 1040; background: #fff; padding: 8px; overflow: auto; }
+.topo-fullscreen .topo-body { height: calc(100vh - 150px); }
+
+/* landing / stp pages */
+.topo-cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0 16px; }
+.topo-card {
+    flex: 1 1 220px; display: block; padding: 14px 16px; border: 1px solid #ddd; border-radius: 6px;
+    background: #fff; color: inherit; text-decoration: none !important;
+}
+a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 178, 0.2); }
+.topo-card h4 { margin: 0 0 6px; font-size: 16px; }
+.topo-card .topo-card-value { font-size: 26px; font-weight: 600; }
+.topo-card p { margin: 0; color: #777; font-size: 12px; }
+.topo-card.topo-critical { border-left: 5px solid #c0392b; }
+.topo-card.topo-warning { border-left: 5px solid #e67e22; }
+.topo-card.topo-ok { border-left: 5px solid #2e9e44; }
+.topo-card.topo-info { border-left: 5px solid #1f6fb2; }
+
+.topo-sev { display: inline-block; min-width: 64px; padding: 1px 6px; border-radius: 3px; color: #fff; font-size: 11px; font-weight: 600; text-align: center; text-transform: uppercase; }
+.topo-sev-critical { background: #c0392b; }
+.topo-sev-warning { background: #e67e22; }
+.topo-sev-info { background: #1f6fb2; }
+.topo-sev-ok { background: #2e9e44; }
+.topo-finding-detail { color: #555; }
+.topo-finding-rec { color: #2c6e49; font-size: 12px; margin-top: 3px; }
+.topo-stp-table td, .topo-stp-table th { font-size: 12px; white-space: nowrap; }
+.topo-stp-table td.topo-wrap { white-space: normal; }
+.topo-mono { font-family: monospace; font-size: 11px; }
+.topo-filterbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 10px; }
+.topo-filterbar .form-control { display: inline-block; width: auto; height: 30px; }
+.topo-device-panel .topo-kv th { width: auto; }
+
+/* dark mode (LibreNMS toggles html.dark) */
+html.dark .topo-toolbar, html.dark .topo-viewbar { background: #24272c; border-color: #3a3f45; }
+html.dark .topo-canvas-wrap, html.dark .topo-panel, html.dark .topo-card { border-color: #3a3f45; background: #1d2024; }
+html.dark .topo-loading { background: rgba(29, 32, 36, 0.6); color: #ccc; }
+html.dark .topo-fullscreen { background: #1d2024; }
+html.dark .topo-kv th, html.dark .topo-toolbar .topo-group-label, html.dark .topo-viewbar .topo-group-label { color: #aaa; }
+html.dark .topo-status-bar, html.dark .topo-finding-detail, html.dark .topo-card p { color: #bbb; }
+html.dark .topo-finding-rec { color: #7fc79a; }
+html.dark .topo-subnet { background: #3b3524; }
+
+@media (max-width: 991px) {
+    .topo-body { flex-direction: column; height: auto; }
+    .topo-canvas-wrap { height: 70vh; }
+    .topo-panel { flex-basis: auto; max-height: 50vh; }
+}
