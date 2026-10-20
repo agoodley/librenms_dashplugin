@@ -92,6 +92,10 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-sev-warning { background: #e67e22; }
 .topo-sev-info { background: #1f6fb2; }
 .topo-sev-ok { background: #2e9e44; }
+.topo-sev-muted { background: #95a5a6; }
+.topo-rollout-hosts { margin-top: 3px; font-size: 12px; }
+.topo-rollout-hosts summary { cursor: pointer; color: #777; }
+.topo-rollout-hosts textarea { margin-top: 3px; font-family: monospace; font-size: 11px; }
 .topo-finding-detail { color: #555; }
 .topo-finding-rec { color: #2c6e49; font-size: 12px; margin-top: 3px; }
 .topo-stp-table td, .topo-stp-table th { font-size: 12px; white-space: nowrap; }

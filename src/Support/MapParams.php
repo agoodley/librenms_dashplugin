@@ -22,7 +22,7 @@ class MapParams
             'group' => self::int($query, 'group'),
             'location' => self::int($query, 'location'),
             'vlan' => self::int($query, 'vlan'),
-            'vrf' => isset($query['vrf']) && $query['vrf'] !== '' ? mb_substr((string) $query['vrf'], 0, 128) : null,
+            'vrf' => isset($query['vrf']) && is_scalar($query['vrf']) && $query['vrf'] !== '' ? mb_substr((string) $query['vrf'], 0, 128) : null,
             'unmanaged' => self::bool($query, 'unmanaged', $settings->bool('show_unmanaged')),
             'lag' => self::bool($query, 'lag', $settings->bool('collapse_lag')),
             'isolated' => self::bool($query, 'isolated', false),
@@ -50,11 +50,11 @@ class MapParams
     }
 
     /**
-     * Checkbox parameter ('1'/'0'); absent or empty uses $default.
+     * Checkbox parameter ('1'/'0'); absent, empty or not a single value uses $default.
      */
     private static function bool(array $query, string $key, bool $default): bool
     {
-        if (! array_key_exists($key, $query) || $query[$key] === '' || $query[$key] === null) {
+        if (! isset($query[$key]) || ! is_scalar($query[$key]) || $query[$key] === '') {
             return $default;
         }
 
