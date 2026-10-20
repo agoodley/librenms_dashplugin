@@ -199,9 +199,11 @@ port, a LAG member, a port with SVIs behind it) is in the VRFs of its device's a
 other end. A link without addresses on either end (a trunk) joins every routing table, unless a subnet its two devices
 share is in VRFs of different names only (no VRF name holds it on both) and is point-to-point (/30, /31, /126, /127: a
 provider edge facing a customer router over a port-channel) or both devices have addresses in VRFs of their own: then it
-joins only the VRFs that agree. A duplicate address between devices that LibreNMS sees no link between in that routing
-table is only info: that includes sites joined only through BGP or an MPLS VPN, which count as separate networks.
-Host-local bridges (virbr0, docker0, ...) are left out.
+joins only the VRFs that agree. Out-of-band management never crosses a link and is left out of these rules: the vendors'
+management VRFs (Mgmt-intf, Mgmt-vrf, management, mgmt_junos) and dedicated management ports (mgmt0, Management1,
+MgmtEth, fxp0 and em0 on Junos, Gi0/0 in a management VRF). A duplicate address between devices that LibreNMS sees no
+link between in that routing table is only info: that includes sites joined only through BGP or an MPLS VPN, which
+count as separate networks. Host-local bridges (virbr0, docker0, ...) are left out.
 VRF names are local to each router and compared without case: a provider edge facing a customer router joins VRFs on
 purpose and is not reported. LSA checksum sums are not compared (they change with every LSA refresh), BGP sessions in a
 state outside the BGP state machine (Junos peers that LibreNMS has not matched yet) are listed but not checked.
