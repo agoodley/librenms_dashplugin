@@ -115,7 +115,7 @@ What LibreNMS does not see, so the gaps in the maps and the checks are known:
 
 | Check | Severity |
 |---|---|
-| **Not monitored**: an LLDP/CDP neighbor whose CDP platform, LLDP system description or name says switch, router, firewall or access point, with every port it is seen on (its LLDP and CDP sightings merged) and an *Add* button for users who may add devices | warning (access points: info) |
+| **Not monitored**: an LLDP/CDP neighbor whose CDP platform, LLDP system description or name says switch, router, firewall or access point, with every port it is seen on (its LLDP and CDP sightings merged) and an *Add* button for users who may add devices | warning (access points and wireless controllers: info) |
 | **Not linked**: a neighbor whose name or address is that of one monitored device, but LibreNMS did not link the two (the name it advertises is not the device's hostname or sysName, or the link is older than the device), so the link is missing from the maps | info |
 | **Name of several devices**: a neighbor named like several monitored devices (and the hostname of none of them): LibreNMS cannot tell which one it is and links none | info |
 | **Disabled**: a neighbor that is a device disabled in LibreNMS, so it is not polled | info |
@@ -126,10 +126,12 @@ What LibreNMS does not see, so the gaps in the maps and the checks are known:
 
 The type of a neighbor comes from its CDP platform or, for LLDP, its system description, which names the software: Cisco
 IOS (the model in it tells a C2960 switch from a C2900 router), IOS XE, NX-OS and IOS XR, Arista EOS, Juniper, Aruba
-(CX switches and access points), ExtremeXOS, Dell OS10, MikroTik, VyOS, FortiGate and Firepower, for example. Phones,
-servers and neighbors of unknown type are counted, not listed, and get no finding; servers, printers, other devices that
-usually run no LLDP/CDP and firewalls whose OS supports neither (Cisco ASA and FTD) are listed without a finding among the
-monitored devices without neighbors; a device that is down is info.
+(CX switches and access points), ExtremeXOS, Dell OS10, MikroTik, VyOS, FortiGate and Firepower, Catalyst 9800 wireless
+controllers and UniFi access points, for example. Neighbors of unknown type are listed (folded away) without a finding,
+phones and servers are only counted. A neighbor LibreNMS linked to a device you may not see is listed as monitored,
+without a finding. Servers, printers, other devices that usually run no LLDP/CDP and firewalls whose OS supports neither
+(Cisco ASA and FTD) are listed without a finding among the monitored devices without neighbors; a device that is down is
+info.
 Factory default names (`Switch`, `MikroTik`, ...) are one neighbor per port and never match a monitored device. Trunks,
 port-channels, ports that are not Ethernet (such as an access point's radio) and ports whose MAC addresses are in three or
 more VLANs (access points, hypervisors) are not counted as a possible unmanaged switch. The advice for an unmonitored
@@ -204,7 +206,7 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
   JSON (same query parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`) for automation.
   `api/coverage` cuts each list at the same 500 rows as the page and returns the full counts as `findings_total`,
   `neighbors_total`, `devices_total` and `ports_total`: narrow it with `device`, `group` or `location` for the rest.
-  Phones, servers and other end devices among the neighbors are only counted, in `summary.other_neighbors`.
+  Phones and servers among the neighbors are only counted, in `summary.other_neighbors`.
 
 ## Settings
 
@@ -236,9 +238,10 @@ To remove it: `./lnms plugin:remove agoodley/librenms-topology-plugin`.
 
 Every map and diagnostic only uses devices the logged-in user may see (LibreNMS device permissions).
 Neighbors on devices the user cannot see are shown as unmanaged neighbors (their LLDP/CDP name only), and a
-root bridge on such a device is not reported as a rogue switch. The coverage report lists them as not monitored, and
-matches the names of neighbors LibreNMS did not link only against the devices the user may see (also disabled ones), so
-it tells nothing about the others.
+root bridge on such a device is not reported as a rogue switch. The coverage report lists a neighbor LibreNMS linked to
+such a device as monitored without naming the device (LibreNMS shows the neighbor's name on the device's neighbors tab
+too), and compares the names of neighbors LibreNMS did not link only with the devices the user may see (also disabled
+ones), so it tells nothing else about the others.
 
 ## How it works
 
@@ -285,11 +288,11 @@ vendor/bin/phpunit
   *Add* opens the Add Device page without it. Neighbors LibreNMS did not link are matched to monitored devices by
   hostname, sysName, display name (a name without domain matches the same first label with any domain) and interface
   address; LibreNMS itself also links by MAC address, which the report cannot check. A neighbor whose platform,
-  description and name tell nothing is counted as of unknown type, without a finding. MAC addresses are those of each
+  description and name tell nothing is listed as of unknown type, without a finding. MAC addresses are those of each
   device's last discovery (LibreNMS keeps older ones for `ports_fdb_purge` days): when that discovery found none on a
-  port, the port is not reported. The LLDP/CDP rows are read from the database in chunks and phones and other end
-  devices are only counted, so the whole network of 1,200 switches with 36,000 phones and 2.8 million forwarding table
-  entries takes about 2 seconds and 30 MB of PHP memory.
+  port, the port is not reported. The LLDP/CDP rows are read from the database in chunks and phones and servers are
+  only counted, so the whole network of 1,200 switches with 36,000 phones and 2.8 million forwarding table entries takes
+  about 2 seconds and 30 MB of PHP memory.
 * Servers, access points and phones are recognized by their LibreNMS device type, unmanaged neighbors by their CDP
   platform or, for LLDP (which has no platform), their system description; a neighbor with neither counts as a switch. Down devices without any LLDP/CDP neighbor are
   not listed as outages: nothing tells what they depend on.

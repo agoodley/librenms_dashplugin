@@ -29,6 +29,8 @@
                     @endforeach
                     @if(count($neighbor['candidates']) > 4)<span class="text-muted">and {{ count($neighbor['candidates']) - 4 }} more</span>@endif
                     <span class="text-muted">(ambiguous, not linked)</span>
+                @elseif($neighbor['status'] === 'hidden')
+                    <span class="text-muted">monitored, not visible to you</span>
                 @elseif($neighbor['status'] === 'disabled')
                     <a href="{{ $deviceUrl($neighbor['device_id']) }}">{{ $name($neighbor['device_id']) }}</a> <span class="text-muted">is disabled</span>
                 @else

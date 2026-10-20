@@ -11,8 +11,9 @@ use Illuminate\Support\LazyCollection;
 /**
  * Database access of the coverage report: the LLDP/CDP rows around the analyzed devices, the names of
  * the devices the user may see, MAC address counts of access ports, and the LibreNMS settings that
- * decide whether LLDP/CDP is read and neighbours are added. Nothing about devices the user may not
- * see leaves this class: a neighbour monitored on such a device looks unmonitored, like on the maps.
+ * decide whether LLDP/CDP is read and neighbours are added. Of the devices the user may not see,
+ * nothing leaves this class but that LibreNMS linked a neighbour to one of them (its name is the
+ * neighbour's, which LibreNMS shows on the device's neighbours tab too).
  */
 class CoverageRepository extends ScopedRepository
 {
@@ -27,8 +28,9 @@ class CoverageRepository extends ScopedRepository
     /**
      * LLDP/CDP rows reported by the given devices, and the rows of other devices the user may see that
      * name them, streamed from the database in chunks every time they are read (a network can have tens
-     * of thousands, mostly phones). A remote device the user may not see (or that no longer exists) loses
-     * its ids, so the neighbour is unmonitored for this user; a disabled device the user may see keeps its id.
+     * of thousands, mostly phones). A remote device the user may not see loses its ids and the row gets
+     * 'hidden' (monitored, out of the user's sight); one that no longer exists only loses its ids (not
+     * monitored); a disabled device the user may see keeps its id.
      *
      * @param  int[]  $ids
      * @return LazyCollection<int, array>
@@ -37,12 +39,15 @@ class CoverageRepository extends ScopedRepository
     {
         $accessible = $this->accessible();
         $disabled = $this->disabledDevices();
+        $existing = array_fill_keys(array_map('intval', DB::table('devices')->pluck('device_id')->all()), true);
         // when the scope is every device the user may see, its own rows already hold every reporter
         $everything = ! array_diff_key($accessible, array_flip($ids));
-        $visible = function (object $row) use ($accessible, $disabled): array {
+        $visible = function (object $row) use ($accessible, $disabled, $existing): array {
             $row = (array) $row;
             $rd = (int) $row['remote_device_id'];
+            $row['hidden'] = false;
             if ($rd && ! isset($accessible[$rd]) && ! isset($disabled[$rd])) {
+                $row['hidden'] = isset($existing[$rd]);
                 $row['remote_device_id'] = 0;
                 $row['remote_port_id'] = null;
             }

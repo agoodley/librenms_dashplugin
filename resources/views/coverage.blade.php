@@ -74,12 +74,16 @@
                     $roleCounts[] = $plural($summary['roles'][$key], $roles[$key][0], $key === 'switch' ? 'switches' : null);
                 }
             }
-            // phones, servers and other end devices are only counted
-            $endDevices = ['unknown' => ['device of unknown type', 'devices of unknown type'], 'server' => ['server', 'servers'], 'phone' => ['phone', 'phones'], 'other' => ['other device', 'other devices']];
+            // phones and servers are only counted; neighbors of unknown type and those monitored on devices out of the
+            // user's sight are folded away
+            $endDevices = ['server' => ['server', 'servers'], 'phone' => ['phone', 'phones']];
             $otherCounts = [];
             foreach ($summary['other_neighbors'] as $key => $count) {
                 $otherCounts[] = number_format($count) . ' ' . ($endDevices[$key] ?? [$key, $key . 's'])[$count === 1 ? 0 : 1];
             }
+            $mainNeighbors = array_values(array_filter($result['neighbors'], fn ($n) => $n['status'] !== 'hidden' && ($n['network'] || $n['status'] !== 'not_monitored')));
+            $unknownNeighbors = array_values(array_filter($result['neighbors'], fn ($n) => ! $n['network'] && $n['status'] === 'not_monitored'));
+            $hiddenNeighbors = array_values(array_filter($result['neighbors'], fn ($n) => $n['status'] === 'hidden'));
             $gapDevices = array_values(array_filter($result['devices'], fn ($d) => $d['state'] !== 'quiet'));
             $quietDevices = array_values(array_filter($result['devices'], fn ($d) => $d['state'] === 'quiet'));
         @endphp
@@ -152,8 +156,20 @@
                 <span class="text-muted">(switches, routers, firewalls and access points seen as LLDP/CDP neighbors, and neighbors LibreNMS did not link to their device: named like a monitored device, like several, or disabled)</span>
             </div>
             <div class="table-responsive">
-                @include('topology::partials.coverage-neighbors', ['rows' => $result['neighbors']])
+                @include('topology::partials.coverage-neighbors', ['rows' => $mainNeighbors])
             </div>
+            @if($unknownNeighbors)
+                <details class="topo-details">
+                    <summary>Neighbors of unknown type that are not monitored ({{ $summary['roles']['unknown'] ?? count($unknownNeighbors) }}): their platform or description does not tell what they are</summary>
+                    <div class="table-responsive">@include('topology::partials.coverage-neighbors', ['rows' => $unknownNeighbors])</div>
+                </details>
+            @endif
+            @if($hiddenNeighbors)
+                <details class="topo-details">
+                    <summary>Neighbors monitored on devices you may not see ({{ count($hiddenNeighbors) }})</summary>
+                    <div class="table-responsive">@include('topology::partials.coverage-neighbors', ['rows' => $hiddenNeighbors])</div>
+                </details>
+            @endif
             @if($otherCounts)
                 <div class="panel-footer text-muted">Also seen as LLDP/CDP neighbors and not monitored, counted but not listed: {{ implode(', ', $otherCounts) }}.</div>
             @endif

@@ -104,7 +104,7 @@ class DeviceRole
             (bool) preg_match('/phone|^sep[0-9a-f]{6}|polycom|yealink|avaya|mitel|cp-\d{4}|grandstream/', $text) => self::PHONE,
             // Ruckus ICX are switches, not Ruckus access points
             (bool) preg_match('/\bicx\d{4}/', $text) => self::SWITCH,
-            (bool) preg_match('/\bair-|access ?point|\bap\b|\buap|aironet|\bmr\d{2}|meraki mr|aruba ap|arubaos \(model: \d{3}\)|\bcap\b|unifi ap|ruckus/', $text) => self::WIRELESS,
+            (bool) preg_match('/\bair-|access ?point|\bap\b|\buap|aironet|\bmr\d{2}|meraki mr|aruba ap|arubaos \(model: \d{3}\)|\bcap\b|unifi ap|ruckus|\bc9800|\bu[67]-[a-z]/', $text) => self::WIRELESS,
             (bool) preg_match('/firewall|fortigate|palo ?alto|\bpa-\d|asa\d|sonicwall|checkpoint|\bsrx|pfsense|opnsense|firepower|\bftd\b/', $text) => self::FIREWALL,
             // system descriptions (LLDP) name the software: IOS XR, ISR / ASR, Cisco router models (a C2900 is a router, a C2960 a switch)
             (bool) preg_match('/router|\bisr|\basr|mikrotik|routeros|\bmx\d|ios[ -]?xr|vyos|edgerouter|\bc(8\d\d|1100|1900|2900|3900|4[34]\d\d|8[235]\d\d)\b/', $text) => self::ROUTER,

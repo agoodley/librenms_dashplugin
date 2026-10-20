@@ -31,32 +31,27 @@ class CoverageService
     public function report(array $p): array
     {
         [$scope, $device] = $this->repo->scope($p);
-        // streamed from the database each time it is read: here for the ports to count, then twice by the analyzer
-        $links = $this->repo->links($scope);
         $devices = $this->topology->devices($scope);
         $lagParent = $this->topology->lagParents($scope);
 
-        // MAC addresses are only counted on access ports without a neighbour that explains them, of the
-        // centered device alone when there is one
+        // MAC addresses are only counted on access ports without a neighbour that explains them (the analyzer
+        // knows those after reading the LLDP/CDP rows once), of the centered device alone when there is one
         $threshold = $this->settings->int('coverage_mac_threshold', 0, 1000000);
-        $busy = [];
-        if ($threshold && $scope) {
-            $candidates = array_diff_key(
-                $this->repo->accessPorts($device !== null ? [$device] : $scope),
-                CoverageAnalyzer::explainedPorts($links), $lagParent, array_flip($lagParent),
-            );
-            $busy = $this->repo->busyPorts($candidates, $threshold);
-        }
+        $busyPorts = fn (array $explained): array => $threshold && $scope
+            ? $this->repo->busyPorts(array_diff_key(
+                $this->repo->accessPorts($device !== null ? [$device] : $scope), $explained, $lagParent, array_flip($lagParent),
+            ), $threshold)
+            : [];
 
         $analyzer = new CoverageAnalyzer(
             $devices,
             $scope,
-            $links,
-            fn (array $portIds) => $this->topology->ports($portIds, self::PORT_COLUMNS),
+            $this->repo->links($scope), // streamed from the database each time the analyzer reads it
+            fn (array $portIds): array => $this->topology->ports($portIds, self::PORT_COLUMNS),
             $lagParent,
             $this->repo->knownDevices($this->repo->addressNames($scope)),
-            $busy,
-            $busy ? $this->topology->portVlans(array_keys($busy)) : [],
+            $busyPorts,
+            fn (array $portIds): array => $this->topology->portVlans($portIds),
             $this->repo->protocolsModuleOff($devices),
             $this->repo->xdpAutodiscovery(),
             $this->settings,

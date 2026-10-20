@@ -120,11 +120,11 @@ class CoverageAnalyzerTest extends TestCase
             ->neighbor(1, 'Gi1/0/7', 'branch-rtr', 'cisco ISR4331/K9', 'Gi0/0/0', 'cdp')
             ->analyzer()->analyze();
 
-        // network devices get a row; phones, servers and devices of unknown type are only counted
-        $this->assertSame(['branch-rtr', 'fw1', 'desk-switch', 'AP-2F-01'], array_column($result['neighbors'], 'name'));
-        $this->assertSame(['router', 'firewall', 'switch', 'wireless'], array_column($result['neighbors'], 'role'));
-        $this->assertSame([true, true, true, true], array_column($result['neighbors'], 'network'));
-        $this->assertSame(['unknown' => 1, 'server' => 1, 'phone' => 1], $result['summary']['other_neighbors']);
+        // network devices and devices of unknown type get a row, phones and servers are only counted
+        $this->assertSame(['branch-rtr', 'fw1', 'desk-switch', 'AP-2F-01', 'mystery'], array_column($result['neighbors'], 'name'));
+        $this->assertSame(['router', 'firewall', 'switch', 'wireless', 'unknown'], array_column($result['neighbors'], 'role'));
+        $this->assertSame([true, true, true, true, false], array_column($result['neighbors'], 'network'));
+        $this->assertSame(['server' => 1, 'phone' => 1], $result['summary']['other_neighbors']);
         $this->assertSame([7, 7], [$result['summary']['neighbors'], $result['summary']['statuses']['not_monitored']]);
 
         // switches, routers and firewalls are warnings, access points info; the rest is only listed
@@ -225,7 +225,7 @@ class CoverageAnalyzerTest extends TestCase
         $this->assertSame([['not_linked', [5]]], $byName['dist1'], 'LibreNMS tries the hostname first');
         $this->assertSame([['not_monitored', []], ['not_monitored', []]], $byName['MikroTik'], 'a factory name matches no device');
         $this->assertSame([['not_monitored', []]], $byName['MikroTik.lan']);
-        $this->assertSame(['not_monitored' => 3, 'not_linked' => 1, 'ambiguous' => 1, 'disabled' => 0], $result['summary']['statuses']);
+        $this->assertSame(['not_monitored' => 3, 'not_linked' => 1, 'ambiguous' => 1, 'disabled' => 0, 'hidden' => 0], $result['summary']['statuses']);
 
         $finding = self::find($result, 'ambiguous_name');
         $this->assertSame('info', $finding['severity']);
@@ -275,11 +275,21 @@ class CoverageAnalyzerTest extends TestCase
             $known[$id] = ['name' => $device['display'], 'hostname' => strtolower($device['hostname']), 'sysname' => strtolower($device['sysName']),
                 'names' => [strtolower($device['hostname']), strtolower($device['sysName'])], 'disabled' => false];
         }
+        $explained = null;
+        $busyFor = function (array $ports) use ($net, &$explained): array {
+            $explained = $ports;
+
+            return $net->busy;
+        };
         $analyzer = new CoverageAnalyzer($net->devices, array_keys($net->devices), new \ArrayIterator($net->links), $loader, [], $known,
-            $net->busy, [], [], 'on', new \Agoodley\LibrenmsTopology\Support\PluginSettings([]));
+            $busyFor, fn (array $portIds) => [], [], 'on', new \Agoodley\LibrenmsTopology\Support\PluginSettings([]));
         $result = $analyzer->analyze();
 
         $this->assertSame(['hub_suspected', 'not_monitored', 'silent_device'], self::codes($result));
+        // the MAC addresses are counted after the first pass, without the ports that face a neighbour other than a phone
+        $this->assertArrayHasKey($net->port(1, 'Gi1/0/1'), $explained);
+        $this->assertArrayHasKey($net->port(3, 'Gi1/0/1'), $explained);
+        $this->assertArrayNotHasKey($net->port(2, 'Gi1/0/2'), $explained);
         $this->assertCount(1, $loads, 'one load');
         $loaded = $loads[0];
         sort($loaded);
@@ -290,19 +300,55 @@ class CoverageAnalyzerTest extends TestCase
         $this->assertStringContainsString('acc1 Gi1/0/49 on its port Gi1/0/1', self::find($result, 'silent_device')['detail']);
     }
 
-    public function testNeighborsOutOfSightCountAsNotMonitored(): void
+    public function testNeighborsMonitoredOutOfSight(): void
     {
         $net = (new CoverageFixture)->device(1, 'acc1');
-        // LibreNMS links this one to a device the user may not see: the repository removed its ids
-        $net->neighbor(1, 'Gi1/0/49', 'secret-core', 'cisco C9500-24Y4C', 'Te1/0/1', 'cdp');
+        // LibreNMS linked this one to a device the user may not see: the repository removed its ids and set 'hidden'
+        $net->neighbor(1, 'Gi1/0/49', 'core1', 'Cisco IOS Software [Cupertino], Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.9.4',
+            'Te1/0/1', 'lldp', ['hidden' => true]);
         // LibreNMS did not link this one; its name belongs to a device the user may not see, which is not passed
-        $net->neighbor(1, 'Gi1/0/50', 'secret-dist', 'cisco C9500-24Y4C', 'Te1/0/2', 'cdp');
+        $net->neighbor(1, 'Gi1/0/50', 'secret-dist', 'Cisco IOS Software [Cupertino], Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.9.4', 'Te1/0/2');
         $result = $net->analyzer()->analyze();
 
-        $this->assertSame(['not_monitored', 'not_monitored'], array_column($result['neighbors'], 'status'));
-        $this->assertSame([[], []], array_column($result['neighbors'], 'candidates'));
-        $this->assertSame(['not_monitored', 'not_monitored'], self::codes($result));
+        $byName = array_column($result['neighbors'], null, 'name');
+        $this->assertSame(['hidden', 'switch', [], null], [$byName['core1']['status'], $byName['core1']['role'], $byName['core1']['candidates'], $byName['core1']['device_id']]);
+        $this->assertSame(['not_monitored', []], [$byName['secret-dist']['status'], $byName['secret-dist']['candidates']]);
+        $this->assertSame(['switch not monitored: secret-dist'], array_column($result['findings'], 'title'), 'no finding for the monitored core1');
+        $this->assertSame(['not_monitored' => 1, 'not_linked' => 0, 'ambiguous' => 0, 'disabled' => 0, 'hidden' => 1], $result['summary']['statuses']);
+        $this->assertSame(1, $result['summary']['not_monitored']);
         $this->assertSame([1], array_keys($result['device_names']));
+    }
+
+    public function testNeighborsOfUnknownTypeAreListedUpToTheLimit(): void
+    {
+        $net = self::pair()->neighbor(1, 'Gi1/0/1', 'lab-sw', 'cisco WS-C2960X-48FPD-L', 'Gi0/1', 'cdp');
+        for ($i = 1; $i <= CoverageAnalyzer::ROWS + 5; $i++) {
+            $net->neighbor(2, "Gi2/0/$i", sprintf('cam-%03d', $i), 'AXIS P3245-V Network Camera 10.12.199', 'eth0');
+        }
+        $net->neighbor(1, 'Gi1/0/2', 'SEP000000000001', 'Cisco IP Phone 8841', 'Port 1', 'cdp');
+        $result = $net->analyzer()->analyze();
+
+        $this->assertCount(CoverageAnalyzer::ROWS, $result['neighbors']);
+        $this->assertSame(['lab-sw', 'cam-001', 'cam-002'], array_slice(array_column($result['neighbors'], 'name'), 0, 3));
+        $this->assertSame(sprintf('cam-%03d', CoverageAnalyzer::ROWS - 1), end($result['neighbors'])['name']);
+        $this->assertSame(1 + CoverageAnalyzer::ROWS + 5, $result['neighbors_total']);
+        $this->assertSame(['switch' => 1, 'unknown' => CoverageAnalyzer::ROWS + 5, 'phone' => 1], $result['summary']['roles']);
+        $this->assertSame(['phone' => 1], $result['summary']['other_neighbors']);
+        $this->assertSame(['switch not monitored: lab-sw'], array_column($result['findings'], 'title'), 'no finding for a device of unknown type');
+
+        $acc1 = $net->analyzer()->analyze(1);
+        $this->assertSame(['lab-sw'], array_column($acc1['neighbors'], 'name'));
+        $this->assertSame([1, ['phone' => 1]], [$acc1['neighbors_total'], $acc1['summary']['other_neighbors']]);
+    }
+
+    public function testWirelessControllerNotMonitored(): void
+    {
+        $result = self::pair()->neighbor(1, 'Gi1/0/1', 'wlc1', 'Cisco IOS Software [Cupertino], C9800 Software (C9800_IOSXE-K9), Version 17.9.4a', 'Te0/0/0')
+            ->neighbor(1, 'Gi1/0/2', 'ap-lobby', 'U6-LR 6.5.62.14789', 'eth0')
+            ->analyzer()->analyze();
+
+        $this->assertSame(['wireless', 'wireless'], array_column($result['neighbors'], 'role'));
+        $this->assertSame(['access point not monitored: ap-lobby', 'wireless controller not monitored: wlc1'], self::sortedTitles($result, 'not_monitored'));
     }
 
     public function testDisabledNeighbor(): void
