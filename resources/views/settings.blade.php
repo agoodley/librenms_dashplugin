@@ -31,6 +31,10 @@
             ['redundancy_warn_devices', 'number', 'Warn when one failure cuts off at least this many switches, routers or firewalls', 'smaller single points of failure are info'],
             ['redundancy_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (outages, lost, fake, spof), e.g. uplinks_same_device spof_link'],
         ],
+        'Monitoring coverage' => [
+            ['coverage_mac_threshold', 'number', 'Report access ports without LLDP/CDP neighbor from this many MAC addresses', 'a likely unmanaged switch or hub; 0 disables the check'],
+            ['coverage_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (unmonitored, devices, ports), e.g. not_linked hub_suspected'],
+        ],
     ];
 @endphp
 

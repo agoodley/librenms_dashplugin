@@ -30,6 +30,8 @@ class PluginSettings
         'redundancy_core' => '',
         'redundancy_warn_devices' => '2',
         'redundancy_disabled_checks' => '',
+        'coverage_mac_threshold' => '4',
+        'coverage_disabled_checks' => '',
     ];
 
     /** @var array<string, string> */

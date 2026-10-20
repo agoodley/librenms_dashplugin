@@ -26,7 +26,7 @@ The plugin's conventions apply to all of them:
 | 4 | [Routing & IP diagnostics](#4-routing--ip-diagnostics) | planned | M |
 | 7 | [Automatic device dependencies](#7-automatic-device-dependencies) | planned | M |
 | 14 | [Rollout planner](#14-rollout-planner-change-and-upgrade-waves) | planned | S–M |
-| 12 | [Coverage report](#12-coverage-report) | planned | S |
+| 12 | [Coverage report](README.md#coverage-report) | **done** | – |
 | 9 | [More L3 map layers](#9-more-l3-map-layers) | planned | S each |
 | 10 | [Loop evidence on the STP page](#10-loop-evidence-on-the-stp-page) | planned | S–M |
 | 8 | [Site / WAN view](#8-site--wan-view) | later | M |
@@ -134,13 +134,6 @@ The L3 counterpart of the spanning tree page.
 * An optional batch size limit, and JSON at `api/rollout` for the
   [change automation plugin](#change-automation-with-ansible).
 * Builds on the redundancy analysis: its core, `simulate()` and the devices behind each device. No new data.
-
-### 12. Coverage report
-
-* LLDP/CDP neighbors that look like switches, routers, APs or firewalls (`DeviceRole::fromPlatform`) but are not
-  monitored, where they are connected, with a link to add them.
-* Monitored devices without neighbor data, which leave gaps in the maps. The link diagnostics already report devices
-  that other switches see but that report no neighbors themselves.
 
 ### 9. More L3 map layers
 
