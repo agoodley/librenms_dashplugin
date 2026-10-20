@@ -236,14 +236,24 @@
                             <td>{{ $fact['since'] ? $fact['since'] . ' (' . $ago($fact['since']) . ')' : 'unknown (before the kept history)' }}</td>
                             @if($admin)
                                 <td>
-                                    <form method="post" action="{{ route('topology.changes.baseline') }}" style="display: inline" onsubmit="return confirm('Gone on purpose? It is removed from the baseline and no longer reported as missing.')">
-                                        @csrf
-                                        <input type="hidden" name="action" value="accept">
-                                        <input type="hidden" name="hash" value="{{ $fact['hash'] }}">
-                                        @if($fact['vlans'] !== null)<input type="hidden" name="vlans" value="{{ implode(',', $fact['vlans']) }}">@endif
-                                        @foreach($keep as $key => $value)<input type="hidden" name="{{ $key }}" value="{{ $value }}">@endforeach
-                                        <button type="submit" class="btn btn-xs btn-default" title="Gone on purpose: remove it from the baseline"><i class="fa fa-check"></i> Accept</button>
-                                    </form>
+                                    @if($fact['change'] !== null)
+                                        <form method="post" action="{{ route('topology.changes.baseline') }}" style="display: inline"
+                                              onsubmit='return confirm(@json('Accept on ' . number_format($fact['switches']) . ($fact['switches'] === 1 ? ' switch: ' : ' switches: ') . $fact['text'] . '? The baseline then expects it.'))'>
+                                            @csrf
+                                            <input type="hidden" name="action" value="accept_roots">
+                                            @foreach($fact['change'] as $key => $value)<input type="hidden" name="{{ $key }}" value="{{ $value }}">@endforeach
+                                            @foreach($keep as $key => $value)<input type="hidden" name="{{ $key }}" value="{{ $value }}">@endforeach
+                                            <button type="submit" class="btn btn-xs btn-default" title="Expected now: the baseline takes it for these switches"><i class="fa fa-check"></i> Accept</button>
+                                        </form>
+                                    @else
+                                        <form method="post" action="{{ route('topology.changes.baseline') }}" style="display: inline" onsubmit="return confirm('Gone on purpose? It is removed from the baseline and no longer reported as missing.')">
+                                            @csrf
+                                            <input type="hidden" name="action" value="accept">
+                                            <input type="hidden" name="hash" value="{{ $fact['hash'] }}">
+                                            @foreach($keep as $key => $value)<input type="hidden" name="{{ $key }}" value="{{ $value }}">@endforeach
+                                            <button type="submit" class="btn btn-xs btn-default" title="Gone on purpose: remove it from the baseline"><i class="fa fa-check"></i> Accept</button>
+                                        </form>
+                                    @endif
                                 </td>
                             @endif
                         </tr>

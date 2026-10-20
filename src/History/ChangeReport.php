@@ -301,7 +301,7 @@ class ChangeReport
 
         foreach ($changes as $change) {
             $devices = array_keys($change['devices']);
-            $seen = $this->deviceList($devices);
+            $seen = $this->text->deviceList($devices);
             $instances = FactText::vlanList(array_keys($change['vlans']));
             $text = match ($change['type']) {
                 'root_changed' => "$instances: root bridge changed from " . $this->text->root($change['old']) . ' to ' . $this->text->root($change['new']) . " (seen by $seen)",
@@ -404,25 +404,6 @@ class ChangeReport
             'text' => $text,
             'devices' => array_values(array_filter($devices, fn ($id) => $this->text->visible($id))),
         ];
-    }
-
-    /**
-     * "core1, core2 and 7 more" for the devices the user may see (the others are not counted).
-     *
-     * @param  int[]  $devices
-     */
-    private function deviceList(array $devices): string
-    {
-        $names = [];
-        foreach ($devices as $device) {
-            if ($this->text->visible($device)) {
-                $names[] = $this->text->device($device, null);
-            }
-        }
-        sort($names, SORT_NATURAL | SORT_FLAG_CASE);
-        $more = count($names) - 5;
-
-        return implode(', ', array_slice($names, 0, 5)) . ($more > 0 ? " and $more more" : '');
     }
 
     /**

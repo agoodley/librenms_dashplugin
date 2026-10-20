@@ -40,8 +40,9 @@ class Window
     /**
      * Facts that started and facts that ended in the window, each read newest first and capped at
      * $limit rows, as one list in the order they were recorded. When a cap was reached, both lists
-     * are cut at the later of their oldest times (`since`), so a change never loses its other half
-     * (a moved cable is a removed and an added fact); the changes before it are left out.
+     * are cut after the later of their oldest times (`since`, excluded: the cap may have cut inside
+     * that snapshot), so a change never loses its other half (a moved cable is a removed and an
+     * added fact); the changes up to it are left out.
      *
      * @param  array<int, array>  $added  rows with id and first_seen (timestamp)
      * @param  array<int, array>  $removed  rows with id and removed_at (timestamp)
@@ -59,12 +60,12 @@ class Window
 
         $rows = [];
         foreach ($added as $row) {
-            if ($since === null || $row['first_seen'] >= $since) {
+            if ($since === null || $row['first_seen'] > $since) {
                 $rows[(int) $row['id']] ??= $row;
             }
         }
         foreach ($removed as $row) {
-            if ($since === null || $row['removed_at'] >= $since) {
+            if ($since === null || $row['removed_at'] > $since) {
                 $rows[(int) $row['id']] ??= $row;
             }
         }

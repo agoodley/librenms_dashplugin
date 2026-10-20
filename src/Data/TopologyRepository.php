@@ -159,9 +159,11 @@ class TopologyRepository extends ScopedRepository
      * Uses IF-MIB ifStackTable (ports_stack) and Cisco PAgP/LACP group data.
      *
      * @param  int[]  $ids
+     * @param  bool  $strict  throw read errors (the topology history skips the port-channels then) instead of
+     *                        returning what could be read (the maps)
      * @return array<int, int>
      */
-    public function lagParents(array $ids): array
+    public function lagParents(array $ids, bool $strict = false): array
     {
         if (! $ids) {
             return [];
@@ -187,6 +189,9 @@ class TopologyRepository extends ScopedRepository
                     $byIndex[] = [(int) $row->device_id, (int) $row->port_id_high, (int) $row->port_id_low];
                 }
             } catch (\Throwable $e) {
+                if ($strict) {
+                    throw $e;
+                }
                 Log::debug('topology plugin: cannot read ports_stack: ' . $e->getMessage());
             }
         }
@@ -216,6 +221,9 @@ class TopologyRepository extends ScopedRepository
                 $pairs[] = [(int) $row->aggregate, (int) $row->member];
             }
         } catch (\Throwable $e) {
+            if ($strict) {
+                throw $e;
+            }
             Log::debug('topology plugin: cannot read pagp data: ' . $e->getMessage());
         }
 

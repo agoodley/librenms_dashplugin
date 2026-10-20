@@ -583,6 +583,37 @@ class HistoryRepository extends ScopedRepository
     }
 
     /**
+     * Write an accepted change of root bridges (Baseline::acceptRootChange()) to the baseline.
+     *
+     * @param  array{update: array<string, array>, delete: string[], insert: array<string, array>}  $ops
+     * @return int baseline facts written
+     */
+    public function applyBaselineChange(array $ops, CarbonInterface $time, ?string $user): int
+    {
+        $user = $user !== null ? mb_substr($user, 0, 128) : null;
+
+        return DB::transaction(function () use ($ops, $time, $user) {
+            $written = 0;
+            foreach ($ops['update'] as $hash => $data) {
+                $written += DB::table('topology_baseline')->where('hash', $hash)->update(['data' => FactCollector::json($data), 'saved_at' => $time, 'saved_by' => $user]);
+            }
+            foreach (array_chunk($ops['delete'], self::CHUNK) as $chunk) {
+                $written += DB::table('topology_baseline')->whereIn('hash', $chunk)->delete();
+            }
+            $rows = [];
+            foreach ($ops['insert'] as $hash => $fact) {
+                $rows[] = ['kind' => $fact['kind'], 'hash' => $hash, 'fact_key' => $fact['key'] ?? $fact['fact_key'], 'device_a' => $fact['device_a'],
+                    'device_b' => $fact['device_b'], 'data' => FactCollector::json($fact['data']), 'saved_at' => $time, 'saved_by' => $user];
+            }
+            foreach (array_chunk($rows, self::CHUNK) as $chunk) {
+                DB::table('topology_baseline')->insert($chunk);
+            }
+
+            return $written + count($rows);
+        });
+    }
+
+    /**
      * Take one fact out of the baseline (an admin accepted that it is gone); of a root bridge fact
      * only the VLANs given, the fact goes with its last VLAN.
      *

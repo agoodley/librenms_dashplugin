@@ -29,20 +29,98 @@ class Baseline
     }
 
     /**
-     * Root bridges per switch and VLAN: a root bridge fact holds the VLANs it is the root of, so a
-     * VLAN whose root moved is missing from its old fact and new in another one, while the other
-     * VLANs of both facts are as expected.
+     * Root bridges against the baseline per switch and VLAN, grouped like the Changes page: one
+     * change per old root bridge, new root bridge and VLANs, with the switches that see it (a VLAN
+     * whose root moved on every switch is one change). from / to are the root bridge (root MAC,
+     * root_device, root_name) of the baseline and of now; null for an instance that is gone or new.
      *
      * @param  array<string, array>  $baseline  hash => saved root bridge fact
      * @param  array<string, array>  $current  hash => root bridge fact now
-     * @return array{missing: array<int, array>, new: array<int, array>} facts limited to the VLANs that differ
+     * @return array<int, array{from: ?array, to: ?array, vlans: int[], devices: int[]}>
      */
-    public static function compareRoots(array $baseline, array $current): array
+    public static function rootChanges(array $baseline, array $current): array
     {
-        return [
-            'missing' => self::differingVlans($baseline, self::rootsByVlan($current)),
-            'new' => self::differingVlans($current, self::rootsByVlan($baseline)),
-        ];
+        $before = self::rootsByVlan($baseline);
+        $after = self::rootsByVlan($current);
+
+        $changes = [];
+        foreach (array_keys($before + $after) as $device) {
+            $was = $before[$device] ?? [];
+            $now = $after[$device] ?? [];
+            $byPair = [];
+            foreach (array_keys($was + $now) as $vlan) {
+                $old = $was[$vlan] ?? null;
+                $new = $now[$vlan] ?? null;
+                if ($old !== null && $new !== null && $old['root'] === $new['root']) {
+                    continue;
+                }
+                $pair = ($old['root'] ?? '') . '>' . ($new['root'] ?? '');
+                $byPair[$pair] ??= ['from' => $old, 'to' => $new, 'vlans' => []];
+                $byPair[$pair]['vlans'][] = $vlan;
+            }
+            foreach ($byPair as $pair => $change) {
+                sort($change['vlans']);
+                $key = $pair . '|' . implode(',', $change['vlans']);
+                $changes[$key] ??= ['from' => $change['from'], 'to' => $change['to'], 'vlans' => $change['vlans'], 'devices' => []];
+                $changes[$key]['devices'][] = (int) $device;
+            }
+        }
+
+        return array_values($changes);
+    }
+
+    /**
+     * The baseline after accepting a change of root bridges (rootChanges()) on its switches: its
+     * VLANs leave the old root bridge's fact (which goes with its last VLAN) and join the new one's,
+     * taken from the fact now when the baseline has none.
+     *
+     * @param  array<string, array>  $baseline  hash => saved root bridge facts of the change's switches
+     * @param  array<string, array>  $current  hash => root bridge facts now of the change's switches
+     * @param  array{from: ?array, to: ?array, vlans: int[], devices: int[]}  $change
+     * @return array{update: array<string, array>, delete: string[], insert: array<string, array>} hash => fact data, or fact
+     */
+    public static function acceptRootChange(array $baseline, array $current, array $change): array
+    {
+        $result = ['update' => [], 'delete' => [], 'insert' => []];
+        foreach ($change['devices'] as $device) {
+            if ($change['from'] !== null) {
+                $hash = FactCollector::hash(FactCollector::STP_ROOT, "d$device|{$change['from']['root']}");
+                if (isset($baseline[$hash])) {
+                    $left = array_values(array_diff(FactText::vlans($baseline[$hash]['data']), $change['vlans']));
+                    if ($left) {
+                        $result['update'][$hash] = ['vlans' => $left] + $baseline[$hash]['data'];
+                    } else {
+                        $result['delete'][] = $hash;
+                    }
+                }
+            }
+            if ($change['to'] !== null) {
+                $hash = FactCollector::hash(FactCollector::STP_ROOT, "d$device|{$change['to']['root']}");
+                if (isset($baseline[$hash])) {
+                    $vlans = array_values(array_unique(array_merge(FactText::vlans($baseline[$hash]['data']), $change['vlans'])));
+                    sort($vlans);
+                    $result['update'][$hash] = ['vlans' => $vlans] + $baseline[$hash]['data'];
+                } elseif (isset($current[$hash])) {
+                    $result['insert'][$hash] = ['data' => ['vlans' => $change['vlans']] + $current[$hash]['data']] + $current[$hash];
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * VLAN keys as a form sends them ("30,31"), null when the value is anything else.
+     *
+     * @return int[]|null
+     */
+    public static function parseVlans(mixed $value): ?array
+    {
+        if (! is_string($value) || ! preg_match('/^\d{1,4}(,\d{1,4})*$/', $value)) {
+            return null;
+        }
+
+        return array_map('intval', explode(',', $value));
     }
 
     /**
@@ -116,40 +194,19 @@ class Baseline
 
     /**
      * @param  array<string, array>  $facts  root bridge facts
-     * @return array<int, array<int, string>> device => VLAN key => root bridge MAC
+     * @return array<int, array<int, array>> device => VLAN key => root bridge (root, root_device, root_name)
      */
     private static function rootsByVlan(array $facts): array
     {
         $roots = [];
         foreach ($facts as $fact) {
+            $root = ['root' => $fact['data']['root'], 'root_device' => $fact['data']['root_device'] ?? null, 'root_name' => $fact['data']['root_name'] ?? null];
             foreach (FactText::vlans($fact['data']) as $vlan) {
-                $roots[(int) $fact['data']['device']][$vlan] = $fact['data']['root'];
+                $roots[(int) $fact['data']['device']][$vlan] = $root;
             }
         }
 
         return $roots;
-    }
-
-    /**
-     * The facts limited to their VLANs whose root bridge is another one in $other.
-     *
-     * @param  array<string, array>  $facts  root bridge facts
-     * @param  array<int, array<int, string>>  $other  device => VLAN key => root bridge MAC
-     * @return array<int, array>
-     */
-    private static function differingVlans(array $facts, array $other): array
-    {
-        $result = [];
-        foreach ($facts as $fact) {
-            $device = (int) $fact['data']['device'];
-            $vlans = array_values(array_filter(FactText::vlans($fact['data']), fn ($vlan) => ($other[$device][$vlan] ?? null) !== $fact['data']['root']));
-            if ($vlans) {
-                $fact['data']['vlans'] = $vlans;
-                $result[] = $fact;
-            }
-        }
-
-        return $result;
     }
 
     /**

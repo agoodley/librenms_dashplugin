@@ -37,6 +37,37 @@ class HistoryJobsTest extends TestCase
         }
     }
 
+    public function testAKindThatCannotBeReadIsSkipped(): void
+    {
+        $failed = [];
+        $read = iterator_to_array(Jobs::read([
+            'link' => fn () => ['l1' => []],
+            'lag' => fn () => throw new \RuntimeException('ports_stack: lost connection'),
+            'stp_root' => fn () => [],
+        ], function (string $kind, \Throwable $e) use (&$failed): void {
+            $failed[$kind] = $e->getMessage();
+        }));
+
+        $this->assertSame(['link' => ['l1' => []], 'stp_root' => []], $read, 'an empty kind is read, a failed one is not');
+        $this->assertSame(['lag' => 'ports_stack: lost connection'], $failed);
+    }
+
+    public function testEveryCheckRunsWhenOneTimesOut(): void
+    {
+        $ran = [];
+        $results = Jobs::each(['stp', 'links', 'redundancy'], function (string $analysis) use (&$ran): bool {
+            $ran[] = $analysis;
+            if ($analysis === 'stp') {
+                throw new \RuntimeException('The process exceeded the timeout of 3600 seconds.');
+            }
+
+            return $analysis !== 'redundancy';
+        });
+
+        $this->assertSame(['stp', 'links', 'redundancy'], $ran);
+        $this->assertSame(['stp' => 'The process exceeded the timeout of 3600 seconds.', 'links' => null, 'redundancy' => 'failed'], $results);
+    }
+
     /**
      * Arguments and options of a Laravel command signature.
      *

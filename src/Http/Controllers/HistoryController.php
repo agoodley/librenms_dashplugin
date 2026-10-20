@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsTopology\Http\Controllers;
 
 use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
+use Agoodley\LibrenmsTopology\History\Baseline;
 use Agoodley\LibrenmsTopology\History\HistoryService;
 use Agoodley\LibrenmsTopology\History\Window;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
@@ -59,7 +60,8 @@ class HistoryController extends Controller
     /**
      * POST plugin/topology/changes/baseline (admins): action=save saves the topology of the last
      * snapshot as the baseline of the page's scope, action=clear forgets it, action=accept takes
-     * one missing fact (hash) out of it.
+     * one missing fact (hash) out of it, action=accept_roots accepts a change of root bridges (from,
+     * to, vlans) on all its switches.
      */
     public function baseline(Request $request): RedirectResponse
     {
@@ -79,10 +81,19 @@ class HistoryController extends Controller
                 $message = "Baseline cleared: $removed facts removed.";
             } elseif ($request->input('action') === 'accept') {
                 abort_unless(is_string($hash) && preg_match('/^[0-9a-f]{40}$/', $hash), 422);
-                $vlans = is_string($request->input('vlans')) && preg_match('/^\d+(,\d+)*$/', $request->input('vlans'))
-                    ? array_map('intval', explode(',', $request->input('vlans'))) : null;
+                $vlans = $request->has('vlans') ? Baseline::parseVlans($request->input('vlans')) : null;
+                abort_if($request->has('vlans') && $vlans === null, 422);
                 $message = $service->acceptMissing($params, $hash, $vlans) ? 'Removed from the baseline: it is no longer expected.' : 'Nothing to remove: the baseline has changed.';
                 $message .= " ($hash)";
+            } elseif ($request->input('action') === 'accept_roots') {
+                [$from, $to] = [$request->input('from', ''), $request->input('to', '')];
+                $vlans = Baseline::parseVlans($request->input('vlans'));
+                abort_unless($vlans !== null && is_string($from) && is_string($to) && preg_match('/^([0-9a-f]{12})?$/', $from)
+                    && preg_match('/^([0-9a-f]{12})?$/', $to) && $from . $to !== '', 422);
+                $change = $service->acceptRootChange($params, $from, $to, $vlans, $user);
+                $message = $change !== null
+                    ? 'Accepted in the baseline: ' . $change['text'] . ' (' . number_format(count($change['devices'])) . (count($change['devices']) === 1 ? ' switch).' : ' switches).')
+                    : 'Nothing to accept: the baseline or the root bridges have changed.';
             } else {
                 $saved = $service->saveBaseline($params, $user);
                 $message = "Baseline saved: {$saved['saved']} facts" . ($saved['removed'] ? " (replacing {$saved['removed']})" : '') . '.';

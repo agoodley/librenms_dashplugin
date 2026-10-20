@@ -82,6 +82,14 @@ abstract class ScopedRepository
     }
 
     /**
+     * Is this the system scope of the scheduled jobs (no user)?
+     */
+    protected function isSystem(): bool
+    {
+        return $this->system;
+    }
+
+    /**
      * Devices the user may see, optionally limited to a device group and/or location.
      *
      * @return int[]

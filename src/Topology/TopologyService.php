@@ -240,7 +240,8 @@ class TopologyService
      * Spanning tree findings of the devices in scope for the background checks, one instance
      * (VLAN) at a time: a PVST network has an instance per VLAN and ports_stp rows per port and
      * VLAN, too many to analyze at once. The instance rows, links, link ports and root bridge
-     * lookups are read once; the page's bridge, port and domain rows are left out.
+     * lookups are read once; the page's bridge, port and domain rows are left out. The loop
+     * evidence of the page (storms, loop messages in syslog) is part of it.
      *
      * @param  array{group: ?int, location: ?int}  $p
      * @return array{findings: array<int, array>}
@@ -258,7 +259,8 @@ class TopologyService
         }
         // has_stp of a link port covers every instance (portHasStp() trusts it)
         $linkPortRows = $this->repo->analysisPorts($linkPorts);
-        $analyzer = new StpAnalyzer($this->repo->devices($scope), $base, $links, $linkPortRows, $lag, $this->settings,
+        $devices = $this->repo->devices($scope);
+        $analyzer = new StpAnalyzer($devices, $base, $links, $linkPortRows, $lag, $this->settings,
             $this->repo->stpEvents($scope, $this->settings->int('stp_event_days', 1, 365)));
         $lookups = $this->repo->rootLookups($base->unknownRootMacs());
 
@@ -277,7 +279,7 @@ class TopologyService
             $networkWide = false;
         }
 
-        return ['findings' => StpAnalyzer::mergeAcrossVlans($findings)];
+        return ['findings' => array_merge(StpAnalyzer::mergeAcrossVlans($findings), $this->loopEvidence($devices, $links, null)['findings'])];
     }
 
     /**

@@ -51,15 +51,11 @@ class HistoryService
         $ids = $topology->deviceIds();
         $stats = ['devices' => count($ids), 'facts' => 0, 'added' => 0, 'removed' => 0, 'updated' => 0];
         $recorded = [];
-        foreach ($this->sources($topology, $ids) as $kind => $source) {
-            try {
-                $current = $source();
-            } catch (\Throwable $e) {
-                // a read error is no empty kind: its facts stay as they were until the next snapshot
-                Log::error("topology plugin: snapshot of $kind skipped: " . $e->getMessage());
-                $stats['skipped'][] = $kind;
-                continue;
-            }
+        $skipped = function (string $kind, \Throwable $e) use (&$stats): void {
+            Log::error("topology plugin: snapshot of $kind skipped: " . $e->getMessage());
+            $stats['skipped'][] = $kind;
+        };
+        foreach (Jobs::read($this->sources($topology, $ids), $skipped) as $kind => $current) {
             // spanning tree facts keep their VLANs in the data: a change of them is a new period the Changes page can compare
             $diff = FactDiff::diff($this->history->openFacts($kind), $current, in_array($kind, [FactCollector::STP_ROOT, FactCollector::STP_BLOCKED], true));
             $stats['facts'] += count($current);
@@ -242,6 +238,33 @@ class HistoryService
     }
 
     /**
+     * Accept a change of root bridges (Baseline::rootChanges()) in the baseline of the page's scope,
+     * on all the switches that see it.
+     *
+     * @param  array{device: ?int, group: ?int, location: ?int}  $p
+     * @param  string  $from  root bridge MAC in the baseline, '' for a new instance
+     * @param  string  $to  root bridge MAC now, '' for an instance that is gone
+     * @param  int[]  $vlans
+     * @return array|null the change accepted with its text, null when the page's change is no longer there
+     */
+    public function acceptRootChange(array $p, string $from, string $to, array $vlans, ?string $user): ?array
+    {
+        $ids = $this->scopeIds($p);
+        $baseline = $this->history->baselineFactsOfKind($ids, FactCollector::STP_ROOT);
+        $current = $this->history->currentFactsOfKind($ids, FactCollector::STP_ROOT);
+        sort($vlans);
+        foreach (Baseline::rootChanges($baseline, $current) as $change) {
+            if (($change['from']['root'] ?? '') === $from && ($change['to']['root'] ?? '') === $to && $change['vlans'] === $vlans) {
+                $this->history->applyBaselineChange(Baseline::acceptRootChange($baseline, $current, $change), Carbon::now(), $user);
+
+                return $change + ['text' => (new FactText($this->history->names($change['devices'])))->rootChange($change)];
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Take one missing fact out of the baseline of the page's scope (gone on purpose); for a root
      * bridge only the VLANs given.
      *
@@ -273,7 +296,7 @@ class HistoryService
                 return $collector(array_merge(array_column($links, 'local_port_id'), array_column($links, 'remote_port_id')))->links($links);
             },
             FactCollector::LAG => function () use ($topology, $ids, $collector) {
-                $lag = $topology->lagParents($ids);
+                $lag = $topology->lagParents($ids, true);
 
                 return $collector(array_merge(array_keys($lag), array_values($lag)))->lagMembers($lag);
             },
@@ -316,25 +339,38 @@ class HistoryService
         $current = $this->history->currentHashes($ids, $kinds);
         $missingHashes = array_keys(array_diff_key($baseline, $current));
         $newHashes = array_keys(array_diff_key($current, $baseline));
-        $roots = Baseline::compareRoots($this->history->baselineFactsOfKind($ids, FactCollector::STP_ROOT),
+        // a root bridge change is one item for all the switches that see it (an admin accepts it at once)
+        $roots = Baseline::rootChanges($this->history->baselineFactsOfKind($ids, FactCollector::STP_ROOT),
             $this->history->currentFactsOfKind($ids, FactCollector::STP_ROOT));
-
+        $rootItem = fn (array $change) => [
+            'kind' => FactCollector::STP_ROOT,
+            'hash' => FactCollector::hash(FactCollector::STP_ROOT, 'd' . $change['devices'][0] . '|' . ($change['from']['root'] ?? '')),
+            'change' => ['from' => $change['from']['root'] ?? '', 'to' => $change['to']['root'] ?? '', 'vlans' => implode(',', $change['vlans'])],
+            'switches' => count($change['devices']),
+            'text' => $text->rootChange($change),
+            'devices' => array_values(array_filter(array_slice($change['devices'], 0, 6), fn ($id) => $text->visible($id))),
+        ];
         $describe = fn (array $fact) => [
             'kind' => $fact['kind'],
             'hash' => $fact['hash'],
-            'vlans' => $fact['kind'] === FactCollector::STP_ROOT ? FactText::vlans($fact['data']) : null,
+            'change' => null,
+            'switches' => null,
             'text' => $text->describe($fact),
             'devices' => array_values(array_filter([$fact['device_a'], $fact['device_b']], fn ($id) => $text->visible($id))),
         ];
-        $missingFacts = array_merge(array_slice($roots['missing'], 0, self::LISTED), $this->history->baselineFactsByHash($missingHashes, self::LISTED));
-        $since = $this->history->goneSince(array_column($missingFacts, 'hash'));
-        $missing = array_map(fn ($fact) => $describe($fact) + ['since' => $since[$fact['hash']] ?? null], $missingFacts);
-        $new = array_map($describe, array_merge(array_slice($roots['new'], 0, self::LISTED), $this->history->currentFactsByHash($newHashes, self::LISTED)));
+        $missingRoots = array_values(array_filter($roots, fn ($change) => $change['from'] !== null));
+        $newRoots = array_values(array_filter($roots, fn ($change) => $change['from'] === null));
+        $missing = array_merge(array_map($rootItem, array_slice($missingRoots, 0, self::LISTED)),
+            array_map($describe, $this->history->baselineFactsByHash($missingHashes, self::LISTED)));
+        $since = $this->history->goneSince(array_column($missing, 'hash'));
+        $missing = array_map(fn ($item) => $item + ['since' => $since[$item['hash']] ?? null], $missing);
+        $new = array_merge(array_map($rootItem, array_slice($newRoots, 0, self::LISTED)),
+            array_map($describe, $this->history->currentFactsByHash($newHashes, self::LISTED)));
         usort($missing, fn ($a, $b) => [$a['kind'], $a['text']] <=> [$b['kind'], $b['text']]);
         usort($new, fn ($a, $b) => [$a['kind'], $a['text']] <=> [$b['kind'], $b['text']]);
 
-        return ['saved' => $info, 'missing' => array_slice($missing, 0, self::LISTED), 'missing_total' => count($missingHashes) + count($roots['missing']),
-            'new' => array_slice($new, 0, self::LISTED), 'new_total' => count($newHashes) + count($roots['new'])];
+        return ['saved' => $info, 'missing' => array_slice($missing, 0, self::LISTED), 'missing_total' => count($missingHashes) + count($missingRoots),
+            'new' => array_slice($new, 0, self::LISTED), 'new_total' => count($newHashes) + count($newRoots)];
     }
 
     /**

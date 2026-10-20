@@ -7,11 +7,13 @@ use Agoodley\LibrenmsTopology\Stp\Finding;
 /**
  * Findings history of the background checks. A finding is the same finding while its code,
  * devices, ports and VLAN stay the same; its wording and severity may change. A finding is
- * confirmed once two runs in a row reported it, or reported a finding of the same check on one
- * of its devices (a finding whose ports change from run to run goes on), and resolved once two
- * runs in a row did not report it, so a check that flickers from run to run (error counters of the
- * last poll) does not fill the eventlog; a finding that was never confirmed ends at its first
- * absence. If it comes back later it starts a new period.
+ * confirmed once two runs in a row reported it, or when it succeeds a confirmed finding of the
+ * same check on one of its devices that this run no longer reports (a finding whose ports change
+ * from run to run goes on), and resolved once two runs in a row did not report it, so a check that
+ * flickers from run to run (error counters of the last poll) does not fill the eventlog; a finding
+ * that was never confirmed ends at its first absence. If it comes back later it starts a new
+ * period. Another finding of the same check that stays on a shared device (a core switch with
+ * several lost uplinks) confirms nothing.
  *
  * The eventlog of a device gets an entry when the device gets its first confirmed finding of a
  * check or loses its last one. The entry names the check only: findings are computed over the
@@ -61,6 +63,12 @@ class FindingHistory
         'tc_recent' => 'Recent topology change',
         'optical_rx' => 'Optical receive power',
         'neighbor_not_reported' => 'Neighbor not reported by the other side',
+        'udld' => 'UDLD',
+        'bpdu_guard' => 'BPDU guard',
+        'mac_flapping' => 'MAC flapping',
+        'err_disabled' => 'Err-disabled port',
+        'syslog_native_vlan' => 'Native VLAN mismatch (syslog)',
+        'syslog_duplex_mismatch' => 'Duplex mismatch (syslog)',
     ];
 
     /** Words of check codes. */
@@ -106,18 +114,19 @@ class FindingHistory
             $current[self::hash($analysis, $finding)] ??= $finding;
         }
 
-        // check and device of every finding the previous run reported (open and not missed by it)
-        $previous = [];
+        // check and device of every confirmed finding this run no longer reports: a finding of the same check on one of
+        // its devices succeeds it
+        $gone = [];
         foreach ($open as $row) {
-            if ($row['missed_at'] === null) {
+            if ($row['confirmed'] && ! isset($current[$row['hash']])) {
                 foreach ($row['devices'] as $device) {
-                    $previous[$row['code'] . '|' . $device] = true;
+                    $gone[$row['code'] . '|' . $device] = true;
                 }
             }
         }
-        $goesOn = function (array $finding) use ($previous): bool {
+        $succeeds = function (array $finding) use ($gone): bool {
             foreach ($finding['devices'] ?? [] as $device) {
-                if (isset($previous[$finding['code'] . '|' . (int) $device])) {
+                if (isset($gone[$finding['code'] . '|' . (int) $device])) {
                     return true;
                 }
             }
@@ -145,7 +154,7 @@ class FindingHistory
                 unset($result['insert'][$hash]);
                 if ($row['missed_at'] !== null) {
                     $result['unmiss'][] = $id; // back after one run without it
-                } elseif (! $row['confirmed'] && ($row['first_seen'] < $time || $goesOn($finding))) {
+                } elseif (! $row['confirmed'] && ($row['first_seen'] < $time || $succeeds($finding))) {
                     $result['confirm'][] = $id; // reported by the previous run and this one
                 }
                 if ($row['severity'] !== $finding['severity'] || $row['title'] !== self::title($finding)) {
@@ -164,8 +173,8 @@ class FindingHistory
             }
         }
         foreach ($result['insert'] as $hash => $finding) {
-            // the first run finds what existed before; a new finding of a check the previous run reported on one of its devices goes on
-            if ($initial || $goesOn($finding)) {
+            // the first run finds what existed before; a successor goes on where its predecessor was
+            if ($initial || $succeeds($finding)) {
                 $result['confirmed'][] = $hash;
                 $result['after'][] = self::state($finding['code'], $finding['severity'], $finding['devices'] ?? []);
             }

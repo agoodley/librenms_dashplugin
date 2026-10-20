@@ -234,16 +234,19 @@ changed in the last day, week or month, or between two dates:
 
 An admin can **save the baseline**: the topology as it should be (links, port-channel members, root bridges, OSPF
 adjacencies, BGP sessions), for everything or for the devices of the current filter. The page then lists what is missing
-compared to the baseline, with since when, and what is new (root bridges per switch and VLAN); **Accept** takes one
-missing item out of the baseline when it is gone on purpose. The redundancy page uses it too: a baseline link that LLDP/CDP no longer reports counts as a down link,
+compared to the baseline, with since when, and what is new; root bridges are compared per switch and VLAN and listed
+per change ("VLAN 30: root bridge core1 → core2 on 1,242 switches"). **Accept** takes one missing item out of the
+baseline when it is gone on purpose, or makes a root bridge change the expected one on all its switches. The redundancy
+page uses it too: a baseline link that LLDP/CDP no longer reports counts as a down link,
 so a lost uplink is still reported after LibreNMS deleted its neighbor at the next discovery (a port that now has another
 cable is a moved cable, not a lost path).
 
-After each snapshot the **background checks** run the spanning tree (one VLAN at a time), link and redundancy checks over
-all devices, one after the other and each in its own process, and keep a findings history. A finding counts once two runs
-in a row report it (or a finding of the same check on one of its devices: findings whose ports change from run to run go
-on), and is resolved once two runs in a row do not, so a check that flickers from run to run does not flood anything; the
-Changes page lists the findings that count. A device gets an entry in its
+After each snapshot the **background checks** run the spanning tree (one VLAN at a time, with the loop evidence of storms
+and syslog messages), link and redundancy checks over all devices, one after the other and each in its own process, and
+keep a findings history. A finding counts once two runs in a row report it, or when it takes the place of a finding of the
+same check on one of its devices that is gone (findings whose ports change from run to run go on), and is resolved once
+two runs in a row do not report it, so a check that flickers from run to run does not flood anything; the Changes page
+lists the findings that count. A device gets an entry in its
 eventlog (type `topology`) when it gets its first such finding of a check or loses its last one, from *Eventlog from
 severity* (warning by default) and except the *Checks kept out of the eventlog* (those that follow the counters of the last
 poll); the entries then show on the device pages and in the eventlog widget, and alert rules can match them. An entry names
@@ -479,9 +482,9 @@ vendor/bin/phpunit
   in LibreNMS keep their last state.
 * The snapshot and each background check run over the whole network, one after the other, each in its own process with
   LibreNMS' `php_memory_limit` (512 MB when it is not set). For 1,242 switches with 23,000 phones and 50 PVST VLANs:
-  snapshot 1 s and 115 MB, spanning tree check 5 s and 250 MB (one VLAN at a time), link check 1 s and 160 MB, redundancy
-  check 1 s and 125 MB, the Changes page 0.3 s and 70 MB. A check that fails is logged in `topology-snapshot.log` and the
-  eventlog, and the others still run.
+  snapshot 1 s and 115 MB, spanning tree check with loop evidence 5 s and 250 MB (one VLAN at a time), link check 1 s and
+  160 MB, redundancy check 1 s and 125 MB, the Changes page 0.4 s and 72 MB. A check that fails or takes more than an hour
+  is logged in `topology-snapshot.log` and the eventlog, and the others still run.
 * The redundancy analysis compares the baseline with the last snapshot, and only while that is less than a day old.
 * `./validate.php` warns about the plugin's migration while the plugin is installed and then skips its checks of LibreNMS'
   own schema (see [Installation](#installation)).

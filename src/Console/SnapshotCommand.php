@@ -44,16 +44,16 @@ class SnapshotCommand extends HistoryCommand
             return self::SUCCESS;
         }
 
-        $failed = false;
-        foreach ($service->enabledChecks() as $analysis) {
+        $results = Jobs::each($service->enabledChecks(), function (string $analysis): bool {
             $process = new Process([PHP_BINARY, base_path('artisan'), 'topology:checks', $analysis], base_path(), null, null, 3600);
             $process->run(fn ($type, $output) => $this->output->write($output));
-            if (! $process->isSuccessful()) {
-                $failed = true;
-                $this->error("Background $analysis checks failed (exit code {$process->getExitCode()}), see above.");
-            }
+
+            return $process->isSuccessful();
+        });
+        foreach (array_filter($results) as $analysis => $why) {
+            $this->error("Background $analysis checks failed ($why), see above.");
         }
 
-        return $failed ? self::FAILURE : self::SUCCESS;
+        return array_filter($results) ? self::FAILURE : self::SUCCESS;
     }
 }

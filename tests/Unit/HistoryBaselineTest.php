@@ -3,7 +3,9 @@
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
 use Agoodley\LibrenmsTopology\History\Baseline;
+use Agoodley\LibrenmsTopology\History\ChangeReport;
 use Agoodley\LibrenmsTopology\History\FactCollector;
+use Agoodley\LibrenmsTopology\History\FactText;
 use Agoodley\LibrenmsTopology\History\FindingBadges;
 use Agoodley\LibrenmsTopology\History\FindingHistory;
 use Agoodley\LibrenmsTopology\History\Runs;
@@ -274,7 +276,7 @@ class HistoryBaselineTest extends TestCase
         }
     }
 
-    public function testWindowRowsAreCutAtACommonBoundary(): void
+    public function testWindowRowsAreCutAfterACommonBoundary(): void
     {
         $added = fn (int $id, int $time) => ['id' => $id, 'first_seen' => $time, 'removed_at' => null];
         $removed = fn (int $id, int $time) => ['id' => $id, 'first_seen' => 0, 'removed_at' => $time];
@@ -282,51 +284,134 @@ class HistoryBaselineTest extends TestCase
         $this->assertSame(['rows' => [$removed(1, 10), $added(2, 20), $added(3, 30)], 'truncated' => false, 'since' => null],
             Window::merge([$added(3, 30), $added(2, 20)], [$removed(1, 10)], 3));
 
-        // the added facts were capped at 30: the removed fact of 20 (half of a moved cable from 20?) goes too
-        $cut = Window::merge([$added(5, 50), $added(4, 40), $added(3, 30)], [$removed(1, 20), $removed(2, 35)], 3);
-        $this->assertSame([2, 3, 4, 5], array_column($cut['rows'], 'id'));
+        // the added facts were capped inside the snapshot of 30: it goes as a whole, with the removed facts up to it
+        $cut = Window::merge([$added(5, 50), $added(4, 40), $added(3, 30)], [$removed(1, 20), $removed(2, 35), $removed(6, 30)], 3);
+        $this->assertSame([2, 4, 5], array_column($cut['rows'], 'id'));
         $this->assertSame([true, 30], [$cut['truncated'], $cut['since']]);
 
-        // both capped: the later of the two oldest times
+        // both capped: after the later of the two oldest times
         $both = Window::merge([$added(5, 50), $added(4, 40)], [$removed(1, 45), $removed(2, 42)], 2);
-        $this->assertSame([42, [1, 2, 5]], [$both['since'], array_column($both['rows'], 'id')]);
+        $this->assertSame([42, [1, 5]], [$both['since'], array_column($both['rows'], 'id')]);
+    }
+
+    public function testCutWindowKeepsBothHalvesOfAMovedCable(): void
+    {
+        $names = [1 => 'core1', 2 => 'core2', 3 => 'acc3', 4 => 'acc4', 5 => 'acc5', 6 => 'acc6'];
+        $ports = [];
+        foreach ([[31, 3, 'Gi1/0/49'], [41, 4, 'Gi1/0/49'], [51, 5, 'Gi1/0/49'], [61, 6, 'Gi1/0/49'], [11, 1, 'Te1/0/3'], [12, 1, 'Te1/0/4'],
+            [21, 2, 'Te1/0/3'], [22, 2, 'Te1/0/4'], [13, 1, 'Te1/0/5'], [14, 1, 'Te1/0/6']] as [$id, $device, $name]) {
+            $ports[$id] = ['port_id' => $id, 'device_id' => $device, 'ifName' => $name];
+        }
+        $collector = new FactCollector($names, $ports);
+        $link = fn ($ld, $lp, $rd, $rp) => array_values($collector->links([['local_device_id' => $ld, 'local_port_id' => $lp, 'remote_device_id' => $rd,
+            'remote_port_id' => $rp, 'remote_hostname' => '', 'remote_port' => '', 'remote_platform' => '', 'remote_version' => '', 'protocol' => 'lldp']]))[0];
+        $row = fn ($fact, $id, $first, $removed) => ['id' => $id, 'kind' => $fact['kind'], 'fact_key' => $fact['key'], 'device_a' => $fact['device_a'],
+            'device_b' => $fact['device_b'], 'data' => $fact['data'], 'initial' => false, 'first_seen' => $first, 'removed_at' => $removed];
+        $t1 = 1_700_000_000;
+        $t2 = $t1 + 3600;
+        // at T1 acc3 and acc4 moved from core1 to core2, at T2 acc5 and acc6 got new links; read newest first, capped at 3
+        $removed = [$row($link(3, 31, 1, 11), 2, $t1 - 86400, $t1), $row($link(4, 41, 1, 12), 3, $t1 - 86400, $t1)];
+        $added = [$row($link(6, 61, 1, 14), 11, $t2, null), $row($link(5, 51, 1, 13), 10, $t2, null), $row($link(4, 41, 2, 22), 5, $t1, null)];
+
+        $window = Window::merge($added, $removed, 3);
+        $events = ChangeReport::build($window['rows'], $window['since'] + 1, $t2 + 10, new FactText($names))['events'];
+
+        $this->assertSame($t1, $window['since']);
+        $this->assertSame(['link_added', 'link_added'], array_column($events, 'type'), 'no "link gone" for the half that was cut');
     }
 
     public function testFindingWhosePortsChangeEveryRunGoesOn(): void
     {
         // link errors on another port of the same switch every run: the check stays on the switch
-        $runs = [[]];
+        $runs = [];
         foreach ([31, 32, 33, 34, 35, 36] as $port) {
             $runs[] = [self::finding('speed_mismatch', [3], [$port])];
         }
         $runs[] = [];
         $runs[] = [];
 
-        $entries = self::simulate($runs);
+        $this->assertSame(['r7 3 ok'], self::flatten(self::simulate($runs)), 'no false "resolved" while another port has it, resolved after two runs without it');
 
-        $this->assertSame([], $entries[1]);
-        $this->assertSame([[3, 'warning']], array_map(fn ($e) => [$e['device_id'], $e['severity']], $entries[2]), 'two runs in a row on the switch');
-        $this->assertSame([], array_merge(...array_slice($entries, 3, 5)), 'no false "resolved" while another port has it');
-        $this->assertSame([[3, 'ok']], array_map(fn ($e) => [$e['device_id'], $e['severity']], $entries[8]), 'resolved after two runs without it');
+        // without a confirmed predecessor a finding that changes every run is never confirmed
+        $this->assertSame([], self::flatten(self::simulate(array_merge([[]], $runs))));
     }
 
-    public function testRootBridgesAreComparedPerVlan(): void
+    public function testOtherFindingsOfTheCheckOnASharedDeviceConfirmNothing(): void
     {
-        $collector = new FactCollector([1 => 'core1', 2 => 'core2', 3 => 'acc1'], []);
-        $stp = fn (callable $root) => $collector->stpRoots(array_map(fn ($vlan) => ['device_id' => 3, 'vlan' => $vlan,
-            'designatedRoot' => $root($vlan), 'bridgeAddress' => '00ab03000001'], range(1, 40)));
-        $baseline = $stp(fn ($vlan) => $vlan % 2 ? '00ab01000001' : '00ab02000001');
+        // core2 (2) has a lost uplink toward acc4 for days; one run catches acc7's uplink down too
+        $acc4 = self::finding('redundancy_lost', [6, 2], [61, 21]);
+        $acc7 = self::finding('redundancy_lost', [10, 2], [101, 22]);
 
-        // VLAN 31 moved from core1 to core2, VLAN 40 is new
-        $now = $collector->stpRoots(array_merge(array_map(fn ($vlan) => ['device_id' => 3, 'vlan' => $vlan,
-            'designatedRoot' => $vlan % 2 && $vlan !== 31 ? '00ab01000001' : '00ab02000001', 'bridgeAddress' => '00ab03000001'], range(1, 40)),
-            [['device_id' => 3, 'vlan' => 41, 'designatedRoot' => '00ab02000001', 'bridgeAddress' => '00ab03000001']]));
+        $blip = self::simulate([[$acc4], [$acc4], [$acc4, $acc7], [$acc4], [$acc4], [$acc4]]);
+        $this->assertSame([], self::flatten($blip), 'a one-run blip on acc7 is no news');
 
-        $result = Baseline::compareRoots($baseline, $now);
+        $every3 = self::simulate([[$acc4], [$acc4], [$acc4, $acc7], [$acc4], [$acc4], [$acc4, $acc7], [$acc4], [$acc4], [$acc4, $acc7], [$acc4], [$acc4]]);
+        $this->assertSame([], self::flatten($every3));
 
-        $this->assertSame([['00ab01000001', [31]]], array_map(fn ($f) => [$f['data']['root'], $f['data']['vlans']], $result['missing']));
-        $this->assertSame([['00ab02000001', [31, 41]]], array_map(fn ($f) => [$f['data']['root'], $f['data']['vlans']], $result['new']));
-        $this->assertSame(['missing' => [], 'new' => []], Baseline::compareRoots($baseline, $baseline));
+        $twice = self::simulate([[$acc4], [$acc4], [$acc4, $acc7], [$acc4, $acc7], [$acc4], [$acc4]]);
+        $this->assertSame(['r3 10 warning', 'r5 10 ok'], self::flatten($twice), 'two runs in a row: new, and resolved after two runs without it');
+    }
+
+    /**
+     * @param  array<int, array<int, array>>  $entries  eventlog entries of each run
+     * @return string[] "r<run> <device> <severity>"
+     */
+    private static function flatten(array $entries): array
+    {
+        $lines = [];
+        foreach ($entries as $run => $runEntries) {
+            foreach ($runEntries as $entry) {
+                $lines[] = "r$run {$entry['device_id']} {$entry['severity']}";
+            }
+        }
+
+        return $lines;
+    }
+
+    public function testRootBridgeChangesAreGroupedAndAcceptedForAllTheirSwitches(): void
+    {
+        $names = [1 => 'core1', 2 => 'core2', 3 => 'acc3', 4 => 'acc4', 5 => 'acc5'];
+        $collector = new FactCollector($names, []);
+        $stp = fn (array $vlansOf, callable $root) => $collector->stpRoots(array_merge(...array_map(fn ($device) => array_map(fn ($vlan) => ['device_id' => $device,
+            'vlan' => $vlan, 'designatedRoot' => $root($vlan), 'bridgeAddress' => "00ab0{$device}000001"], $vlansOf[$device]), array_keys($vlansOf))));
+        $vlans = [3 => range(1, 40), 4 => range(1, 40), 5 => [1, 31]];
+        $design = fn ($vlan) => $vlan % 2 ? '00ab01000001' : '00ab02000001';
+        $baseline = $stp($vlans, $design);
+        // VLAN 31 moved from core1 to core2 on every switch, VLAN 41 is new on acc3
+        $now = $stp([3 => array_merge(range(1, 40), [41])] + $vlans, fn ($vlan) => $vlan === 31 || $vlan === 41 ? '00ab02000001' : $design($vlan));
+
+        $changes = Baseline::rootChanges($baseline, $now);
+
+        $this->assertSame([['00ab01000001', '00ab02000001', [31], [3, 4, 5]], [null, '00ab02000001', [41], [3]]],
+            array_map(fn ($c) => [$c['from']['root'] ?? null, $c['to']['root'] ?? null, $c['vlans'], $c['devices']], $changes), 'one change for all switches');
+        $text = new FactText($names);
+        // (the cores report no spanning tree here, so their bridges are not named)
+        $this->assertSame('VLAN 31: root bridge 00:ab:01:00:00:01 → 00:ab:02:00:00:01 on acc3, acc4, acc5', $text->rootChange($changes[0]));
+        $this->assertSame('VLAN 41: root bridge 00:ab:02:00:00:01 on acc3', $text->rootChange($changes[1]));
+
+        // accept the move: VLAN 31 leaves core1's fact and joins core2's on all three switches; acc5 had no core2 fact
+        $ops = Baseline::acceptRootChange($baseline, $now, $changes[0]);
+        $this->assertCount(5, $ops['update']);
+        $this->assertCount(1, $ops['insert']);
+        $after = $baseline;
+        foreach ($ops['update'] as $hash => $data) {
+            $after[$hash]['data'] = $data;
+        }
+        foreach ($ops['delete'] as $hash) {
+            unset($after[$hash]);
+        }
+        $after += $ops['insert'];
+        $this->assertSame([[null, '00ab02000001', [41], [3]]],
+            array_map(fn ($c) => [$c['from']['root'] ?? null, $c['to']['root'] ?? null, $c['vlans'], $c['devices']], Baseline::rootChanges($after, $now)));
+    }
+
+    public function testVlansOfAFormAreStrict(): void
+    {
+        $this->assertSame([30, 31], Baseline::parseVlans('30,31'));
+        $this->assertSame([0], Baseline::parseVlans('0'));
+        foreach (['', '30,', '30,,31', 'abc', '30;31', '30 31', '12345', null, ['30']] as $value) {
+            $this->assertNull(Baseline::parseVlans($value), json_encode($value));
+        }
     }
 
     public function testNewMarksExpireWhenTheChecksStop(): void

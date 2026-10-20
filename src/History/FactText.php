@@ -37,6 +37,40 @@ class FactText
     }
 
     /**
+     * "core1, core2 and 7 more" for the devices the user may see (the others are not counted).
+     *
+     * @param  int[]  $devices
+     */
+    public function deviceList(array $devices, int $max = 5): string
+    {
+        $names = [];
+        foreach ($devices as $device) {
+            if ($this->visible($device)) {
+                $names[] = $this->device($device, null);
+            }
+        }
+        sort($names, SORT_NATURAL | SORT_FLAG_CASE);
+        $more = count($names) - $max;
+
+        return implode(', ', array_slice($names, 0, $max)) . ($more > 0 ? ' and ' . number_format($more) . ' more' : '');
+    }
+
+    /**
+     * One line for a change of root bridges against the baseline (Baseline::rootChanges()).
+     */
+    public function rootChange(array $change): string
+    {
+        $vlans = self::vlanList($change['vlans']);
+        $on = $this->deviceList($change['devices']);
+
+        return match (true) {
+            $change['from'] !== null && $change['to'] !== null => "$vlans: root bridge " . $this->root($change['from']) . ' → ' . $this->root($change['to']) . " on $on",
+            $change['from'] !== null => "$vlans: root bridge " . $this->root($change['from']) . " no longer reported on $on",
+            default => "$vlans: root bridge " . $this->root($change['to']) . " on $on",
+        };
+    }
+
+    /**
      * "acc-sw1 Gi1/0/49" for one end of a link fact.
      */
     public function linkEnd(array $end): string
