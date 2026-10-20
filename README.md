@@ -906,8 +906,8 @@ vendor/bin/phpunit
   it had never been recorded, without a "Link gone".
 * The snapshot and each background check run over the whole network, one after the other, each in its own process with
   LibreNMS' `php_memory_limit` (512 MB when it is not set). For 1,242 switches with 23,000 phones and 50 PVST VLANs:
-  snapshot 1 s and 115 MB, spanning tree check with loop evidence 5 s and 250 MB (one VLAN at a time), link check 1 s and
-  160 MB, redundancy check 1 s and 125 MB, the Changes page 0.4 s and 72 MB. For 2,000 routers with 50,000 addresses,
+  snapshot 1 s and 115 MB, spanning tree check with loop evidence 5 s and 250 MB (one VLAN at a time), link check 0.6 s
+  and 86 MB, redundancy check 0.8 s and 98 MB, the Changes page 0.4 s and 72 MB. For 2,000 routers with 50,000 addresses,
   8,000 OSPF adjacencies and 8,000 BGP sessions: snapshot 1.3 s and 80 MB, routing & IP check 1.3 s and 107 MB (with 1,800
   findings). A check that fails or takes more than an hour is logged in `topology-snapshot.log` and the eventlog, and the
   others still run. A lock lasts as long as the longest run could (5 hours 10 minutes: the snapshot and four checks of
@@ -933,7 +933,7 @@ vendor/bin/phpunit
 * `./validate.php` warns about the plugin's migrations while the plugin is installed and then skips its checks of
   LibreNMS' own schema (see [Installation](#installation)).
 * The pages of the whole network fit in PHP's default 128 MB on 1,242 switches with 23,000 phones and 50 PVST VLANs
-  (largest: redundancy and device dependencies 96 MB, links 86 MB, spanning tree 82 MB, L2 map 66 MB); a page also
+  (largest: redundancy and device dependencies 96 MB, links 86 MB, spanning tree 84 MB, L2 map 66 MB); a page also
   raises PHP's memory limit to LibreNMS' `php_memory_limit`, or 256 MB when it is not set. One VLAN of a very large
   PVST network with STP port rows for every port can still need more.
 
