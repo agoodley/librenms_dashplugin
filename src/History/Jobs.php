@@ -22,6 +22,16 @@ class Jobs
      */
     public const SCHEDULED = ['topology:snapshot' => []];
 
+    /** A background check run by topology:snapshot is stopped after this long (seconds). */
+    public const CHECK_TIMEOUT = 3600;
+
+    /**
+     * How long the locks of the history jobs last unless their run releases them (seconds), the
+     * scheduler's overlap lock too: longer than the longest scheduled run, the snapshot (given the
+     * time of a check, it takes minutes) and the four checks one after the other.
+     */
+    public const LOCK_SECONDS = 5 * self::CHECK_TIMEOUT + 600;
+
     /**
      * Read each kind of fact, skipping a kind whose reader fails (a read error is no empty kind:
      * its facts stay as they were until the next snapshot).

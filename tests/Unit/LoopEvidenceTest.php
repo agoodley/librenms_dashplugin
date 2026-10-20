@@ -140,6 +140,24 @@ class LoopEvidenceTest extends TestCase
         $this->assertSame(1, $result['evidence']['ports_with_counters']);
     }
 
+    public function testLldpNeighborsAreTypedFromTheirSystemDescription(): void
+    {
+        // LLDP has no platform: the system description says what the neighbor is, as on the L2 map
+        $net = (new LoopFixture)->device(2, 'sw-a')
+            ->neighbor(2, 'Gi1/0/1', 'vvx450-3f', '', 'Polycom;VVX-VVX_450;3111-48450-001,1;SIP/6.4.3.5018/23-Mar-22 07:11;UP/6.4.3.5018')
+            ->neighbor(2, 'Gi1/0/2', 'srv-db-1', '', 'Linux srv-db-1 5.15.0-91-generic #101-Ubuntu SMP x86_64')
+            ->neighbor(2, 'Gi1/0/3', 'bldg2-idf3', '', 'Juniper Networks, Inc. ex2300-48p Ethernet Switch, kernel JUNOS 21.4R3')
+            ->neighbor(2, 'Gi1/0/4', 'sonic-leaf1', '', 'SONiC Software Version: SONiC.202305 - HwSku: Accton-AS7726-32X Distribution: Debian 11 Kernel: 5.10.0');
+        $storm = ['ifInBroadcastPkts_rate' => 50000, 'ifInUcastPkts_rate' => 100];
+        foreach (['Gi1/0/1', 'Gi1/0/2', 'Gi1/0/3', 'Gi1/0/4'] as $port) {
+            $net->set(2, $port, $storm);
+        }
+        $result = $net->evidence();
+
+        $this->assertSame([$net->portId(2, 'Gi1/0/3'), $net->portId(2, 'Gi1/0/4')], self::find($result, 'broadcast_storm')['ports']);
+        $this->assertSame(2, $result['evidence']['inter_switch_ports']);
+    }
+
     public function testStormChecksCanBeSwitchedOff(): void
     {
         $net = (new LoopFixture)->device(2, 'sw-a')->device(3, 'sw-b')->link(2, 'Gi1/0/1', 3, 'Ethernet1/1');

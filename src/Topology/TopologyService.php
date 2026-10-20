@@ -106,12 +106,15 @@ class TopologyService
             $linkPorts[] = (int) $link['remote_port_id'];
         }
         $lag = $this->repo->lagParents($ids);
-        $linkPorts = array_values(array_filter(array_unique(array_merge($linkPorts, array_map(fn ($p) => $lag[$p] ?? 0, $linkPorts)))));
+        $aggregates = array_values(array_filter(array_unique(array_map(fn ($p) => $lag[$p] ?? 0, $linkPorts))));
+        $linkPorts = array_values(array_filter(array_unique(array_merge($linkPorts, $aggregates))));
+        // all members of those aggregates, with or without a link: whether an aggregate is only one edge
+        $members = array_keys(array_intersect($lag, $aggregates));
 
         // the overlay shows one instance per device: the one carrying the selected VLAN
         $stp = $this->singleInstanceIndex($this->repo->stpKeys($ids), $p['vlan'], $lag);
         $rootPorts = array_filter(array_map(fn ($id) => $stp->rootPortId($id, $p['vlan']), $ids));
-        $ports = $this->repo->ports(array_merge($linkPorts, $rootPorts));
+        $ports = $this->repo->ports(array_merge($linkPorts, $rootPorts, $members));
 
         $builder = new L2Builder(
             $this->repo->devices($ids),
