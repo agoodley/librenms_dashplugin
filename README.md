@@ -107,19 +107,18 @@ cloud VPN gateway) or on a tunnel subnet they join with addresses of their own (
 
 ### Sharing & export
 
-**Saved views** (the bookmark button of the L2 and L3 maps, and **Maps → Saved Views**) keep a map under a name on the
-server: its scope, filters, device positions and display options (layout, *Color links by*, labels, STP overlay,
-outages). A view is personal or shared with everyone who can open the maps, and opens with a link (`l2?view=12`). Each
-user sees a shared view with their own permissions: the map is built for them, and only the positions of the nodes on
-their map are used (and sent to their browser); a node the view does not place, such as a device they see as an
-unmanaged neighbor, goes next to the nodes it is linked to; the view's scope names no device, group, location or VRF
-they may not see, but its name is shown as it was typed. The map leaves the view when its scope changes (device, hops,
-group, location, VRF); *Update* saves the map as it is now into the open view. Users change and delete their own views,
-LibreNMS admins also any shared view and the personal views of users that no longer exist (listed as owned by "a former
-user" on *Saved Views*). A user keeps up to 200 views; a view stores the positions of the nodes of its map only, at most
-1 MB.
-*Saved Views* lists them (rename, share, delete) and the layouts saved in this browser with the save button, each of
-which becomes a view in one click.
+**Saved views** (the bookmark button of the L2 and L3 maps, and *Overview → Plugins → Topology maps → Saved Views*) keep
+a map under a name on the server: its scope, filters, device positions and display options (layout, *Color links by*,
+labels, STP overlay, outages). A view is personal or shared with everyone who can open the maps, and opens with a link
+(`l2?view=12`). Each user sees a shared view with their own permissions: the map is built for them, and only the
+positions of the nodes on their map are used (and sent to their browser); a node the view does not place, such as a
+device they see as an unmanaged neighbor, goes next to the nodes it is linked to; the view's scope names no device,
+group, location or VRF they may not see, but its name is shown as it was typed. The map leaves the view when its scope
+changes (device, hops, group, location, VRF); *Update* saves the map as it is now into the open view. Users change and
+delete their own views, LibreNMS admins also any shared view and the personal views of users that no longer exist
+(listed as owned by "a former user" on *Saved Views*). A user keeps up to 200 views; a view stores the positions of the
+nodes of its map only, at most 1 MB. *Saved Views* lists them (rename, share, delete) and the layouts saved in this
+browser with the save button, each of which becomes a view in one click.
 
 ![Saved views](docs/images/saved-views.png)
 
@@ -602,6 +601,9 @@ composer config --global repositories.librenms-topology vcs https://github.com/a
 # 2. install it with LibreNMS' plugin installer
 cd /opt/librenms
 ./lnms plugin:add agoodley/librenms-topology-plugin dev-main
+
+# 3. create the plugin's tables (history, baseline, saved views, custom maps)
+./lnms migrate
 ```
 
 If the repository is private, give composer a GitHub token first:
@@ -612,6 +614,7 @@ To install from a local checkout instead, use a path repository:
 ```bash
 composer config --global repositories.librenms-topology '{"type": "path", "url": "/opt/librenms-plugins/librenms_dashplugin", "options": {"symlink": true}}'
 ./lnms plugin:add agoodley/librenms-topology-plugin @dev
+./lnms migrate
 ```
 
 The plugin is enabled automatically. Its pages are listed under **Overview → Plugins** in four groups (maps,
@@ -637,6 +640,9 @@ are the plugin's migrations, and the warning stays while the plugin is installed
 checks of LibreNMS' own schema (structure and collation). **Do not delete the plugin's rows from the `migrations` table**
 to silence it: validate.php then lists the `topology_*` tables as extra tables and offers to drop them. **Never apply
 that fix**: it deletes the history, the baseline and the saved views.
+
+**Updating:** LibreNMS' daily update requires the installed plugins again and runs `./lnms migrate`, so the plugin
+follows `dev-main`; to update by hand, run the `plugin:add` line again, then `./lnms migrate`.
 
 To remove the plugin and its tables:
 

@@ -16,6 +16,8 @@
 .topo-toolbar .select2-container { vertical-align: middle; }
 .topo-toolbar .topo-group-label, .topo-viewbar .topo-group-label { font-weight: 600; color: #666; margin-right: 2px; }
 .topo-viewbar .btn-group .btn { padding: 3px 8px; }
+/* Bootstrap takes the focus outline off dropdown toggles: the views and export buttons show keyboard focus again */
+.topo-viewbar .dropdown-toggle:focus-visible { outline: 2px solid #66afe9; outline-offset: -2px; }
 .topo-spacer { flex: 1 1 auto; }
 
 .topo-body { display: flex; gap: 8px; height: calc(100vh - 290px); min-height: 480px; }
@@ -55,6 +57,7 @@
 .topo-status-degraded { color: #b85c00; font-weight: 600; }
 .topo-status-disabled, .topo-status-unknown, .topo-status-notPresent { color: #8a949e; }
 .topo-text-warning { color: #b85c00; }
+.topo-text-info { color: #1f6fb2; }
 .topo-tooltip { font-size: 12px; line-height: 1.4; max-width: 320px; }
 
 .topo-sim {
@@ -163,7 +166,7 @@ html.dark .topo-config pre { background: #24272c; border-color: #3a3f45; color: 
 html.dark .topo-config summary { color: #6ea8de; }
 html.dark .topo-stp-table td.topo-mismatch { background: rgba(230, 126, 34, 0.28); }
 html.dark .topo-host-ip { background: rgba(110, 168, 222, 0.18); }
-html.dark .topo-host-note-info { color: #6ea8de; }
+html.dark .topo-host-note-info, html.dark .topo-text-info { color: #6ea8de; }
 html.dark .topo-host-note-warning { color: #f0a35e; }
 html.dark .topo-status-down, html.dark .topo-status-lowerLayerDown { color: #f08a80; }
 html.dark .topo-status-degraded, html.dark .topo-text-warning { color: #f0a35e; }

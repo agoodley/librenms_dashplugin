@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\Hosts\HostLocator;
 use Agoodley\LibrenmsTopology\Hosts\HostQuery;
 use Agoodley\LibrenmsTopology\Support\Cidr;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
+use Agoodley\LibrenmsTopology\Support\Text;
 
 /**
  * The ends of a path and where their traffic leaves their subnet: a device (and port) given by id, the device owning an
@@ -33,7 +34,7 @@ class PathEndpoints
     {
         $endpoint = ['input' => $text, 'resolved' => false, 'message' => null, 'kind' => null, 'label' => $text, 'device' => null, 'port' => null, 'port_url' => null, 'mac' => null,
             'readable' => null, 'vendor' => null, 'ip' => null, 'ips' => [], 'device_id' => null, 'port_id' => null, 'vlan' => null, 'status' => null,
-            'notes' => [], 'others' => 0, 'arp' => [], 'owners' => [], 'host_url' => null];
+            'notes' => [], 'others' => 0, 'arp' => [], 'owners' => [], 'host_url' => null, 'role_hint' => null];
 
         if ($deviceId) {
             return $this->device($endpoint, $deviceId, $portId);
@@ -60,7 +61,7 @@ class PathEndpoints
         }
 
         if ($this->hosts === null) {
-            return ['message' => $text . ' is not an address or name of a device you can see.' . $this->roleHint()] + $endpoint;
+            return ['message' => $text . ' is not an address or name of a device you can see.', 'role_hint' => $this->roleHint()] + $endpoint;
         }
         $search = ($this->hosts)($text);
         $device = $search['devices'][0] ?? null;
@@ -85,7 +86,8 @@ class PathEndpoints
                 default => null,
             };
 
-            return ['message' => ($why !== null ? $text . ' cannot be located: ' . $why : ($search['message'] ?? $text . ' cannot be located.')) . $this->roleHint()] + $endpoint;
+            return ['message' => $why !== null ? $text . ' cannot be located: ' . $why : ($search['message'] ?? $text . ' cannot be located.'),
+                'role_hint' => $this->roleHint()] + $endpoint;
         }
 
         $ips = array_values(array_unique(array_merge($ip !== null ? [$ip] : [],
@@ -136,22 +138,23 @@ class PathEndpoints
     }
 
     /**
-     * " Your LibreNMS role may not view ..." when the user's role hides data an end is looked up in: interface addresses
-     * and the host locator's tables.
+     * "Your LibreNMS role may not view ..." when the user's role hides data an end that is not found is looked up in:
+     * interface addresses and the host locator's tables. Not in the end's message: the page's notice names what the role
+     * hides, and the trace's message (the API's) adds it once.
      */
-    private function roleHint(): string
+    private function roleHint(): ?string
     {
         $hidden = $this->network->roleHides('ipv4_addresses', 'ipv6_addresses', 'ports', 'ports_fdb', 'ipv4_mac', 'ipv6_nd', 'ports_nac');
 
-        return $hidden ? ' Your LibreNMS role may not view ' . implode(', ', $hidden) . ', where hosts and addresses are looked up.' : '';
+        return $hidden ? 'Your LibreNMS role may not view ' . Text::join($hidden) . ', where hosts and addresses are looked up.' : null;
     }
 
     /**
-     * What the page and the API show of an end: no ARP rows or other owners.
+     * What the page and the API show of an end: no ARP rows, other owners or role hint.
      */
     public static function publicView(array $endpoint): array
     {
-        unset($endpoint['arp'], $endpoint['owners']);
+        unset($endpoint['arp'], $endpoint['owners'], $endpoint['role_hint']);
 
         return $endpoint;
     }

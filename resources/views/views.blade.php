@@ -22,9 +22,12 @@
             run <code>./lnms migrate</code> as the librenms user (see the plugin's README, Installation).</div>
     @endif
 
-    <p class="text-muted">To save a view, open a map, arrange it and use <i class="fa fa-bookmark"></i> &rarr; <i>Save this map as a view</i>.
-        A view keeps the scope, filters, device positions and display options of the map. A shared view is listed for everyone who can
-        open the maps; each of them sees it with their own permissions, only the devices they may see.</p>
+    <div class="topo-filterbar" style="flex-wrap: nowrap; align-items: flex-start">
+        <p class="text-muted" style="margin: 0; flex: 1 1 auto">To save a view, open a map, arrange it and use <i class="fa fa-bookmark"></i> &rarr; <i>Save this map as a view</i>.
+            A view keeps the scope, filters, device positions and display options of the map. A shared view is listed for everyone who can
+            open the maps; each of them sees it with their own permissions, only the devices they may see.</p>
+        <a class="btn btn-sm btn-default" href="{{ route('topology.api.views') }}" target="_blank"><i class="fa fa-code"></i> JSON</a>
+    </div>
 
     <div class="table-responsive">
         <table class="table table-condensed table-hover topo-views-table">
@@ -37,8 +40,8 @@
                         <td><a href="{{ $view['url'] }}"><i class="fa fa-bookmark fa-fw"></i> {{ $view['name'] }}</a></td>
                         <td>{{ $pages[$view['page']] ?? $view['page'] }}
                             @if(! empty($roleHidden[$view['page']]))
-                                <i class="fa fa-lock text-muted" title="Your LibreNMS role may not view {{ implode(', ', $roleHidden[$view['page']]) }}: this map leaves them out"
-                                   aria-label="Your LibreNMS role may not view {{ implode(', ', $roleHidden[$view['page']]) }}"></i>
+                                <i class="fa fa-lock text-muted" title="Your LibreNMS role may not view {{ \Agoodley\LibrenmsTopology\Support\Text::join($roleHidden[$view['page']]) }}: this map leaves them out"
+                                   aria-label="Your LibreNMS role may not view {{ \Agoodley\LibrenmsTopology\Support\Text::join($roleHidden[$view['page']]) }}"></i>
                             @endif
                         </td>
                         <td>{{ $view['scope'] }}</td>
@@ -120,7 +123,7 @@
         var describe = function (scope) {
             var params = new URLSearchParams(scope);
             var parts = [];
-            if (params.get('device')) parts.push('device #' + params.get('device') + ', ' + (params.get('depth') || '?') + ' hops');
+            if (params.get('device')) parts.push('device #' + params.get('device') + ', ' + (params.get('depth') || '?') + (params.get('depth') === '1' ? ' hop' : ' hops'));
             if (params.get('group')) parts.push('group #' + params.get('group'));
             if (params.get('location')) parts.push('location #' + params.get('location'));
             if (params.get('vrf')) parts.push('VRF ' + params.get('vrf'));

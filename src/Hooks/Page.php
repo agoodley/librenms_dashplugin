@@ -23,7 +23,7 @@ class Page implements SinglePageHook
     public function handle(string $pluginName): array
     {
         return [
-            'title' => 'Network Topology',
+            'title' => 'Topology overview',
             'content_view' => "$pluginName::landing",
         ];
     }

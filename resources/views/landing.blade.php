@@ -4,7 +4,7 @@
     <link href="{{ route('topology.asset', 'topology.css') }}" rel="stylesheet">
 @endpush
 <div class="container-fluid">
-    <h3>Network Topology</h3>
+    <h3>Topology overview</h3>
     @foreach(\Agoodley\LibrenmsTopology\Support\Navigation::groups() as $group)
         <h4 class="topo-landing-group"><i class="fa {{ $group['icon'] }} fa-fw"></i> {{ $group['label'] }}</h4>
         <div class="topo-cards" style="display: flex; flex-wrap: wrap; gap: 12px;">

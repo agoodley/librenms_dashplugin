@@ -1755,7 +1755,7 @@
                 (node.down ? '<br><span class="text-danger">' + esc(node.down + ' down') + '</span>' : '');
         }
         if (node.type === 'subnet') {
-            return '<b>' + esc(node.network) + '</b>' + (node.vrf ? ' (' + esc(node.vrf) + ')' : '') + '<br>' + node.devices + ' device(s)';
+            return '<b>' + esc(node.network) + '</b>' + (node.vrf ? ' (' + esc(node.vrf) + ')' : '') + '<br>' + esc(plural(node.devices, 'device'));
         }
         var html = '<b>' + esc(node.name) + '</b>';
         if (node.hardware) html += '<br>' + esc(node.hardware);
@@ -3288,7 +3288,7 @@
         };
         var scope = [];
         if (this.data.scope && this.data.scope.root_name) {
-            scope.push(this.data.scope.root_name + ', ' + this.data.scope.depth + ' hops');
+            scope.push(this.data.scope.root_name + ', ' + plural(this.data.scope.depth, 'hop'));
         }
         ['group', 'location'].forEach(function (key) {
             if (chosen(key)) {

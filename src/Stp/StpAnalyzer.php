@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Agoodley\LibrenmsTopology\Support\Graph;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
+use Agoodley\LibrenmsTopology\Support\Text;
 
 /**
  * Spanning tree health analysis built on the LibreNMS STP, link (LLDP/CDP) and port data.
@@ -787,7 +788,7 @@ class StpAnalyzer
             $this->add(new Finding(
                 Finding::INFO, 'tc_recent',
                 "topology change " . self::duration($last) . ' ago',
-                count($recent) . ' bridge(s) saw a topology change in the last ' . self::duration($this->tcRecentSeconds()) . '.' . $suspectText,
+                Text::count(count($recent), 'bridge') . ' saw a topology change in the last ' . self::duration($this->tcRecentSeconds()) . '.' . $suspectText,
                 'Correlate with link up/down events; a single change after maintenance is expected.',
                 $key, array_keys($recent), array_map(fn ($s) => $s[2], $suspects),
             ));
@@ -1095,12 +1096,13 @@ class StpAnalyzer
         [$rootChanges, $rootPortChanges] = [$changes['root'], $changes['port']];
 
         $days = $this->settings->int('stp_event_days', 1);
+        $window = $days === 1 ? 'the last day' : "the last $days days";
         if ($rootChanges) {
             arsort($rootChanges);
             $this->add(new Finding(
                 max($rootChanges) >= 3 ? Finding::CRITICAL : Finding::WARNING, 'root_changed',
                 'Root bridge changes detected',
-                "Designated root changed in the last $days day(s) on: " . $this->countList($rootChanges) . '.',
+                "Designated root changed in $window on: " . $this->countList($rootChanges) . '.',
                 'Root changes cause network-wide reconvergence. Check for new switches with low priority, root guard violations or failing core links.',
                 null, array_keys($rootChanges),
             ));
@@ -1111,7 +1113,7 @@ class StpAnalyzer
             $this->add(new Finding(
                 max($rootPortChanges) >= 5 ? Finding::WARNING : Finding::INFO, 'root_port_changed',
                 'Root port changes detected',
-                "Root port changed in the last $days day(s) on: " . $this->countList($rootPortChanges) . '.',
+                "Root port changed in $window on: " . $this->countList($rootPortChanges) . '.',
                 'A changing root port means the uplink toward the root failed or flapped.',
                 null, array_keys($rootPortChanges),
             ));
@@ -1420,7 +1422,7 @@ class StpAnalyzer
             return $owner['name'] ?? $this->deviceName((int) $owner['device_id']);
         }
         if (! empty($lookups[$mac]['hidden'])) {
-            return 'monitored bridge (no access)';
+            return 'a bridge you may not see';
         }
 
         return ! empty($lookups[$mac]['vendor']) ? 'unmonitored ' . $lookups[$mac]['vendor'] : 'unmonitored bridge';

@@ -21,7 +21,7 @@
         'speed_mismatch' => 'speed', 'duplex_mismatch' => 'duplex', 'half_duplex' => 'half duplex', 'mtu_mismatch' => 'MTU',
         'mode_mismatch' => 'trunk / access', 'native_vlan_mismatch' => 'native VLAN', 'access_vlan_mismatch' => 'access VLAN',
         'trunk_vlan_mismatch' => 'allowed VLANs', 'vlan_split' => 'split VLAN',
-        'lag_unbundled' => 'Port-channel on one end', 'lag_split' => 'Port-channel split', 'lag_degraded' => 'Port-channel degraded', 'lag_imbalance' => 'Port-channel load',
+        'lag_unbundled' => 'port-channel on one end', 'lag_split' => 'port-channel split', 'lag_degraded' => 'port-channel degraded', 'lag_imbalance' => 'port-channel load',
         'link_errors' => 'errors', 'link_discards' => 'discards', 'optical_rx' => 'optics',
         'neighbor_not_reported' => 'one-sided', 'no_neighbor_data' => 'no LLDP/CDP', 'description_wrong' => 'description', 'description_missing' => 'no description',
     ];

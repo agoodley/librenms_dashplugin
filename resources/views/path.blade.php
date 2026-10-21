@@ -8,7 +8,7 @@
 @endpush
 
 @php
-    $speed = fn ($bps) => $bps ? \Agoodley\LibrenmsTopology\Path\PathService::speedText((int) $bps) : '-';
+    $speed = fn ($bps) => $bps ? \Agoodley\LibrenmsTopology\Links\LinkAnalyzer::speed((int) $bps) : '-';
     $roles = [
         'router' => 'fa-random', 'firewall' => 'fa-shield-alt', 'l3switch' => 'fa-sitemap', 'switch' => 'fa-sitemap', 'wireless' => 'fa-wifi',
         'server' => 'fa-server', 'phone' => 'fa-phone', 'other' => 'fa-cube', 'unknown' => 'fa-question-circle',
@@ -81,7 +81,7 @@
                    placeholder="IP, MAC, hostname or device" @if($query['a_device']) readonly @endif autofocus>
         </label>
         @if($ready)
-            <a class="btn btn-sm btn-default" href="{{ route('topology.path', $swap) }}" title="Trace the way back (B to A)"><i class="fa fa-exchange"></i></a>
+            <a class="btn btn-sm btn-default" href="{{ route('topology.path', $swap) }}" title="Trace the way back (B to A)" aria-label="Trace the way back (B to A)"><i class="fa fa-exchange" aria-hidden="true"></i></a>
         @endif
         <label>To (B)
             <input type="text" name="b" class="form-control" style="width: 260px" value="{{ $query['b'] !== '' ? $query['b'] : ($result['b']['label'] ?? '') }}"
@@ -93,7 +93,7 @@
         @foreach(['a_device', 'a_port', 'b_device', 'b_port'] as $key)
             @if($query[$key])<input type="hidden" name="{{ $key }}" value="{{ $query[$key] }}">@endif
         @endforeach
-        <button type="submit" class="btn btn-sm btn-primary"><i class="fa fa-route"></i> Trace</button>
+        <button type="submit" class="btn btn-sm btn-primary"><i class="fa {{ \Agoodley\LibrenmsTopology\Support\Navigation::PAGES['path']['icon'] }}"></i> Trace</button>
         @if($query['a_device'] || $query['b_device'])
             <a class="btn btn-sm btn-default" href="{{ route('topology.path') }}">New trace</a>
         @endif
@@ -107,7 +107,8 @@
     @endif
 
     @if($result)
-        @if($result['message'])
+        {{-- each end's panel says why it was not found: the message only when there are no panels --}}
+        @if($result['message'] && ! ($result['a'] && $result['b']))
             <div class="alert alert-info"><i class="fa fa-info-circle"></i> {{ $result['message'] }}</div>
         @endif
 
@@ -163,7 +164,7 @@
                 <div class="topo-card topo-{{ $summary['complete'] ? $summary['status'] : 'critical' }}">
                     <h4>Path</h4>
                     <div class="topo-card-value"><span class="topo-sev topo-sev-{{ $summary['complete'] ? $summary['status'] : 'critical' }}" style="font-size: 16px">{{ $summary['complete'] ? $summary['status'] : 'incomplete' }}</span></div>
-                    <p>{{ $summary['critical'] }} critical, {{ $summary['warning'] }} warnings, {{ $summary['info'] }} info</p>
+                    <p>{{ number_format($summary['critical']) }} critical, {{ \Agoodley\LibrenmsTopology\Support\Text::count($summary['warning'], 'warning') }}, {{ number_format($summary['info']) }} info</p>
                 </div>
                 <div class="topo-card topo-info">
                     <h4>{{ $result['mode'] === 'l3' ? 'Routed' : 'Layer 2' }}</h4>
@@ -191,6 +192,7 @@
             @if($result['findings'])
                 <div class="panel panel-default">
                     <div class="panel-heading"><strong>Problems on the path</strong> <span class="text-muted">({{ count($result['findings']) }})</span></div>
+                    <div class="table-responsive">
                     <table class="table table-condensed table-hover topo-stp-table">
                         <thead><tr><th style="width: 90px">Severity</th><th>Finding</th><th style="width: 22%">Devices</th></tr></thead>
                         <tbody>
@@ -213,6 +215,7 @@
                         @endforeach
                         </tbody>
                     </table>
+                    </div>
                 </div>
             @endif
 
@@ -227,6 +230,7 @@
                         @if($summary['hidden'])<small class="text-muted">the map shows the path up to the devices you may not see</small>@endif
                     @endif
                 </div>
+                <div class="table-responsive">
                 <table class="table table-condensed table-hover topo-stp-table topo-path">
                     <thead><tr><th style="width: 30px">#</th><th>Device</th><th>In</th><th>Out</th><th>Link to the next hop</th><th>Forwarding</th></tr></thead>
                     <tbody>
@@ -292,6 +296,7 @@
                     @endforeach
                     </tbody>
                 </table>
+                </div>
             </div>
             <p class="text-muted" style="font-size: 12px">
                 The path is worked out from what LibreNMS last read: LLDP/CDP links, spanning tree states, forwarding and ARP tables

@@ -44,6 +44,6 @@
 </div>
 @if($navRoleHidden)
     <div class="alert alert-info topo-role-hidden" style="margin: 8px 0">
-        <i class="fa fa-lock"></i> Your LibreNMS role may not view {{ implode(', ', $navRoleHidden) }}: {{ $roleNote ?? 'this page leaves them out' }}.
+        <i class="fa fa-lock"></i> Your LibreNMS role may not view {{ \Agoodley\LibrenmsTopology\Support\Text::join($navRoleHidden) }}: {{ $roleNote ?? 'this page leaves them out' }}.
     </div>
 @endif

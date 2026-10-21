@@ -59,7 +59,7 @@ class Navigation
             'description' => 'Where is this plugged in? An IP, MAC or hostname to its switch port, VLAN, vendor and 802.1X user, following the forwarding tables past uplinks, port-channels, phones and access points.',
         ],
         'path' => [
-            'route' => 'topology.path', 'group' => 'tools', 'tab' => 'Path Trace', 'title' => 'Path Trace', 'icon' => 'fa-route', 'scoped' => false,
+            'route' => 'topology.path', 'group' => 'tools', 'tab' => 'Path Trace', 'title' => 'Path Trace', 'icon' => 'fa-arrows-left-right', 'scoped' => false,
             'description' => 'Every hop between two hosts or devices: through the forwarding ports of the spanning tree within a VLAN, or router by router through the route tables, with the speed, utilization, errors and duplex of each port.',
         ],
         'coverage' => [

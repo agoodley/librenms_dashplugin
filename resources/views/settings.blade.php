@@ -62,7 +62,7 @@
             ['path_route_rows', 'number', 'Route table limit', 'read LibreNMS\' route table (one full read per address a trace routes toward, its per-router summary kept 5 minutes) only while it holds fewer routes than this; larger, routers are estimated from their neighbors (0: no limit)'],
         ],
         'Monitoring coverage' => [
-            ['shared_port_macs', 'number', 'Probable hub or unmanaged switch from this many MAC addresses', 'access port with at least this many MAC addresses and no LLDP/CDP neighbor: probably a hub or unmanaged switch (a phone on the port does not count as a neighbor); used by the coverage report and the host locator; 0 switches it off'],
+            ['shared_port_macs', 'number', 'Possible hub or unmanaged switch from this many MAC addresses', 'access port with at least this many MAC addresses and no LLDP/CDP neighbor: probably a hub or unmanaged switch (a phone on the port does not count as a neighbor); used by the coverage report and the host locator; 0 switches it off'],
             ['coverage_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (unmonitored, devices, ports), e.g. not_linked hub_suspected'],
         ],
         'Topology history & background checks' => [

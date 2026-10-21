@@ -77,7 +77,7 @@ class RolePermissionsTest extends TestCase
         $this->assertSame([], $repo->opticalRx([1, 2]));
         $this->assertSame([], $repo->portEntities([['device_id' => 1, 'port_id' => 2, 'ifIndex' => 3]]));
         $this->assertSame([], iterator_to_array($repo->portDescriptions([1, 2])));
-        $this->assertSame(['ports', 'optical levels', 'stack members and line cards'], $repo->hiddenKinds(['ports', 'transceivers', 'sensors', 'entPhysical']));
+        $this->assertSame(['ports', 'optical levels', 'the hardware inventory'], $repo->hiddenKinds(['ports', 'transceivers', 'sensors', 'entPhysical']));
 
         $this->assertSame(['App\Models\Sensor', 'App\Models\Transceiver', 'App\Models\EntPhysical'],
             array_map(fn (string $table) => ScopedRepository::TABLE_MODELS[$table][0], ['sensors', 'transceivers', 'entPhysical']));

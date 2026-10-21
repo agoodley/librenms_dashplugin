@@ -46,7 +46,7 @@ class PathController extends Controller
 
         $admin = $user !== null && ($user->can('admin') || (method_exists($user, 'isAdmin') && $user->isAdmin()));
 
-        return new PathService($topology->sibling(PathRepository::class), $topology, $settings, fn (string $q) => $hosts->search($q), null, $admin);
+        return new PathService($topology->sibling(PathRepository::class), $topology, $settings, fn (string $q) => $hosts->search($q, false), null, $admin);
     }
 
     /**
