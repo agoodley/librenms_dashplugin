@@ -31,8 +31,14 @@ class MapHistory
     ];
 
     private const FROM_TODAY = [
-        'l2' => ['ports, their names, speeds and VLANs', 'device details', 'links drawn without a status'],
-        'l3' => ['subnets and addresses', 'device details', 'adjacencies and sessions drawn without a status'],
+        'l2' => ['ports with their speeds and VLANs', 'device details'],
+        'l3' => ['subnets and addresses', 'device details'],
+    ];
+
+    /** How a past map draws what has no state in the history. */
+    private const NEUTRAL = [
+        'l2' => 'Links are drawn without a status (the history keeps none), devices as they were (an outage then).',
+        'l3' => 'Adjacencies, sessions and subnets are drawn without a status (the history keeps none), devices as they were.',
     ];
 
     /** L3 overlays the history does not record, as the banner names them. */
@@ -92,7 +98,7 @@ class MapHistory
         $snapshot = $past->snapshot;
         $kinds = array_keys(self::FROM_HISTORY[$mode]);
         $allowed = array_values(array_filter($kinds, fn ($kind) => $this->service()->factAllowed($kind)));
-        $notes = [];
+        $notes = [self::NEUTRAL[$mode]];
         $interval = $this->settings->int('history_interval', 5, 1440) * 60;
         $until = $snapshot['next'] ?? time();
         if ($time - $snapshot['time'] > 2 * $interval && $until - $snapshot['time'] > 2 * $interval) {
@@ -160,9 +166,9 @@ class MapHistory
             [$before, $after, $goneAt] = $this->baseline($ids, $kinds);
             $result = ChangeMarks::apply($mode, $result, $before, $after, $text, [], $goneAt);
             $result['changes'] += ['since' => MapParams::BASELINE, 'baseline' => ['saved_at' => $saved['saved_at']], 'from' => $saved['saved_at'],
-                'to' => self::format(time(), true), 'events' => [], 'events_total' => null, 'truncated' => false];
+                'to' => self::format(time(), true), 'events' => [], 'events_total' => null, 'truncated' => false, 'labels' => ChangeMarks::TYPES];
 
-            return $result;
+            return self::withWhen($result);
         }
 
         $this->check((int) $since);
@@ -193,7 +199,33 @@ class MapHistory
             'events' => array_map(fn ($event) => array_diff_key($event, ['facts' => true]), array_slice($events, 0, self::LISTED_EVENTS)),
             'events_total' => count($events),
             'truncated' => $window['truncated'],
+            'labels' => ChangeMarks::TYPES,
         ];
+
+        return self::withWhen($result);
+    }
+
+    /**
+     * The marks of a map with changes and its events, with their time as the server tells it (when): the page shows
+     * the server's times.
+     */
+    private static function withWhen(array $result): array
+    {
+        $when = function (array $items): array {
+            foreach ($items as &$item) {
+                foreach ($item['changes'] ?? [] as $index => $mark) {
+                    $item['changes'][$index]['when'] = $mark['time'] !== null ? date('Y-m-d H:i', (int) $mark['time']) : null;
+                }
+            }
+
+            return $items;
+        };
+        $result['nodes'] = $when($result['nodes']);
+        $result['edges'] = $when($result['edges']);
+        $result['changes']['ghosts']['edges'] = $when($result['changes']['ghosts']['edges']);
+        foreach ($result['changes']['events'] as $index => $event) {
+            $result['changes']['events'][$index]['when'] = date('Y-m-d H:i', (int) $event['time']);
+        }
 
         return $result;
     }

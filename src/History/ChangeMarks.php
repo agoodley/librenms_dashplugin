@@ -217,8 +217,9 @@ class ChangeMarks
     }
 
     /**
-     * Root bridges per switch and VLAN before and after (Baseline::rootChanges()): the new root bridge and the old
-     * one get a mark for the VLANs they gained or lost, when they are on the map.
+     * Root bridges per switch and VLAN before and after (Baseline::rootChanges()): where the root bridge of instances
+     * moved, the new root bridge and the old one get a mark for those VLANs, when they are on the map. An instance a
+     * switch started or stopped reporting moved no root bridge.
      *
      * @param  array<string, array>  $before  hash => root bridge fact present at the start
      * @param  array<string, array>  $after  hash => root bridge fact present now
@@ -241,7 +242,7 @@ class ChangeMarks
         }
         foreach (Baseline::rootChanges($before, $after) as $change) {
             $devices = array_values(array_filter($change['devices'], fn ($id) => $this->text->visible($id)));
-            if (! $devices) {
+            if (! $devices || $change['from'] === null || $change['to'] === null) {
                 continue;
             }
             $time = max(array_map(fn ($id) => $changed[$id] ?? 0, $devices)) ?: null;

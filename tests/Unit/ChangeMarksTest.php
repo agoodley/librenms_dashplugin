@@ -149,11 +149,11 @@ class ChangeMarksTest extends TestCase
         $this->assertStringNotContainsString('acc2', (string) json_encode($result), 'nothing names the hidden device');
 
         $mapNodes = array_column($result['nodes'], null, 'id');
-        $moves = array_column($mapNodes['d:2']['changes'], 'text');
-        $this->assertContains('VLAN 20: root bridge core1 (00:00:00:00:00:a1) → core2 (00:00:00:00:00:a2) on acc1', $moves, 'the new root bridge of acc1\'s VLAN 20');
-        $this->assertContains('VLAN 20: root bridge core2 (00:00:00:00:00:a2) on core2', $moves, 'core2\'s own new instance');
+        // core2 also reports a new instance (VLAN 20, its own root): a new instance moves no root bridge
+        $this->assertSame([['type' => 'root_new', 'time' => self::T1, 'text' => 'VLAN 20: root bridge core1 (00:00:00:00:00:a1) → core2 (00:00:00:00:00:a2) on acc1']],
+            $mapNodes['d:2']['changes']);
         $this->assertSame('VLAN 20: root bridge core1 (00:00:00:00:00:a1) → core2 (00:00:00:00:00:a2) on acc1', self::marksOf($mapNodes['d:1'])['root_old']);
-        $this->assertEquals(['link_new' => 3, 'link_gone' => 3, 'member_added' => 1, 'root_new' => 2, 'root_old' => 1, 'blocking_started' => 1], $result['changes']['counts']);
+        $this->assertEquals(['link_new' => 3, 'link_gone' => 3, 'member_added' => 1, 'root_new' => 1, 'root_old' => 1, 'blocking_started' => 1], $result['changes']['counts']);
         $this->assertSame(0, $result['changes']['unplaced']);
     }
 

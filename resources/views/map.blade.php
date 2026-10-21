@@ -13,6 +13,26 @@
     $savedView ??= null;
     $viewError ??= null;
     $canExportCustomMap ??= false;
+    // the Time control of the L2 and L3 maps (MapHistory::info()): the map as of a time, or with the changes since one
+    $time ??= null;
+    if ($time !== null) {
+        // as the URL gives them, also when invalid: the map then says why (MapParams::time()) rather than draw today's
+        $rawTime = fn (string $key) => isset($query[$key]) && is_scalar($query[$key]) ? trim((string) $query[$key]) : '';
+        $timeMode = $rawTime('at') !== '' ? 'at' : ($rawTime('since') !== '' ? 'since' : '');
+        $sinceBaseline = strtolower($rawTime('since')) === \Agoodley\LibrenmsTopology\Support\MapParams::BASELINE;
+        $timeValue = $params['at'] !== null ? date('Y-m-d\TH:i', $params['at'])
+            : (is_int($params['since']) ? date('Y-m-d\TH:i', $params['since']) : '');
+        $nowStamp = time();
+        // quick picks: none before the earliest snapshot (the history cannot draw them)
+        $timePicks = [];
+        foreach (['1 hour ago' => 3600, 'Yesterday, this time' => 86400, 'Last week, this time' => 7 * 86400] as $pickLabel => $ago) {
+            $pick = date('Y-m-d\TH:i', $nowStamp - $ago);
+            $timePicks[] = ['label' => $pickLabel, 'value' => $pick, 'early' => $time['earliest'] !== null && $pick < $time['earliest']];
+        }
+        // what As of / Changes since start with: an hour ago and yesterday, else the latest and the earliest snapshot
+        $timeDefaults = ['at' => $timePicks[0]['early'] ? (string) $time['latest'] : $timePicks[0]['value'],
+            'since' => $timePicks[1]['early'] ? (string) $time['earliest'] : $timePicks[1]['value']];
+    }
 @endphp
 
 @section('content')
@@ -118,6 +138,52 @@
                 <input type="checkbox" name="all_devices" value="1" @checked($params['all_devices'])> All devices
             </label>
         @endif
+        @if($time !== null)
+            {{-- the map's time (topology.js bindTime()): as now, as of a time (at) or with the changes since a time or the
+                 baseline (since); the hidden inputs carry it into the URL and the API request --}}
+            <span id="topo-time" class="topo-time" data-earliest="{{ $time['earliest'] }}" data-latest="{{ $time['latest'] }}"
+                data-baseline="{{ $time['baseline'] }}" data-default-at="{{ $timeDefaults['at'] }}" data-default-since="{{ $timeDefaults['since'] }}" title="{{ $time['available'] ? 'Times are the server\'s (' . $time['timezone'] . '): snapshots from ' . str_replace('T', ' ', (string) $time['earliest']) . ' on, every ' . $time['interval'] . ' minutes' : $time['reason'] }}">
+                <label for="topo-time-mode"><span class="topo-group-label">Time</span></label>
+                <select id="topo-time-mode" class="form-control" @disabled(! $time['available'] && $timeMode === '')>
+                    <option value="" @selected($timeMode === '')>Now</option>
+                    <option value="at" @selected($timeMode === 'at')>As of&hellip;</option>
+                    <option value="since" @selected($timeMode === 'since')>Changes since&hellip;</option>
+                </select>
+                <input id="topo-time-value" type="datetime-local" class="form-control" step="60" aria-label="Date and time (server time)"
+                    value="{{ $timeValue }}" min="{{ $time['earliest'] }}" max="{{ date('Y-m-d\TH:i') }}" list="topo-time-snapshots"
+                    @if($timeMode === '' || ($timeMode === 'since' && $sinceBaseline)) style="display: none" @endif>
+                <span id="topo-time-baseline" class="topo-time-baseline" @if(! ($timeMode === 'since' && $sinceBaseline)) style="display: none" @endif>the baseline</span>
+                <datalist id="topo-time-snapshots">
+                    @foreach($time['snapshots'] as $snapshot)
+                        <option value="{{ $snapshot }}"></option>
+                    @endforeach
+                </datalist>
+                <span class="btn-group" id="topo-time-picks" @if($timeMode === '') style="display: none" @endif>
+                    <button type="button" class="btn btn-default btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" title="Quick picks and recorded snapshots">
+                        <i class="fa fa-clock-o"></i> <span class="caret"></span>
+                    </button>
+                    <ul class="dropdown-menu topo-time-menu">
+                        <li class="dropdown-header">Quick picks</li>
+                        @foreach($timePicks as $pick)
+                            <li class="{{ $pick['early'] ? 'disabled' : '' }}"><a href="#" data-time-pick="{{ $pick['value'] }}" @if($pick['early']) title="Before the earliest snapshot ({{ str_replace('T', ' ', (string) $time['earliest']) }})" @endif>{{ $pick['label'] }}</a></li>
+                        @endforeach
+                        @if($time['baseline'])
+                            <li><a href="#" data-time-pick="baseline" title="As of: when the baseline was saved. Changes since: what differs from the baseline">Baseline (saved {{ str_replace('T', ' ', $time['baseline']) }})</a></li>
+                        @endif
+                        @if($time['snapshots'])
+                            <li role="separator" class="divider"></li>
+                            <li class="dropdown-header">Recorded snapshots ({{ number_format($time['count']) }})</li>
+                            @foreach(array_slice($time['snapshots'], 0, 12) as $snapshot)
+                                <li><a href="#" data-time-pick="{{ $snapshot }}">{{ str_replace('T', ' ', $snapshot) }}</a></li>
+                            @endforeach
+                            <li class="dropdown-header">Earliest: {{ str_replace('T', ' ', (string) $time['earliest']) }}</li>
+                        @endif
+                    </ul>
+                </span>
+                <input type="hidden" name="at" value="{{ $rawTime('at') }}">
+                <input type="hidden" name="since" value="{{ $rawTime('since') }}">
+            </span>
+        @endif
         <button type="submit" class="btn btn-sm btn-primary"><i class="fa fa-refresh"></i> Update map</button>
     </form>
 
@@ -217,6 +283,8 @@
     @if($viewError)
         <div class="alert alert-warning topo-view-error"><i class="fa fa-exclamation-triangle"></i> {{ $viewError }}</div>
     @endif
+    {{-- what a map at another time shows (topology.js updateTimeBar()) --}}
+    <div id="topo-time-banner" class="topo-time-banner" role="status" style="display: none"></div>
 
     <div class="topo-body">
         <div class="topo-canvas-wrap">
@@ -312,6 +380,7 @@
             'hosts' => route('topology.api.hosts'),
             'hostsPage' => route('topology.hosts'),
             'devicesPage' => url('devices'),
+            'changesPage' => route('topology.changes'),
         ] + ($views !== null ? [
             'views' => route('topology.api.views.store'),
             'view' => $savedView ? route('topology.api.views.save', ['id' => $savedView['id']]) : null,
@@ -321,6 +390,8 @@
         ] : []),
         // the saved view this page opened (?view=)
         'view' => $savedView ? array_intersect_key($savedView, array_flip(['id', 'name', 'owner', 'mine', 'shared', 'can_edit', 'options'])) : null,
+        // the Time control (MapHistory::info()), null on the site map
+        'time' => $time,
     ];
 @endphp
 
