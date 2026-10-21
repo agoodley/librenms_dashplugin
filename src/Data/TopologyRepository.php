@@ -607,9 +607,9 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
-     * stp rows of one instance per device.
+     * stp rows of some instances of the devices.
      *
-     * @param  array<int, int>  $keys  device_id => VLAN key (0 = default instance)
+     * @param  array<int, int|int[]>  $keys  device_id => VLAN key(s) (0 = default instance)
      */
     public function stpInstancesFor(array $keys): array
     {
@@ -617,26 +617,40 @@ class TopologyRepository extends ScopedRepository
             return [];
         }
 
-        $devicesByKey = [];
-        foreach ($keys as $deviceId => $key) {
-            $devicesByKey[$key][] = (int) $deviceId;
-        }
-
         $rows = [];
-        foreach ($devicesByKey as $key => $deviceIds) {
-            $query = DB::table('stp')->whereIntegerInRaw('device_id', $deviceIds);
-            if ($key === 0) {
-                // LibreNMS stores the default instance (and Cisco PVST VLAN 1) with vlan NULL
-                $query->where(fn (Builder $q) => $q->whereNull('vlan')->orWhereIn('vlan', [0, 1]));
-            } else {
-                $query->where('vlan', $key);
-            }
-            foreach ($query->orderBy('stp_id')->get() as $row) {
+        foreach (self::devicesByKey($keys) as $key => $deviceIds) {
+            foreach (self::whereVlanKey(DB::table('stp')->whereIntegerInRaw('device_id', $deviceIds), $key)->orderBy('stp_id')->get() as $row) {
                 $rows[] = (array) $row;
             }
         }
 
         return $rows;
+    }
+
+    /**
+     * @param  array<int, int|int[]|null>  $keys  device_id => VLAN key(s)
+     * @return array<int, int[]> VLAN key => device ids
+     */
+    private static function devicesByKey(array $keys): array
+    {
+        $devices = [];
+        foreach ($keys as $deviceId => $deviceKeys) {
+            foreach ((array) $deviceKeys as $key) {
+                if ($key !== null) {
+                    $devices[(int) $key][] = (int) $deviceId;
+                }
+            }
+        }
+
+        return $devices;
+    }
+
+    /**
+     * The rows of a VLAN key: LibreNMS stores the default instance (and Cisco PVST VLAN 1) with vlan NULL.
+     */
+    private static function whereVlanKey(Builder $query, int $key): Builder
+    {
+        return $key === 0 ? $query->where(fn (Builder $q) => $q->whereNull('vlan')->orWhereIn('vlan', [0, 1])) : $query->where('vlan', $key);
     }
 
     /**
@@ -655,8 +669,8 @@ class TopologyRepository extends ScopedRepository
      * so callers usually load a single instance per device.
      *
      * @param  int[]  $ids
-     * @param  array<int, int|null>|null  $keys  device_id => VLAN key (0 = default instance) to load,
-     *                                           null loads every instance
+     * @param  array<int, int|int[]|null>|null  $keys  device_id => VLAN key(s) (0 = default instance) to load,
+     *                                                 null loads every instance
      */
     public function stpPorts(array $ids, ?array $keys = null): array
     {
@@ -668,24 +682,9 @@ class TopologyRepository extends ScopedRepository
             return DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids)->get()->map(fn ($r) => (array) $r)->all();
         }
 
-        $wanted = array_flip($ids);
-        $devicesByKey = [];
-        foreach ($keys as $deviceId => $key) {
-            if ($key !== null && isset($wanted[$deviceId])) {
-                $devicesByKey[$key][] = $deviceId;
-            }
-        }
-
         $rows = [];
-        foreach ($devicesByKey as $key => $deviceIds) {
-            $query = DB::table('ports_stp')->whereIntegerInRaw('device_id', $deviceIds);
-            if ($key === 0) {
-                // LibreNMS stores the default instance (and Cisco PVST VLAN 1) with vlan NULL
-                $query->where(fn (Builder $q) => $q->whereNull('vlan')->orWhereIn('vlan', [0, 1]));
-            } else {
-                $query->where('vlan', $key);
-            }
-            foreach ($query->get() as $row) {
+        foreach (self::devicesByKey(array_intersect_key($keys, array_flip($ids))) as $key => $deviceIds) {
+            foreach (self::whereVlanKey(DB::table('ports_stp')->whereIntegerInRaw('device_id', $deviceIds), $key)->get() as $row) {
                 $rows[] = (array) $row;
             }
         }
@@ -694,11 +693,47 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
-     * Number of ports_stp rows of the devices (decides whether the STP page can analyze every VLAN at once).
+     * Ports of the devices with ports_stp rows, in any instance.
+     *
+     * @param  int[]  $ids
+     * @return array<int, true>
      */
-    public function stpPortCount(array $ids): int
+    public function stpPortIds(array $ids): array
     {
-        return $ids && $this->allowsTable('ports_stp') ? DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids)->count() : 0;
+        $ports = [];
+        if ($ids && $this->allowsTable('ports_stp')) {
+            foreach (DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids)->distinct()->select(['port_id'])->cursor() as $row) {
+                $ports[(int) $row->port_id] = true;
+            }
+        }
+
+        return $ports;
+    }
+
+    /**
+     * Number of ports_stp rows of the devices, or of these VLAN keys of them (decides whether the STP page can
+     * analyze those instances at once).
+     *
+     * @param  int[]|null  $vlanKeys
+     */
+    public function stpPortCount(array $ids, ?array $vlanKeys = null): int
+    {
+        if (! $ids || ! $this->allowsTable('ports_stp') || $vlanKeys === []) {
+            return 0;
+        }
+
+        $query = DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids);
+        if ($vlanKeys !== null) {
+            $vlanKeys = array_map('intval', $vlanKeys);
+            $query->where(function (Builder $q) use ($vlanKeys): void {
+                $q->whereIn('vlan', array_values(array_filter($vlanKeys)));
+                if (in_array(0, $vlanKeys, true)) {
+                    $q->orWhereNull('vlan')->orWhereIn('vlan', [0, 1]);
+                }
+            });
+        }
+
+        return $query->count();
     }
 
     /**

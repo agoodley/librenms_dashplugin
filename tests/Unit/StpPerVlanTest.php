@@ -114,6 +114,33 @@ class StpPerVlanTest extends TestCase
         }
     }
 
+    public function testTheVlansOfADeviceAnalyzedOnEveryBridgeLikeOnTheWholeIndex(): void
+    {
+        // a device's STP page reads the instances of its VLANs (20 and 30) on every bridge; a single instance
+        // bridge brings its default instance, which is not analyzed for itself
+        $keys = [];
+        $bridges = [];
+        foreach (self::instances() as $row) {
+            $keys[$row['device_id']][] = StpIndex::vlanKey($row['vlan']);
+            if (($mac = StpIndex::mac($row['bridgeAddress'] ?? '')) !== '') {
+                $bridges[$mac] ??= $row['device_id'];
+            }
+        }
+        $wanted = fn (array $row) => in_array(StpIndex::vlanKey($row['vlan']), [20, 30], true) || ($row['device_id'] === 4 && StpIndex::vlanKey($row['vlan']) === 0);
+        $complete = new StpIndex(self::instances(), self::ports(), CampusFixture::lagParent());
+        $partial = StpIndex::partial($keys, array_filter(self::instances(), $wanted), array_filter(self::ports(), $wanted), CampusFixture::lagParent(), $bridges);
+
+        $expected = self::analyzer($complete)->analyze([], null, [20, 30]);
+        $actual = self::analyzer($partial)->analyze([], null, [20, 30]);
+        $this->assertCount(2 * count(CampusFixture::stpInstances()), $expected['bridges'], 'the bridges of VLANs 20 and 30 only');
+        $this->assertEquals($expected['findings'], $actual['findings']);
+        // the bridges of a VLAN come in the order their rows were read
+        foreach (['bridges', 'blocked', 'domains'] as $part) {
+            $this->assertEqualsCanonicalizing($expected[$part], $actual[$part], $part);
+        }
+        $this->assertNotSame(self::analyzer($complete)->analyze()['bridges'], $expected['bridges']);
+    }
+
     public function testMergingMergedFindingsKeepsAllVlans(): void
     {
         $finding = ['severity' => 'warning', 'code' => 'port_flapping', 'title' => 't', 'detail' => 'd', 'devices' => [3], 'ports' => [33]];

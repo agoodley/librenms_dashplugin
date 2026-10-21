@@ -16,6 +16,7 @@ use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Stp\SyslogPatterns;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Agoodley\LibrenmsTopology\Support\MapParams;
+use Agoodley\LibrenmsTopology\Support\MemoryLimit;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 
 /**
@@ -23,11 +24,22 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
  */
 class TopologyService
 {
-    /** Above this many ports_stp rows the STP page analyzes one VLAN at a time. */
-    private const STP_ALL_VLAN_LIMIT = 40000;
+    /** Above this many ports_stp rows the STP page analyzes one VLAN at a time (it would take too long). */
+    private const STP_ALL_VLAN_LIMIT = 150000;
 
-    /** Above this many spanning tree instances (a PVST network has one per switch and VLAN) too. */
-    private const STP_ALL_INSTANCE_LIMIT = 3000;
+    /**
+     * Memory the STP page takes once its links and devices are read, per spanning tree instance and ports_stp row it
+     * analyzes, per device (ports, loop evidence, the result) and a margin: it analyzes every VLAN at once when that
+     * fits in the memory PHP allows it, else one VLAN (fitsInMemory()). Measured on networks of 157 to 1,242 switches
+     * with 25 and 50 PVST VLANs: PHP's 128M default holds about 8,000 instances.
+     */
+    private const STP_INSTANCE_BYTES = 5632;
+
+    private const STP_PORT_BYTES = 1792;
+
+    private const STP_DEVICE_BYTES = 28672;
+
+    private const STP_MARGIN_BYTES = 8 * 1048576;
 
     /** Above this many ports_vlans rows on inter-switch ports the link page skips the VLAN checks. */
     private const LINK_VLAN_LIMIT = 1000000;
@@ -236,24 +248,40 @@ class TopologyService
         $vlan = $p['vlan'];
         $notice = null;
         $keys = $this->repo->stpKeys($scope);
-        if ($vlan === null && ($keys['count'] > self::STP_ALL_INSTANCE_LIMIT || $this->repo->stpPortCount($scope) > self::STP_ALL_VLAN_LIMIT)) {
-            $vlan = 1;
-            $notice = 'Large spanning tree data set: showing VLAN 1 / CST only, select a VLAN to analyze another instance.';
-        }
-
         $stpDevices = array_keys($keys['keys']);
         $lag = $this->repo->lagParents($stpDevices);
-        $index = $vlan === null
-            ? new StpIndex($this->repo->stpInstances($scope), $this->repo->stpPorts($stpDevices), $lag)
-            : $this->singleInstanceIndex($keys, $vlan, $lag);
-        unset($keys);
 
-        // the neighbours of the analyzed STP ports and of port-channel members (STP runs on the aggregate, LLDP on
-        // its members), and of the other ports unless they are end devices (phones...)
-        $stpPorts = array_flip($index->portIds());
+        // the neighbours of ports with spanning tree rows and of port-channel members (STP runs on the aggregate, LLDP
+        // on its members), and of the other ports unless they are end devices (phones...)
+        $stpPorts = $this->repo->stpPortIds($stpDevices);
         $links = array_values($this->repo->linksWhere($scope, fn (array $link) => ! self::endDeviceNeighbor($link)
             || isset($stpPorts[(int) $link['local_port_id']]) || isset($lag[(int) $link['local_port_id']])));
         unset($stpPorts);
+        $devices = $this->repo->devices($scope);
+
+        // every VLAN when their instances fit in the memory left: the network's, or those a device's page needs (its
+        // VLANs on every bridge; a single instance bridge takes part in all of them)
+        $vlanKeys = null;
+        if ($vlan === null) {
+            $deviceKeys = $p['device'] ? ($keys['keys'][$p['device']] ?? null) : null;
+            if ($deviceKeys !== null) {
+                $vlanKeys = $deviceKeys === [0] ? array_values(array_unique(array_merge(...array_values($keys['keys'])))) : $deviceKeys;
+            }
+            $instances = $vlanKeys === null ? $keys['count'] : array_sum(array_map('count', self::instancesOf($keys['keys'], $vlanKeys)));
+            if (! self::fitsInMemory($instances, $this->repo->stpPortCount($scope, $vlanKeys), count($devices))) {
+                $vlan = 1;
+                $vlanKeys = null;
+                $notice = 'Large spanning tree data set: showing VLAN 1 / CST only, select a VLAN to analyze another instance.';
+            }
+        }
+
+        $index = match (true) {
+            $vlan !== null => $this->singleInstanceIndex($keys, $vlan, $lag),
+            $vlanKeys !== null => $this->instancesIndex($keys, self::instancesOf($keys['keys'], $vlanKeys), $lag),
+            default => new StpIndex($this->repo->stpInstances($scope), $this->repo->stpPorts($stpDevices), $lag),
+        };
+        unset($keys);
+
         $portIds = $index->portIds();
         foreach ($links as $link) {
             $portIds[] = (int) $link['local_port_id'];
@@ -261,7 +289,6 @@ class TopologyService
         }
         $portIds = array_merge($portIds, array_keys($lag), array_values($lag));
 
-        $devices = $this->repo->devices($scope);
         $analyzer = new StpAnalyzer(
             $devices,
             $index,
@@ -272,7 +299,7 @@ class TopologyService
             $this->repo->stpEvents($scope, $this->settings->int('stp_event_days', 1, 365)),
         );
 
-        $result = $analyzer->analyze($this->repo->rootLookups($index->unknownRootMacs()), $vlan);
+        $result = $analyzer->analyze($this->repo->rootLookups($index->unknownRootMacs()), $vlan, $vlanKeys);
         $result['vlans'] = $this->repo->stpVlans($scope);
         $result['notice'] = $notice;
         $result['filter'] = $p + ['effective_vlan' => $vlan];
@@ -660,12 +687,11 @@ class TopologyService
         foreach ($keys['keys'] as $deviceId => $deviceKeys) {
             $key = StpIndex::selectKey($deviceKeys, $vlan);
             if ($key !== null) {
-                $selected[$deviceId] = $key;
+                $selected[$deviceId] = [$key];
             }
         }
 
-        return StpIndex::partial($keys['keys'], $this->repo->stpInstancesFor($selected), $this->repo->stpPorts(array_keys($selected), $selected),
-            $lag, $keys['bridges']);
+        return $this->instancesIndex($keys, $selected, $lag);
     }
 
     /**
@@ -702,6 +728,60 @@ class TopologyService
         }
 
         return $result;
+    }
+
+    /**
+     * Can the STP page, its links and devices read, also hold these instances and ports_stp rows in the memory PHP
+     * allows it (LibreNMS' php_memory_limit or the plugin's, see RaiseMemoryLimit)?
+     */
+    private static function fitsInMemory(int $instances, int $portRows, int $devices): bool
+    {
+        if ($portRows > self::STP_ALL_VLAN_LIMIT) {
+            return false;
+        }
+        $limit = MemoryLimit::bytes((string) ini_get('memory_limit'));
+        $needed = $instances * self::STP_INSTANCE_BYTES + $portRows * self::STP_PORT_BYTES + $devices * self::STP_DEVICE_BYTES + self::STP_MARGIN_BYTES;
+
+        return $limit === -1 || $needed <= $limit - memory_get_usage();
+    }
+
+    /**
+     * The instances of each bridge that control these VLAN keys (StpIndex::selectKey()).
+     *
+     * @param  array<int, int[]>  $keys  device_id => its VLAN keys
+     * @param  int[]  $vlanKeys
+     * @return array<int, int[]> device_id => VLAN keys of its instances to load
+     */
+    private static function instancesOf(array $keys, array $vlanKeys): array
+    {
+        $selected = [];
+        foreach ($keys as $deviceId => $deviceKeys) {
+            $mine = [];
+            foreach ($vlanKeys as $key) {
+                $one = StpIndex::selectKey($deviceKeys, (int) $key);
+                if ($one !== null) {
+                    $mine[$one] = true;
+                }
+            }
+            if ($mine) {
+                $selected[$deviceId] = array_keys($mine);
+            }
+        }
+
+        return $selected;
+    }
+
+    /**
+     * STP index holding these instances of the bridges (and their port rows), knowing every VLAN key of each.
+     *
+     * @param  array{keys: array<int, int[]>, bridges: array<string, int>}  $keys  TopologyRepository::stpKeys()
+     * @param  array<int, int[]>  $selected  device_id => VLAN keys (instancesOf())
+     * @param  array<int, int>  $lag
+     */
+    private function instancesIndex(array $keys, array $selected, array $lag): StpIndex
+    {
+        return StpIndex::partial($keys['keys'], $this->repo->stpInstancesFor($selected), $this->repo->stpPorts(array_keys($selected), $selected),
+            $lag, $keys['bridges']);
     }
 
     /**

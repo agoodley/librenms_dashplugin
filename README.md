@@ -823,8 +823,11 @@ vendor/bin/phpunit
   `multicast_storm` there.
 * Stacks / virtual chassis that are not modeled as one device, and MLAG pairs without a detected port-channel, can
   produce a "possible bridging loop" warning – the finding says so.
-* Above 3,000 spanning tree instances or 40,000 STP port rows (a PVST network has an instance per switch and VLAN) the
-  STP page analyzes one VLAN at a time, VLAN 1 / CST until another is picked; the background check covers every VLAN.
+* The STP page analyzes every VLAN at once when their spanning tree instances (a PVST network has one per switch and
+  VLAN) fit in the memory a page may use: about 8,000 instances at PHP's 128 MB default, 25,000 at the 256 MB the
+  plugin's pages take unless LibreNMS sets `php_memory_limit`; a device's page needs only the instances of that device's
+  VLANs. Beyond that, or above 150,000 STP port rows, it analyzes one VLAN at a time, VLAN 1 / CST until another is
+  picked; the background check covers every VLAN.
 
 **Link & VLAN, routing & IP**
 
