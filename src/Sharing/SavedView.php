@@ -82,9 +82,10 @@ class SavedView
     }
 
     /**
-     * May the user open the view: their own, or a shared one?
+     * May the user open the view: their own, a shared one, or, as a LibreNMS admin, a personal view whose owner
+     * no longer exists (to delete it)?
      *
-     * @param  array{user_id: int|string, shared: mixed}  $row  topology_views row
+     * @param  array{user_id: int|string, shared: mixed, owner_id?: ?int}  $row  topology_views row, joined to its owner (owner_id)
      */
     public static function canOpen(array $row, int $userId, bool $admin = false): bool
     {
