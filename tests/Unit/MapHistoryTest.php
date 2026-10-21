@@ -161,6 +161,66 @@ class MapHistoryTest extends TestCase
         $this->assertSame(self::S1, $changes['ghosts']['edges'][0]['changes'][0]['time'], 'gone when its period ended');
     }
 
+    /**
+     * acc1 Gi1/0/49 starts blocking VLAN 20 and VLAN 20's root bridge moves from core1 to core2 at S1; at S2 a data change
+     * without a change of the network starts new periods of those facts, which no event names: acc1 renamed, its port
+     * re-created under a new id, or the root bridge core2 renamed. The map marks what the Changes page reports, at S1.
+     *
+     * @return array<string, array{0: array<int, string>, 1: bool, 2: bool}>
+     */
+    public static function laterDataChanges(): array
+    {
+        return [
+            'no later change' => [self::NAMES, false, false],
+            'acc1 renamed' => [[3 => 'acc1-floor2'] + self::NAMES, false, true],
+            'port re-created' => [self::NAMES, true, true],
+            'root bridge renamed' => [[2 => 'core2-dc1'] + self::NAMES, false, true],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('laterDataChanges')]
+    public function testDataChangedLaterKeepsTheMarks(array $namesThen, bool $recreated, bool $changedAtS2): void
+    {
+        Carbon::setTestNow(Carbon::createFromTimestamp(self::NOW));
+        [$a, $b, $bridge] = ['0000000000a1', '0000000000a2', '0000000000c3'];
+        $ports = self::ports() + [99 => ['port_id' => 99, 'device_id' => 3, 'ifName' => 'Gi1/0/49', 'ifOperStatus' => 'up']];
+        $collector = fn (array $names, bool $new) => new FactCollector($names, $new ? array_diff_key($ports, [31 => true]) : array_diff_key($ports, [99 => true]));
+        $roots = fn (FactCollector $c, array $vlan20) => array_values(array_filter($c->stpRoots([
+            ['device_id' => 3, 'vlan' => 10, 'designatedRoot' => $a, 'bridgeAddress' => $bridge],
+            ['device_id' => 3, 'vlan' => 20, 'designatedRoot' => $vlan20[0], 'bridgeAddress' => $bridge],
+            ['device_id' => 1, 'vlan' => 1, 'designatedRoot' => $a, 'bridgeAddress' => $a], ['device_id' => 2, 'vlan' => 1, 'designatedRoot' => $a, 'bridgeAddress' => $b],
+        ]), fn ($fact) => $fact['data']['device'] === 3));
+        $then = $collector(self::NAMES, false);
+        $now = $collector($namesThen, $recreated);
+        $port = $recreated ? 99 : 31;
+        $later = $changedAtS2 ? self::S2 : null;
+        $history = array_merge(
+            self::rows($then->blockedPortFacts([3 => [31 => [10]]]), self::S0 - 86400, self::S1),
+            self::rows($then->blockedPortFacts([3 => [31 => [10, 20]]]), self::S1, $later),
+            self::rows($roots($then, [$a]), self::S0 - 86400, self::S1),
+            self::rows($roots($then, [$b]), self::S1, $later),
+        );
+        if ($changedAtS2) {
+            $history = array_merge($history, self::rows($now->blockedPortFacts([3 => [$port => [10, 20]]]), self::S2, null), self::rows($roots($now, [$b]), self::S2, null));
+        }
+        $map = (new L2Builder(self::devices(), [self::link(3, $port, 1, 11, 'core1', 'Te1/0/1'), self::link(3, 32, 2, 21, 'core2', 'Te1/0/1')],
+            $ports + [32 => ['port_id' => 32, 'device_id' => 3, 'ifName' => 'Gi1/0/50', 'ifOperStatus' => 'up']], [], [], new StpIndex))->build();
+
+        $result = (new MapHistory(new FakeMapHistory($history, [self::S0, self::S1, self::S2], $namesThen), new PluginSettings))->changes('l2', self::S0 + 600, $map);
+
+        $marks = [];
+        foreach (array_merge($result['nodes'], $result['edges']) as $item) {
+            foreach ($item['changes'] ?? [] as $mark) {
+                $marks[] = $item['id'] . ' ' . $mark['type'] . ' ' . implode(',', $mark['vlans'] ?? []) . ' ' . ($mark['time'] === self::S1 ? 'S1' : $mark['time']);
+            }
+        }
+        sort($marks);
+        $edge = array_values(array_filter($result['edges'], fn ($e) => $e['from'] === 'd:1' && $e['to'] === 'd:3'))[0]['id'];
+        $this->assertSame(['d:1 root_old 20 S1', 'd:2 root_new 20 S1', "$edge blocking_started 20 S1"], $marks, 'what the Changes page reports, when it saw it');
+        $this->assertSame(0, $result['changes']['unplaced']);
+        $this->assertEqualsCanonicalizing(['root_changed', 'blocking_started'], array_column($result['changes']['events'], 'type'));
+    }
+
     public function testRefusals(): void
     {
         Carbon::setTestNow(Carbon::createFromTimestamp(self::NOW));

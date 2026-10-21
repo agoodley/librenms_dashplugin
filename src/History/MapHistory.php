@@ -215,7 +215,7 @@ class MapHistory
             }
         }
         $events = array_values(array_filter($window['report']['events'], fn ($event) => in_array($event['category'], $mode === 'l2' ? ['devices', 'links', 'stp'] : ['devices', 'routing'], true)));
-        $result = ChangeMarks::apply($mode, $result, $before, $after, $text, ['events' => $events] + $options);
+        $result = ChangeMarks::apply($mode, $result, $before, $after, $text, ['events' => $events, 'rows' => $window['rows']] + $options);
         $result['changes'] += [
             'since' => self::format((int) $since, true),
             'baseline' => null,

@@ -13,10 +13,12 @@ use Agoodley\LibrenmsTopology\Topology\L2Builder;
  * are gone, with a ghost far end when it is not on the map. The facts come as two sets: those present at the
  * start that changed or went (before) and those present now that are new or changed (after), as the Changes
  * page reads them (HistoryService::window()) or as the baseline holds them; a fact in both is no change. Since
- * a time, only the facts of the Changes page's events count: what it does not report (a neighbour LibreNMS
- * started or stopped monitoring is the same cable) is not marked either. Root bridges compare per switch and
- * VLAN (Baseline::rootChanges()), blocked ports per port (its device and name) and VLAN; on a map of one VLAN
- * only the spanning tree instance it shows counts.
+ * a time, only the facts of the Changes page's events count, each with all its periods (a fact's data can change
+ * without a change of the network, a switch renamed or a port re-created: a period no event names): what the
+ * Changes page does not report (a neighbour LibreNMS started or stopped monitoring is the same cable) is not
+ * marked either, and a mark says when the Changes page saw it. Root bridges compare per switch and VLAN
+ * (Baseline::rootChanges()), blocked ports per port (its device and name) and VLAN; on a map of one VLAN only
+ * the spanning tree instance it shows counts.
  *
  * Names come from FactText, so a device the user may not see is named as on the Changes page; a ghost node's id
  * is a number of this answer, which tells nothing about the device behind it.
@@ -55,6 +57,15 @@ class ChangeMarks
     /** @var array<int, array> fact row id => the ChangeReport event it is part of */
     private array $eventOf = [];
 
+    /** @var array<string, array> fact hash => the latest ChangeReport event about one of its periods */
+    private array $eventByHash = [];
+
+    /** @var array<int, array<string, int>> switch => root bridge (MAC) => when the Changes page last saw a root move to it */
+    private array $rootMoves = [];
+
+    /** @var array<string, array<string, array<int, int>>> "device|port name" => started|stopped => VLAN => when the Changes page saw it */
+    private array $blockingTimes = [];
+
     /** @var array<int, array<int, array>> edge index => marks */
     private array $edgeMarks = [];
 
@@ -84,9 +95,10 @@ class ChangeMarks
 
     /**
      * @param  array<int, array>  $events  ChangeReport events with the ids of their rows (facts)
+     * @param  array<int, array>  $rows  the stored rows the events come from
      * @param  array{vlan?: ?int, unmanaged?: bool, existing?: ?array}  $options
      */
-    private function __construct(private readonly array $result, private readonly FactText $text, array $events, array $options)
+    private function __construct(private readonly array $result, private readonly FactText $text, array $events, array $rows, array $options)
     {
         $this->vlan = $options['vlan'] ?? null;
         $this->unmanaged = $options['unmanaged'] ?? true;
@@ -123,11 +135,75 @@ class ChangeMarks
                 }
             }
         }
-        foreach ($events as $event) {
-            foreach ($event['facts'] ?? [] as $id) {
-                $this->eventOf[(int) $id] ??= $event;
+        $this->indexEvents($events, $rows);
+    }
+
+    /**
+     * What the Changes page's events say about the facts: the event of each row and the latest of each fact (by its
+     * hash, a later period of it may have no event), when a switch's root bridge last moved to each root bridge, and
+     * when a port (its device and name) last started or stopped blocking each VLAN.
+     *
+     * @param  array<int, array>  $events
+     * @param  array<int, array>  $rows
+     */
+    private function indexEvents(array $events, array $rows): void
+    {
+        $rowsById = [];
+        foreach ($rows as $row) {
+            if (isset($row['id'])) {
+                $rowsById[(int) $row['id']] = $row;
             }
         }
+        foreach ($events as $event) {
+            $time = (int) $event['time'];
+            $blocked = ['before' => [], 'after' => []];
+            foreach ($event['facts'] ?? [] as $id) {
+                $this->eventOf[(int) $id] ??= $event;
+                $row = $rowsById[(int) $id] ?? null;
+                if ($row === null) {
+                    continue;
+                }
+                if ((int) ($this->eventByHash[$row['hash']]['time'] ?? PHP_INT_MIN) <= $time) {
+                    $this->eventByHash[$row['hash']] = $event;
+                }
+                // the root bridge a switch moved to (its fact that started then) and a port's VLANs on either side
+                if ($event['type'] === 'root_changed' && $row['kind'] === FactCollector::STP_ROOT && (int) $row['first_seen'] === $time) {
+                    $root = (string) ($row['data']['root'] ?? '');
+                    $this->rootMoves[(int) $row['data']['device']][$root] = max($this->rootMoves[(int) $row['data']['device']][$root] ?? 0, $time);
+                }
+                if (str_starts_with($event['type'], 'blocking_') && $row['kind'] === FactCollector::STP_BLOCKED) {
+                    $side = (int) $row['first_seen'] === $time ? 'after' : 'before';
+                    $blocked[$side][self::portKey($row['data'])] = array_merge($blocked[$side][self::portKey($row['data'])] ?? [], FactText::vlans($row['data']));
+                }
+            }
+            foreach (array_unique(array_merge(array_keys($blocked['before']), array_keys($blocked['after']))) as $port) {
+                $was = $blocked['before'][$port] ?? [];
+                $now = $blocked['after'][$port] ?? [];
+                foreach (['started' => array_diff($now, $was), 'stopped' => array_diff($was, $now)] as $way => $vlans) {
+                    foreach ($vlans as $vlan) {
+                        $this->blockingTimes[$port][$way][(int) $vlan] = max($this->blockingTimes[$port][$way][(int) $vlan] ?? 0, $time);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * When the Changes page saw a fact change: its row's event, else the latest event of the fact; null without one.
+     */
+    private function eventTime(array $row): ?int
+    {
+        $event = (isset($row['id']) ? ($this->eventOf[(int) $row['id']] ?? null) : null) ?? $this->eventByHash[$row['hash']] ?? null;
+
+        return $event !== null ? (int) $event['time'] : null;
+    }
+
+    /**
+     * A blocked port by its device and name, as the Changes page takes it (LibreNMS may re-create it under a new id).
+     */
+    private static function portKey(array $data): string
+    {
+        return (int) ($data['device'] ?? 0) . '|' . InterfaceName::normalize((string) ($data['port_name'] ?? ''));
     }
 
     /**
@@ -138,34 +214,32 @@ class ChangeMarks
      * @param  string  $mode  l2 or l3
      * @param  array<int, array>  $before  stored facts present at the start that changed or went (time: removed_at)
      * @param  array<int, array>  $after  stored facts present now that are new or changed (time: first_seen)
-     * @param  array{events?: ?array, gone_at?: array<string, int>, vlan?: ?int, unmanaged?: bool, existing?: ?array}  $options
-     *     events: the Changes page's events with their facts since the time (only their facts are marked); null when
-     *     comparing with the baseline. gone_at: hash => when a fact of $before went, when its removed_at is not that
-     *     (the baseline). vlan: the map's VLAN. unmanaged: the map draws unmanaged neighbours (default true).
-     *     existing: every device LibreNMS has, for a user who may see all of them (a gone far end not among them was
-     *     monitored then: its ghost is drawn whatever the map's unmanaged neighbours).
+     * @param  array{events?: ?array, rows?: array, gone_at?: array<string, int>, vlan?: ?int, unmanaged?: bool, existing?: ?array}  $options
+     *     events: the Changes page's events with their facts since the time (only these facts are marked, with all their
+     *     periods); null when comparing with the baseline. rows: the stored rows the events come from (default: $before
+     *     and $after). gone_at: hash => when a fact of $before went, when its removed_at is not that (the baseline).
+     *     vlan: the map's VLAN. unmanaged: the map draws unmanaged neighbours (default true). existing: every device
+     *     LibreNMS has, for a user who may see all of them (a gone far end not among them was monitored then: its ghost
+     *     is drawn whatever the map's unmanaged neighbours).
      */
     public static function apply(string $mode, array $result, array $before, array $after, FactText $text, array $options = []): array
     {
         $events = $options['events'] ?? null;
+        $rows = $options['rows'] ?? array_merge($before, $after);
         if ($events !== null) {
-            $reported = [];
-            foreach ($events as $event) {
-                foreach ($event['facts'] ?? [] as $id) {
-                    $reported[(int) $id] = true;
-                }
-            }
-            $inReport = fn (array $row) => isset($row['id'], $reported[(int) $row['id']]);
+            $reported = self::reported($events, $rows);
+            $inReport = fn (array $row) => isset($reported[$row['hash']]);
             $before = array_values(array_filter($before, $inReport));
             $after = array_values(array_filter($after, $inReport));
         }
         $goneAt = $options['gone_at'] ?? [];
-        $marks = new self($result, $text, $events ?? [], $options);
+        $marks = new self($result, $text, $events ?? [], $rows, $options);
         $beforeByHash = self::byHash($before);
         $afterByHash = self::byHash($after);
         $gone = array_diff_key($beforeByHash, $afterByHash);
         $new = array_diff_key($afterByHash, $beforeByHash);
-        $time = fn (array $row, bool $isGone) => $isGone ? ($goneAt[$row['hash']] ?? $row['removed_at'] ?? null) : $row['first_seen'];
+        // when: as the Changes page saw it, else (the baseline) when the period started or ended
+        $time = fn (array $row, bool $isGone) => $marks->eventTime($row) ?? ($isGone ? ($goneAt[$row['hash']] ?? $row['removed_at'] ?? null) : $row['first_seen']);
 
         if ($mode === 'l2') {
             foreach ($new as $row) {
@@ -205,6 +279,33 @@ class ChangeMarks
         }
 
         return $marks->result();
+    }
+
+    /**
+     * The facts (hashes) the Changes page's events are about. A fact counts with all its periods: one that started
+     * without a change of the network (its switch or the root bridge renamed, its port re-created under a new id) is
+     * named by no event, yet it is the fact's state now.
+     *
+     * @param  array<int, array>  $events  ChangeReport events with the ids of their rows (facts)
+     * @param  array<int, array>  $rows  the stored rows the events come from
+     * @return array<string, true>
+     */
+    public static function reported(array $events, array $rows): array
+    {
+        $ids = [];
+        foreach ($events as $event) {
+            foreach ($event['facts'] ?? [] as $id) {
+                $ids[(int) $id] = true;
+            }
+        }
+        $hashes = [];
+        foreach ($rows as $row) {
+            if (isset($row['id'], $ids[(int) $row['id']])) {
+                $hashes[$row['hash']] = true;
+            }
+        }
+
+        return $hashes;
     }
 
     /**
@@ -290,7 +391,7 @@ class ChangeMarks
         if (! $before && ! $after) {
             return;
         }
-        // when each switch's root bridges changed: its latest new or ended fact
+        // when each switch's root bridges changed (the baseline): its latest new or ended fact
         $changed = [];
         foreach ($after as $row) {
             $changed[(int) $row['data']['device']] = max($changed[(int) $row['data']['device']] ?? 0, (int) $row['first_seen']);
@@ -322,7 +423,9 @@ class ChangeMarks
             $devices = array_keys($deviceVlans);
             $vlans = array_values(array_unique(array_merge(...array_values($deviceVlans))));
             sort($vlans);
-            $time = max(array_map(fn ($id) => $changed[$id] ?? 0, $devices)) ?: null;
+            // when: the Changes page's latest move of these switches to the new root bridge, else their facts' times
+            $root = (string) ($change['to']['root'] ?? '');
+            $time = max(array_map(fn ($id) => $this->rootMoves[$id][$root] ?? 0, $devices)) ?: (max(array_map(fn ($id) => $changed[$id] ?? 0, $devices)) ?: null);
             $text = $this->text->rootChange(['devices' => $devices, 'vlans' => $vlans, 'device_vlans' => $deviceVlans] + $change);
             $placed = false;
             foreach (['to' => 'root_new', 'from' => 'root_old'] as $side => $type) {
@@ -351,7 +454,7 @@ class ChangeMarks
         foreach (['before' => $before, 'after' => $after] as $side => $rows) {
             foreach ($rows as $row) {
                 $data = $row['data'];
-                $key = (int) $data['device'] . '|' . InterfaceName::normalize((string) ($data['port_name'] ?? ''));
+                $key = self::portKey($data);
                 $ports[$key]['data'] = $data;
                 $ports[$key]['ids'][(int) $data['port']] = true;
                 $ports[$key][$side] = array_merge($ports[$key][$side] ?? [], FactText::vlans($data));
@@ -380,11 +483,12 @@ class ChangeMarks
                 continue;
             }
             $name = $this->text->device($device, $data['device_name'] ?? null) . ' ' . ($data['port_name'] ?? '');
-            foreach (['blocking_started' => $started, 'blocking_stopped' => $stopped] as $type => $vlans) {
+            foreach (['started' => $started, 'stopped' => $stopped] as $way => $vlans) {
                 if ($vlans) {
                     sort($vlans);
-                    $this->markEdge($index, $type, $port['time'] ?: null, $name . ($type === 'blocking_started' ? ' started blocking in ' : ' stopped blocking in ')
-                        . FactText::vlanList($vlans), $vlans);
+                    // when: the Changes page's latest start or stop of these VLANs on the port, else the facts' times (the baseline)
+                    $time = max(array_map(fn ($vlan) => $this->blockingTimes[$key][$way][$vlan] ?? 0, $vlans)) ?: ($port['time'] ?: null);
+                    $this->markEdge($index, 'blocking_' . $way, $time, $name . ' ' . $way . ' blocking in ' . FactText::vlanList($vlans), $vlans);
                 }
             }
         }
@@ -642,11 +746,12 @@ class ChangeMarks
     }
 
     /**
-     * Wording of the ChangeReport event a fact is part of (a moved cable says where it went), null without one.
+     * Wording of the ChangeReport event of a fact's row, else of the fact's latest event (a moved cable says where it
+     * went), null without one.
      */
     private function eventText(array $row): ?string
     {
-        return isset($row['id']) ? ($this->eventOf[(int) $row['id']]['text'] ?? null) : null;
+        return (isset($row['id']) ? ($this->eventOf[(int) $row['id']]['text'] ?? null) : null) ?? $this->eventByHash[$row['hash']]['text'] ?? null;
     }
 
     private function sessionText(array $row): string
