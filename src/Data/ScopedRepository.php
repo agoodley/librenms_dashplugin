@@ -197,6 +197,24 @@ abstract class ScopedRepository
     }
 
     /**
+     * May the user see every device (LibreNMS' viewAll on devices), also those LibreNMS no longer has? A map of
+     * the past names such a device by the name the history stored for this user only.
+     */
+    public function seesEveryDevice(): bool
+    {
+        if ($this->system) {
+            return true;
+        }
+        try {
+            return Gate::forUser($this->user)->allows('viewAll', Device::class);
+        } catch (\Throwable $e) {
+            Log::debug('topology plugin: cannot check the viewAll permission: ' . $e->getMessage());
+
+            return false;
+        }
+    }
+
+    /**
      * Is this the system scope of the scheduled jobs (no user)?
      */
     protected function isSystem(): bool

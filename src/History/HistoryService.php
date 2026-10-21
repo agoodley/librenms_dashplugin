@@ -216,6 +216,53 @@ class HistoryService
         $visible = array_fill_keys($this->history->deviceIds(), true);
         $text = new FactText($this->history->names(array_keys($visible)), $visible);
 
+        $window = $this->window($ids, $from, $to, $text);
+        $from = $window['from'];
+        $since = $window['since'];
+        $report = $window['report'];
+
+        // findings of the syslog checks only for users who may read syslog, as on the spanning tree page
+        $hidden = $this->history->sibling(LoopEvidenceRepository::class)->canViewSyslog()
+            ? [] : ['stp' => array_keys(array_filter(LoopEvidence::CHECKS, fn ($category) => $category === 'syslog'))];
+        $windowFindings = $this->history->windowFindings($from, $to, $ids, $hidden);
+        $windowFindings['rows'] = array_values(array_filter($windowFindings['rows'], fn ($row) => $this->findingAllowed($row['analysis'], $row['code'])));
+        $findings = array_map(function (array $finding) use ($text) {
+            $finding['device_names'] = array_combine($finding['devices'], array_map(fn ($id) => $text->device($id, null), $finding['devices']));
+
+            return $finding;
+        }, FindingHistory::window($windowFindings['rows'], $from->getTimestamp(), $to->getTimestamp()));
+
+        return [
+            'available' => true,
+            'from' => $from->toDateTimeString(),
+            'to' => $to->toDateTimeString(),
+            // the ids of the rows behind an event are for the maps (ChangeMarks)
+            'events' => array_map(fn (array $event) => array_diff_key($event, ['facts' => true]), $report['events']),
+            'counts' => $report['counts'],
+            'truncated' => $window['truncated'],
+            'since' => $since?->toDateTimeString(),
+            'dropped' => $window['dropped'],
+            'baseline' => $this->baselineComparison($ids, $text),
+            'findings' => $findings,
+            'findings_truncated' => $windowFindings['truncated'],
+            'runs' => $this->history->latestRuns(),
+            'device_names' => $this->history->names(array_unique(array_merge(...array_column($report['events'], 'devices')))),
+            'filter' => $p,
+        ];
+    }
+
+    /**
+     * The changes of the devices in [$from, $to] as the Changes page tells them (ChangeReport), of the kinds of
+     * facts the user's role may read: the facts that started or ended in it, the newest of each up to a common
+     * boundary when there are too many (HistoryRepository::windowFacts(); from then starts after it), and the
+     * report. A map's changes since a time (MapHistory) read the same.
+     *
+     * @param  int[]  $ids
+     * @return array{rows: array<int, array>, report: array{events: array<int, array>, counts: array<string, int>},
+     *     from: CarbonInterface, since: ?CarbonInterface, truncated: bool, dropped: ?array}
+     */
+    public function window(array $ids, CarbonInterface $from, CarbonInterface $to, FactText $text): array
+    {
         $window = $this->history->windowFacts($from, $to, $ids);
         $rows = array_values(array_filter($window['rows'], fn ($row) => $this->factAllowed($row['kind'])));
         $since = null;
@@ -243,33 +290,7 @@ class HistoryService
         $report = ChangeReport::build($rows, $from->getTimestamp(), $to->getTimestamp(), $text,
             $this->history->newToHistory(array_intersect_key($firstFacts, $added)), $this->history->priorNodes($nodes, $from));
 
-        // findings of the syslog checks only for users who may read syslog, as on the spanning tree page
-        $hidden = $this->history->sibling(LoopEvidenceRepository::class)->canViewSyslog()
-            ? [] : ['stp' => array_keys(array_filter(LoopEvidence::CHECKS, fn ($category) => $category === 'syslog'))];
-        $windowFindings = $this->history->windowFindings($from, $to, $ids, $hidden);
-        $windowFindings['rows'] = array_values(array_filter($windowFindings['rows'], fn ($row) => $this->findingAllowed($row['analysis'], $row['code'])));
-        $findings = array_map(function (array $finding) use ($text) {
-            $finding['device_names'] = array_combine($finding['devices'], array_map(fn ($id) => $text->device($id, null), $finding['devices']));
-
-            return $finding;
-        }, FindingHistory::window($windowFindings['rows'], $from->getTimestamp(), $to->getTimestamp()));
-
-        return [
-            'available' => true,
-            'from' => $from->toDateTimeString(),
-            'to' => $to->toDateTimeString(),
-            'events' => $report['events'],
-            'counts' => $report['counts'],
-            'truncated' => $window['truncated'],
-            'since' => $since?->toDateTimeString(),
-            'dropped' => $window['dropped'],
-            'baseline' => $this->baselineComparison($ids, $text),
-            'findings' => $findings,
-            'findings_truncated' => $windowFindings['truncated'],
-            'runs' => $this->history->latestRuns(),
-            'device_names' => $this->history->names(array_unique(array_merge(...array_column($report['events'], 'devices')))),
-            'filter' => $p,
-        ];
+        return ['rows' => $rows, 'report' => $report, 'from' => $from, 'since' => $since, 'truncated' => $window['truncated'], 'dropped' => $window['dropped']];
     }
 
     /**
@@ -413,7 +434,7 @@ class HistoryService
     /**
      * May the user's role read the LibreNMS data this kind of fact comes from?
      */
-    private function factAllowed(string $kind): bool
+    public function factAllowed(string $kind): bool
     {
         return $this->history->allowsTable(self::FACT_TABLES[$kind] ?? '');
     }
