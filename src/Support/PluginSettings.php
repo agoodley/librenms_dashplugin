@@ -61,6 +61,8 @@ class PluginSettings
         'history_eventlog_skip' => 'link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent multicast_storm bgp_recent_reset ip_duplicate:info',
         'rollout_batch_size' => '0',
         'dependencies_outage_days' => '30',
+        'path_util_percent' => '80',
+        'path_route_rows' => '500000',
     ];
 
     /** @var array<string, string> */

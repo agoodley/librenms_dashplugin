@@ -270,6 +270,8 @@
         this.outages = {top: {}, behind: {}};
         // a host found by the host locator (host=<mac> in the URL), drawn next to its switch
         this.host = {mac: normalizeMac(new URLSearchParams(window.location.search).get('host')), data: null, warned: false};
+        // a path from the path trace page (path=<node ids>&path_ports=<port pairs>), highlighted on the L2 map
+        this.path = parsePath(new URLSearchParams(window.location.search), config.mode);
         this.container = document.getElementById('topo-canvas');
         this.panel = document.getElementById('topo-details');
         this.status = document.getElementById('topo-status');
@@ -482,6 +484,7 @@
             if (this.host.mac) {
                 url.set('host', this.host.mac);
             }
+            this.keepPath(url);
             window.history.replaceState(null, '', window.location.pathname + '?' + url.toString());
         }
         this.updateNavLinks(params);
@@ -732,6 +735,7 @@
         this.updateSearchList();
         this.updateSimBox();
         this.drawHost();
+        this.focusPath();
     };
 
     /**
@@ -771,6 +775,7 @@
         if (this.mode === 'l3' && node.outside) {
             visNode.opacity = 0.45; // a device outside this map, drawn as the far end of an overlay
         }
+        this.pathNodeStyle(node, visNode);
         return visNode;
     };
 
@@ -890,6 +895,7 @@
         tooltip.className = 'topo-tooltip';
         tooltip.innerHTML = this.edgeTooltip(edge);
         visEdge.title = tooltip;
+        this.pathEdgeStyle(edge, visEdge);
 
         return visEdge;
     };
@@ -2387,6 +2393,130 @@
             return row.map(quote).join(',');
         }).join('\r\n');
         this.download('data:text/csv;charset=utf-8,' + encodeURIComponent(csv), this.fileBase() + '.csv');
+    };
+
+    // ------------------------------------------------------------------ path trace (path=...)
+
+    var PATH_COLOR = '#f39c12';
+
+    /**
+     * The path of the path trace page: map node ids in order (path=d:12,u:name,...) and, for each two of them, the
+     * ports of the link between them (path_ports=12:34,...; '-' where the path is not drawn); path_hidden=1 when it
+     * crosses devices the user may not see. Null without one.
+     */
+    function parsePath(params, mode) {
+        var nodes = (params.get('path') || '').split(',').filter(Boolean);
+        if (mode !== 'l2' || !nodes.length) {
+            return null;
+        }
+        return {nodes: nodes, ports: (params.get('path_ports') || '').split(','), hidden: params.get('path_hidden') === '1', edges: null, data: null, focused: false};
+    }
+
+    /**
+     * Keep the path in the shareable URL.
+     */
+    TopologyMap.prototype.keepPath = function (url) {
+        if (this.path) {
+            url.set('path', this.path.nodes.join(','));
+            url.set('path_ports', this.path.ports.join(','));
+            if (this.path.hidden) {
+                url.set('path_hidden', '1');
+            }
+        }
+    };
+
+    /**
+     * Edge ids of the map on the path: the edge between each two consecutive nodes, the one on the traced ports when
+     * there are parallel ones.
+     */
+    TopologyMap.prototype.pathEdges = function () {
+        if (!this.path || !this.data) {
+            return {};
+        }
+        if (this.path.data === this.data) {
+            return this.path.edges;
+        }
+        var edges = {};
+        for (var i = 0; i + 1 < this.path.nodes.length; i++) {
+            var pair = this.path.ports[i] || '';
+            if (pair === '-') {
+                continue;
+            }
+            var from = this.path.nodes[i];
+            var to = this.path.nodes[i + 1];
+            var ports = pair.split(':').map(Number).filter(Boolean);
+            var between = this.data.edges.filter(function (edge) {
+                return (edge.from === from && edge.to === to) || (edge.from === to && edge.to === from);
+            });
+            var onPorts = between.filter(function (edge) {
+                var ids = [edge.a && edge.a.port_id, edge.b && edge.b.port_id];
+                (edge.members || []).forEach(function (member) {
+                    ids.push(member.a_port_id, member.b_port_id);
+                });
+                return ports.some(function (port) {
+                    return ids.indexOf(port) !== -1;
+                });
+            });
+            (onPorts.length ? onPorts : between).slice(0, 1).forEach(function (edge) {
+                edges[edge.id] = true;
+            });
+        }
+        this.path.edges = edges;
+        this.path.data = this.data;
+        return edges;
+    };
+
+    /**
+     * Devices on the path get a frame, the others fade.
+     */
+    TopologyMap.prototype.pathNodeStyle = function (node, visNode) {
+        if (!this.path) {
+            return;
+        }
+        if (this.path.nodes.indexOf(node.id) !== -1) {
+            visNode.borderWidth = 4;
+            visNode.color = {border: PATH_COLOR, background: 'rgba(243,156,18,0.18)', highlight: {border: PATH_COLOR, background: 'rgba(243,156,18,0.3)'},
+                hover: {border: PATH_COLOR, background: 'rgba(243,156,18,0.3)'}};
+        } else {
+            visNode.opacity = Math.min(visNode.opacity === undefined ? 1 : visNode.opacity, 0.4);
+        }
+    };
+
+    /**
+     * Links on the path are drawn wide in the path color, the others fade.
+     */
+    TopologyMap.prototype.pathEdgeStyle = function (edge, visEdge) {
+        if (!this.path) {
+            return;
+        }
+        if (this.pathEdges()[edge.id]) {
+            visEdge.width = (visEdge.width || 2) + 4;
+            visEdge.color = {color: PATH_COLOR, highlight: PATH_COLOR, hover: PATH_COLOR, opacity: 1};
+            visEdge.shadow = {enabled: true, color: 'rgba(243,156,18,0.5)', size: 10, x: 0, y: 0};
+        } else {
+            visEdge.color.opacity = Math.min(visEdge.color.opacity, 0.3);
+        }
+    };
+
+    /**
+     * Zoom to the path once, and say when part of it is not on this map.
+     */
+    TopologyMap.prototype.focusPath = function () {
+        if (!this.path || this.path.focused || !this.network) {
+            return;
+        }
+        this.path.focused = true;
+        var self = this;
+        var shown = this.path.nodes.filter(function (id) {
+            return !!self.nodes.get(id);
+        });
+        if (shown.length) {
+            this.network.fit({nodes: shown, animation: false});
+        }
+        if (shown.length < this.path.nodes.length) {
+            this.flash((this.path.nodes.length - shown.length) + ' of the ' + this.path.nodes.length + ' devices on the path are not on this map: '
+                + (this.path.hidden ? 'the path crosses devices you may not see, and the map does not show what lies beyond them.' : 'widen the number of hops.'));
+        }
     };
 
     // ------------------------------------------------------------------ diagram files (draw.io, GraphML for yEd)

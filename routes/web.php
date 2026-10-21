@@ -7,6 +7,7 @@ use Agoodley\LibrenmsTopology\Http\Controllers\ExportController;
 use Agoodley\LibrenmsTopology\Http\Controllers\HistoryController;
 use Agoodley\LibrenmsTopology\Http\Controllers\HostController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PageController;
+use Agoodley\LibrenmsTopology\Http\Controllers\PathController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PlanningController;
 use Agoodley\LibrenmsTopology\Http\Controllers\RoutingController;
 use Agoodley\LibrenmsTopology\Http\Controllers\SiteController;
@@ -41,6 +42,9 @@ Route::middleware(['web', 'auth'])
         Route::get('api/routing', [RoutingController::class, 'api'])->name('api.routing');
         Route::get('api/changes', [HistoryController::class, 'api'])->name('api.changes');
         Route::get('api/hosts', [HostController::class, 'api'])->name('api.hosts');
+
+        Route::get('path', [PathController::class, 'index'])->name('path');
+        Route::get('api/path', [PathController::class, 'api'])->name('api.path');
 
         Route::get('coverage', [CoverageController::class, 'index'])->name('coverage');
         Route::get('api/coverage', [CoverageController::class, 'api'])->name('api.coverage');

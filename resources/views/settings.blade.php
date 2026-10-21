@@ -57,6 +57,10 @@
         'Host locator' => [
             ['hosts_dns', 'bool', 'Look up hostnames that are not LibreNMS devices in DNS', 'with the server\'s resolver (getent), 2 seconds per name and 4 per search, cached for 5 minutes, 20 lookups per user and minute'],
         ],
+        'Path trace' => [
+            ['path_util_percent', 'number', 'Report a port on a traced path from this utilization (%)', 'in or out; critical from 95 %'],
+            ['path_route_rows', 'number', 'Route table limit', 'read LibreNMS\' route table (one full read per address a trace routes toward, its per-router summary kept 5 minutes) only while it holds fewer routes than this; larger, routers are estimated from their neighbors (0: no limit)'],
+        ],
         'Monitoring coverage' => [
             ['shared_port_macs', 'number', 'Probable hub or unmanaged switch from this many MAC addresses', 'access port with at least this many MAC addresses and no LLDP/CDP neighbor: probably a hub or unmanaged switch (a phone on the port does not count as a neighbor); used by the coverage report and the host locator; 0 switches it off'],
             ['coverage_disabled_checks', 'text', 'Checks to skip', 'check codes or categories (unmonitored, devices, ports), e.g. not_linked hub_suspected'],
@@ -84,7 +88,7 @@
         'links_error_threshold' => [0, null], 'links_discard_percent' => [0, 100], 'links_lag_imbalance' => [0, 100], 'links_rx_margin' => [0, 20],
         'routing_bgp_reset_hours' => [0, 8760], 'routing_prefix_warn_percent' => [0, 100], 'redundancy_warn_devices' => [1, 100000],
         'shared_port_macs' => [0, 1000000], 'history_interval' => [5, 1440], 'history_retention_days' => [1, 3650],
-        'rollout_batch_size' => [0, 10000], 'dependencies_outage_days' => [1, 3650],
+        'path_util_percent' => [1, 100], 'path_route_rows' => [0, null], 'rollout_batch_size' => [0, 10000], 'dependencies_outage_days' => [1, 3650],
     ];
     // entries of the eventlog skip list that name no check (they keep nothing out)
     $warnings = ['history_eventlog_skip' => \Agoodley\LibrenmsTopology\History\FindingHistory::unknownSkips((string) ($settings['history_eventlog_skip'] ?? ''),

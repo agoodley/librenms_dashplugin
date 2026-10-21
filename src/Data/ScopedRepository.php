@@ -43,6 +43,15 @@ abstract class ScopedRepository
         'syslog' => [\App\Models\Syslog::class, 'syslog'],
         'stp' => [\App\Models\Stp::class, 'spanning tree'],
         'ports_stp' => [\App\Models\PortStp::class, 'spanning tree ports'],
+        // port data with policies of their own (port.view, as the ports)
+        'ports_vlans' => [\App\Models\PortVlan::class, 'ports'],
+        'ports_stack' => [\App\Models\PortStack::class, 'ports'],
+        'ports_statistics' => [\App\Models\PortStatistic::class, 'ports'],
+        'ipv4_addresses' => [\App\Models\Ipv4Address::class, 'IP addresses'],
+        'ipv6_addresses' => [\App\Models\Ipv6Address::class, 'IP addresses'],
+        'ipv4_networks' => [\App\Models\Ipv4Network::class, 'IP addresses'],
+        'ipv6_networks' => [\App\Models\Ipv6Network::class, 'IP addresses'],
+        'route' => [\App\Models\Route::class, 'routes'],
     ];
 
     /** @var array<int, true>|null */

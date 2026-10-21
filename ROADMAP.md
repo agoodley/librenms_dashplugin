@@ -30,14 +30,12 @@ The plugin's conventions apply to all of them:
 | 10 | [Loop evidence on the STP page](README.md#spanning-tree-diagnostics) | **done** | – |
 | 11 | [Sharing & export](README.md#sharing--export) | **done** | – |
 | 12 | [Monitoring coverage](README.md#monitoring-coverage) | **done** | – |
+| 13 | [A→B path trace](README.md#path-trace) | **done** | – |
 | 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
-| 13 | [A→B path trace](#13-ab-path-trace) | later, after 2 | L |
 | 15 | [Maps at a point in time](#15-maps-at-a-point-in-time) | later | M |
 
 Effort: S = new checks or an overlay on data the plugin already loads; M = new queries plus a page or tab;
 L = several new parts (tables, jobs, UI).
-
-**Why this order:** the path trace (13) finds both of its ends with the host locator (2).
 
 ## What a plugin can do in LibreNMS
 
@@ -49,13 +47,6 @@ L = several new parts (tables, jobs, UI).
   findings there) and the Custom Map widget (a map exported as a [Custom Map](README.md#sharing--export)).
 
 ## Later
-
-### 13. A→B path trace
-
-* **L2:** between two hosts located with 2, follow the forwarding ports of the spanning tree (the active tree has a
-  single path) and show every hop's ports, speed, utilization and errors.
-* **L3:** hop-by-hop lookups in the `route` table (the `route` discovery module is off by default and heavy), falling
-  back to connected subnets and OSPF/BGP adjacencies.
 
 ### 15. Maps at a point in time
 
