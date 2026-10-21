@@ -199,6 +199,65 @@ class SemaphoreRunnerTest extends TestCase
         }
     }
 
+    /**
+     * @return array<string, array{0: HttpResponse|\Throwable, 1: bool}>
+     */
+    public static function launchFailures(): array
+    {
+        return [
+            'timeout after sending' => [new \Agoodley\LibrenmsAnsible\Runner\Http\TransportError('Operation timed out after 15001 milliseconds', true), true],
+            'no connection' => [new \Agoodley\LibrenmsAnsible\Runner\Http\TransportError('Failed to connect', false), false],
+            'server error' => [new HttpResponse(502, 'Bad Gateway'), true],
+            'answer without a task' => [new HttpResponse(201, '{"ok":true}'), true],
+            'refused' => [new HttpResponse(400, '{"error":"bad"}'), false],
+            'forbidden' => [new HttpResponse(403, ''), false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('launchFailures')]
+    public function testALaunchWithoutAProperAnswerIsUncertain(HttpResponse|\Throwable $answer, bool $uncertain): void
+    {
+        $this->http->on('POST /api/project/2/tasks', $answer);
+        try {
+            $this->runner()->launch(new LaunchRequest('5', ['a'], [], [], 'm'));
+            $this->fail('no error');
+        } catch (RunnerError $e) {
+            $this->assertSame($uncertain, $e->uncertain);
+        }
+    }
+
+    public function testReadsAreNeverUncertain(): void
+    {
+        $this->http->on('GET /api/project/2/templates/5', new \Agoodley\LibrenmsAnsible\Runner\Http\TransportError('timed out', true));
+        try {
+            $this->runner()->template('5');
+            $this->fail('no error');
+        } catch (RunnerError $e) {
+            $this->assertFalse($e->uncertain);
+        }
+    }
+
+    public function testFindTheTaskOfALaunchByItsMessage(): void
+    {
+        $this->http->on('GET /api/project/2/tasks/last?count=200', new HttpResponse(200, FakeTransport::fixture('tasks-last.json')));
+
+        $task = $this->runner()->findTask('15', 'LibreNMS Ansible run #41 by admin');
+        $this->assertSame('61', $task->id);
+        $this->assertSame(RunStatus::STOPPED, $task->status);
+        $this->assertNull($this->runner()->findTask('11', 'LibreNMS Ansible run #41 by admin'), 'another template');
+        $this->assertNull($this->runner()->findTask('15', 'LibreNMS Ansible run #4 by admin'), 'the message must match exactly');
+    }
+
+    public function testCurlErrorsThatNeverSent(): void
+    {
+        foreach ([6, 7, 35, 60] as $errno) {
+            $this->assertFalse(\Agoodley\LibrenmsAnsible\Runner\Http\CurlTransport::maybeSent($errno), "curl error $errno");
+        }
+        foreach ([28, 52, 56, 92] as $errno) {
+            $this->assertTrue(\Agoodley\LibrenmsAnsible\Runner\Http\CurlTransport::maybeSent($errno), "curl error $errno");
+        }
+    }
+
     public function testRefusedLaunch(): void
     {
         $this->http->on('POST /api/project/2/tasks', new HttpResponse(400, '{"error":"Template is not allowed"}'));

@@ -43,6 +43,12 @@ interface Runner
     public function launch(LaunchRequest $request): RunnerTask;
 
     /**
+     * The task the runner started for a launch whose answer never came, by the launch's message (unique per run);
+     * null when it has none.
+     */
+    public function findTask(string $templateId, string $message): ?RunnerTask;
+
+    /**
      * The task's status and times.
      */
     public function task(string $id): RunnerTask;

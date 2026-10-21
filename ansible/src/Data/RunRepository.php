@@ -116,13 +116,15 @@ final class RunRepository
     }
 
     /**
-     * Change columns of a run that has not finished yet; false when it already had (another process finished it).
+     * Change columns of a run that has not finished yet (and, with $withoutTask, has no runner task recorded yet);
+     * false when it already had (another process got there first).
      *
      * @param  array<string, mixed>  $values
      */
-    public function updateUnfinished(int $id, array $values): bool
+    public function updateUnfinished(int $id, array $values, bool $withoutTask = false): bool
     {
         return DB::table('ansible_runs')->where('id', $id)->whereIn('status', RunStatus::UNFINISHED)
+            ->when($withoutTask, fn ($q) => $q->whereNull('runner_task_id'))
             ->update(self::encode($values) + ['updated_at' => now()]) > 0;
     }
 

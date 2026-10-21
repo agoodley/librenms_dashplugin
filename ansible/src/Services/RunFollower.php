@@ -31,7 +31,12 @@ final class RunFollower
     /** Seconds after the runner's end at which the output is taken as complete anyway. */
     private const SETTLE = 60;
 
-    /** Seconds a run may stay recorded without a runner task (the launch never completed). */
+    /**
+     * Seconds after which the follower looks for the task of a launch that did not complete (the launching request
+     * died; one that got no proper answer from the runner says so at once), and after which it gives the launch up.
+     */
+    private const LAUNCH_GRACE = 300;
+
     private const LAUNCH_TIMEOUT = 600;
 
     public function __construct(
@@ -96,8 +101,8 @@ final class RunFollower
         $id = (int) $run['id'];
         $age = time() - strtotime((string) $run['created_at']);
         if ($run['runner_task_id'] === null) {
-            if ($age > self::LAUNCH_TIMEOUT) {
-                $this->lose($run, 'the launch did not complete: no task of the runner was recorded');
+            if ($run['poll_error'] !== null || $age > self::LAUNCH_GRACE) {
+                $this->findLaunch($run, $age);
             }
 
             return;
@@ -149,6 +154,58 @@ final class RunFollower
     }
 
     /**
+     * A launch without a recorded task: find the task the runner started for it (by the launch's message, unique per
+     * run) and follow it from now on, or, after LAUNCH_TIMEOUT, record that it was not launched.
+     */
+    private function findLaunch(array $run, int $age): void
+    {
+        $id = (int) $run['id'];
+        try {
+            $runner = $this->runner ?? $this->plugin->runner();
+            $task = $runner->findTask((string) $run['template_id'], RunText::taskMessage($id, (string) $run['username']));
+        } catch (RunnerError $e) {
+            $task = null;
+            $error = $e->getMessage();
+        }
+        if ($task !== null) {
+            if (self::adopt($this->runs, $id, $task)) {
+                foreach (array_keys($this->runs->targets($id)) as $deviceId) {
+                    $this->eventlog->write(RunText::started($id, (string) $run['template_name'], (string) $run['username']), $deviceId, 'info', RunText::reference($id));
+                }
+            }
+
+            return;
+        }
+        if ($age <= self::LAUNCH_TIMEOUT) {
+            $this->runs->update($id, ['polled_at' => now()] + (isset($error) ? ['poll_error' => UntrustedText::line($error, 500)] : []));
+
+            return;
+        }
+        $reason = 'the runner gave no proper answer to the launch and has no task for it';
+        $targets = $this->runs->targets($id);
+        if (! $this->runs->updateUnfinished($id, ['status' => RunStatus::NOT_LAUNCHED, 'error' => $reason, 'finished_at' => now(),
+            'summary' => [RunResults::NOT_RUN => count($targets)]])) {
+            return;
+        }
+        $this->runs->setResults($id, array_fill_keys(array_keys($targets), ['result' => RunResults::NOT_RUN, 'counts' => null]));
+        foreach (array_keys($targets) as $deviceId) {
+            $this->eventlog->write(RunText::notLaunched($id, (string) $run['template_name'], (string) $run['username'], $reason), $deviceId, 'warning',
+                RunText::reference($id));
+        }
+    }
+
+    /**
+     * Record the runner's task of a launch, once: false when the run already had one (or had ended). A final status
+     * comes later from refresh(), with the output and the PLAY RECAP.
+     */
+    public static function adopt(RunRepository $runs, int $runId, RunnerTask $task): bool
+    {
+        return $runs->updateUnfinished($runId, ['runner_task_id' => $task->id, 'runner_status' => $task->rawStatus,
+            'status' => RunStatus::isFinal($task->status) ? RunStatus::RUNNING : $task->status, 'poll_error' => null,
+            'started_at' => $task->started !== null ? date('Y-m-d H:i:s', $task->started) : null], true);
+    }
+
+    /**
      * The run is over: per-target results from the PLAY RECAP, the summary, and the eventlog of each target (and
      * of the run, when the runner ran on hosts that were not targets). The PLAY RECAP is read from the stored
      * output, or from the runner's whole log when the stored one was capped.
@@ -158,7 +215,14 @@ final class RunFollower
     private function finish(array $run, array $values, RunnerTask $task, Runner $runner): void
     {
         $id = (int) $run['id'];
-        $lines = $values['output_truncated'] ? $runner->output((string) $run['runner_task_id'])->lines : OutputBuffer::lines((string) $values['output']);
+        $lines = OutputBuffer::lines((string) $values['output']);
+        if ($values['output_truncated']) {
+            try {
+                $lines = $runner->output((string) $run['runner_task_id'])->lines;
+            } catch (RunnerError $e) {
+                Log::warning("ansible plugin: run #$id: the whole log for the PLAY RECAP cannot be read, the stored part is used: " . $e->getMessage());
+            }
+        }
         $targets = $this->runs->targets($id);
         $combined = RunResults::combine(array_map(fn ($t) => (string) $t['inventory_name'], $targets), RecapParser::parse($lines),
             RecapParser::connectionFailures($lines));

@@ -200,22 +200,28 @@ final class RunLauncher
     }
 
     /**
-     * Ask the runner to start the recorded run, and write the eventlog of its targets.
+     * Ask the runner to start the recorded run, and write the eventlog of its targets. When no proper answer came
+     * (a timeout, a server error) the runner may have started the task anyway: the run stays recorded as launching
+     * and RunFollower looks for its task by the launch's message, so the audit log never says "not launched" for a
+     * task that runs.
      */
     private function start(int $runId, LaunchPlan $plan, string $username): void
     {
         $template = $plan->template;
         try {
             $task = $plan->runner->launch(new LaunchRequest($template->id, $plan->limit(), $plan->values, $plan->secrets, RunText::taskMessage($runId, $username)));
-            // a final status comes from the follower, with the output and the PLAY RECAP
-            $this->runs->update($runId, ['runner_task_id' => $task->id, 'runner_status' => $task->rawStatus,
-                'status' => RunStatus::isFinal($task->status) ? RunStatus::RUNNING : $task->status,
-                'started_at' => $task->started !== null ? date('Y-m-d H:i:s', $task->started) : null]);
-            foreach (array_keys($plan->targets) as $deviceId) {
-                $this->eventlog->write(RunText::started($runId, $template->name, $username), $deviceId, 'info', RunText::reference($runId));
+            if (RunFollower::adopt($this->runs, $runId, $task)) {
+                foreach (array_keys($plan->targets) as $deviceId) {
+                    $this->eventlog->write(RunText::started($runId, $template->name, $username), $deviceId, 'info', RunText::reference($runId));
+                }
             }
         } catch (RunnerError $e) {
-            $this->notLaunched($runId, $plan, $username, $e->getMessage());
+            if ($e->uncertain) {
+                $this->runs->update($runId, ['poll_error' => UntrustedText::line('The runner gave no proper answer to the launch, so the plugin looks for its task: '
+                    . $e->getMessage(), 500)]);
+            } else {
+                $this->notLaunched($runId, $plan, $username, $e->getMessage());
+            }
         } catch (\Throwable $e) {
             Log::error("ansible plugin: launching run #$runId failed: " . $e->getMessage());
             $this->notLaunched($runId, $plan, $username, 'the launch failed, see logs/librenms.log');

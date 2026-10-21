@@ -13,6 +13,12 @@ final class CurlTransport implements Transport
     private const MAX_BYTES = 64 * 1024 * 1024;
 
     /**
+     * curl errors after which the request certainly did not reach the server: bad URL or protocol, name resolution,
+     * no connection, TLS handshake and certificate errors.
+     */
+    private const NOT_SENT = [1, 3, 5, 6, 7, 35, 51, 53, 54, 58, 59, 60, 64, 66, 77, 83, 90, 91];
+
+    /**
      * @param  int  $timeout  seconds for the whole call; connecting gets at most 10 of them
      * @param  string|null  $caBundle  CA certificates (PEM file) to verify the runner's certificate with
      */
@@ -73,12 +79,21 @@ final class CurlTransport implements Transport
         $ok = curl_exec($handle);
         $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
         $error = curl_error($handle);
+        $errno = curl_errno($handle);
         unset($handle); // a CurlHandle is freed with its last reference (curl_close() does nothing since PHP 8)
 
         if ($ok === false || $status === 0) {
-            throw new TransportError($error !== '' ? $error : 'no answer');
+            throw new TransportError($error !== '' ? $error : 'no answer', self::maybeSent($errno));
         }
 
         return new HttpResponse($status, $received);
+    }
+
+    /**
+     * May a request that failed with this curl error have reached the server?
+     */
+    public static function maybeSent(int $errno): bool
+    {
+        return ! in_array($errno, self::NOT_SENT, true);
     }
 }

@@ -132,8 +132,33 @@ final class SemaphoreRunner implements Runner
             $body['secret'] = json_encode((object) $request->secrets, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
         }
         $task = $this->call('POST', $this->projectPath('/tasks'), "a task of template {$request->templateId}", $body);
+        try {
+            return $this->task_($task);
+        } catch (RunnerError $e) {
+            // an answer without a task: Semaphore may still have started it
+            throw new RunnerError($e->kind, $e->getMessage(), $e->status, true);
+        }
+    }
 
-        return $this->task_($task);
+    /**
+     * GET /api/project/{p}/tasks/last: the newest task of the template with this message, among the last 200 of the
+     * project.
+     */
+    public function findTask(string $templateId, string $message): ?RunnerTask
+    {
+        $tasks = $this->get($this->projectPath('/tasks/last?count=200'), 'the latest tasks');
+        if (! array_is_list($tasks)) {
+            throw $this->badResponse('/tasks/last');
+        }
+        $found = null;
+        foreach ($tasks as $task) {
+            if (is_array($task) && (string) ($task['template_id'] ?? '') === $templateId && ($task['message'] ?? null) === $message
+                && ($found === null || (int) $task['id'] > (int) $found['id'])) {
+                $found = $task;
+            }
+        }
+
+        return $found === null ? null : $this->task_($found);
     }
 
     /**
@@ -329,24 +354,26 @@ final class SemaphoreRunner implements Runner
             $response = $this->http->send($method, rtrim($this->baseUrl, '/') . '/api' . $path, $headers,
                 $body === null ? null : json_encode($body, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
         } catch (TransportError $e) {
-            throw new RunnerError(RunnerError::UNREACHABLE, "Cannot reach Semaphore UI at {$this->host()}: " . UntrustedText::line($e->getMessage(), 200));
+            throw new RunnerError(RunnerError::UNREACHABLE, "Cannot reach Semaphore UI at {$this->host()}: " . UntrustedText::line($e->getMessage(), 200),
+                null, $method !== 'GET' && $e->maybeSent);
         }
-        $this->check($response, $what, $missingTask);
+        $this->check($response, $what, $missingTask, $method !== 'GET');
         if ($response->status === 204 || trim($response->body) === '') {
             return [];
         }
         $json = $response->json();
         if (! is_array($json)) {
-            throw $this->badResponse($path);
+            throw $this->badResponse($path, $method !== 'GET');
         }
 
         return $json;
     }
 
     /**
-     * Turn an HTTP error status into a RunnerError.
+     * Turn an HTTP error status into a RunnerError; a server error to a request that changes something leaves its
+     * outcome uncertain.
      */
-    private function check(HttpResponse $response, string $what, bool $missingTask): void
+    private function check(HttpResponse $response, string $what, bool $missingTask, bool $changes = false): void
     {
         $status = $response->status;
         if ($status >= 200 && $status < 300) {
@@ -359,7 +386,7 @@ final class SemaphoreRunner implements Runner
             $status === 404 => new RunnerError(RunnerError::NOT_FOUND, "Semaphore UI does not have $what in project {$this->project} (HTTP 404), or the token's user is not a member of the project.", $status),
             $status === 400 && $missingTask => new RunnerError(RunnerError::NOT_FOUND, "Semaphore UI does not have $what in project {$this->project} (HTTP 400).", $status),
             $status >= 400 && $status < 500 => new RunnerError(RunnerError::REFUSED, "Semaphore UI refused $what (HTTP $status)" . ($detail !== '' ? ": $detail" : '.'), $status),
-            default => new RunnerError(RunnerError::BAD_RESPONSE, "Semaphore UI failed on $what (HTTP $status)" . ($detail !== '' ? ": $detail" : '.') . ' Check its log.', $status),
+            default => new RunnerError(RunnerError::BAD_RESPONSE, "Semaphore UI failed on $what (HTTP $status)" . ($detail !== '' ? ": $detail" : '.') . ' Check its log.', $status, $changes),
         };
     }
 
@@ -377,9 +404,10 @@ final class SemaphoreRunner implements Runner
     /**
      * An answer the plugin cannot read.
      */
-    private function badResponse(string $path): RunnerError
+    private function badResponse(string $path, bool $uncertain = false): RunnerError
     {
-        return new RunnerError(RunnerError::BAD_RESPONSE, "Semaphore UI's answer to $path is not what the plugin expects: is {$this->host()} a Semaphore UI 2.x?");
+        return new RunnerError(RunnerError::BAD_RESPONSE, "Semaphore UI's answer to $path is not what the plugin expects: is {$this->host()} a Semaphore UI 2.x?",
+            null, $uncertain);
     }
 
     /**
