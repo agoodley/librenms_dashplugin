@@ -318,7 +318,7 @@ class LinkAnalyzerTest extends TestCase
             . "interface GigabitEthernet1/0/34\n description ap-12 eth0", $wrong['config']);
 
         $this->assertCount(1, $codes['description_missing']);
-        $this->assertSame('1 port(s): Te1/1/2 (core2 Te1/0/3).', $codes['description_missing'][0]['detail']);
+        $this->assertSame('1 port: Te1/1/2 (core2 Te1/0/3).', $codes['description_missing'][0]['detail']);
     }
 
     public function testDescriptionConfigUsesTheSyntaxOfTheOs(): void

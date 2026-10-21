@@ -118,7 +118,7 @@
                     @endforelse
                     @if(count($result['core']) > 4) <small>+{{ count($result['core']) - 4 }}</small> @endif
                 </div>
-                <p>parents point toward it ({{ implode(', ', array_unique(array_map(fn ($core) => $coreModes[$core['mode']] ?? $core['mode'], $result['core']))) ?: 'no switches with neighbors found' }})</p>
+                <p>parents point toward {{ count($result['core']) === 1 ? 'it' : 'them' }} ({{ implode(', ', array_unique(array_map(fn ($core) => $coreModes[$core['mode']] ?? $core['mode'], $result['core']))) ?: 'no switches with neighbors found' }})</p>
             </div>
             <div class="topo-card topo-{{ $summary['explained_after'] > $summary['explained_now'] ? 'info' : 'ok' }}">
                 <h4>Outages ({{ $result['days'] }} days)</h4>

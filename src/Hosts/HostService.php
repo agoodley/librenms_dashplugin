@@ -9,6 +9,7 @@ use Agoodley\LibrenmsTopology\Support\Cidr;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use Agoodley\LibrenmsTopology\Support\PortStack;
+use Agoodley\LibrenmsTopology\Support\Text;
 
 /**
  * Host locator searches and the port tab, on the data the user may see: turns an address or name
@@ -74,9 +75,11 @@ class HostService
     }
 
     /**
+     * @param  bool  $roleHint  say so in the message when the user's role hides the tables an address is looked up in
+     *     (the path trace says it once for both of its ends)
      * @return array{query: array, devices: array, resolved: string[], hosts: array, message: ?string, truncated: bool}
      */
-    public function search(string $input): array
+    public function search(string $input, bool $roleHint = true): array
     {
         $query = HostQuery::parse($input);
         $result = ['query' => $query, 'devices' => [], 'resolved' => [], 'hosts' => [], 'message' => null, 'truncated' => false];
@@ -145,11 +148,14 @@ class HostService
         }
         if (! $result['hosts']) {
             $addresses = implode(', ', $result['resolved'] ?: array_map([self::class, 'display'], $ips));
+            $hidden = $roleHint && $ips ? $this->repo->hiddenKinds(['ports', 'ipv4_mac', 'ipv6_nd']) : [];
             $result['message'] = match (true) {
                 (bool) $ends => $query['value'] . ' is monitored by LibreNMS, but ' . ($ips ? 'its address (' . $addresses . ') is in no ARP or IPv6 neighbor table you can see' : 'its address is unknown')
                     . ' and no switch you can see has learned the MAC address of one of its interfaces.',
                 (bool) $result['devices'] => $query['value'] . ' is a switch, router or firewall monitored by LibreNMS: its device page and the L2 map show its links'
                     . ($ips ? '; its address (' . $addresses . ') is in no ARP or IPv6 neighbor table you can see.' : '.'),
+                (bool) $hidden => 'No ARP or IPv6 neighbor entry for ' . $addresses . ' that you may see: your LibreNMS role may not view ' . Text::join($hidden)
+                    . ', where IP addresses are looked up.',
                 default => 'No ARP or IPv6 neighbor entry for ' . $addresses . ' on the devices you can see. LibreNMS learns IP addresses from the ARP and neighbor tables of routers and L3 switches.',
             };
         }

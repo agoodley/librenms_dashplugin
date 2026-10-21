@@ -27,12 +27,12 @@ abstract class ScopedRepository
         'ports_nac' => [\App\Models\PortsNac::class, '802.1X sessions'],
         'bgpPeers' => [\App\Models\BgpPeer::class, 'BGP sessions'],
         'bgpPeers_cbgp' => [\App\Models\BgpPeer::class, 'BGP sessions'],
-        'ospf_nbrs' => [\App\Models\OspfNbr::class, 'OSPF neighbors'],
-        'ospf_instances' => [\App\Models\OspfInstance::class, 'OSPF instances'],
-        'ospf_areas' => [\App\Models\OspfArea::class, 'OSPF areas'],
-        'ospf_ports' => [\App\Models\OspfPort::class, 'OSPF interfaces'],
-        'ospfv3_nbrs' => [\App\Models\Ospfv3Nbr::class, 'OSPFv3 neighbors'],
-        'ospfv3_instances' => [\App\Models\Ospfv3Instance::class, 'OSPFv3 instances'],
+        'ospf_nbrs' => [\App\Models\OspfNbr::class, 'OSPF'],
+        'ospf_instances' => [\App\Models\OspfInstance::class, 'OSPF'],
+        'ospf_areas' => [\App\Models\OspfArea::class, 'OSPF'],
+        'ospf_ports' => [\App\Models\OspfPort::class, 'OSPF'],
+        'ospfv3_nbrs' => [\App\Models\Ospfv3Nbr::class, 'OSPFv3'],
+        'ospfv3_instances' => [\App\Models\Ospfv3Instance::class, 'OSPFv3'],
         'isis_adjacencies' => [\App\Models\IsisAdjacency::class, 'IS-IS adjacencies'],
         'ipsec_tunnels' => [\App\Models\IpsecTunnel::class, 'IPsec tunnels'],
         'mpls_lsps' => [\App\Models\MplsLsp::class, 'MPLS LSPs'],
@@ -56,7 +56,7 @@ abstract class ScopedRepository
         // of ports (inventory.view)
         'sensors' => [\App\Models\Sensor::class, 'optical levels'],
         'transceivers' => [\App\Models\Transceiver::class, 'ports'],
-        'entPhysical' => [\App\Models\EntPhysical::class, 'stack members and line cards'],
+        'entPhysical' => [\App\Models\EntPhysical::class, 'the hardware inventory'],
     ];
 
     /** @var array<int, true>|null */

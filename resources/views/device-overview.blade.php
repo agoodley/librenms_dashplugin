@@ -7,6 +7,7 @@
     ]));
 @endphp
 @if($summary && ($summary['neighbors'] || $summary['stp'] || $routing))
+<link href="{{ route('topology.asset', 'topology.css') }}?v={{ \Agoodley\LibrenmsTopology\Http\Controllers\PageController::assetVersion() }}" rel="stylesheet">
 @php
     $stp = $summary['stp'];
     $deviceId = $device->device_id;
@@ -18,7 +19,8 @@
             default => $worst,
         };
     }
-    $sevColor = ['critical' => '#c0392b', 'warning' => '#b85c00', 'info' => '#1f6fb2', 'ok' => '#23803a'];
+    // classes of topology.css, which has their dark mode colors
+    $sevClass = ['critical' => 'topo-status-down', 'warning' => 'topo-text-warning', 'info' => 'topo-text-info', 'ok' => 'topo-status-up'];
 @endphp
 <div class="panel panel-default panel-condensed topo-device-panel">
     <div class="panel-heading">
@@ -50,7 +52,7 @@
         @if($stp)
             <tr>
                 <td>Spanning tree health</td>
-                <td><span style="color: {{ $sevColor[$worst] }}; font-weight: 600; text-transform: uppercase">{{ $worst }}</span></td>
+                <td><span class="{{ $sevClass[$worst] }}" style="font-weight: 600; text-transform: uppercase">{{ $worst }}</span></td>
             </tr>
             @foreach(array_slice($stp['instances'], 0, 8) as $instance)
                 <tr>
@@ -59,10 +61,10 @@
                         @if($instance['is_root'])
                             <strong><i class="fa fa-star" style="color: #f1c40f"></i> Root bridge</strong> (priority {{ $instance['priority'] }})
                         @else
-                            Root {{ $instance['root_name'] ?? $instance['root_id'] }} {{ isset($instance['root_port']) ? 'via ' . $instance['root_port'] : '(no root port reported)' }}, cost {{ $instance['root_cost'] }}
+                            Root: {{ $instance['root_name'] ?? $instance['root_id'] }} {{ isset($instance['root_port']) ? 'via ' . $instance['root_port'] : '(no root port reported)' }}, cost {{ $instance['root_cost'] }}
                         @endif
                         @if($instance['blocked'])
-                            &middot; <span style="color: #b85c00">{{ $instance['blocked'] }} blocked</span>
+                            &middot; <span class="topo-text-warning">{{ $instance['blocked'] }} blocked</span>
                         @endif
                         @if($instance['last_tc'] !== null)
                             &middot; last TC {{ \Agoodley\LibrenmsTopology\Stp\StpAnalyzer::duration($instance['last_tc']) }} ago
@@ -75,7 +77,7 @@
             @endif
             @foreach(array_slice($stp['issues'], 0, 6) as $issue)
                 <tr>
-                    <td><span style="color: {{ $sevColor[$issue['severity']] }}; font-weight: 600; text-transform: uppercase">{{ $issue['severity'] }}</span></td>
+                    <td><span class="{{ $sevClass[$issue['severity']] }}" style="font-weight: 600; text-transform: uppercase">{{ $issue['severity'] }}</span></td>
                     <td>{{ $issue['text'] }}</td>
                 </tr>
             @endforeach

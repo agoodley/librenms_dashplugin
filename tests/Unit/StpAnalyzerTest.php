@@ -177,7 +177,7 @@ class StpAnalyzerTest extends TestCase
         }
         $result = $this->analyze($overrides, [], [], [], [$hiddenRoot => ['owners' => [], 'fdb' => [], 'vendor' => '', 'hidden' => true]]);
         $this->assertArrayNotHasKey('root_unmanaged', $this->codes($result));
-        $this->assertSame('monitored bridge (no access)', $result['domains'][0]['root']['name']);
+        $this->assertSame('a bridge you may not see', $result['domains'][0]['root']['name']);
     }
 
     public function testRootPlacementChecks(): void

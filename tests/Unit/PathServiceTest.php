@@ -396,7 +396,7 @@ class PathServiceTest extends TestCase
         $result = self::service(null, null, [], $repo, 100, false, $topology, null, $denied)
             ->trace(['a_device' => PathFixture::ACC1, 'a_port' => 305, 'b_device' => PathFixture::ACC2, 'b_port' => 406, 'vlan' => 110]);
 
-        $this->assertSame(['LLDP/CDP links', 'ports', 'spanning tree ports', 'IP addresses', 'routes', 'OSPF neighbors', 'BGP sessions', 'forwarding tables', 'ARP tables',
+        $this->assertSame(['LLDP/CDP links', 'ports', 'spanning tree ports', 'IP addresses', 'routes', 'OSPF', 'BGP sessions', 'forwarding tables', 'ARP tables',
             'IPv6 neighbor tables', '802.1X sessions'], $result['role_hidden']);
         $this->assertSame(['acc1', null], [$result['a']['label'], $result['a']['port']]);
         $this->assertSame('Port #305 is left out: your LibreNMS role may not view ports.', $result['a']['notes'][0]['text']);
@@ -413,11 +413,16 @@ class PathServiceTest extends TestCase
             $this->assertStringNotContainsString($secret, $json, $secret);
         }
 
-        // an address is looked up in what the role hides: the message says so
+        // an address is looked up in what the role hides: the message says so once, the end's message (its panel, next to
+        // the page's notice) does not
         $hosts = fn (string $query) => ['devices' => [], 'resolved' => [], 'truncated' => false, 'hosts' => [], 'message' => 'No ARP or IPv6 neighbor entry for ' . $query . '.'];
         $result = self::service(null, null, [], $repo, 100, false, $topology, $hosts, $denied)->trace(['a' => '10.90.110.11', 'b_device' => PathFixture::ACC2]);
         $this->assertSame('A: No ARP or IPv6 neighbor entry for 10.90.110.11. Your LibreNMS role may not view IP addresses, ports, forwarding tables, ARP tables, IPv6 neighbor'
-            . ' tables, 802.1X sessions, where hosts and addresses are looked up.', $result['message']);
+            . ' tables and 802.1X sessions, where hosts and addresses are looked up.', $result['message']);
+        $this->assertSame('No ARP or IPv6 neighbor entry for 10.90.110.11.', $result['a']['message']);
+        $this->assertArrayNotHasKey('role_hint', $result['a']);
+        $result = self::service(null, null, [], $repo, 100, false, $topology, $hosts, $denied)->trace(['a' => '10.90.110.11', 'b' => '10.90.110.12']);
+        $this->assertSame(1, substr_count($result['message'], 'Your LibreNMS role'), 'once for both ends: ' . $result['message']);
 
         // links without ports: the links count as up and carrying the VLAN, their ports are not shown
         $result = self::service(null, null, [], $repo, 100, false, $topology, null, array_values(array_diff($denied, ['App\\Models\\Link'])))

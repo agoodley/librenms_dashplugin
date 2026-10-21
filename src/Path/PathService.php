@@ -74,7 +74,9 @@ class PathService
         $result['a'] = PathEndpoints::publicView($a);
         $result['b'] = PathEndpoints::publicView($b);
         if (! $a['resolved'] || ! $b['resolved']) {
-            $result['message'] = implode(' ', array_filter([$a['resolved'] ? null : 'A: ' . $a['message'], $b['resolved'] ? null : 'B: ' . $b['message']]));
+            // what the role hides once, after the ends that were not found (the page shows it in its notice instead)
+            $hint = ($a['resolved'] ? null : ($a['role_hint'] ?? null)) ?? ($b['resolved'] ? null : ($b['role_hint'] ?? null));
+            $result['message'] = implode(' ', array_filter([$a['resolved'] ? null : 'A: ' . $a['message'], $b['resolved'] ? null : 'B: ' . $b['message'], $hint]));
 
             return $result;
         }

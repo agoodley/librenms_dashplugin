@@ -8,6 +8,7 @@ use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Agoodley\LibrenmsTopology\Support\Graph;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
+use Agoodley\LibrenmsTopology\Support\Text;
 use Agoodley\LibrenmsTopology\Topology\L2Builder;
 
 /**
@@ -948,8 +949,8 @@ class LinkAnalyzer
                 $this->add(new Finding(
                     Finding::INFO, 'no_neighbor_data',
                     "$name reports no LLDP/CDP neighbors",
-                    count($labels) . " neighbor(s) see $name (on its ports " . implode(', ', array_slice($labels, 0, 20)) . (count($labels) > 20 ? ' ...' : '')
-                    . '), but LibreNMS has no LLDP/CDP neighbors from it.',
+                    Text::count(count($labels), 'neighbor') . (count($labels) === 1 ? ' sees ' : ' see ') . "$name (on its " . (count($labels) === 1 ? 'port ' : 'ports ')
+                    . implode(', ', array_slice($labels, 0, 20)) . (count($labels) > 20 ? ' ...' : '') . '), but LibreNMS has no LLDP/CDP neighbors from it.',
                     'Enable LLDP or CDP on the device and the discovery-protocols module in LibreNMS so its links can be checked from both ends.',
                     null, array_merge([$deviceId], $reporters), $ports,
                 ));
@@ -1059,7 +1060,7 @@ class LinkAnalyzer
             $this->add(new Finding(
                 Finding::INFO, 'description_missing',
                 'inter-switch ports without description: ' . $this->deviceName($deviceId),
-                count($items) . ' port(s): ' . implode(', ', array_slice($parts, 0, 20)) . (count($parts) > 20 ? ' ...' : '') . '.',
+                Text::count(count($items), 'port') . ': ' . implode(', ', array_slice($parts, 0, 20)) . (count($parts) > 20 ? ' ...' : '') . '.',
                 'Describe inter-switch ports with the neighbor name and port, for example with the configuration below.',
                 null, [$deviceId], array_keys($items),
                 $this->config($deviceId, $items),

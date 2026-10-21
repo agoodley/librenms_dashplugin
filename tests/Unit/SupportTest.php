@@ -270,6 +270,14 @@ class SupportTest extends TestCase
         $this->assertSame('2 L2 domains', Text::count('2', 'L2 domain'));
     }
 
+    public function testListsInWords(): void
+    {
+        $this->assertSame('', Text::join([]));
+        $this->assertSame('ports', Text::join(['ports']));
+        $this->assertSame('ports and routes', Text::join([3 => 'ports', 7 => 'routes']));
+        $this->assertSame('LLDP/CDP links, ports, OSPF and BGP sessions', Text::join(['LLDP/CDP links', 'ports', 'OSPF', 'BGP sessions']));
+    }
+
     public function testIntegerSetsWithRanges(): void
     {
         $settings = new PluginSettings(['links_ignore_vlans' => '999 1002-1005, 4095 x 0']);
