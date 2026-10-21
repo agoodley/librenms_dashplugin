@@ -30,7 +30,7 @@ class HostController extends Controller
 
     public function api(Request $request): JsonResponse
     {
-        return $this->json('host search', fn () => $this->hosts($request, $this->settings())->search(self::query($request)));
+        return $this->json('host search', fn () => $this->hosts($request, $this->settings())->search(self::query($request)), 'hosts');
     }
 
     private function hosts(Request $request, PluginSettings $settings): HostService

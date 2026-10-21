@@ -44,7 +44,7 @@ class ExportController extends Controller
         abort_unless(self::allowed($request->user()), 403);
 
         return $this->respond($request, function (array $plan) {
-            return response()->json($this->summary($plan));
+            return response()->json($this->summary($plan) + ['role_hidden' => self::roleHidden($plan['page'])]);
         });
     }
 
@@ -69,6 +69,7 @@ class ExportController extends Controller
                 'replaced' => $plan['replace'] !== null,
                 'url' => self::mapUrl('maps.custom.show', $id, 'maps/custom/' . $id),
                 'edit_url' => self::mapUrl('maps.custom.edit', $id, 'maps/custom/' . $id . '/edit'),
+                'role_hidden' => self::roleHidden($plan['page']),
             ]);
         });
     }
@@ -114,6 +115,10 @@ class ExportController extends Controller
             $settings = $this->settings();
             $query = [];
             parse_str(is_string($request->input('query')) ? $request->input('query') : '', $query);
+            if (($invalid = MapParams::invalidScope($query)) !== null) {
+                // read as "no filter", the map would be the whole network
+                return response()->json(['error' => "The $invalid of the map is not a valid id."], 422);
+            }
             $params = MapParams::parse($query, $settings);
             $data = $this->service($request, $settings)->$page($params);
             $layout = CustomMapLayout::build($data, self::positions($request->input('positions')), $repo->style());

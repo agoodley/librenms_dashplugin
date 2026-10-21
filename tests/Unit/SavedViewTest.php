@@ -46,6 +46,37 @@ class SavedViewTest extends TestCase
         $this->assertSame(['d:1' => [1.0, 2.0]], SavedView::positions('{"d:1": [1, 2]}'));
         $this->assertSame([], SavedView::positions('not json'));
         $this->assertCount(SavedView::MAX_POSITIONS, SavedView::positions(array_fill_keys(array_map(fn ($i) => "d:$i", range(1, SavedView::MAX_POSITIONS + 5)), [1, 1])));
+        $long = 'u:' . str_repeat('n', SavedView::MAX_ID_LENGTH - 2);
+        $this->assertSame([$long], array_keys(SavedView::positions([$long => [1, 1], $long . 'x' => [1, 1]])), 'ids of up to 200 characters');
+    }
+
+    public function testAViewKeepsThePositionsOfItsMapAndNoMoreThanAMegabyte(): void
+    {
+        $map = [['id' => 'd:1'], ['id' => 'u:core1.example.net'], ['label' => 'no id']];
+        $this->assertSame([['d:1' => [1.0, 2.0], 'u:core1.example.net' => [5.0, 6.0]], null],
+            SavedView::forStorage(['d:1' => [1.0, 2.0], 'd:9' => [3.0, 4.0], 'junk' => [0.0, 0.0], 'u:core1.example.net' => [5.0, 6.0]], $map));
+        $this->assertSame([[], null], SavedView::forStorage([], $map));
+
+        // neighbors with ids of 200 characters: 226 bytes a position, 4000 fit in 1 MB, 6000 do not
+        $layout = function (int $nodes) {
+            $ids = array_map(fn (int $i) => 'u:' . str_pad((string) $i, SavedView::MAX_ID_LENGTH - 2, 'n'), range(1, $nodes));
+
+            return SavedView::forStorage(array_fill_keys($ids, [1234567.1, -1234567.1]), array_map(fn (string $id) => ['id' => $id], $ids));
+        };
+        [$kept, $error] = $layout(4000);
+        $this->assertCount(4000, $kept);
+        $this->assertNull($error);
+        [$kept, $error] = $layout(6000);
+        $this->assertCount(6000, $kept);
+        $this->assertSame('The layout of this view is too large to save (more than 1 MB).', $error);
+    }
+
+    public function testAUserKeepsAtMostTwoHundredViews(): void
+    {
+        $this->assertNull(SavedView::tooMany(0));
+        $this->assertNull(SavedView::tooMany(SavedView::MAX_PER_USER - 1));
+        $this->assertSame('You keep 200 saved views, the most a user may: delete some on the Saved Views page to save another.', SavedView::tooMany(200));
+        $this->assertNotNull(SavedView::tooMany(250), 'views kept before the limit');
     }
 
     public function testOnlyTheNodesOfTheViewersMapGetPositions(): void
@@ -80,6 +111,23 @@ class SavedViewTest extends TestCase
         $this->assertFalse(SavedView::canEdit($shared, 8, false), 'shared, but not theirs');
         $this->assertTrue(SavedView::canEdit($shared, 8, true), 'an admin changes any shared view');
         $this->assertFalse(SavedView::canEdit($personal, 8, true), 'not another user\'s personal one');
+
+        $this->assertTrue(SavedView::canDelete($personal, 7, false), 'the owner deletes their view');
+        $this->assertTrue(SavedView::canDelete($shared, 8, true), 'an admin deletes any shared view');
+        $this->assertFalse(SavedView::canDelete($shared, 8, false));
+        $this->assertFalse(SavedView::canDelete($personal, 8, true), 'not another user\'s personal one');
+
+        // the personal view of a user that no longer exists (joined to users: owner_id null)
+        $orphan = ['user_id' => 9, 'shared' => 0, 'owner_id' => null];
+        $owned = ['user_id' => 9, 'shared' => 0, 'owner_id' => 9];
+        $this->assertTrue(SavedView::canOpen($orphan, 8, true), 'an admin opens it');
+        $this->assertTrue(SavedView::canDelete($orphan, 8, true), 'and deletes it');
+        $this->assertFalse(SavedView::canEdit($orphan, 8, true), 'but does not change it');
+        $this->assertFalse(SavedView::canOpen($orphan, 8, false), 'nobody else opens it');
+        $this->assertFalse(SavedView::canDelete($orphan, 8, false));
+        $this->assertFalse(SavedView::canOpen($owned, 8, true), 'not when its owner exists');
+        $this->assertFalse(SavedView::canDelete($owned, 8, true));
+        $this->assertFalse(SavedView::canDelete($personal, 8, true), 'nor when the owner is not known (no owner_id)');
     }
 
     public function testAViewShowsNothingTheUserMayNotSee(): void
@@ -92,12 +140,17 @@ class SavedViewTest extends TestCase
         $this->assertSame([null, null, null, null], [$hidden['params']['device'], $hidden['params']['group'], $hidden['params']['location'], $hidden['params']['vrf']]);
         $this->assertStringNotContainsString('CUSTOMER-B', json_encode($hidden));
         $this->assertSame('a device you cannot see, 2 hops · group (one you cannot see) · location (one you cannot see) · VRF (one you cannot see)', $hidden['scope']);
-        $this->assertSame(['alice', false, true, false, ['layout' => 'organic']], [$hidden['owner'], $hidden['mine'], $hidden['shared'], $hidden['can_edit'], $hidden['options']]);
+        $this->assertSame(['alice', false, true, false, false, ['layout' => 'organic']],
+            [$hidden['owner'], $hidden['mine'], $hidden['shared'], $hidden['can_edit'], $hidden['can_delete'], $hidden['options']]);
 
         $seen = SavedView::present($row, 7, false, ['device' => 'core1', 'group' => 'Core', 'location' => 'HQ', 'vrf' => 'CUSTOMER-B']);
         $this->assertSame([1, 3, 4, 'CUSTOMER-B'], [$seen['params']['device'], $seen['params']['group'], $seen['params']['location'], $seen['params']['vrf']]);
-        $this->assertSame(['you', true, true], [$seen['owner'], $seen['mine'], $seen['can_edit']]);
+        $this->assertSame(['you', true, true, true], [$seen['owner'], $seen['mine'], $seen['can_edit'], $seen['can_delete']]);
         $this->assertSame('a former user', SavedView::present(['username' => null] + $row, 8, false, [])['owner']);
+
+        $orphan = SavedView::present(['username' => null, 'owner_id' => null, 'shared' => 0] + $row, 8, true, []);
+        $this->assertSame(['a former user', false, false, true], [$orphan['owner'], $orphan['mine'], $orphan['can_edit'], $orphan['can_delete']],
+            'an admin deletes the personal view of a former user');
     }
 
     public function testOpeningAViewKeepsItsOverlaysAndTheUrlWins(): void

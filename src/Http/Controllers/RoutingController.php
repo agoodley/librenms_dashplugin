@@ -39,7 +39,7 @@ class RoutingController extends Controller
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json('routing analysis', fn () => $this->analyze($request, $settings, $params));
+        return $this->json('routing analysis', fn () => $this->analyze($request, $settings, $params), 'routing');
     }
 
     /**

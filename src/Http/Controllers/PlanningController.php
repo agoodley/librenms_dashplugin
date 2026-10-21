@@ -55,7 +55,7 @@ class PlanningController extends Controller
         [$picked, $size, $network] = $this->rolloutInput($request, $settings);
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json('rollout plan', fn () => $this->planning($request, $settings)->rollout($params, $picked, $size, $network));
+        return $this->json('rollout plan', fn () => $this->planning($request, $settings)->rollout($params, $picked, $size, $network), 'rollout');
     }
 
     /**
@@ -76,7 +76,7 @@ class PlanningController extends Controller
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json('device dependencies', fn () => $this->planning($request, $settings)->dependencies($params));
+        return $this->json('device dependencies', fn () => $this->planning($request, $settings)->dependencies($params), 'dependencies');
     }
 
     /**
@@ -90,6 +90,9 @@ class PlanningController extends Controller
         abort_unless($this->canApply($request), 403);
 
         $filter = $request->input('filter');
+        // a device, group or location of the view that is no id would be read as "every device"
+        $invalid = is_array($filter) ? MapParams::invalidScope($filter) : ($request->filled('filter') ? 'filter' : null);
+        abort_if($invalid !== null, 422, "The $invalid of this view is not a valid id: nothing changed.");
         $view = [];
         foreach (['device', 'group', 'location'] as $key) {
             $value = is_array($filter) ? ($filter[$key] ?? null) : null;

@@ -47,6 +47,25 @@ class MapParams
     }
 
     /**
+     * The first of device, group and location that a request fills in (as Request::filled() reads it: not
+     * absent, empty or blank) but that parse() would drop as no id (abc, 0, -1, a list), or null. A request
+     * that writes refuses it (HTTP 422): read as "no filter", it would widen the write to every device
+     * (ScopedRepository::strictScope()).
+     */
+    public static function invalidScope(array $input): ?string
+    {
+        foreach (['device', 'group', 'location'] as $key) {
+            $value = $input[$key] ?? null;
+            $given = $value !== null && (! is_scalar($value) || is_bool($value) || trim((string) $value) !== '');
+            if ($given && self::int($input, $key) === null) {
+                return $key;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Positive integer parameter or null.
      */
     private static function int(array $query, string $key): ?int

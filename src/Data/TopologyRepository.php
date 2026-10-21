@@ -239,7 +239,7 @@ class TopologyRepository extends ScopedRepository
     public function ports(array $portIds, ?array $columns = null): array
     {
         $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
-        if (! $portIds) {
+        if (! $portIds || ! $this->allowsTable('ports')) {
             return [];
         }
 
@@ -499,7 +499,7 @@ class TopologyRepository extends ScopedRepository
     public function opticalRx(array $portIds): array
     {
         $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
-        if (! $portIds) {
+        if (! $portIds || ! $this->allowsTable('ports') || ! $this->allowsTable('sensors')) {
             return [];
         }
 
@@ -517,8 +517,8 @@ class TopologyRepository extends ScopedRepository
         // every transceiver of the devices, so a sensor of another port is never taken for one of ours
         $byEntity = [];
         try {
-            foreach (DB::table('transceivers')->whereIntegerInRaw('device_id', $deviceIds)->whereNotNull('entity_physical_index')
-                ->get(['port_id', 'device_id', 'entity_physical_index']) as $row) {
+            foreach ($this->allowsTable('transceivers') ? DB::table('transceivers')->whereIntegerInRaw('device_id', $deviceIds)->whereNotNull('entity_physical_index')
+                ->get(['port_id', 'device_id', 'entity_physical_index']) : [] as $row) {
                 $byEntity[$row->device_id . '|' . $row->entity_physical_index] = (int) $row->port_id;
             }
         } catch (\Throwable $e) {
@@ -914,7 +914,7 @@ class TopologyRepository extends ScopedRepository
 
         $owners = DB::table('stp')->whereIn('bridgeAddress', $macs)->distinct()
             ->get(['device_id', 'bridgeAddress as mac'])->map(fn ($r) => [(int) $r->device_id, null, (string) $r->mac, 'stp']);
-        if ($deep) {
+        if ($deep && $this->allowsTable('ports')) {
             $owners = $owners->merge(DB::table('ports')->whereIn('ifPhysAddress', $macs)->limit(200)
                 ->get(['device_id', 'port_id', 'ifPhysAddress as mac'])->map(fn ($r) => [(int) $r->device_id, (int) $r->port_id, (string) $r->mac, 'interface']));
         }
@@ -1028,6 +1028,10 @@ class TopologyRepository extends ScopedRepository
             if ((int) ($port['ifIndex'] ?? 0) > 0) {
                 $wanted[(int) $port['device_id']][(int) $port['ifIndex']] = true;
             }
+        }
+
+        if (! $wanted || ! $this->allowsTable('entPhysical')) {
+            return [];
         }
 
         $columns = ['device_id', 'entPhysicalIndex', 'entPhysicalContainedIn', 'entPhysicalClass', 'entPhysicalIsFRU', 'entPhysicalName', 'entPhysicalDescr', 'ifIndex'];

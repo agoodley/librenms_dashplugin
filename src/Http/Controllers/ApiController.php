@@ -70,7 +70,7 @@ class ApiController extends Controller
         $refs = array_slice(array_values(array_filter(array_map('trim', explode(',', (string) $request->query('fail', ''))),
             fn ($ref) => $ref !== '' && strlen($ref) <= 300)), 0, 50);
 
-        return $this->json('failure simulation', fn () => $this->service($request)->simulate($refs));
+        return $this->json('failure simulation', fn () => $this->service($request)->simulate($refs), 'redundancy');
     }
 
     /**
@@ -104,6 +104,6 @@ class ApiController extends Controller
             }
 
             return $result;
-        });
+        }, $map);
     }
 }

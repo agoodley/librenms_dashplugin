@@ -54,7 +54,7 @@ class HistoryController extends Controller
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json('topology history', fn () => self::forUser($this->history($request, $settings)->changes($params, $from, $to), self::isAdmin($request)));
+        return $this->json('topology history', fn () => self::forUser($this->history($request, $settings)->changes($params, $from, $to), self::isAdmin($request)), 'changes');
     }
 
     /**
@@ -68,6 +68,9 @@ class HistoryController extends Controller
     public function baseline(Request $request): RedirectResponse
     {
         abort_unless(self::isAdmin($request), 403);
+        // a device, group or location that is no id would be read as "every device"
+        $invalid = MapParams::invalidScope($request->only(['device', 'group', 'location']));
+        abort_if($invalid !== null, 422, "The $invalid of this request is not a valid id: nothing changed.");
 
         $settings = $this->settings();
         $params = MapParams::parse($request->only(['device', 'group', 'location']), $settings);

@@ -11,8 +11,17 @@ namespace Agoodley\LibrenmsTopology\Sharing;
  */
 class SavedView
 {
-    /** Positions kept per view: more nodes than any map draws (Maximum devices and their neighbors). */
+    /** Positions read from a browser: more nodes than any map draws (Maximum devices and their neighbors). */
     public const MAX_POSITIONS = 20000;
+
+    /** Longest node id kept (a map node id names a device or an LLDP/CDP neighbor). */
+    public const MAX_ID_LENGTH = 200;
+
+    /** Largest layout stored (positions, JSON encoded): a view keeps only the nodes of its map. */
+    public const MAX_LAYOUT_BYTES = 1048576;
+
+    /** Views a user may keep. */
+    public const MAX_PER_USER = 200;
 
     /** Map pages that have views. */
     public const PAGES = ['l2' => 'Layer 2', 'l3' => 'Layer 3'];
@@ -73,13 +82,14 @@ class SavedView
     }
 
     /**
-     * May the user open the view: their own, or a shared one?
+     * May the user open the view: their own, a shared one, or, as a LibreNMS admin, a personal view whose owner
+     * no longer exists (to delete it)?
      *
-     * @param  array{user_id: int|string, shared: mixed}  $row  topology_views row
+     * @param  array{user_id: int|string, shared: mixed, owner_id?: ?int}  $row  topology_views row, joined to its owner (owner_id)
      */
-    public static function canOpen(array $row, int $userId): bool
+    public static function canOpen(array $row, int $userId, bool $admin = false): bool
     {
-        return (int) $row['user_id'] === $userId || (bool) $row['shared'];
+        return (int) $row['user_id'] === $userId || (bool) $row['shared'] || ($admin && self::orphaned($row));
     }
 
     /**
@@ -94,6 +104,49 @@ class SavedView
     }
 
     /**
+     * May the user delete the view: one they may change, or, as a LibreNMS admin, a personal view whose owner
+     * no longer exists (nobody else can open it)?
+     *
+     * @param  array{user_id: int|string, shared: mixed, owner_id?: ?int}  $row  topology_views row joined to its owner (owner_id)
+     */
+    public static function canDelete(array $row, int $userId, bool $admin): bool
+    {
+        return self::canEdit($row, $userId, $admin) || ($admin && self::orphaned($row));
+    }
+
+    /**
+     * Is the view's owner gone (a views row joined to users without a match: owner_id null)?
+     */
+    private static function orphaned(array $row): bool
+    {
+        return array_key_exists('owner_id', $row) && $row['owner_id'] === null;
+    }
+
+    /**
+     * Why a user may not save another view, or null.
+     */
+    public static function tooMany(int $views): ?string
+    {
+        return $views >= self::MAX_PER_USER
+            ? 'You keep ' . self::MAX_PER_USER . ' saved views, the most a user may: delete some on the Saved Views page to save another.' : null;
+    }
+
+    /**
+     * The positions of the nodes a map has (the map the view is saved from), and why they cannot be stored, or null.
+     *
+     * @param  array<string, array{0: float, 1: float}>  $positions  positions()
+     * @param  array<int, array>  $nodes  the map's nodes (with id)
+     * @return array{0: array<string, array{0: float, 1: float}>, 1: ?string}
+     */
+    public static function forStorage(array $positions, array $nodes): array
+    {
+        $kept = array_intersect_key($positions, array_flip(array_map(fn (array $node) => (string) ($node['id'] ?? ''), $nodes)));
+        $error = strlen((string) json_encode($kept)) > self::MAX_LAYOUT_BYTES ? 'The layout of this view is too large to save (more than 1 MB).' : null;
+
+        return [$kept, $error];
+    }
+
+    /**
      * What a user is shown of a view they may open: its parameters without the device, group,
      * location and VRF they may not see (their ids and names would tell them), its scope in words,
      * owner and whether they may change it. The url is added by the caller.
@@ -103,7 +156,7 @@ class SavedView
      * @param  array{device?: ?string, group?: ?string, location?: ?string, vrf?: ?string}  $names  the names of the view's
      *     device, group, location and VRF that the user may see, null for the others
      * @return array{id: int, name: string, page: string, params: array, options: array, scope: string, owner: string, mine: bool,
-     *     shared: bool, can_edit: bool, updated_at: ?string}
+     *     shared: bool, can_edit: bool, can_delete: bool, updated_at: ?string}
      */
     public static function present(array $row, int $userId, bool $admin, array $names): array
     {
@@ -129,6 +182,7 @@ class SavedView
             'mine' => $mine,
             'shared' => (bool) $row['shared'],
             'can_edit' => self::canEdit($row, $userId, $admin),
+            'can_delete' => self::canDelete($row, $userId, $admin),
             'updated_at' => $row['updated_at'] ?? null,
         ];
     }
@@ -149,7 +203,7 @@ class SavedView
 
         $positions = [];
         foreach (array_slice($input, 0, self::MAX_POSITIONS, true) as $id => $position) {
-            if (! is_string($id) || $id === '' || strlen($id) > 300 || ! is_array($position)) {
+            if (! is_string($id) || $id === '' || strlen($id) > self::MAX_ID_LENGTH || ! is_array($position)) {
                 continue;
             }
             $x = $position['x'] ?? $position[0] ?? null;

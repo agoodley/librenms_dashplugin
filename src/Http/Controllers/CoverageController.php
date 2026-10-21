@@ -40,7 +40,7 @@ class CoverageController extends Controller
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json('coverage report', fn () => $this->coverage($request, $settings)->report($params));
+        return $this->json('coverage report', fn () => $this->coverage($request, $settings)->report($params), 'coverage');
     }
 
     private function coverage(Request $request, PluginSettings $settings): CoverageService
