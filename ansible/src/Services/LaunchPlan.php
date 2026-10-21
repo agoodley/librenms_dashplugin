@@ -1,0 +1,98 @@
+<?php
+
+namespace Agoodley\LibrenmsAnsible\Services;
+
+use Agoodley\LibrenmsAnsible\Runner\Runner;
+use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
+
+/**
+ * What a launch would start (RunLauncher::plan()): the template as the runner has it now, the targets and the
+ * refused devices, the checked answers, and what stops it. forPage() is what the preview shows: the secret
+ * answers never leave this object except toward the runner.
+ */
+final class LaunchPlan
+{
+    /** @var string[] what prevents the launch */
+    public array $errors = [];
+
+    /** @var array<string, string> survey variable => what is wrong with its answer */
+    public array $variableErrors = [];
+
+    /** @var string[] what the user should know but does not prevent the launch */
+    public array $warnings = [];
+
+    public ?RunnerTemplate $template = null;
+
+    public ?Runner $runner = null;
+
+    /** @var array<int, array{device_id: int, name: string, display: string, hostname: string, os: string, platform: string}> device_id => target */
+    public array $targets = [];
+
+    /** @var array<int, array{device_id: int, display: string, reason: string, text: string}> device_id => refused device */
+    public array $refused = [];
+
+    /** @var array<string, string|int> answers that are not secret */
+    public array $values = [];
+
+    /** @var array<string, string> secret answers, for the runner only */
+    public array $secrets = [];
+
+    public int $maxTargets = 0;
+
+    /**
+     * Can it be launched as it is?
+     */
+    public function ok(): bool
+    {
+        return ! $this->errors && ! $this->variableErrors && ! $this->refused && $this->targets && $this->template !== null;
+    }
+
+    /**
+     * The inventory names of the targets: the limit.
+     *
+     * @return string[]
+     */
+    public function limit(): array
+    {
+        return array_values(array_column($this->targets, 'name'));
+    }
+
+    /**
+     * The answers as the audit log keeps them: secret ones without their value.
+     *
+     * @return array<int, array{name: string, label: string, type: string, value: string|int|null, secret: bool}>
+     */
+    public function variables(): array
+    {
+        $variables = [];
+        foreach ($this->template?->surveyVars ?? [] as $var) {
+            $given = array_key_exists($var->name, $this->values) || array_key_exists($var->name, $this->secrets);
+            $variables[] = ['name' => $var->name, 'label' => $var->label(), 'type' => $var->type,
+                'value' => $var->isSecret() ? ($given ? '********' : null) : ($this->values[$var->name] ?? null), 'secret' => $var->isSecret()];
+        }
+
+        return $variables;
+    }
+
+    /**
+     * The preview: everything but the secret answers.
+     *
+     * @return array<string, mixed>
+     */
+    public function forPage(): array
+    {
+        return [
+            'ok' => $this->ok(),
+            'errors' => $this->errors,
+            'variable_errors' => (object) $this->variableErrors,
+            'warnings' => $this->warnings,
+            'template' => $this->template === null ? null : ['id' => $this->template->id, 'name' => $this->template->name,
+                'playbook' => $this->template->playbook, 'description' => $this->template->description],
+            'targets' => array_values($this->targets),
+            'refused' => array_values($this->refused),
+            'variables' => $this->variables(),
+            'limit' => implode(',', $this->limit()),
+            'max_targets' => $this->maxTargets,
+        ];
+    }
+}

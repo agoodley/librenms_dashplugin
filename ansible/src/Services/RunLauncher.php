@@ -1,0 +1,237 @@
+<?php
+
+namespace Agoodley\LibrenmsAnsible\Services;
+
+use Agoodley\LibrenmsAnsible\Data\RunRepository;
+use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
+use Agoodley\LibrenmsAnsible\Runner\LaunchRequest;
+use Agoodley\LibrenmsAnsible\Runner\RunnerError;
+use Agoodley\LibrenmsAnsible\Runs\RunResults;
+use Agoodley\LibrenmsAnsible\Runs\RunStatus;
+use Agoodley\LibrenmsAnsible\Runs\RunText;
+use Agoodley\LibrenmsAnsible\Runs\TargetSelection;
+use Agoodley\LibrenmsAnsible\Runs\TemplateCheck;
+use Agoodley\LibrenmsAnsible\Runs\VariableValidator;
+use Agoodley\LibrenmsAnsible\Support\PluginSettings;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Previews and launches runs. Everything is checked on the server, against the runner as it is now: the template
+ * (TemplateCheck, asked from the runner, never cached), the answers (VariableValidator) and the targets
+ * (TargetSelection, at most the max per run). A launch that fails a check is refused before the runner is asked.
+ * The busy check and the recording of the run happen under one lock, so two launches cannot take the same
+ * device and a submitted form starts one run at most (its one-time token).
+ */
+final class RunLauncher
+{
+    /** Lock around the busy check and the insert of a run. */
+    private const LOCK = 'ansible-plugin-launch';
+
+    public function __construct(
+        private readonly Plugin $plugin,
+        private readonly RunRepository $runs,
+        private readonly InventoryService $inventory,
+        private readonly PluginSettings $settings,
+        private readonly Eventlog $eventlog = new Eventlog(),
+    ) {
+    }
+
+    /**
+     * What a launch of the template on the devices with the answers would start, or why it cannot.
+     *
+     * @param  int[]  $deviceIds
+     * @param  array<string, mixed>  $answers
+     */
+    public function plan(string $templateId, array $deviceIds, array $answers): LaunchPlan
+    {
+        $plan = new LaunchPlan();
+        $plan->maxTargets = $this->settings->maxTargets();
+        $connection = $this->plugin->connection();
+        try {
+            $plan->runner = $this->plugin->runner($connection);
+            $plan->template = $plan->runner->template($templateId);
+        } catch (RunnerError $e) {
+            $plan->errors[] = $e->getMessage();
+
+            return $plan;
+        }
+        $reasons = TemplateCheck::reasons($plan->template, (string) $connection->inventory);
+        if ($reasons) {
+            $plan->errors[] = 'The template "' . $plan->template->name . '" cannot be launched safely: ' . implode('; ', $reasons) . '.';
+        }
+        $answers = VariableValidator::validate($plan->template->surveyVars, $answers);
+        [$plan->values, $plan->secrets, $plan->variableErrors] = [$answers['values'], $answers['secrets'], $answers['errors']];
+        $this->targets($plan, $deviceIds);
+
+        return $plan;
+    }
+
+    /**
+     * Sort the chosen devices into targets and refused ones, and check their number.
+     *
+     * @param  int[]  $deviceIds
+     */
+    private function targets(LaunchPlan $plan, array $deviceIds): void
+    {
+        $devices = $this->inventory->devices();
+        $runnerUser = $this->inventory->runnerUser();
+        if ($runnerUser === null) {
+            $plan->warnings[] = 'The runner has not fetched the inventory yet, so the plugin cannot check that it will find these devices: '
+                . 'set up the LibreNMS inventory in Semaphore UI (see the Inventory page).';
+        }
+        $selection = new TargetSelection($this->inventory->build(), $devices->exists(), $this->runs->busy(), $runnerUser['visible'] ?? null,
+            (string) ($runnerUser['user']->username ?? ''));
+        $chosen = $selection->select($deviceIds);
+        $rows = $devices->devices();
+        $names = $devices->names(array_keys($chosen['targets'] + $chosen['refused']));
+        $map = $this->settings->platformMap();
+        foreach ($chosen['targets'] as $deviceId => $name) {
+            $plan->targets[$deviceId] = ['device_id' => $deviceId, 'name' => $name, 'display' => $names[$deviceId] ?? (string) $deviceId,
+                'hostname' => (string) $rows[$deviceId]['hostname'], 'os' => (string) $rows[$deviceId]['os'],
+                'platform' => (string) ($map->for((string) $rows[$deviceId]['os'])['network_os'] ?? '')];
+        }
+        foreach ($chosen['refused'] as $deviceId => $refusal) {
+            $plan->refused[$deviceId] = ['device_id' => $deviceId, 'display' => $names[$deviceId] ?? "#$deviceId"] + $refusal;
+        }
+        if (! $plan->targets) {
+            $plan->errors[] = 'Choose at least one device that can be a target.';
+        } elseif (count($plan->targets) > $plan->maxTargets) {
+            $plan->errors[] = 'A run may have at most ' . $plan->maxTargets . ' targets (Max targets per run setting); ' . count($plan->targets) . ' are chosen.';
+        }
+    }
+
+    /**
+     * Launch: check everything again, record the run, then ask the runner. The run of an already used form
+     * token is returned as it is.
+     *
+     * @param  \App\Models\User  $user
+     * @param  int[]  $deviceIds
+     * @param  array<string, mixed>  $answers
+     * @return array{run_id: int|null, plan: LaunchPlan, errors: string[], existing: bool}
+     */
+    public function launch($user, string $templateId, array $deviceIds, array $answers, string $requestToken): array
+    {
+        $plan = new LaunchPlan();
+        if (! preg_match('/^[a-f0-9]{32}$/D', $requestToken)) {
+            return self::refused($plan, ['The launch form is out of date: reload the page.']);
+        }
+        $existing = $this->runs->byRequestToken($requestToken);
+        if ($existing !== null) {
+            return ['run_id' => $existing, 'plan' => $plan, 'errors' => [], 'existing' => true];
+        }
+        $plan = $this->plan($templateId, $deviceIds, $answers);
+        if (! $plan->ok()) {
+            $errors = $plan->errors;
+            if ($plan->variableErrors) {
+                $errors[] = 'Fix the answers to the survey variables.';
+            }
+            if ($plan->refused) {
+                $errors[] = count($plan->refused) . ' of the chosen devices cannot be targets now (' . implode('; ',
+                    array_map(fn ($r) => $r['display'] . ': ' . $r['text'], array_slice($plan->refused, 0, 5))) . '): preview again.';
+            }
+
+            return self::refused($plan, $errors);
+        }
+
+        $lock = Cache::lock(self::LOCK, 30);
+        try {
+            $lock->block(10);
+        } catch (LockTimeoutException) {
+            return self::refused($plan, ['Another launch is being recorded: try again in a moment.']);
+        }
+        try {
+            $existing = $this->runs->byRequestToken($requestToken);
+            if ($existing !== null) {
+                return ['run_id' => $existing, 'plan' => $plan, 'errors' => [], 'existing' => true];
+            }
+            $busy = array_intersect_key($this->runs->busy(), $plan->targets);
+            if ($busy) {
+                return self::refused($plan, array_map(fn ($deviceId, $runId) => $plan->targets[$deviceId]['display'] . " became busy in run #$runId: preview again.",
+                    array_keys($busy), $busy));
+            }
+            $runId = $this->record($user, $plan, $requestToken);
+        } finally {
+            $lock->release();
+        }
+        $this->start($runId, $plan, (string) $user->username);
+
+        return ['run_id' => $runId, 'plan' => $plan, 'errors' => [], 'existing' => false];
+    }
+
+    /**
+     * Record the run (pending) and its targets.
+     *
+     * @param  \App\Models\User  $user
+     */
+    private function record($user, LaunchPlan $plan, string $requestToken): int
+    {
+        $connection = $this->plugin->connection();
+        $targets = [];
+        foreach ($plan->targets as $deviceId => $target) {
+            $targets[$deviceId] = ['inventory_name' => $target['name'], 'hostname' => $target['hostname'], 'display' => $target['display']];
+        }
+
+        return $this->runs->create([
+            'user_id' => (int) $user->user_id,
+            'username' => (string) $user->username,
+            'runner' => 'semaphore',
+            'runner_project' => $connection->project,
+            'template_id' => $plan->template->id,
+            'template_name' => mb_substr($plan->template->name, 0, 255),
+            'playbook' => mb_substr($plan->template->playbook, 0, 255),
+            'limit' => implode(',', $plan->limit()),
+            'variables' => $plan->variables(),
+            'request_token' => $requestToken,
+            'status' => RunStatus::PENDING,
+        ], $targets);
+    }
+
+    /**
+     * Ask the runner to start the recorded run, and write the eventlog of its targets.
+     */
+    private function start(int $runId, LaunchPlan $plan, string $username): void
+    {
+        $template = $plan->template;
+        try {
+            $task = $plan->runner->launch(new LaunchRequest($template->id, $plan->limit(), $plan->values, $plan->secrets, RunText::taskMessage($runId, $username)));
+            // a final status comes from the follower, with the output and the PLAY RECAP
+            $this->runs->update($runId, ['runner_task_id' => $task->id, 'runner_status' => $task->rawStatus,
+                'status' => RunStatus::isFinal($task->status) ? RunStatus::RUNNING : $task->status,
+                'started_at' => $task->started !== null ? date('Y-m-d H:i:s', $task->started) : null]);
+            foreach (array_keys($plan->targets) as $deviceId) {
+                $this->eventlog->write(RunText::started($runId, $template->name, $username), $deviceId, 'info', RunText::reference($runId));
+            }
+        } catch (RunnerError $e) {
+            $this->notLaunched($runId, $plan, $username, $e->getMessage());
+        } catch (\Throwable $e) {
+            Log::error("ansible plugin: launching run #$runId failed: " . $e->getMessage());
+            $this->notLaunched($runId, $plan, $username, 'the launch failed, see logs/librenms.log');
+        }
+    }
+
+    /**
+     * The runner refused the run or could not be reached: nothing ran.
+     */
+    private function notLaunched(int $runId, LaunchPlan $plan, string $username, string $error): void
+    {
+        $this->runs->update($runId, ['status' => RunStatus::NOT_LAUNCHED, 'error' => UntrustedText::line($error, 1000), 'finished_at' => now(),
+            'summary' => [RunResults::NOT_RUN => count($plan->targets)]]);
+        $this->runs->setResults($runId, array_fill_keys(array_keys($plan->targets), ['result' => RunResults::NOT_RUN, 'counts' => null]));
+        foreach (array_keys($plan->targets) as $deviceId) {
+            $this->eventlog->write(RunText::notLaunched($runId, $plan->template->name, $username, $error), $deviceId, 'warning', RunText::reference($runId));
+        }
+    }
+
+    /**
+     * A refused launch.
+     *
+     * @param  string[]  $errors
+     * @return array{run_id: null, plan: LaunchPlan, errors: string[], existing: bool}
+     */
+    private static function refused(LaunchPlan $plan, array $errors): array
+    {
+        return ['run_id' => null, 'plan' => $plan, 'errors' => $errors, 'existing' => false];
+    }
+}

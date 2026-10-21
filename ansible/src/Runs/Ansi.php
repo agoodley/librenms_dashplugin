@@ -41,8 +41,13 @@ final class Ansi
             self::add($segments, substr($line, $offset, $position - $offset), $colour, $bold);
             $offset = $position + strlen($sequence);
             if (preg_match('/^\x1b\[([0-9;]*)m$/', $sequence, $m)) {
-                foreach ($m[1] === '' ? [0] : array_map('intval', explode(';', $m[1])) as $code) {
-                    if ($code === 0) {
+                $codes = $m[1] === '' ? [0] : array_map('intval', explode(';', $m[1]));
+                for ($i = 0; $i < count($codes); $i++) {
+                    $code = $codes[$i];
+                    if ($code === 38 || $code === 48) {
+                        // 256-colour and RGB colours (38;5;n, 38;2;r;g;b): no class, and their numbers are no codes
+                        $i += ($codes[$i + 1] ?? null) === 5 ? 2 : (($codes[$i + 1] ?? null) === 2 ? 4 : 0);
+                    } elseif ($code === 0) {
                         [$colour, $bold] = [null, false];
                     } elseif ($code === 1) {
                         $bold = true;
@@ -59,6 +64,20 @@ final class Ansi
         self::add($segments, substr($line, $offset), $colour, $bold);
 
         return $segments;
+    }
+
+    /**
+     * The line as HTML: every run of text escaped, in a span with its colour class (from the fixed set above).
+     */
+    public static function html(string $line): string
+    {
+        $html = '';
+        foreach (self::segments($line) as [$class, $text]) {
+            $text = htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $html .= $class === null ? $text : '<span class="' . $class . '">' . $text . '</span>';
+        }
+
+        return $html;
     }
 
     /**
