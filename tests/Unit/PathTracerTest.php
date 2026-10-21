@@ -469,6 +469,78 @@ class PathTracerTest extends TestCase
         $this->assertSame([506, 706], [$trace['hops'][0]['out_port'], $trace['hops'][1]['in_port']]);
     }
 
+    public function testRoutesTheRoleMayNotViewOrThatWereNotReadAreEstimatedNotMissing(): void
+    {
+        $path = [self::D1, PathFixture::RTR1, PathFixture::RTR3, PathFixture::RTR2];
+
+        // the user's LibreNMS role may not view routes: every router is estimated, and says why
+        $l3 = PathFixture::campus()->l3(false, $data);
+        $data->routesHidden = true;
+        $trace = $l3->trace(self::D1, 1110, '', '10.90.130.31');
+        $this->assertSame(['connected', $path], [$trace['end'], array_column($trace['hops'], 'device_id')]);
+        $this->assertSame([L3Tracer::ROUTES_HIDDEN], array_values(array_unique(array_filter(array_column($trace['hops'], 'estimated_why')))));
+        $this->assertSame([null, null, null], array_column(array_slice($trace['hops'], 0, 3), 'route'));
+        $this->assertStringStartsWith('Your LibreNMS role may not view routes: the next hop is taken to be rtr1', $trace['hops'][0]['estimated']);
+
+        // the routes toward the destination were not read (a trace reads them toward a few addresses): estimated, not "no route"
+        $l3 = PathFixture::campus()->l3(false, $data);
+        $data->unread = ['192.0.2.1'];
+        $stuck = $l3->trace(PathFixture::RTR2, null, '', '192.0.2.1');
+        $this->assertSame(['stuck', L3Tracer::ROUTES_UNREAD], [$stuck['end'], $stuck['stuck']], 'not "no route"');
+        $l3 = PathFixture::campus()->l3(false, $data);
+        $data->unread = ['10.90.130.31'];
+        $trace = $l3->trace(self::D1, 1110, '', '10.90.130.31');
+        $this->assertSame(['connected', $path], [$trace['end'], array_column($trace['hops'], 'device_id')]);
+        $this->assertSame([L3Tracer::ROUTES_UNREAD, L3Tracer::ROUTES_UNREAD], array_column(array_slice($trace['hops'], 0, 2), 'estimated_why'));
+        $this->assertStringStartsWith('The routes toward 10.90.130.31 were not read', $trace['hops'][0]['estimated']);
+
+        // nor are a recursive next hop's: the next hop is reached on at its router, the routers between not known
+        $net = PathFixture::campus();
+        $net->address(PathFixture::RTR2, 699, 'Lo0', '10.255.0.2', 32);
+        $net->routes[PathFixture::RTR1] = array_values(array_filter($net->routes[PathFixture::RTR1], fn ($route) => $route['dest'] !== '10.90.130.0'));
+        $net->route(PathFixture::RTR1, '10.90.130.0', 24, '10.255.0.2', 0, 'bgp', 200)->route(PathFixture::RTR1, '10.255.0.2', 32, '10.90.0.5', 503, 'ospf', 30);
+        $l3 = $net->l3(false, $data);
+        $data->unread = ['10.255.0.2'];
+        $trace = $l3->trace(self::D1, 1110, '', '10.90.130.31');
+        $this->assertSame(['connected', [self::D1, PathFixture::RTR1, PathFixture::RTR2]], [$trace['end'], array_column($trace['hops'], 'device_id')]);
+        $this->assertSame([true, '10.255.0.2', null], [$trace['hops'][1]['recursive'], $trace['hops'][1]['unread'], $trace['hops'][1]['via']]);
+    }
+
+    public function testASubnetWithoutANetworkInLibreNmsIsFoundThroughItsArpEntries(): void
+    {
+        // rtr2's Gi0/0/1.140 has an address row without a network id: the subnet is not found by its network
+        $net = PathFixture::campus();
+        $net->address(PathFixture::RTR2, 6140, 'Gi0/0/1.140', '10.90.140.1', 24, network: false);
+        $net->route(PathFixture::RTR1, '10.90.140.0', 24, '10.90.0.5', 503, 'ospf', 20);
+        $l3 = $net->l3();
+        $this->assertSame([], $l3->gateways('10.90.140.41'));
+        $this->assertSame('stuck', $l3->trace(self::D1, 1110, '', '10.90.140.41')['end'], 'rtr3 has no way toward a router with the subnet');
+
+        // the router interface with the host's ARP entry is its gateway, and what estimates head for
+        $l3 = $net->l3();
+        $l3->arpEntries('10.90.140.41', [['device_id' => PathFixture::ACC3, 'port_id' => 803], ['device_id' => PathFixture::RTR2, 'port_id' => 6140]]);
+        $this->assertSame([[PathFixture::RTR2, 6140, '10.90.140.1']], array_map(fn ($interface) => [$interface['device_id'], $interface['port_id'], $interface['address']],
+            $l3->gateways('10.90.140.41')), 'not the switch');
+        $trace = $l3->trace(self::D1, 1110, '', '10.90.140.41');
+        $this->assertSame(['connected', [self::D1, PathFixture::RTR1, PathFixture::RTR3, PathFixture::RTR2]], [$trace['end'], array_column($trace['hops'], 'device_id')]);
+        $this->assertSame('10.90.140.1', $trace['egress']['address']);
+
+        // a subnet with a network is found by it, the ARP entries are not needed
+        $this->assertSame([PathFixture::RTR2], array_column($net->l3()->gateways('10.90.130.31'), 'device_id'));
+    }
+
+    public function testAnEstimateFollowsOnlySubnetsWithANetwork(): void
+    {
+        // rtr3 and rtr2 share 10.90.0.6/31, which LibreNMS keeps no network of, and no OSPF: rtr3 does not find rtr2
+        $net = PathFixture::campus();
+        $net->adjacencies = array_values(array_filter($net->adjacencies, fn ($row) => $row['neighbor_ip'] !== '10.90.0.7'));
+        $this->assertSame([self::D1, PathFixture::RTR1, PathFixture::RTR3, PathFixture::RTR2], array_column($net->l3()->trace(self::D1, 1110, '', '10.90.130.31')['hops'], 'device_id'),
+            'over the subnet');
+        $net->withoutNetwork('10.90.0.6', '10.90.0.7');
+        $trace = $net->l3()->trace(self::D1, 1110, '', '10.90.130.31');
+        $this->assertSame(['stuck', [self::D1, PathFixture::RTR1, PathFixture::RTR3]], [$trace['end'], array_column($trace['hops'], 'device_id')]);
+    }
+
     /**
      * The campus with 172.30.0.0/24 on rtr2 (Gi0/0/3) and rtr2's loopback 10.255.0.2, which rtr1 learns 172.30.0.0/24 by
      * iBGP from and reaches by OSPF via rtr3; rtr3 has a route table in LibreNMS.

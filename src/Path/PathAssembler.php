@@ -38,19 +38,25 @@ class PathAssembler
                 . (Cidr::family($bIp) === 4 ? 'IPv4' : 'IPv6') . ' one: only the Layer 2 path can be traced.');
         }
 
+        $this->roleNotes();
         $gateway = $routed ? $this->endpoints->gateway($a) : null;
         if ($routed && $gateway === null) {
-            $this->log->note('warning', 'No router you can see has an interface in the subnet of ' . PathService::display($aIp)
-                . ', so the routed path from A cannot be followed: the Layer 2 path is shown instead.');
+            $hidden = $this->network->roleHides('ipv4_addresses', 'ipv6_addresses');
+            $this->log->note('warning', $hidden ? 'Your LibreNMS role may not view ' . implode(', ', $hidden) . ', so the routers on the way are not known: the Layer 2'
+                . ' path is shown instead of the routed one.'
+                : 'No router you can see has an interface in the subnet of ' . PathService::display($aIp) . ', so the routed path from A cannot be followed: the Layer 2'
+                . ' path is shown instead.');
             $routed = false;
         } elseif ($routed && $gateway['address'] !== null && Cidr::contains((string) Cidr::network($gateway['address'], (int) $gateway['prefixlen']), $bIp)
             && $gateway['device_id'] !== $b['device_id']) {
             $routed = false; // the same subnet: B is reached at Layer 2
             $vlan ??= $this->network->l2Port($gateway['device_id'], $gateway['port_id'])[1];
         }
+        $addresses = $this->network->roleHides('ipv4_addresses', 'ipv6_addresses');
         foreach (['A' => $a, 'B' => $b] as $side => $end) {
             if ($end['ip'] === null) {
-                $this->log->note('info', $side . ' has no IP address known to LibreNMS' . ($end['kind'] === 'host' ? ' (no ARP entry of it on the routers you can see)' : '')
+                $this->log->note('info', $side . ($addresses ? ' has no IP address you may see (your LibreNMS role may not view ' . implode(', ', $addresses) . ')'
+                    : ' has no IP address known to LibreNMS' . ($end['kind'] === 'host' ? ' (no ARP entry of it on the routers you can see)' : ''))
                     . ': only the Layer 2 path can be traced.');
             }
         }
@@ -101,7 +107,10 @@ class PathAssembler
     {
         $this->endpoints->gatewayNote($a, $gateway);
         $table = $this->network->routeTable();
-        if ($table['skipped']) {
+        if ($table['hidden']) {
+            $this->log->note('warning', 'Your LibreNMS role may not view routes: every router is crossed by an estimate from its subnets'
+                . ($this->network->roleHides('ospf_nbrs', 'bgpPeers') ? '.' : ' and neighbors.'));
+        } elseif ($table['skipped']) {
             $this->log->note('warning', 'The route table of LibreNMS holds ' . ($this->admin && $table['size'] !== null ? 'about ' . number_format($table['size']) . ' routes, ' : '')
                 . 'more than the ' . number_format($table['limit']) . ' routes a path trace reads (setting "Route table limit"): every router is crossed by an estimate from its subnets and neighbors.');
         }
@@ -191,6 +200,18 @@ class PathAssembler
     }
 
     /**
+     * What the user's LibreNMS role hides from the whole trace: the ports of the hops (the links then count as up, carrying
+     * the VLAN and forwarding).
+     */
+    private function roleNotes(): void
+    {
+        if (! $this->network->allows('ports')) {
+            $this->log->note('warning', 'Your LibreNMS role may not view ports: the hops show none' . ($this->network->allows('links')
+                ? ', and whether the links on the path are up, carry the VLAN and forward is not known.' : '.'));
+        }
+    }
+
+    /**
      * Notes on one router of the routed path: a next hop several devices have, a recursive next hop its routes do not
      * lead to.
      */
@@ -235,11 +256,17 @@ class PathAssembler
 
         // no Layer 2 path: still neighbors, unless the second was reached by a recursive next hop the first one's routes do not lead to
         $adjacent = ! $hop['recursive'];
-        $note = 'No LLDP/CDP link you can see joins ' . $this->network->name($from) . ' and ' . $this->network->name($to) . ($adjacent
-            ? ', neighbors on a subnet they share: the switches between them, if any, are not known.'
-            : ($hop['recursive'] ? ': the next hop ' . PathService::display((string) $hop['next_hop']) . ' is not on a subnet of ' . $this->network->name($from)
-                . ' and its routes do not lead to it, so the routers between them are not known.'
-                : ': the devices between them are not known.'));
+        $names = $this->network->name($from) . ' and ' . $this->network->name($to);
+        $links = $this->network->allows('links');
+        if ($adjacent) {
+            $note = $links ? "No LLDP/CDP link you can see joins $names, neighbors on a subnet they share: the switches between them, if any, are not known."
+                : "Your LibreNMS role may not view LLDP/CDP links: the switches between $names (neighbors on a subnet they share), if any, are not shown.";
+        } else {
+            $why = $hop['unread'] !== null ? 'its routes toward ' . PathService::display((string) $hop['unread']) . ' were not read (a path trace reads the route table toward '
+                . PathNetwork::ROUTE_READS . ' addresses at most)' : 'its routes do not lead to it';
+            $note = ($links ? "No LLDP/CDP link you can see joins $names" : "Your LibreNMS role may not view LLDP/CDP links between $names") . ': the next hop '
+                . PathService::display((string) $hop['next_hop']) . ' is not on a subnet of ' . $this->network->name($from) . " and $why, so the routers between them are not known.";
+        }
 
         return [[
             ['node' => 'd:' . $from, 'kind' => 'device', 'device_id' => $from, 'link_note' => $note] + self::emptyRow(),
@@ -291,7 +318,13 @@ class PathAssembler
     private function broken(int $from, int $to, ?int $vlan, array $ports, array $blockers): array
     {
         $where = $vlan === null ? '' : ' in VLAN ' . $vlan;
-        if ($blockers) {
+        $gap = $blockers ? 'no forwarding path' . $where : 'not linked by LLDP/CDP';
+        if (! $this->network->allows('links')) {
+            // not a problem of the network: the user's role may not view the links the path would follow
+            $gap = 'not shown: your role may not view LLDP/CDP links';
+            $this->log->note('warning', 'The Layer 2 path between ' . $this->network->name($from) . ' and ' . $this->network->name($to) . $where
+                . ' is not shown: your LibreNMS role may not view LLDP/CDP links.');
+        } elseif ($blockers) {
             $list = array_map(fn ($blocker) => $this->network->name($blocker['device_id']) . ' ' . $this->network->portName($blocker['port_id']) . ' (' . $blocker['why'] . ')', array_slice($blockers, 0, 8));
             $this->log->add(Finding::CRITICAL, 'no_l2_path', 'no forwarding path' . $where . ' between ' . $this->network->name($from) . ' and ' . $this->network->name($to),
                 'Every shortest chain of links between them is stopped: ' . implode(', ', $list) . (count($blockers) > 8 ? ' and ' . (count($blockers) - 8) . ' more' : '') . '.',
@@ -306,7 +339,7 @@ class PathAssembler
         return [
             ['node' => 'd:' . $from, 'kind' => 'device', 'device_id' => $from, 'in_port' => $ports['enter'] ?? null, 'out_port' => $ports['leave'] ?? null,
                 'in_vlan' => $vlan, 'out_vlan' => $vlan] + self::emptyRow(),
-            ['kind' => 'gap', 'name' => $blockers ? 'no forwarding path' . $where : 'not linked by LLDP/CDP', 'in_vlan' => $vlan, 'out_vlan' => $vlan] + self::emptyRow(),
+            ['kind' => 'gap', 'name' => $gap, 'in_vlan' => $vlan, 'out_vlan' => $vlan] + self::emptyRow(),
             ['node' => 'd:' . $to, 'kind' => 'device', 'device_id' => $to, 'in_port' => $ports['arrive'] ?? null, 'out_port' => $ports['exit'] ?? null,
                 'in_vlan' => $vlan, 'out_vlan' => $vlan] + self::emptyRow(),
         ];
@@ -364,6 +397,9 @@ class PathAssembler
     public static function noRoutes(string $name, string $state, string $vrf): string
     {
         return match ($state) {
+            L3Tracer::ROUTES_HIDDEN => "Your LibreNMS role may not view the routes of $name",
+            L3Tracer::ROUTES_UNREAD => "The routes of $name toward this address were not read (a path trace reads the route table toward " . PathNetwork::ROUTE_READS
+                . ' addresses at most)',
             L3Tracer::ROUTES_SKIPPED => 'The route table of LibreNMS was not read (it holds more routes than a path trace reads)',
             L3Tracer::ROUTES_STALE => "LibreNMS' routes of $name were not read again at its last discovery",
             L3Tracer::ROUTES_VRF => "LibreNMS has routes of $name, but none " . ($vrf === '' ? 'in its global table' : 'in VRF ' . $vrf),
@@ -377,6 +413,8 @@ class PathAssembler
     public static function routesAdvice(string $state): string
     {
         return match ($state) {
+            L3Tracer::ROUTES_HIDDEN => 'A LibreNMS admin can give your role the permission to view routing data (routing.view).',
+            L3Tracer::ROUTES_UNREAD => 'Trace toward the next hop of the last router whose routes were read to follow the path further.',
             L3Tracer::ROUTES_SKIPPED => 'Raise the setting "Route table limit" if the database scans the route table quickly enough.',
             L3Tracer::ROUTES_STALE => 'Check that the route discovery module still runs for them and that they have fewer routes than LibreNMS reads of a device'
                 . ' (lnms config:set routes_max_number, 1000 by default).',

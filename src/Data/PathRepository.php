@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Log;
  * some nodes (a device out of the user's sight stays recognizable without being revealed), the VLAN rows of one VLAN on
  * some ports, the interfaces of the routing devices, the owners of an address, and the route table (LibreNMS' `route`,
  * which has no index but its primary key: its per-device summary is cached, and it is scanned once per address routed to).
+ * Every read leaves out what the user's LibreNMS role may not view (ScopedRepository::allowsTable()).
  */
 class PathRepository extends ScopedRepository
 {
@@ -42,6 +43,9 @@ class PathRepository extends ScopedRepository
      */
     public function linksAt(array $deviceIds, array $hidden = [], array $names = []): array
     {
+        if (! $this->allowsTable('links')) {
+            return [];
+        }
         $deviceIds = $this->visible($deviceIds);
         $hiddenIds = $this->hiddenDeviceIds($hidden);
         $names = array_values(array_unique(array_filter(array_map('strval', $names), fn ($name) => $name !== '')));
@@ -84,6 +88,9 @@ class PathRepository extends ScopedRepository
     public function portsWithVlans(array $portIds): array
     {
         $result = [];
+        if (! $this->allowsTable('ports_vlans')) {
+            return $result;
+        }
         foreach (array_chunk(array_values(array_unique(array_map('intval', $portIds))), 5000) as $chunk) {
             foreach (DB::table('ports_vlans')->whereIntegerInRaw('port_id', $chunk)->distinct()->pluck('port_id') as $portId) {
                 $result[(int) $portId] = true;
@@ -102,6 +109,9 @@ class PathRepository extends ScopedRepository
     public function portVlans(array $portIds, int $vlan): array
     {
         $result = [];
+        if (! $this->allowsTable('ports_vlans')) {
+            return $result;
+        }
         foreach (array_chunk(array_values(array_unique(array_map('intval', $portIds))), 5000) as $chunk) {
             foreach (DB::table('ports_vlans')->whereIntegerInRaw('port_id', $chunk)->where('vlan', $vlan)->get(['port_id', 'untagged']) as $row) {
                 $result[(int) $row->port_id] = ($result[(int) $row->port_id] ?? false) || (bool) $row->untagged;
@@ -121,10 +131,11 @@ class PathRepository extends ScopedRepository
     {
         $result = [];
         foreach (array_chunk(array_values(array_unique(array_map('intval', $portIds))), 5000) as $chunk) {
-            foreach (DB::table('ipv4_addresses')->whereIntegerInRaw('port_id', $chunk)->distinct()->pluck('port_id') as $portId) {
+            foreach ($this->allowsTable('ipv4_addresses') ? DB::table('ipv4_addresses')->whereIntegerInRaw('port_id', $chunk)->distinct()->pluck('port_id') : [] as $portId) {
                 $result[(int) $portId] = true;
             }
-            foreach (DB::table('ipv6_addresses')->whereIntegerInRaw('port_id', $chunk)->where('ipv6_address', 'not like', 'fe80%')->distinct()->pluck('port_id') as $portId) {
+            foreach ($this->allowsTable('ipv6_addresses') ? DB::table('ipv6_addresses')->whereIntegerInRaw('port_id', $chunk)->where('ipv6_address', 'not like', 'fe80%')->distinct()->pluck('port_id') : []
+                as $portId) {
                 $result[(int) $portId] = true;
             }
         }
@@ -143,7 +154,7 @@ class PathRepository extends ScopedRepository
     public function stpInstances(array $ids, ?int $vlan): array
     {
         $ids = $this->visible($ids);
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('stp')) {
             return [];
         }
 
@@ -194,7 +205,7 @@ class PathRepository extends ScopedRepository
             }
         }
         $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
-        if (! $byKey || ! $portIds) {
+        if (! $byKey || ! $portIds || ! $this->allowsTable('ports_stp')) {
             return [];
         }
 
@@ -282,6 +293,9 @@ class PathRepository extends ScopedRepository
             $networks[] = (string) Cidr::network($canonical, $length);
         }
         [$table, $column, $id] = $family === 4 ? ['ipv4_networks', 'ipv4_network', 'ipv4_network_id'] : ['ipv6_networks', 'ipv6_network', 'ipv6_network_id'];
+        if (! $this->allowsTable($table)) {
+            return [];
+        }
         try {
             $ids = array_map('intval', DB::table($table)->whereIn($column, $networks)->pluck($id)->all());
         } catch (\Throwable $e) {
@@ -316,6 +330,9 @@ class PathRepository extends ScopedRepository
      */
     public function routeTableSize(): ?int
     {
+        if (! $this->allowsTable('route')) {
+            return null;
+        }
         try {
             $row = DB::selectOne('SELECT TABLE_ROWS AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', ['route']);
 
@@ -338,7 +355,7 @@ class PathRepository extends ScopedRepository
     public function routeData(array $deviceIds): array
     {
         $deviceIds = $this->visible($deviceIds);
-        if (! $deviceIds) {
+        if (! $deviceIds || ! $this->allowsTable('route')) {
             return [];
         }
 
@@ -383,7 +400,7 @@ class PathRepository extends ScopedRepository
     {
         $deviceIds = $this->visible($deviceIds);
         $packed = @inet_pton($destination);
-        if (! $deviceIds || $packed === false) {
+        if (! $deviceIds || $packed === false || ! $this->allowsTable('route')) {
             return [];
         }
 
@@ -437,7 +454,7 @@ class PathRepository extends ScopedRepository
     public function portsByName(int $deviceId, array $names): array
     {
         $names = array_values(array_unique(array_filter($names, fn ($name) => $name !== '')));
-        if (! $names || ! $this->canSee($deviceId)) {
+        if (! $names || ! $this->canSee($deviceId) || ! $this->allowsTable('ports')) {
             return [];
         }
 
@@ -527,7 +544,8 @@ class PathRepository extends ScopedRepository
 
     /**
      * Interface rows of both address tables of devices the user may see, the query of each narrowed by $where (null:
-     * that table is not read).
+     * that table is not read); none of a table the user's role may not view (nor of ports), and the VRF names only
+     * with the permission to view VRFs.
      *
      * @param  \Closure(\Illuminate\Database\Query\Builder, int): mixed  $where  query and address family
      */
@@ -537,6 +555,9 @@ class PathRepository extends ScopedRepository
         try {
             foreach ([4 => ['ipv4_addresses', 'a.ipv4_address', 'a.ipv4_prefixlen', 'a.ipv4_network_id'], 6 => ['ipv6_addresses', 'a.ipv6_compressed', 'a.ipv6_prefixlen', 'a.ipv6_network_id']]
                 as $family => [$table, $address, $prefixlen, $network]) {
+                if (! $this->allowsTable($table) || ! $this->allowsTable('ports')) {
+                    continue;
+                }
                 $query = DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')->where('p.deleted', 0);
                 if ($where($query, $family) === null) {
                     continue;
@@ -554,7 +575,7 @@ class PathRepository extends ScopedRepository
             return [];
         }
         $vrfs = [];
-        foreach (array_chunk(array_values(array_unique(array_map(fn ($row) => (int) $row['device_id'], $rows))), 5000) as $chunk) {
+        foreach ($this->allows(\App\Models\Vrf::class) ? array_chunk(array_values(array_unique(array_map(fn ($row) => (int) $row['device_id'], $rows))), 5000) : [] as $chunk) {
             $vrfs += DB::table('vrfs')->whereIntegerInRaw('device_id', $chunk)->pluck('vrf_name', 'vrf_id')->all();
         }
 

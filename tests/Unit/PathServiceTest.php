@@ -33,6 +33,8 @@ class PathServiceTest extends TestCase
             '10.90.110.11' => $host('009011000011', PathFixture::ACC1, 305, 'Gi1/0/5', 110, '10.90.110.11', PathFixture::DIST1, 1110),
             '10.90.110.12' => $host('009011000012', PathFixture::ACC2, 406, 'Gi1/0/6', 110, '10.90.110.12', PathFixture::DIST1, 1110),
             '10.90.130.31' => $host('009013000031', PathFixture::ACC3, 803, 'Gi1/0/3', 130, '10.90.130.31', PathFixture::RTR2, 6130),
+            // on rtr2's VLAN 140 sub-interface (see subnetWithoutNetwork())
+            '10.90.140.41' => $host('009014000041', PathFixture::ACC3, 804, 'Gi1/0/4', 140, '10.90.140.41', PathFixture::RTR2, 6140),
         ];
 
         return fn (string $query) => ['devices' => [], 'resolved' => [], 'truncated' => false,
@@ -44,11 +46,11 @@ class PathServiceTest extends TestCase
      * @param  (\Closure(string): array)|null  $hosts  host locator answers (default: hosts())
      */
     private static function service(?PathFixture $net = null, ?array $visible = null, array $settings = [], ?FakePathRepository &$repo = null, ?int $routes = 100,
-        bool $admin = false, ?FakePathTopology &$topology = null, ?\Closure $hosts = null): PathService
+        bool $admin = false, ?FakePathTopology &$topology = null, ?\Closure $hosts = null, array $denied = []): PathService
     {
         $net ??= PathFixture::campus();
         $visible ??= array_keys($net->devices);
-        $repo = new FakePathRepository($net, $visible);
+        $repo = new FakePathRepository($net, $visible, $denied);
         $repo->size = $routes;
         $topology = new FakePathTopology($net, $visible);
 
@@ -338,6 +340,142 @@ class PathServiceTest extends TestCase
         $this->assertStringContainsString('10.90.0.5, the next hop of rtr1, is an address of 2 devices you can see (rtr3 as well)', implode(' ', array_column($result['notes'], 'text')));
     }
 
+    public function testAHostOnASubnetWithoutANetworkLeavesThroughTheRouterWithItsArpEntry(): void
+    {
+        $result = self::service(self::subnetWithoutNetwork())->trace(['a' => '10.90.140.41', 'b' => '10.90.110.11']);
+        $this->assertSame(['l3', true], [$result['mode'], $result['complete']]);
+        $this->assertSame(['10.90.140.41 (00:90:14:00:00:41)', 'acc3', 'rtr2', 'rtr3', 'rtr1', 'dist1', 'acc1', '10.90.110.11 (00:90:11:00:00:11)'], self::names($result));
+        $rtr2 = $result['hops'][2];
+        $this->assertSame(['Gi0/0/1', 'Gi0/0/1.140', '10.90.140.1'], [$rtr2['in']['name'], $rtr2['in']['interface']['name'], $rtr2['in']['interface']['address']]);
+
+        // and back: the estimate at rtr3 heads for the router with the host's ARP entry, which delivers to the subnet
+        $back = self::service(self::subnetWithoutNetwork())->trace(['a' => '10.90.110.11', 'b' => '10.90.140.41']);
+        $this->assertSame(['l3', true], [$back['mode'], $back['complete']]);
+        $this->assertSame(['dist1', 'rtr1', 'rtr3', 'rtr2', 'acc3'], array_slice(self::names($back), 2, 5));
+        $this->assertSame('10.90.140.0/24', $back['hops'][5]['connected']);
+
+        // without the ARP entry nothing tells the router: the Layer 2 path only
+        $hosts = self::hosts();
+        $noArp = function (string $query) use ($hosts): array {
+            $answer = $hosts($query);
+            foreach ($answer['hosts'] as &$host) {
+                $host['addresses'] = [];
+            }
+
+            return $answer;
+        };
+        $result = self::service(self::subnetWithoutNetwork(), null, [], $repo, 100, false, $topology, $noArp)->trace(['a' => '10.90.140.41', 'b' => '10.90.110.11']);
+        $this->assertSame('l2', $result['mode']);
+        $this->assertStringContainsString('No router you can see has an interface in the subnet of 10.90.140.41', implode(' ', array_column($result['notes'], 'text')));
+    }
+
+    public function testARoleThatMayNotViewRoutesGetsEveryRouterEstimated(): void
+    {
+        $result = self::service(null, null, [], $repo, 100, false, $topology, null, ['App\Models\Route'])->trace(['a' => '10.90.110.11', 'b' => '10.90.130.31']);
+
+        $this->assertSame([], $repo->calls, 'no route reads');
+        $this->assertSame(['routes'], $result['role_hidden']);
+        $this->assertSame(['l3', true], [$result['mode'], $result['complete']]);
+        $routers = array_values(array_filter($result['hops'], fn ($hop) => $hop['layer'] === 'l3'));
+        $this->assertSame(['dist1', 'rtr1', 'rtr3', 'rtr2'], array_column($routers, 'name'));
+        $this->assertSame(['hidden', 'hidden', 'hidden'], array_column(array_slice($routers, 0, 3), 'estimated_why'));
+        $this->assertStringStartsWith('Your LibreNMS role may not view routes: the next hop is taken to be rtr1', $routers[0]['estimated']);
+        $this->assertNull($routers[0]['routes_read']);
+        $this->assertStringContainsString('Your LibreNMS role may not view routes: every router is crossed by an estimate from its subnets and neighbors.',
+            implode(' ', array_column($result['notes'], 'text')), 'it may view OSPF neighbors');
+        $estimated = array_column($result['findings'], null, 'code')['estimated_hops'];
+        $this->assertStringContainsString('routing.view', $estimated['recommendation']);
+        $this->assertStringNotContainsString('discovery_modules', $estimated['recommendation']);
+    }
+
+    public function testARoleThatMayViewDevicesOnlyIsToldWhatTheTraceLeavesOut(): void
+    {
+        $denied = ['App\Models\Link', 'App\Models\Port', 'App\Models\PortVlan', 'App\Models\PortStack', 'App\Models\PortStatistic', 'App\Models\PortStp',
+            'App\Models\Ipv4Address', 'App\Models\Ipv6Address', 'App\Models\Ipv4Network', 'App\Models\Ipv6Network', 'App\Models\Route', 'App\Models\OspfNbr',
+            'App\Models\BgpPeer', 'App\Models\PortsFdb', 'App\Models\Ipv4Mac', 'App\Models\Ipv6Nd', 'App\Models\PortsNac', 'App\Models\Vrf'];
+        $result = self::service(null, null, [], $repo, 100, false, $topology, null, $denied)
+            ->trace(['a_device' => PathFixture::ACC1, 'a_port' => 305, 'b_device' => PathFixture::ACC2, 'b_port' => 406, 'vlan' => 110]);
+
+        $this->assertSame(['LLDP/CDP links', 'ports', 'spanning tree ports', 'IP addresses', 'routes', 'OSPF neighbors', 'BGP sessions', 'forwarding tables', 'ARP tables',
+            'IPv6 neighbor tables', '802.1X sessions'], $result['role_hidden']);
+        $this->assertSame(['acc1', null], [$result['a']['label'], $result['a']['port']]);
+        $this->assertSame('Port #305 is left out: your LibreNMS role may not view ports.', $result['a']['notes'][0]['text']);
+        $this->assertFalse($result['complete']);
+        $this->assertSame(['device', 'gap', 'device'], array_column($result['hops'], 'type'));
+        $this->assertSame('not shown: your role may not view LLDP/CDP links', $result['hops'][1]['name']);
+        $this->assertSame([null, null], [$result['hops'][0]['in'], $result['hops'][0]['out']]);
+        $this->assertSame([], $result['findings'], 'not "not linked by LLDP/CDP": nothing is known to be wrong');
+        $notes = implode(' ', array_column($result['notes'], 'text'));
+        $this->assertStringContainsString('The Layer 2 path between acc1 and acc2 in VLAN 110 is not shown: your LibreNMS role may not view LLDP/CDP links.', $notes);
+        $this->assertStringContainsString('Your LibreNMS role may not view ports: the hops show none.', $notes);
+        $json = json_encode($result);
+        foreach (['Gi1/0/5', 'Gi1/0/49', 'Te1/0/11', 'dist1', '10.90.'] as $secret) {
+            $this->assertStringNotContainsString($secret, $json, $secret);
+        }
+
+        // an address is looked up in what the role hides: the message says so
+        $hosts = fn (string $query) => ['devices' => [], 'resolved' => [], 'truncated' => false, 'hosts' => [], 'message' => 'No ARP or IPv6 neighbor entry for ' . $query . '.'];
+        $result = self::service(null, null, [], $repo, 100, false, $topology, $hosts, $denied)->trace(['a' => '10.90.110.11', 'b_device' => PathFixture::ACC2]);
+        $this->assertSame('A: No ARP or IPv6 neighbor entry for 10.90.110.11. Your LibreNMS role may not view IP addresses, ports, forwarding tables, ARP tables, IPv6 neighbor'
+            . ' tables, 802.1X sessions, where hosts and addresses are looked up.', $result['message']);
+
+        // links without ports: the links count as up and carrying the VLAN, their ports are not shown
+        $result = self::service(null, null, [], $repo, 100, false, $topology, null, array_values(array_diff($denied, ['App\\Models\\Link'])))
+            ->trace(['a_device' => PathFixture::ACC1, 'b_device' => PathFixture::ACC2, 'vlan' => 110]);
+        $this->assertSame(['l2', true, ['acc1', 'dist1', 'acc2']], [$result['mode'], $result['complete'], self::names($result)]);
+        $this->assertSame([[null, null]], array_unique(array_map(fn ($hop) => [$hop['in'], $hop['out']], $result['hops']), SORT_REGULAR));
+        $this->assertStringContainsString('the hops show none, and whether the links on the path are up, carry the VLAN and forward is not known.',
+            implode(' ', array_column($result['notes'], 'text')));
+
+        // the routed path needs the routers' interfaces
+        $result = self::service(null, null, [], $repo, 100, false, $topology, null, ['App\Models\Ipv4Address', 'App\Models\Ipv4Network'])
+            ->trace(['a' => '10.90.110.11', 'b' => '10.90.130.31']);
+        $this->assertSame('l2', $result['mode']);
+        $this->assertStringContainsString('Your LibreNMS role may not view IP addresses, so the routers on the way are not known: the Layer 2 path is shown instead of the routed one.',
+            implode(' ', array_column($result['notes'], 'text')));
+    }
+
+    public function testEveryReadOfDataTheRoleMayNotViewIsEmptyWithoutAQuery(): void
+    {
+        // no database here: a read that queried would fail
+        $repo = new class(null) extends PathRepository
+        {
+            protected function policyAllows(string $modelClass): bool
+            {
+                return false;
+            }
+
+            public function canSee(int $deviceId): bool
+            {
+                return true;
+            }
+        };
+
+        $this->assertSame([[], [], [], [], [], [], [], [], [], [], [], [], null], [
+            $repo->linksAt([1], [1], ['sw9']), $repo->portsWithVlans([1]), $repo->portVlans([1], 110), $repo->portsWithIp([1]), $repo->stpInstances([1], 110),
+            $repo->stpPorts([1 => 0], [1]), $repo->interfaces([1]), $repo->ownersOf(['10.0.0.1', '2001:db8::1']), $repo->subnets('10.0.0.1'),
+            $repo->peers([['address' => '10.0.0.1', 'network_id' => 5]]), $repo->routeData([1]), $repo->routesToward('10.0.0.1', [1]), $repo->routeTableSize(),
+        ]);
+        $this->assertSame([], $repo->portsByName(1, ['Gi1/0/1']));
+    }
+
+    /**
+     * The campus with rtr2's Gi0/0/1.140 (10.90.140.1/24, an address row without a network id: LibreNMS keeps no network of
+     * it) on the trunk to acc3, a host on acc3 Gi1/0/4 whose ARP entry rtr2 has, and rtr1's route to it via rtr3.
+     */
+    private static function subnetWithoutNetwork(): PathFixture
+    {
+        $net = PathFixture::campus();
+        $net->address(PathFixture::RTR2, 6140, 'Gi0/0/1.140', '10.90.140.1', 24, network: false);
+        $net->port(804, PathFixture::ACC3, 'Gi1/0/4', 1, 'ethernetCsmacd', '140');
+        $net->portVlans[610][140] = false;
+        $net->portVlans[801][140] = false;
+        $net->portVlans[804] = [140 => true];
+        $net->route(PathFixture::RTR1, '10.90.140.0', 24, '10.90.0.5', 503, 'ospf', 20);
+
+        return $net;
+    }
+
     public function testASingleSpanningTreeInstanceForAVlanIsSaidSo(): void
     {
         // acc1 runs one RSTP / MSTP instance: LibreNMS has it as the common instance
@@ -376,10 +514,16 @@ final class FakePathRepository extends PathRepository
 
     /**
      * @param  int[]  $visible
+     * @param  string[]  $denied  models the user's role may not view (each read leaves them out, as PathRepository's do)
      */
-    public function __construct(private readonly PathFixture $net, private readonly array $visible)
+    public function __construct(private readonly PathFixture $net, private readonly array $visible, private readonly array $denied = [])
     {
         parent::__construct(null);
+    }
+
+    protected function policyAllows(string $modelClass): bool
+    {
+        return ! in_array($modelClass, $this->denied, true);
     }
 
     public function canSee(int $deviceId): bool
@@ -390,6 +534,9 @@ final class FakePathRepository extends PathRepository
     public function linksAt(array $deviceIds, array $hidden = [], array $names = []): array
     {
         $this->linkReads[] = $deviceIds;
+        if (! $this->allowsTable('links')) {
+            return [];
+        }
         $remotes = array_merge($deviceIds, $this->hiddenDeviceIds($hidden));
         $links = [];
         foreach ($this->net->links as $index => $link) {
@@ -405,13 +552,17 @@ final class FakePathRepository extends PathRepository
 
     public function portsWithVlans(array $portIds): array
     {
+        if (! $this->allowsTable('ports_vlans')) {
+            return [];
+        }
+
         return array_fill_keys(array_keys(array_intersect_key($this->net->portVlans, array_flip($portIds))), true);
     }
 
     public function portVlans(array $portIds, int $vlan): array
     {
         $result = [];
-        foreach (array_intersect_key($this->net->portVlans, array_flip($portIds)) as $portId => $vlans) {
+        foreach (! $this->allowsTable('ports_vlans') ? [] : array_intersect_key($this->net->portVlans, array_flip($portIds)) as $portId => $vlans) {
             if (isset($vlans[$vlan])) {
                 $result[$portId] = $vlans[$vlan];
             }
@@ -424,7 +575,7 @@ final class FakePathRepository extends PathRepository
     {
         $result = [];
         foreach ($this->net->interfaces as $interface) {
-            if (in_array($interface['port_id'], $portIds, true)) {
+            if (in_array($interface['port_id'], $portIds, true) && $this->allowsTable(str_contains($interface['address'], ':') ? 'ipv6_addresses' : 'ipv4_addresses')) {
                 $result[$interface['port_id']] = true;
             }
         }
@@ -434,17 +585,17 @@ final class FakePathRepository extends PathRepository
 
     public function routeTableSize(): ?int
     {
-        return $this->size;
+        return $this->allowsTable('route') ? $this->size : null;
     }
 
     public function stpInstances(array $ids, ?int $vlan): array
     {
-        return array_values(array_filter($this->net->instances, fn ($row) => in_array($row['device_id'], $ids, true) && $this->canSee($row['device_id'])));
+        return array_values(array_filter($this->net->instances, fn ($row) => in_array($row['device_id'], $ids, true) && $this->canSee($row['device_id']) && $this->allowsTable('stp')));
     }
 
     public function stpPorts(array $keys, array $portIds): array
     {
-        return array_values(array_filter($this->net->stpPorts, fn ($row) => in_array($row['port_id'], $portIds, true)
+        return array_values(array_filter($this->net->stpPorts, fn ($row) => $this->allowsTable('ports_stp') && in_array($row['port_id'], $portIds, true)
             && ($keys[$row['device_id']] ?? null) === StpIndex::vlanKey($row['vlan'])));
     }
 
@@ -462,33 +613,47 @@ final class FakePathRepository extends PathRepository
         return $this->visibleRows(fn ($interface) => in_array(Cidr::canonical($interface['address']), $addresses, true));
     }
 
+    /**
+     * The addresses on the networks LibreNMS keeps of the address's subnets.
+     */
     public function subnets(string $address): array
     {
         $this->subnetReads[] = $address;
+        if (! $this->allowsTable(str_contains($address, ':') ? 'ipv6_networks' : 'ipv4_networks')) {
+            return [];
+        }
 
-        return $this->visibleRows(fn ($interface) => $interface['prefixlen'] < (str_contains($address, ':') ? 128 : 32) && ! str_starts_with($interface['address'], 'fe80')
-            && Cidr::family($interface['address']) === Cidr::family($address) && Cidr::contains((string) Cidr::network($interface['address'], $interface['prefixlen']), $address));
-    }
-
-    public function peers(array $interfaces): array
-    {
-        $networks = array_map(fn ($interface) => Cidr::network($interface['address'], $interface['prefixlen']), $interfaces);
-
-        return $this->visibleRows(fn ($interface) => ! str_starts_with($interface['address'], 'fe80') && in_array(Cidr::network($interface['address'], $interface['prefixlen']), $networks, true));
+        return $this->visibleRows(fn ($interface) => $interface['network_id'] > 0 && Cidr::family($interface['address']) === Cidr::family($address)
+            && Cidr::contains((string) Cidr::network($interface['address'], $interface['prefixlen']), $address));
     }
 
     /**
-     * Interface rows (with a network id, as LibreNMS has them) of devices the user may see.
+     * The addresses on the networks of these interfaces (none for an interface without a network).
+     */
+    public function peers(array $interfaces): array
+    {
+        $networks = array_filter(array_map(fn ($interface) => (int) ($interface['network_id'] ?? 0), $interfaces));
+
+        return $this->visibleRows(fn ($interface) => in_array($interface['network_id'], $networks, true));
+    }
+
+    /**
+     * Interface rows (with a network id, as LibreNMS has them) of devices the user may see, of the address tables (and
+     * ports) their role may view.
      */
     private function visibleRows(\Closure $filter): array
     {
         return array_values(array_map(fn ($interface) => $interface + ['network_id' => 0, 'up' => true],
-            array_filter($this->net->interfaces, fn ($interface) => $this->canSee($interface['device_id']) && $filter($interface))));
+            array_filter($this->net->interfaces, fn ($interface) => $this->canSee($interface['device_id']) && $this->allowsTable('ports')
+                && $this->allowsTable(str_contains($interface['address'], ':') ? 'ipv6_addresses' : 'ipv4_addresses') && $filter($interface))));
     }
 
     public function routeData(array $deviceIds): array
     {
         $this->calls[] = 'routeData';
+        if (! $this->allowsTable('route')) {
+            return [];
+        }
 
         return array_intersect_key($this->net->routeData, array_flip(array_filter($deviceIds, fn ($id) => $this->canSee($id))));
     }
@@ -497,7 +662,7 @@ final class FakePathRepository extends PathRepository
     {
         $this->calls[] = 'routesToward';
         $routes = [];
-        foreach (array_intersect_key($this->net->routes, array_flip($deviceIds)) as $deviceId => $rows) {
+        foreach (! $this->allowsTable('route') ? [] : array_intersect_key($this->net->routes, array_flip($deviceIds)) as $deviceId => $rows) {
             $routes[$deviceId] = array_values(array_filter($rows, fn ($route) => Cidr::contains($route['dest'] . '/' . $route['pfxlen'], $destination)));
         }
 
@@ -507,7 +672,7 @@ final class FakePathRepository extends PathRepository
     public function portsByName(int $deviceId, array $names): array
     {
         $found = [];
-        foreach ($this->net->ports as $portId => $port) {
+        foreach ($this->allowsTable('ports') ? $this->net->ports : [] as $portId => $port) {
             if ($port['device_id'] === $deviceId && in_array($port['ifName'], $names, true)) {
                 $found[strtolower($port['ifName'])] = $portId;
             }

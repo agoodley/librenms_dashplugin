@@ -46,7 +46,7 @@ class RolePermissionsTest extends TestCase
         $this->assertFalse($repo->allowsTable('bgpPeers'));
         $this->assertFalse($repo->allowsTable('bgpPeers_cbgp'), 'the prefix counters are BGP data too');
         $this->assertTrue($repo->allowsTable('ospf_nbrs'));
-        $this->assertTrue($repo->allowsTable('ipv4_addresses'), 'a table without a role permission of its own');
+        $this->assertTrue($repo->allowsTable('vendor_ouis'), 'a table without a role permission of its own');
         $this->assertSame(['LLDP/CDP links', 'BGP sessions'], $repo->hiddenKinds(['links', 'bgpPeers', 'bgpPeers_cbgp', 'ospf_nbrs']));
         $this->assertSame([], $repo->read('bgpPeers'), 'no query for a table the role may not read');
         $this->assertSame(3, $repo->checks, 'one check per model and repository');

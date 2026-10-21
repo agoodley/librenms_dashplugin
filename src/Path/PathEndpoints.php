@@ -60,7 +60,7 @@ class PathEndpoints
         }
 
         if ($this->hosts === null) {
-            return ['message' => $text . ' is not an address or name of a device you can see.'] + $endpoint;
+            return ['message' => $text . ' is not an address or name of a device you can see.' . $this->roleHint()] + $endpoint;
         }
         $search = ($this->hosts)($text);
         $device = $search['devices'][0] ?? null;
@@ -85,7 +85,7 @@ class PathEndpoints
                 default => null,
             };
 
-            return ['message' => $why !== null ? $text . ' cannot be located: ' . $why : ($search['message'] ?? $text . ' cannot be located.')] + $endpoint;
+            return ['message' => ($why !== null ? $text . ' cannot be located: ' . $why : ($search['message'] ?? $text . ' cannot be located.')) . $this->roleHint()] + $endpoint;
         }
 
         $ips = array_values(array_unique(array_merge($ip !== null ? [$ip] : [],
@@ -98,6 +98,10 @@ class PathEndpoints
         if (! empty($host['stale']) && in_array($host['status'], ['located', 'behind'], true)) {
             array_unshift($notes, ['level' => 'warning', 'text' => 'The forwarding tables did not list this host at their last discovery: it may be switched off or gone,'
                 . ' and the path shows where it was last seen.']);
+        }
+        // the routers with its ARP / neighbor entries: its gateways when LibreNMS keeps no network of its subnet
+        foreach ($host['addresses'] as $address) {
+            $this->network->l3()->arpEntries((string) $address['ip'], [$address]);
         }
         $endpoint = array_merge($endpoint, [
             'resolved' => true, 'kind' => 'host', 'mac' => $host['mac'], 'readable' => $host['readable'], 'vendor' => $host['vendor'],
@@ -129,6 +133,17 @@ class PathEndpoints
         $endpoint['device'] = $this->network->name($endpoint['device_id']);
 
         return $endpoint;
+    }
+
+    /**
+     * " Your LibreNMS role may not view ..." when the user's role hides data an end is looked up in: interface addresses
+     * and the host locator's tables.
+     */
+    private function roleHint(): string
+    {
+        $hidden = $this->network->roleHides('ipv4_addresses', 'ipv6_addresses', 'ports', 'ports_fdb', 'ipv4_mac', 'ipv6_nd', 'ports_nac');
+
+        return $hidden ? ' Your LibreNMS role may not view ' . implode(', ', $hidden) . ', where hosts and addresses are looked up.' : '';
     }
 
     /**
@@ -247,6 +262,10 @@ class PathEndpoints
         }
         $name = $this->network->name($deviceId);
         $port = null;
+        if ($portId !== null && ! $this->network->allows('ports')) {
+            $endpoint['notes'][] = ['level' => 'warning', 'text' => 'Port #' . $portId . ' is left out: your LibreNMS role may not view ports.'];
+            $portId = null;
+        }
         if ($portId !== null) {
             $port = $this->network->port($portId);
             if ($port === null || (int) $port['device_id'] !== $deviceId) {

@@ -90,4 +90,9 @@ interface L3Data
      * Was the route table left unread (larger than a trace reads)?
      */
     public function skipped(): bool;
+
+    /**
+     * May the user's LibreNMS role not view routes (no route data then)?
+     */
+    public function routesHidden(): bool;
 }

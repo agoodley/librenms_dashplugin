@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\Data\PathRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Hosts\HostQuery;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
+use Agoodley\LibrenmsTopology\Support\RoleData;
 
 /**
  * A→B path trace on the data the user may see: resolves both ends (PathEndpoints: a host located with the host
@@ -43,7 +44,8 @@ class PathService
     /**
      * @param  array{a?: string, b?: string, a_device?: ?int, a_port?: ?int, b_device?: ?int, b_port?: ?int, vlan?: ?int}  $query
      * @return array{query: array, a: ?array, b: ?array, mode: ?string, vlan: ?int, complete: bool, hops: array, findings: array,
-     *     device_names: array, notes: array, summary: ?array, map_url: ?string, message: ?string}
+     *     device_names: array, notes: array, summary: ?array, map_url: ?string, message: ?string, role_hidden: string[]}
+     *     role_hidden: what the user's LibreNMS role may not view of the data a trace uses (the trace leaves it out)
      */
     public function trace(array $query): array
     {
@@ -54,7 +56,8 @@ class PathService
             'vlan' => $query['vlan'] ?? null,
         ];
         $result = ['query' => $query, 'a' => null, 'b' => null, 'mode' => null, 'vlan' => null, 'complete' => false, 'hops' => [],
-            'findings' => [], 'device_names' => [], 'notes' => [], 'summary' => null, 'map_url' => null, 'message' => null];
+            'findings' => [], 'device_names' => [], 'notes' => [], 'summary' => null, 'map_url' => null, 'message' => null,
+            'role_hidden' => $this->repo->hiddenKinds(RoleData::PAGES['path'])];
         $hasA = $query['a'] !== '' || $query['a_device'];
         $hasB = $query['b'] !== '' || $query['b_device'];
         if (! $hasA || ! $hasB) {

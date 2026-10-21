@@ -66,6 +66,9 @@ class PathFixture
 
     public array $adjacencies = [];
 
+    /** @var array<string, int> family|network => id, the networks LibreNMS keeps of the subnets (ipv4_networks / ipv6_networks) */
+    public array $networks = [];
+
     public static function campus(): self
     {
         $net = new self;
@@ -187,11 +190,33 @@ class PathFixture
         return $this;
     }
 
-    public function address(int $deviceId, int $portId, ?string $name, string $address, int $prefix, string $vrf = '', bool $up = true): self
+    /**
+     * An interface address with the network id LibreNMS gives it: the id of its subnet's network, none (0) for host and
+     * link-local addresses, and none when $network is false (an address row without a network).
+     */
+    public function address(int $deviceId, int $portId, ?string $name, string $address, int $prefix, string $vrf = '', bool $up = true, bool $network = true): self
     {
-        $this->interfaces[] = ['device_id' => $deviceId, 'port_id' => $portId, 'address' => $address, 'prefixlen' => $prefix, 'vrf' => $vrf, 'up' => $up];
+        $family = Cidr::family($address);
+        $subnet = $prefix > 0 && $prefix < ($family === 4 ? 32 : 128) && ! str_starts_with($address, 'fe80') ? $family . '|' . Cidr::network($address, $prefix) : null;
+        $networkId = $subnet !== null && $network ? ($this->networks[$subnet] ??= count($this->networks) + 1) : 0;
+        $this->interfaces[] = ['device_id' => $deviceId, 'port_id' => $portId, 'address' => $address, 'prefixlen' => $prefix, 'vrf' => $vrf, 'up' => $up,
+            'network_id' => $networkId];
         if ($name !== null && ! isset($this->ports[$portId])) {
             $this->port($portId, $deviceId, $name, 1, str_starts_with($name, 'Vlan') ? 'l3ipvlan' : 'ethernetCsmacd');
+        }
+
+        return $this;
+    }
+
+    /**
+     * Interface addresses LibreNMS keeps no network of (their rows' network id is 0).
+     */
+    public function withoutNetwork(string ...$addresses): self
+    {
+        foreach ($this->interfaces as &$interface) {
+            if (in_array($interface['address'], $addresses, true)) {
+                $interface['network_id'] = 0;
+            }
         }
 
         return $this;
@@ -274,6 +299,12 @@ final class FixtureL3Data implements L3Data
     /** @var string[] addresses whose subnets were asked for */
     public array $subnetReads = [];
 
+    /** The user's role may not view routes. */
+    public bool $routesHidden = false;
+
+    /** @var string[] addresses whose routes are not read (more addresses routed toward than a trace reads) */
+    public array $unread = [];
+
     public function __construct(private readonly PathFixture $net, private readonly bool $skipped = false)
     {
     }
@@ -293,20 +324,25 @@ final class FixtureL3Data implements L3Data
             && in_array(Cidr::canonical($interface['address']), $addresses, true)));
     }
 
+    /**
+     * As PathRepository finds them: the addresses on the networks LibreNMS keeps of the address's subnets.
+     */
     public function subnets(string $address): array
     {
         $this->subnetReads[] = $address;
 
-        return array_values(array_filter($this->net->interfaces, fn ($interface) => ! str_starts_with($interface['address'], 'fe80')
+        return array_values(array_filter($this->net->interfaces, fn ($interface) => $interface['network_id'] > 0
             && Cidr::family($interface['address']) === Cidr::family($address) && Cidr::contains((string) Cidr::network($interface['address'], $interface['prefixlen']), $address)));
     }
 
+    /**
+     * The addresses on the networks of these interfaces (none for an interface without a network).
+     */
     public function peers(array $interfaces): array
     {
-        $networks = array_map(fn ($interface) => Cidr::network($interface['address'], $interface['prefixlen']), $interfaces);
+        $networks = array_filter(array_map(fn ($interface) => (int) ($interface['network_id'] ?? 0), $interfaces));
 
-        return array_values(array_filter($this->net->interfaces, fn ($interface) => ! str_starts_with($interface['address'], 'fe80')
-            && in_array(Cidr::network($interface['address'], $interface['prefixlen']), $networks, true)));
+        return array_values(array_filter($this->net->interfaces, fn ($interface) => in_array($interface['network_id'], $networks, true)));
     }
 
     public function adjacencies(array $deviceIds): array
@@ -338,7 +374,7 @@ final class FixtureL3Data implements L3Data
 
     public function routes(string $address): ?array
     {
-        return $this->net->routes;
+        return in_array($address, $this->unread, true) ? null : $this->net->routes;
     }
 
     public function routeData(): array
@@ -349,5 +385,10 @@ final class FixtureL3Data implements L3Data
     public function skipped(): bool
     {
         return $this->skipped;
+    }
+
+    public function routesHidden(): bool
+    {
+        return $this->routesHidden;
     }
 }

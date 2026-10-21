@@ -275,7 +275,7 @@
                                         @if($hop['route']['next_hop']) via <span class="topo-mono">{{ $hop['route']['next_hop'] }}</span>@endif
                                         @if($hop['route']['protocol'])<small class="text-muted">({{ $hop['route']['protocol'] }})</small>@endif
                                         @if($hop['route']['via'])<br><small>a recursive next hop, reached through <span class="topo-mono">{{ $hop['route']['via'] }}</span></small>@endif
-                                        @if($hop['route']['recursive'])<br><small class="topo-text-warning">not on one of its subnets, and its routes do not lead to it: the routers between are not known</small>@endif
+                                        @if($hop['route']['recursive'])<br><small class="topo-text-warning">not on one of its subnets, and its routes {{ $hop['route']['unread'] ? 'toward ' . $hop['route']['unread'] . ' were not read' : 'do not lead to it' }}: the routers between are not known</small>@endif
                                         @if(count($hop['route']['next_hops']) > 1)<br><small>one of {{ count($hop['route']['next_hops']) }} equal cost next hops: <span class="topo-mono">{{ implode(', ', $hop['route']['next_hops']) }}</span></small>@endif
                                     @elseif(! $hop['estimated'])
                                         <small class="text-muted">routes</small>

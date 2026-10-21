@@ -99,6 +99,7 @@ class PathReport
                                 'metric' => $route['metric'] ?? null,
                                 'updated' => $route['updated'] ?? null,
                                 'recursive' => (bool) ($l3['recursive'] ?? false),
+                                'unread' => ($l3['unread'] ?? null) !== null ? PathService::display($l3['unread']) : null,
                             ];
                         }
                     }
@@ -205,7 +206,7 @@ class PathReport
             $states = array_values(array_unique(array_map(fn ($hop) => (string) ($hop['estimated_why'] ?? L3Tracer::ROUTES_NONE), $estimated)));
             $one = count($estimated) === 1;
             $log->add(Finding::INFO, 'estimated_hops', ($one ? 'the next hop of ' : 'the next hops of ') . $names . ($one ? ' is' : ' are') . ' estimated',
-                'LibreNMS has no current routes of ' . ($one ? 'this router' : 'these routers') . ' (see each estimate for why): the next hop is estimated from'
+                'No current routes of ' . ($one ? 'this router' : 'these routers') . ' could be used (see each estimate for why): the next hop is estimated from'
                 . ' the subnets and OSPF / BGP neighbors ' . ($one ? 'it shares' : 'they share') . ' with other routers. With static routes, policy routing or ECMP the real path can differ.',
                 implode(' ', array_map(fn ($state) => PathAssembler::routesAdvice($state), $states)), array_map(fn ($hop) => $hop['device_id'], $estimated));
         }

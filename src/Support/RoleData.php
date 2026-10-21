@@ -24,6 +24,8 @@ class RoleData
         'redundancy' => ['links', 'device_outages'],
         'coverage' => ['links', 'ports_fdb'],
         'hosts' => ['ports', 'ports_fdb', 'ipv4_mac', 'ipv6_nd', 'ports_nac', 'links'],
+        // its own data, then the host locator's, which locates the ends
+        'path' => ['links', 'ports', 'ports_stp', 'ipv4_addresses', 'ipv6_addresses', 'route', 'ospf_nbrs', 'bgpPeers', 'stp', 'ports_fdb', 'ipv4_mac', 'ipv6_nd', 'ports_nac'],
         'rollout' => ['links'],
         'dependencies' => ['links', 'device_outages'],
         'changes' => ['links', 'ports', 'stp', 'ports_stp', 'ospf_nbrs', 'bgpPeers'],

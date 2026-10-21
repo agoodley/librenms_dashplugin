@@ -20,10 +20,10 @@ use Agoodley\LibrenmsTopology\Support\DeviceRole;
  * hop's address, the one on the egress link is taken, else the first whose own route does not lead back; the walk on
  * from such a guess is uncertain.
  *
- * The `route` discovery module is off by default, a router can have more routes than LibreNMS reads of it, and the table
- * may not have been read: such a router is crossed by an estimate, the first step of the shortest way over subnets it
- * shares with other routers and its OSPF / BGP neighbors (never back to a router already on the path) toward a router
- * with the destination's subnet connected.
+ * The `route` discovery module is off by default, a router can have more routes than LibreNMS reads of it, the table
+ * may not have been read and the user's role may not view routes: such a router is crossed by an estimate, the first
+ * step of the shortest way over subnets it shares with other routers and its OSPF / BGP neighbors (never back to a router
+ * already on the path) toward a router with the destination's subnet connected.
  *
  * Everything is asked of L3Data when the walk needs it: a router's interfaces when the walk reaches it, the owners and
  * subnets of an address, the neighbors of the routers an estimate looks at.
@@ -59,6 +59,12 @@ class L3Tracer
 
     public const ROUTES_SKIPPED = 'skipped';
 
+    /** The user's LibreNMS role may not view routes. */
+    public const ROUTES_HIDDEN = 'hidden';
+
+    /** The routes toward this address were not read (L3Data::routes() reads a few addresses only). */
+    public const ROUTES_UNREAD = 'unread';
+
     public const ROUTING_ROLES = [DeviceRole::ROUTER, DeviceRole::L3SWITCH, DeviceRole::FIREWALL];
 
     /** inetCidrRouteType */
@@ -88,8 +94,11 @@ class L3Tracer
     /** @var array<int, array<int, array>> device_id => [neighbor device_id => how], for the routers an estimate looked at */
     private array $adjacent = [];
 
-    /** @var array<string, array<int, array>> address => device_id => routes covering it */
+    /** @var array<string, array<int, array>|null> address => device_id => routes covering it, null when not read */
     private array $routeCache = [];
+
+    /** @var array<string, array<int, array{device_id: int, port_id: int}>> address => router ports with its ARP / neighbor entries */
+    private array $entries = [];
 
     private ?array $routeData = null;
 
@@ -109,7 +118,8 @@ class L3Tracer
      *     reached through), toward / toward_from (the recursive next hop this router forwards toward, as it has no route to
      *     the destination, and the router whose route chose it), route (prefix, next_hops, protocol, metric, updated),
      *     estimated (null or the reason) with estimated_why (a ROUTES_ state), recursive (a recursive next hop the router's
-     *     routes do not lead to: the routers between are not known), ambiguous (other devices with the next hop's address:
+     *     routes do not lead to: the routers between are not known; unread: the address toward which its routes were not
+     *     read), ambiguous (other devices with the next hop's address:
      *     the next router is a guess), routes_read (time of the router's newest route); end: local (the destination is the
      *     last router's own address), connected (on the last router's subnet: egress), no_route, blackhole, outside
      *     (next_hop belongs to no device the user may see), loop (back to the hop index loop; uncertain_loop when an
@@ -162,8 +172,8 @@ class L3Tracer
             $avoid = array_merge(array_column($hops, 'device_id'), [$device]);
             $hop = ['device_id' => $device, 'vrf' => $vrf, 'in_port' => $in['port_id'] ?? null, 'in_address' => $in['address'] ?? null,
                 'out_port' => null, 'out_address' => null, 'next_hop' => null, 'via' => null, 'toward' => $target['from'] !== null ? $address : null,
-                'toward_from' => $target['from'], 'route' => null, 'estimated' => null, 'estimated_why' => null, 'recursive' => false, 'ambiguous' => [],
-                'routes_read' => $this->newest($device)];
+                'toward_from' => $target['from'], 'route' => null, 'estimated' => null, 'estimated_why' => null, 'recursive' => false, 'unread' => null,
+                'ambiguous' => [], 'routes_read' => $this->newest($device)];
 
             if ($target['from'] === null && $this->owns($device, $destination)) {
                 $hops[] = $hop;
@@ -172,6 +182,9 @@ class L3Tracer
             }
 
             $state = $this->routeState($device, $vrf);
+            if ($state === self::ROUTES_OK && $this->routesOf($device, $address) === null) {
+                $state = self::ROUTES_UNREAD;
+            }
             $connected = $this->connected($device, $vrf, $address);
             $route = $state === self::ROUTES_OK ? $this->lookup($device, $vrf, $address) : null;
 
@@ -234,6 +247,7 @@ class L3Tracer
                 $hop['out_address'] = $step['egress']['address'] ?? null;
                 if ($step['via'] === null) {
                     $hop['recursive'] = true;
+                    $hop['unread'] = $step['unread'];
                     [$owner, $hop['ambiguous']] = $this->nextHopOwner($route['next_hop'], $step['vrf'], $device, null, null, $address, $avoid);
                 } else {
                     $hop['via'] = $step['via'] !== $route['next_hop'] ? $step['via'] : null;
@@ -262,7 +276,7 @@ class L3Tracer
                 return $result('stuck', ['stuck' => $state]);
             }
             $hops[] = ['out_port' => $step['out']['port_id'] ?? null, 'out_address' => $step['out']['address'] ?? null,
-                'next_hop' => $step['in']['address'] ?? null, 'estimated' => $this->estimateReason($device, $vrf, $state, $step), 'estimated_why' => $state] + $hop;
+                'next_hop' => $step['in']['address'] ?? null, 'estimated' => $this->estimateReason($device, $vrf, $state, $step, $address), 'estimated_why' => $state] + $hop;
             $vrf = $step['in']['vrf'] ?? $vrf;
             $device = $step['device_id'];
             $in = $step['in'];
@@ -288,7 +302,9 @@ class L3Tracer
     }
 
     /**
-     * Routing devices with the address's subnet connected (an up interface), in that VRF if any has it there, else in any VRF.
+     * Routing devices with the address's subnet connected (an up interface), in that VRF if any has it there, else in any
+     * VRF. L3Data finds the subnets by the networks LibreNMS keeps of them: when it has none (an address row without a
+     * network id), the router interfaces that hold the address's ARP / neighbor entries (arpEntries()) are its gateways.
      *
      * @return array<int, array> the connected interfaces
      */
@@ -296,23 +312,30 @@ class L3Tracer
     {
         $address = Cidr::canonical($address) ?? $address;
         $this->subnetsOf[$address] ??= self::rows($this->data->subnets($address));
-        $rows = array_values(array_filter($this->subnetsOf[$address], fn ($interface) => $interface['up'] && self::isSubnet($interface) && self::onSubnet($interface, $address)));
-        $roles = $this->roles(array_column($rows, 'device_id'));
-        $best = [];
-        foreach ($rows as $interface) {
-            $key = $interface['device_id'] . '|' . $interface['vrf'];
-            if (in_array($roles[$interface['device_id']] ?? DeviceRole::UNKNOWN, self::ROUTING_ROLES, true)
-                && (! isset($best[$key]) || $interface['prefixlen'] > $best[$key]['prefixlen'])) {
-                $best[$key] = $interface;
-            }
+        $found = $this->routing(array_filter($this->subnetsOf[$address], fn ($interface) => $interface['up'] && self::isSubnet($interface) && self::onSubnet($interface, $address)));
+        if (! $found) {
+            $found = $this->routing($this->entryInterfaces($address));
         }
-        $found = array_values($best);
         if ($vrf !== null && array_filter($found, fn ($interface) => $interface['vrf'] === $vrf)) {
             $found = array_values(array_filter($found, fn ($interface) => $interface['vrf'] === $vrf));
         }
         usort($found, fn ($a, $b) => [$b['prefixlen'], $a['device_id']] <=> [$a['prefixlen'], $b['device_id']]);
 
         return $found;
+    }
+
+    /**
+     * Where routers hold ARP / IPv6 neighbor entries of an address (the router and the port of each, as the host locator
+     * found them): its gateways when LibreNMS keeps no network of its subnet (see gateways()).
+     *
+     * @param  array<int, array{device_id: int, port_id: int}>  $entries
+     */
+    public function arpEntries(string $address, array $entries): void
+    {
+        $address = Cidr::canonical($address) ?? $address;
+        foreach ($entries as $entry) {
+            $this->entries[$address][] = ['device_id' => (int) $entry['device_id'], 'port_id' => (int) $entry['port_id']];
+        }
     }
 
     /**
@@ -352,12 +375,16 @@ class L3Tracer
     }
 
     /**
-     * Can the device's routes in the VRF be used (ROUTES_OK), and if not, why: none in LibreNMS, none in this VRF, not
-     * read again at the last discovery (stale), or the route table was not read. A router whose last discovery ended
-     * after the route summary was read is not judged stale: that discovery may have read its routes again.
+     * Can the device's routes in the VRF be used (ROUTES_OK), and if not, why: the user's role may not view routes, the
+     * route table was not read, none in LibreNMS, not read again at the last discovery (stale), or none in this VRF. A
+     * router whose last discovery ended after the route summary was read is not judged stale: that discovery may have read
+     * its routes again.
      */
     public function routeState(int $deviceId, string $vrf): string
     {
+        if ($this->data->routesHidden()) {
+            return self::ROUTES_HIDDEN;
+        }
         if ($this->data->skipped()) {
             return self::ROUTES_SKIPPED;
         }
@@ -486,19 +513,21 @@ class L3Tracer
     }
 
     /**
-     * Routes of a device that cover an address.
+     * Routes of a device that cover an address; null when the routes toward the address were not read (L3Data reads
+     * them for a few addresses only), which is not "no route".
      */
-    private function routesOf(int $deviceId, string $address): array
+    private function routesOf(int $deviceId, string $address): ?array
     {
         if (! array_key_exists($address, $this->routeCache)) {
-            $this->routeCache[$address] = $this->data->routes($address) ?? [];
+            $this->routeCache[$address] = $this->data->routes($address);
         }
 
-        return $this->routeCache[$address][$deviceId] ?? [];
+        return $this->routeCache[$address] === null ? null : $this->routeCache[$address][$deviceId] ?? [];
     }
 
     /**
      * Does the device route the destination itself: an address or a connected subnet of its own, or a current route?
+     * Routes toward it that were not read do not tell: no.
      */
     private function routesItself(int $deviceId, string $vrf, string $destination): bool
     {
@@ -509,13 +538,14 @@ class L3Tracer
     /**
      * The longest prefix route of the device toward the address, among its current routes in the VRF (the ones of its
      * newest read: the summary's, or a newer one among these routes); a route over an interface that is down no longer
-     * counts (the router withdrew it since LibreNMS read it).
+     * counts (the router withdrew it since LibreNMS read it). Null also when the routes toward the address were not read
+     * (routesOf(): the callers that tell the two apart ask it first).
      *
      * @return array{prefix: string, length: int, next_hop: ?string, next_hops: string[], port_id: int, type: int, protocol: string, metric: int, updated: int}|null
      */
     private function lookup(int $deviceId, string $vrf, string $address): ?array
     {
-        $routes = $this->routesOf($deviceId, $address);
+        $routes = $this->routesOf($deviceId, $address) ?? [];
         $newest = max((int) ($this->summary()[$deviceId]['newest'] ?? 0), $routes ? max(array_map(fn ($route) => (int) $route['updated'], $routes)) : 0);
         $best = null;
         $candidates = [];
@@ -567,13 +597,15 @@ class L3Tracer
      * The neighbor a route's next hop is reached through: the next hop itself when it is on a subnet of the router (an
      * IPv6 link-local one on the route's interface), else the next hop of the router's own route toward it, recursively
      * (never by a default route). vrf: the table the next hop is in (the global one for a VRF route toward an address of
-     * the global table: an MPLS VPN). via null: the router's routes do not lead to it.
+     * the global table: an MPLS VPN). via null: the router's routes do not lead to it, or (unread) its routes toward that
+     * address were not read.
      *
-     * @return array{via: ?string, egress_port: ?int, egress: ?array, vrf: string}
+     * @return array{via: ?string, egress_port: ?int, egress: ?array, vrf: string, unread: ?string}
      */
     private function resolve(int $deviceId, string $vrf, array $route): array
     {
         $nextHop = (string) $route['next_hop'];
+        $unread = null;
         $table = $vrf !== '' && ! array_filter($this->owners($nextHop, $vrf), fn ($owner) => $owner['vrf'] === $vrf)
             && array_filter($this->owners($nextHop), fn ($owner) => $owner['vrf'] === '') ? '' : $vrf;
         $address = $nextHop;
@@ -581,16 +613,21 @@ class L3Tracer
         for ($depth = 0; $depth <= self::MAX_RECURSION; $depth++) {
             $egress = $portId !== null ? $this->interfaceOn($deviceId, $portId) : null;
             if (self::isLinkLocal($address)) {
-                return ['via' => $address, 'egress_port' => $portId, 'egress' => $egress, 'vrf' => $table];
+                return ['via' => $address, 'egress_port' => $portId, 'egress' => $egress, 'vrf' => $table, 'unread' => null];
             }
             if ($egress !== null && self::isSubnet($egress) && self::onSubnet($egress, $address)) {
-                return ['via' => $address, 'egress_port' => $portId, 'egress' => $egress, 'vrf' => $table];
+                return ['via' => $address, 'egress_port' => $portId, 'egress' => $egress, 'vrf' => $table, 'unread' => null];
             }
             $facing = $this->facing($deviceId, $address, $table);
             if ($facing !== null) {
-                return ['via' => $address, 'egress_port' => $facing['port_id'], 'egress' => $facing, 'vrf' => $table];
+                return ['via' => $address, 'egress_port' => $facing['port_id'], 'egress' => $facing, 'vrf' => $table, 'unread' => null];
             }
-            $inner = $depth < self::MAX_RECURSION && $this->routeState($deviceId, $table) === self::ROUTES_OK ? $this->lookup($deviceId, $table, $address) : null;
+            $usable = $depth < self::MAX_RECURSION && $this->routeState($deviceId, $table) === self::ROUTES_OK;
+            if ($usable && $this->routesOf($deviceId, $address) === null) {
+                $unread = $address;
+                break;
+            }
+            $inner = $usable ? $this->lookup($deviceId, $table, $address) : null;
             if ($inner === null || $inner['length'] === 0 || in_array($inner['type'], [self::TYPE_REJECT, self::TYPE_BLACKHOLE], true)) {
                 break;
             }
@@ -598,17 +635,19 @@ class L3Tracer
                 // an interface route toward it: on that interface's link
                 $portId = $inner['port_id'] ?: null;
 
-                return ['via' => $address, 'egress_port' => $portId, 'egress' => $portId !== null ? $this->interfaceOn($deviceId, $portId) : null, 'vrf' => $table];
+                return ['via' => $address, 'egress_port' => $portId, 'egress' => $portId !== null ? $this->interfaceOn($deviceId, $portId) : null, 'vrf' => $table,
+                    'unread' => null];
             }
             $address = $inner['next_hop'];
             $portId = $inner['port_id'] ?: null;
         }
-        // the routes do not lead to it: out of the route's interface when that has no address of its own (unnumbered), else unknown
+        // the routes do not lead to it (or were not read): out of the route's interface when that has no address of its own
+        // (unnumbered), else unknown
         $portId = (int) $route['port_id'] ?: null;
         $egress = $portId !== null ? $this->interfaceOn($deviceId, $portId) : null;
         $unnumbered = $portId !== null && ($egress === null || self::isLinkLocal($egress['address']));
 
-        return ['via' => $unnumbered ? $nextHop : null, 'egress_port' => $portId, 'egress' => $egress, 'vrf' => $table];
+        return ['via' => $unnumbered ? $nextHop : null, 'egress_port' => $portId, 'egress' => $egress, 'vrf' => $table, 'unread' => $unnumbered ? null : $unread];
     }
 
     /**
@@ -693,7 +732,7 @@ class L3Tracer
     }
 
     /**
-     * Does a device's own route toward the target lead back to a router on the path?
+     * Does a device's own route toward the target lead back to a router on the path? Routes that were not read do not tell: no.
      *
      * @param  int[]  $avoid
      */
@@ -933,13 +972,15 @@ class L3Tracer
     }
 
     /**
-     * Why a router's next hop is estimated, and how.
+     * Why a router's next hop toward the target is estimated, and how.
      */
-    private function estimateReason(int $deviceId, string $vrf, string $state, array $step): string
+    private function estimateReason(int $deviceId, string $vrf, string $state, array $step, string $target): string
     {
         $name = $this->data->name($deviceId);
         $data = $this->summary()[$deviceId] ?? [];
         $why = match ($state) {
+            self::ROUTES_HIDDEN => 'Your LibreNMS role may not view routes',
+            self::ROUTES_UNREAD => 'The routes toward ' . $target . ' were not read (a path trace reads the route table toward a few addresses only)',
             self::ROUTES_SKIPPED => 'The route table of LibreNMS was not read (it holds more routes than a path trace reads)',
             self::ROUTES_STALE => 'LibreNMS\' routes of ' . $name . ' date from ' . StpAnalyzer::duration(max(0, (int) ($data['discovered'] ?? 0) - (int) ($data['newest'] ?? 0)))
                 . ' before its last discovery (the route module no longer reads them, or it has more routes than LibreNMS reads of a device)',
@@ -955,6 +996,48 @@ class L3Tracer
 
         return $why . ': the next hop is taken to be ' . $next . ($step['device_id'] === $step['found'] ? ', ' . $goal
             : ', on the shortest way toward ' . $this->data->name($step['found']) . ', ' . $goal) . '.';
+    }
+
+    /**
+     * The longest prefix interface of each routing device and VRF among some interfaces.
+     *
+     * @param  array<int, array>  $interfaces
+     * @return array<int, array>
+     */
+    private function routing(array $interfaces): array
+    {
+        $roles = $this->roles(array_column($interfaces, 'device_id'));
+        $best = [];
+        foreach ($interfaces as $interface) {
+            $key = $interface['device_id'] . '|' . $interface['vrf'];
+            if (in_array($roles[$interface['device_id']] ?? DeviceRole::UNKNOWN, self::ROUTING_ROLES, true)
+                && (! isset($best[$key]) || $interface['prefixlen'] > $best[$key]['prefixlen'])) {
+                $best[$key] = $interface;
+            }
+        }
+
+        return array_values($best);
+    }
+
+    /**
+     * The up interfaces of the address's family on the ports that hold its ARP / neighbor entries (arpEntries()): of each
+     * port the one whose subnet holds the address, else the longest prefix.
+     *
+     * @return array<int, array>
+     */
+    private function entryInterfaces(string $address): array
+    {
+        $found = [];
+        foreach ($this->entries[$address] ?? [] as $entry) {
+            $on = array_values(array_filter($this->interfacesOf($entry['device_id']), fn ($interface) => $interface['port_id'] === $entry['port_id'] && $interface['up']
+                && self::isSubnet($interface) && Cidr::family($interface['address']) === Cidr::family($address)));
+            usort($on, fn ($x, $y) => [! self::onSubnet($x, $address), -$x['prefixlen']] <=> [! self::onSubnet($y, $address), -$y['prefixlen']]);
+            if ($on) {
+                $found[] = $on[0];
+            }
+        }
+
+        return $found;
     }
 
     /**

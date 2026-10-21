@@ -424,7 +424,9 @@ uses, and how the router forwards it.
   its OSPF / BGP neighbors and the subnets it shares with other routers (never back to a router already on the path),
   toward a router with B's subnet connected. The estimate says why: the `route` discovery module is off (the default),
   its routes were not read again at its last discovery (the module was turned off, or it has more routes than
-  LibreNMS reads of a device), it has none in that VRF, or the route table is larger than a trace reads.
+  LibreNMS reads of a device), it has none in that VRF, the route table is larger than a trace reads, the routes toward
+  that address were not read (a trace reads the route table toward 6 addresses at most), or your LibreNMS role may not
+  view routes.
 * **Problems on the path** are listed with a fix: ports down, half duplex, interface errors and discards (the link
   diagnostics' thresholds), links at 80 % or more (*Busy link*, critical from 95 %), port-channels missing members, no
   route or a null route toward B, a routing loop (only "path unknown" when an estimated hop is part of it), no
@@ -766,7 +768,11 @@ devices" without a count. Applying device dependencies writes the number of pare
 go to the LibreNMS log), as users who may see the device may not see its parents.
 
 A path trace only resolves ends the user may see and shows devices out of their sight on the path without name, ports
-or addresses; only admins see the size of the whole route table.
+or addresses; only admins see the size of the whole route table. It leaves out what the user's role may not view and
+says so on the trace: without LLDP/CDP links a Layer 2 path is "not shown", without `port.view` (which also covers
+interface addresses, ARP and forwarding tables) the hops show no ports, hosts are not located and the routed path is
+not followed, and without `routing.view` every router is crossed by an estimate that says the role may not view routes
+(OSPF / BGP neighbors are then left out of the estimates too).
 
 ## How it works
 
@@ -961,8 +967,10 @@ vendor/bin/phpunit
   "a device you may not see" when the visible devices on both sides report it as their LLDP/CDP neighbor; its ports and
   name are not shown, and it is assumed to pass frames on. A bridge with a single spanning tree instance in LibreNMS
   (RSTP, or MSTP, whose other instances LibreNMS does not read) has its states taken for every VLAN, which the page
-  notes. Gateways and next hops are found through LibreNMS' networks tables (ipv4_networks, ipv6_networks), which it
-  fills for every address with a subnet.
+  notes. A gateway (the router with an end's subnet connected) and the subnets an estimate crosses are found through
+  LibreNMS' networks tables (ipv4_networks, ipv6_networks), which it fills for every address with a subnet. For an
+  address row without a network the gateway is the router whose interface holds the host's ARP / neighbor entry, and
+  an estimate does not cross that subnet (it still follows OSPF / BGP neighbors).
 
 **Rollout planner and device dependencies**
 

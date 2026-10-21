@@ -17,6 +17,9 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
  * what L3Tracer asks as it walks (L3Data): the interfaces of the routers it reaches, the owners and subnets of an address
  * by indexed lookups, the neighbors of the routers an estimate looks at, the routes toward each address routed to.
  * Per-hop details (counters, URLs) are read for the hops of the answer only. Kept for the traces of one request.
+ *
+ * What the user's LibreNMS role may not view is not read (allows()): without LLDP/CDP links no Layer 2 path is found,
+ * without ports none is shown and links count as up, without routes every router is estimated.
  */
 class PathNetwork implements L3Data
 {
@@ -32,7 +35,7 @@ class PathNetwork implements L3Data
     private const CHAIN_EXPANDED = 800;
 
     /** Addresses whose routes a request reads at most (a route table scan each: the destination, recursive next hops). */
-    private const ROUTE_READS = 6;
+    public const ROUTE_READS = 6;
 
     /** @var array<int, array|null> device_id => row (role, display, url), null when the user may not see it */
     private array $devices = [];
@@ -109,6 +112,24 @@ class PathNetwork implements L3Data
     public function canSee(int $deviceId): bool
     {
         return $this->repo->canSee($deviceId);
+    }
+
+    /**
+     * May the user's LibreNMS role view this table's data (ScopedRepository::allowsTable())?
+     */
+    public function allows(string $table): bool
+    {
+        return $this->repo->allowsTable($table);
+    }
+
+    /**
+     * What the user's role may not view among these tables ("LLDP/CDP links", ...).
+     *
+     * @return string[]
+     */
+    public function roleHides(string ...$tables): array
+    {
+        return $this->repo->hiddenKinds($tables);
     }
 
     /**
@@ -195,7 +216,7 @@ class PathNetwork implements L3Data
         if (! $missing) {
             return;
         }
-        $rows = $this->topology->ports($missing);
+        $rows = $this->allows('ports') ? $this->topology->ports($missing) : [];
         $this->loadDevices(array_column($rows, 'device_id'));
         foreach ($missing as $portId) {
             $port = $rows[$portId] ?? null;
@@ -217,7 +238,7 @@ class PathNetwork implements L3Data
      */
     public function statistics(array $portIds): array
     {
-        return $portIds ? $this->topology->portStatistics($portIds) : [];
+        return $portIds && $this->allows('ports_statistics') ? $this->topology->portStatistics($portIds) : [];
     }
 
     /**
@@ -458,7 +479,7 @@ class PathNetwork implements L3Data
         $this->loadDevices($reached);
         $newDevices = array_values(array_filter(array_unique($reached), fn ($id) => $id > 0 && ($this->devices[$id] ?? null) !== null && ! isset($this->lagDevices[$id])));
         if ($newDevices) {
-            $this->lag += $this->topology->lagParents($newDevices);
+            $this->lag += $this->allows('ports_stack') && $this->allows('ports') ? $this->topology->lagParents($newDevices) : [];
             $this->lagDevices += array_fill_keys($newDevices, true);
         }
         $linkPorts = array_values(array_filter(array_unique($linkPorts)));
@@ -466,7 +487,7 @@ class PathNetwork implements L3Data
         $members = array_keys(array_intersect($this->lag, $aggregates));
         $missing = array_values(array_diff(array_unique(array_merge($linkPorts, $aggregates, $members)), array_keys($this->graphPorts)));
         if ($missing) {
-            $this->graphPorts += $this->topology->ports($missing, self::GRAPH_COLUMNS);
+            $this->graphPorts += $this->allows('ports') ? $this->topology->ports($missing, self::GRAPH_COLUMNS) : [];
             $this->vlanPorts += $this->repo->portsWithVlans($missing);
             foreach ($this->repo->portsWithIp(array_values(array_intersect($missing, array_merge($linkPorts, $aggregates)))) as $portId => $true) {
                 $port = $this->graphPorts[$portId] ?? [];
@@ -564,13 +585,13 @@ class PathNetwork implements L3Data
             return [];
         }
         $rows = [];
-        foreach ($this->topology->ospfNeighbors($deviceIds) as $row) {
+        foreach ($this->allows('ospf_nbrs') ? $this->topology->ospfNeighbors($deviceIds) : [] as $row) {
             if (strtolower((string) $row['ospfNbrState']) === 'full') {
                 $rows[] = ['device_id' => (int) $row['device_id'], 'port_id' => (int) ($row['port_id'] ?? 0) ?: null, 'local_ip' => null,
                     'neighbor_ip' => (string) $row['ospfNbrIpAddr'], 'kind' => 'ospf', 'vrf' => (string) ($row['context_name'] ?? '')];
             }
         }
-        foreach ($this->topology->bgpPeers($deviceIds) as $row) {
+        foreach ($this->allows('bgpPeers') ? $this->topology->bgpPeers($deviceIds) : [] as $row) {
             if (strtolower((string) $row['bgpPeerState']) === 'established') {
                 $rows[] = ['device_id' => (int) $row['device_id'], 'port_id' => null, 'local_ip' => (string) ($row['bgpLocalAddr'] ?? ''),
                     'neighbor_ip' => (string) $row['bgpPeerIdentifier'], 'kind' => 'bgp', 'vrf' => (string) ($row['context_name'] ?? '')];
@@ -616,12 +637,19 @@ class PathNetwork implements L3Data
      */
     public function routeData(): array
     {
-        return $this->routeData ??= $this->routeTable()['skipped'] ? [] : $this->repo->routeData($this->topology->deviceIds());
+        $table = $this->routeTable();
+
+        return $this->routeData ??= $table['skipped'] || $table['hidden'] ? [] : $this->repo->routeData($this->topology->deviceIds());
     }
 
     public function skipped(): bool
     {
         return $this->routeTable()['skipped'];
+    }
+
+    public function routesHidden(): bool
+    {
+        return $this->routeTable()['hidden'];
     }
 
     /**
@@ -645,16 +673,18 @@ class PathNetwork implements L3Data
     }
 
     /**
-     * Is the route table read: skipped when LibreNMS holds more routes than the path_route_rows setting allows.
+     * Is the route table read: not when the user's role may not view routes (hidden), skipped when LibreNMS holds more
+     * routes than the path_route_rows setting allows.
      *
-     * @return array{skipped: bool, size: ?int, limit: int}
+     * @return array{hidden: bool, skipped: bool, size: ?int, limit: int}
      */
     public function routeTable(): array
     {
         if ($this->routeTable === null) {
             $limit = $this->settings->int('path_route_rows', 0);
-            $size = $this->repo->routeTableSize();
-            $this->routeTable = ['skipped' => $size !== null && $limit > 0 && $size > $limit, 'size' => $size, 'limit' => $limit];
+            $hidden = ! $this->allows('route');
+            $size = $hidden ? null : $this->repo->routeTableSize();
+            $this->routeTable = ['hidden' => $hidden, 'skipped' => $size !== null && $limit > 0 && $size > $limit, 'size' => $size, 'limit' => $limit];
         }
 
         return $this->routeTable;
