@@ -1,12 +1,16 @@
 # Roadmap
 
-Ideas for the plugin's next tools, roughly in the order they are worth building. Every item uses data LibreNMS
-already collects; the tables and modules each one needs are listed so it can be picked up directly.
+The plugin's tools and what could come next. Items 1 to 14 are built and described in the [README](README.md); the
+open item uses data LibreNMS already collects and names the tables it needs, so it can be picked up directly. Ideas
+that do not fit this plugin are listed as [separate plugins](#ideas-for-separate-plugins).
 
-The plugin's conventions apply to all of them:
+The plugin's conventions, which every tool follows and a new one should too:
 
 * database access only in `src/Data/`, in repositories that extend `ScopedRepository` so every query stays inside
   the devices the user may see; a feature adds its own repository rather than growing `TopologyRepository`;
+* a LibreNMS table that a role permission guards is read only when the user's role may view it
+  (`ScopedRepository::TABLE_MODELS`, `allowsTable()`), and a page lists the tables it reads in `Support\RoleData`, so
+  it says what the role hides;
 * the analysis in plain PHP classes with no LibreNMS dependency, covered by unit tests
   (like `StpAnalyzer`, `LinkAnalyzer` and `RedundancyAnalyzer`);
 * a page is listed in `Support\Navigation` (the navigation of every page, the plugin menu and the landing page) and
@@ -101,7 +105,7 @@ from the LibreNMS pages.
 | 1 | Connection to the runner; an Ansible inventory from LibreNMS (device groups, locations, LibreNMS `os` mapped to `ansible_network_os`; devices without a mapping are refused); run a template on selected devices; live status and log; an audit log (who, what, when, result), also in each device's eventlog | – |
 | 2 | Dry run (`--check --diff`) showing the diff per device; approval, optionally by a second admin; batches that stop at the first failures; Oxidized backups before and after (its REST API's `node/next`); a LibreNMS maintenance window for the targets | 1 |
 | 3 | Rollout plan and blast radius from this plugin (`api/rollout` and `api/simulate`); the maintenance window also covers what each batch cuts off | 1 |
-| 4 | Verification: topology and findings before and after the change (root bridge moved, uplink lost, new single point of failure); one-click fixes for findings with a clear configuration (port descriptions, STP root priority) | items 5 and 6 |
+| 4 | Verification: topology and findings before and after the change (root bridge moved, uplink lost, new single point of failure); one-click fixes for findings with a clear configuration (port descriptions, STP root priority) | 1; this plugin's topology history and background checks (items 5 and 6) |
 
 * **Safety:**
   * admin only, ideally with a permission of its own; the runner's API token may only launch the plugin's templates;
