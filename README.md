@@ -1158,16 +1158,17 @@ vendor/bin/phpunit
 
 * `./validate.php` warns about the plugin's migrations while the plugin is installed and then skips its checks of
   LibreNMS' own schema (see [Installation](#installation)).
-* The pages of the whole network fit in PHP's default 128 MB on 1,242 switches with 23,000 phones and 50 PVST VLANs
-  (largest: redundancy and device dependencies 96 MB, links 86 MB, spanning tree 84 MB, L2 map 66 MB). So do the maps
-  at a point in time, also over a long history: with four snapshots an hour apart (some 10,000 changed facts) after
-  600,000 facts over 90 days with a snapshot every 6 hours, the L2 map as of the latest snapshot takes 66 MB and 0.25 s,
-  as of a time 45 days back 54 MB and 0.3 s, with the changes since the first of the four 74 MB and 0.6 s, since the
-  start of the 90 days 94 MB and 0.9 s (up to the limit of 5,000 + 5,000 facts), since the baseline 70 MB and 0.7 s;
-  at a device limit of 5,000, 66-116 MB and up to 1.1 s. A page also raises PHP's memory limit to LibreNMS'
-  `php_memory_limit`, or 256 MB when it is not set. One VLAN of a very large PVST network with STP port rows for every
-  port can still need more, and so can the L3 map of a large routed network (2,000 routers with 50,000 addresses:
-  160 MB, as of a time or with the changes since as much as now).
+* At the default *Maximum devices* (400), the pages of the whole network fit in PHP's default 128 MB on 1,242 switches
+  with 23,000 phones and 50 PVST VLANs (largest: redundancy and device dependencies 96 MB, links 86 MB, spanning tree
+  84 MB, L2 map 66 MB). So do the maps at a point in time, also over a long history: with four snapshots an hour apart
+  (some 10,000 changed facts) after 600,000 facts over 90 days with a snapshot every 6 hours, the L2 map as of the
+  latest snapshot takes 66 MB and 0.25 s, as of a time 45 days back 54 MB and 0.3 s, with the changes since the first
+  of the four 74 MB and 0.6 s, since the start of the 90 days 94 MB and 0.9 s (up to the limit of 5,000 + 5,000
+  facts), since the baseline 70 MB and 0.7 s. Larger limits rely on the plugin raising PHP's memory limit for its
+  pages, to LibreNMS' `php_memory_limit`, or 256 MB when it is not set: at 5,000 devices the changes since the start of
+  the 90 days take 116 MB, 124 MB with the answer encoded as JSON. One VLAN of a very large PVST network with STP port
+  rows for every port can still need more, and so can the L3 map of a large routed network (2,000 routers with 50,000
+  addresses: 160 MB, as of a time or with the changes since as much as now).
 
 ## Roadmap
 
