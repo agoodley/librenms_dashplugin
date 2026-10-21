@@ -27,6 +27,8 @@
     },
     "require": {
         "php": "^8.2",
+        "ext-curl": "*",
+        "ext-mbstring": "*",
         "librenms/plugin-interfaces": "^1.0"
     },
     "require-dev": {
