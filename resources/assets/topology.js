@@ -236,6 +236,10 @@
     var HOST_NODE = 'host:located';
     var HOST_EDGE = 'host:port';
 
+    /** Names a group of end devices lists in its panel, and entries the "Find device" box offers (it finds all). */
+    var GROUP_NAMES_SHOWN = 20;
+    var SEARCH_LIST_MAX = 2000;
+
     /** L3 overlays beyond OSPF and BGP: edge kind => name, color and dash pattern (distinct from OSPF, BGP and subnets). */
     var L3_LAYERS = {
         ospfv3: {name: 'OSPFv3 adjacency', color: '#2e86de', dashes: [2, 4]},
@@ -1984,6 +1988,9 @@
             if (edge.lag) {
                 html += this.row('Port-channel', esc((edge.lag.a || '-') + ' / ' + (edge.lag.b || '-') + ' (' + edge.lag.up + '/' + edge.lag.members + ' members up)'));
             }
+            if (edge.group) {
+                html += this.row('Ports', esc(plural(edge.group.count, 'port') + (edge.group.down ? ', ' + edge.group.down + ' not up' : '')));
+            }
         } else {
             html += this.row('Network', esc(edge.network)) + this.row('VRF', esc(edge.vrf)) + this.row('Type', esc(edge.kind === 'p2p' ? 'point-to-point' : 'segment member'));
         }
@@ -2065,8 +2072,13 @@
      * Details row of a node standing for the end devices of one kind seen by a switch (too many to draw).
      */
     TopologyMap.prototype.groupRow = function (group) {
-        var more = group.count - group.names.length;
-        return this.row('Neighbors', esc(group.names.join(', ')) + (more > 0 ? ' and ' + more + ' more' : '')) +
+        // the first names (the map's search finds all of them), the found one first
+        var names = group.found ? [group.found].concat(group.names.filter(function (name) {
+            return name !== group.found;
+        })) : group.names;
+        var shown = names.slice(0, GROUP_NAMES_SHOWN);
+        var more = group.count - shown.length;
+        return this.row('Neighbors', esc(shown.join(', ')) + (more > 0 ? ' and ' + more + ' more' : '')) +
             '<tr><td colspan="2" class="text-muted">The map has no room for each of them: they are drawn as one node per switch and kind. ' +
             'Center the map on the switch or narrow it to a group or location with fewer devices to see them one by one.</td></tr>';
     };
@@ -2121,36 +2133,77 @@
     };
 
     /**
-     * Device names offered by the "Find device" box.
+     * Device names offered by the "Find device" box: the nodes, then the members of groups of end devices
+     * (up to SEARCH_LIST_MAX entries; the search itself finds all of them).
      */
     TopologyMap.prototype.updateSearchList = function () {
         var list = document.getElementById('topo-search-list');
         if (!list) {
             return;
         }
-        list.innerHTML = this.data.nodes.filter(function (node) {
-            return node.type !== 'subnet';
-        }).map(function (node) {
-            return '<option value="' + esc(node.name) + '">';
+        var names = [];
+        this.data.nodes.forEach(function (node) {
+            if (node.type !== 'subnet') {
+                names.push(node.name);
+            }
+        });
+        this.data.nodes.forEach(function (node) {
+            (node.group ? node.group.names : []).forEach(function (name) {
+                if (names.length < SEARCH_LIST_MAX) {
+                    names.push(name);
+                }
+            });
+        });
+        list.innerHTML = names.slice(0, SEARCH_LIST_MAX).map(function (name) {
+            return '<option value="' + esc(name) + '">';
         }).join('');
     };
 
     /**
-     * Select and zoom to the first device whose name matches (exact match first).
+     * Select and zoom to the first device whose name matches (exact match first), or to the group of end devices it
+     * is drawn in.
      */
     TopologyMap.prototype.find = function (text) {
         text = String(text || '').toLowerCase().trim();
         if (!text || !this.data) {
             return;
         }
-        var match = this.data.nodes.find(function (node) {
+        var nodes = this.data.nodes;
+        var member = function (exact) {
+            for (var i = 0; i < nodes.length; i++) {
+                var names = nodes[i].group ? nodes[i].group.names : [];
+                for (var j = 0; j < names.length; j++) {
+                    var name = String(names[j]).toLowerCase();
+                    if (exact ? name === text : name.indexOf(text) !== -1) {
+                        return {node: nodes[i], name: names[j]};
+                    }
+                }
+            }
+            return null;
+        };
+        var found = nodes.find(function (node) {
             return String(node.name).toLowerCase() === text;
-        }) || this.data.nodes.find(function (node) {
-            return String(node.name).toLowerCase().indexOf(text) !== -1 || String(node.label).toLowerCase().indexOf(text) !== -1;
         });
-        if (match) {
-            this.network.selectNodes([match.id]);
-            this.network.focus(match.id, {scale: Math.max(1, this.network.getScale()), animation: {duration: 500}});
+        var inGroup = found ? null : member(true);
+        if (!found && !inGroup) {
+            found = nodes.find(function (node) {
+                return String(node.name).toLowerCase().indexOf(text) !== -1 || String(node.label).toLowerCase().indexOf(text) !== -1;
+            });
+            inGroup = found ? null : member(false);
+        }
+        var match = found || (inGroup && inGroup.node);
+        if (!match) {
+            this.flash('No device on this map matches "' + text + '".');
+            return;
+        }
+        this.network.selectNodes([match.id]);
+        this.network.focus(match.id, {scale: Math.max(1, this.network.getScale()), animation: {duration: 500}});
+        if (inGroup) {
+            match.group.found = inGroup.name;
+            this.showNode(match.id);
+            delete match.group.found;
+            this.flash(inGroup.name + ' is in "' + match.name + '".');
+        } else {
             this.showNode(match.id);
         }
     };

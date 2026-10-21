@@ -54,7 +54,7 @@ class TopologyService
     public function l2(array $p): array
     {
         [$scope, $root] = $this->repo->scope($p);
-        // end devices (phones, servers, access points) are only counted at first: when the map has no room for
+        // end devices (phones, servers, access points) are only noted at first: when the map has no room for
         // them they are drawn as one group per device and kind, else their rows are read again below
         $ends = [];
         $links = $this->repo->linksWhere($scope, function (array $link) use (&$ends): bool {
@@ -62,11 +62,10 @@ class TopologyService
                 return true;
             }
             $group = &$ends[(int) $link['local_device_id']][DeviceRole::fromNeighbor($link['remote_platform'], $link['remote_version'], $link['remote_hostname'])];
-            $group['count'] = ($group['count'] ?? 0) + 1;
-            $name = trim((string) $link['remote_hostname']);
-            if ($name !== '' && count($group['names'] ?? []) < L2Builder::GROUP_NAMES) {
-                $group['names'][] = $name;
-            }
+            $group['rows'] = ($group['rows'] ?? 0) + 1;
+            // one neighbour per name, as the map draws them (LLDP and CDP report the same phone)
+            $group['neighbors'][RedundancyAnalyzer::neighborKey($link)] ??= trim((string) $link['remote_hostname']);
+            $group['ports'][(int) $link['local_port_id']] = true;
 
             return false;
         });
@@ -80,7 +79,7 @@ class TopologyService
             }
         }
         foreach ($ends as $deviceId => $groups) {
-            $linked[$deviceId] = ($linked[$deviceId] ?? 0) + array_sum(array_column($groups, 'count'));
+            $linked[$deviceId] = ($linked[$deviceId] ?? 0) + array_sum(array_column($groups, 'rows'));
         }
         if (! $root && ! $p['isolated']) {
             $ids = array_values(array_filter($ids, fn ($id) => isset($linked[$id])));
@@ -88,18 +87,25 @@ class TopologyService
 
         [$ids, $total, $truncated] = $this->limit($ids, $root, $linked);
         $idSet = array_flip($ids);
-        $links = array_values(array_filter($links, fn ($l) => isset($idSet[(int) $l['local_device_id']])));
-        $ends = array_intersect_key($ends, $idSet);
-        if ($p['unmanaged'] && $ends) {
+        $links = array_filter($links, fn ($l) => isset($idSet[(int) $l['local_device_id']]));
+        $ends = $p['unmanaged'] ? array_intersect_key($ends, $idSet) : [];
+        if ($ends) {
             $nodes = count($ids) + count(array_filter($links, fn ($l) => ! $l['remote_device_id']));
             foreach ($ends as $groups) {
-                $nodes += array_sum(array_column($groups, 'count'));
+                foreach ($groups as $group) {
+                    $nodes += count($group['neighbors']);
+                }
             }
             if ($nodes <= $this->maxNodes()) {
-                $links = array_merge($links, $this->repo->linksWhere($ids, fn (array $link) => self::endDeviceNeighbor($link)));
+                // the same devices' rows again, so that they merge back into the order of the rows (the default layout)
+                $links += $this->repo->linksWhere($scope, fn (array $link) => isset($idSet[(int) $link['local_device_id']]) && self::endDeviceNeighbor($link));
+                ksort($links);
                 $ends = [];
+            } else {
+                $ends = $this->endDeviceGroups($ends);
             }
         }
+        $links = array_values($links);
 
         $linkPorts = [];
         foreach ($links as $link) {
@@ -245,8 +251,8 @@ class TopologyService
         // the neighbours of the analyzed STP ports and of port-channel members (STP runs on the aggregate, LLDP on
         // its members), and of the other ports unless they are end devices (phones...)
         $stpPorts = array_flip($index->portIds());
-        $links = $this->repo->linksWhere($scope, fn (array $link) => ! self::endDeviceNeighbor($link)
-            || isset($stpPorts[(int) $link['local_port_id']]) || isset($lag[(int) $link['local_port_id']]));
+        $links = array_values($this->repo->linksWhere($scope, fn (array $link) => ! self::endDeviceNeighbor($link)
+            || isset($stpPorts[(int) $link['local_port_id']]) || isset($lag[(int) $link['local_port_id']])));
         unset($stpPorts);
         $portIds = $index->portIds();
         foreach ($links as $link) {
@@ -372,17 +378,34 @@ class TopologyService
     public function links(array $p): array
     {
         [$scope, $device] = $this->repo->scope($p);
-        // end devices (phones, servers, access points) take part in no link check: LinkAnalyzer only needs to
-        // know that a device reports neighbours, which one row without a port tells for all of them
+        // end devices (phones, servers, access points) take part in one link check only: the description of their
+        // port may still name the monitored device that was there before. Else LinkAnalyzer only needs to know that
+        // a device reports neighbours, which one row without a port tells for all of them
         $reporting = [];
-        $links = $this->repo->linksWhere($scope, function (array $link) use (&$reporting): bool {
+        $endPorts = [];
+        $links = $this->repo->linksWhere($scope, function (array $link) use (&$reporting, &$endPorts): bool {
             if (! self::endDeviceNeighbor($link)) {
                 return true;
             }
             $reporting[(int) $link['local_device_id']] = true;
+            $endPorts[(int) $link['local_port_id']] = true;
 
             return false;
         });
+        $remote = [];
+        foreach ($links as $link) {
+            if ($link['remote_device_id']) {
+                $remote[] = (int) $link['remote_device_id'];
+            }
+        }
+        $devices = $this->repo->devices(array_values(array_unique(array_merge($scope, $remote))), roles: false);
+        $named = LinkAnalyzer::portsNamingDevices($this->repo->portDescriptions(array_keys($endPorts)), $devices);
+        unset($endPorts);
+        if ($named) {
+            $links += $this->repo->linksWhere($scope, fn (array $link) => isset($named[(int) $link['local_port_id']]) && self::endDeviceNeighbor($link));
+            ksort($links);
+        }
+        $links = array_values($links);
         foreach (array_keys($reporting) as $deviceId) {
             $links[] = ['id' => 0, 'local_device_id' => $deviceId, 'local_port_id' => 0, 'remote_device_id' => 0, 'remote_port_id' => null,
                 'remote_hostname' => '', 'remote_port' => '', 'remote_platform' => '', 'remote_version' => '', 'protocol' => ''];
@@ -442,7 +465,7 @@ class TopologyService
 
         $physicalPorts = array_values(array_unique(array_merge($linkPorts, $members)));
         $analyzer = new LinkAnalyzer(
-            $this->repo->devices($deviceIds, roles: false),
+            $devices,
             $scope,
             $links,
             $ports,
@@ -509,8 +532,10 @@ class TopologyService
         $leafNeighbors = new LeafNeighbors($missing);
         $links = $this->repo->linksWhere($all, $leafNeighbors->keep(...));
         if ($leafNeighbors->hasSeveral()) {
-            $links = array_merge($links, $this->repo->linksWhere($all, $leafNeighbors->several(...)));
+            $links += $this->repo->linksWhere($all, $leafNeighbors->several(...));
+            ksort($links);
         }
+        $links = array_values($links);
         $leaves = $leafNeighbors->leaves();
         unset($leafNeighbors);
 
@@ -641,6 +666,42 @@ class TopologyService
 
         return StpIndex::partial($keys['keys'], $this->repo->stpInstancesFor($selected), $this->repo->stpPorts(array_keys($selected), $selected),
             $lag, $keys['bridges']);
+    }
+
+    /**
+     * The groups of end devices L2Builder draws: per device and role the neighbours and their names, the device's
+     * ports they are seen on and how many of those are not up.
+     *
+     * @param  array<int, array<string, array{rows: int, neighbors: array<string, string>, ports: array<int, true>}>>  $ends
+     * @return array<int, array<string, array{count: int, names: string[], ports: int, down: int}>>
+     */
+    private function endDeviceGroups(array $ends): array
+    {
+        $ports = [];
+        foreach ($ends as $groups) {
+            foreach ($groups as $group) {
+                array_push($ports, ...array_keys($group['ports']));
+            }
+        }
+        $down = [];
+        foreach ($this->repo->portsNotUp($ports) as $portId) {
+            $down[$portId] = true;
+        }
+
+        $result = [];
+        foreach ($ends as $deviceId => $groups) {
+            foreach ($groups as $role => $group) {
+                unset($group['ports'][0]); // rows without a local port
+                $result[$deviceId][$role] = [
+                    'count' => count($group['neighbors']),
+                    'names' => array_values(array_unique(array_filter($group['neighbors'], fn (string $name) => $name !== ''))),
+                    'ports' => count($group['ports']),
+                    'down' => count(array_intersect_key($group['ports'], $down)),
+                ];
+            }
+        }
+
+        return $result;
     }
 
     /**

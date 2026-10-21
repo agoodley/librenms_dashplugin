@@ -76,7 +76,7 @@ class PlanningBaselineTest extends TestCase
 
             public function linksWhere(array $ids, callable $keep): array
             {
-                return array_values(array_filter($this->net->links, $keep));
+                return array_filter($this->net->links, $keep); // keyed by position, as the repository's
             }
 
             public function ports(array $portIds, ?array $columns = null): array

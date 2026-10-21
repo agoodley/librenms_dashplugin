@@ -222,7 +222,7 @@ every VLAN is followed across the trunks:
 | Port-channel on one end only, members landing in different port-channels, degraded port-channel (members down), uneven load across members | warning |
 | Interface errors and packet discards in the last poll | warning |
 | Optical receive power below the warning threshold, or within a margin of the alarm threshold | warning / info |
-| Port descriptions of inter-switch ports naming the wrong neighbor (also ports that now face an unmanaged switch), inter-switch ports without description – with the configuration lines that fix them (Cisco-style, Junos, ProCurve, RouterOS). Ports toward phones, servers and access points are left out | warning / info |
+| Port descriptions naming the wrong neighbor (also ports that now face an unmanaged AP or phone), inter-switch ports without description – with the configuration lines that fix them (Cisco-style, Junos, ProCurve, RouterOS). Ports toward phones and servers need no description | warning / info |
 | Neighbors listed by one end only (LLDP/CDP off on one side, or a unidirectional link), devices without neighbor data | info |
 
 The page also lists every link with both ends side by side (speed, duplex, MTU, mode and native VLAN, VLANs, errors,
@@ -590,8 +590,8 @@ Custom maps the plugin made are LibreNMS' own: they stay either way.
 
 * **Center on a device** and pick the number of hops for large networks (the map is capped at *Maximum devices*,
   default 400). Double-click any device to re-center on it. When the devices and their unmanaged neighbors are more
-  than that, the phones, servers and access points of each switch are drawn as one node per kind ("20 phones");
-  centered on a switch with few hops, they are drawn one by one again.
+  than that, the phones, servers and access points of each switch are drawn as one node per kind ("20 phones"), and
+  **Find device** finds a device in its group; centered on a switch with few hops, they are drawn one by one again.
 * Pick a **VLAN** on the L2 map to see which switches/trunks carry it and that VLAN's spanning tree
   (root bridge, port roles, blocked ports). Domain rows and findings on the STP page link straight to that view.
 * Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope), or save the map as a

@@ -19,9 +19,6 @@ class L2Builder
         DeviceRole::SWITCH => 2,
     ];
 
-    /** Names of the members a group of end devices lists (see build()). */
-    public const GROUP_NAMES = 20;
-
     /** How a group of end devices of a role is called on the map. */
     private const GROUP_LABELS = [
         DeviceRole::PHONE => ['phone', 'phones'],
@@ -46,9 +43,10 @@ class L2Builder
      * @param  array<int, array<int, bool>>  $portVlans  port_id => [vlan => untagged]
      * @param  array<int, int>  $lagParent  member port_id => aggregate port_id
      * @param  array<int, array<int, string>>  $deviceVlans  device_id => [vlan => name]
-     * @param  array<int, array<string, array{count: int, names?: string[]}>>  $endDeviceGroups  device_id => role => the
-     *     end devices (DeviceRole::END_DEVICES) seen as LLDP/CDP neighbours of the device, drawn as one node per
-     *     device and role instead of one each (their rows are not in $links): a large map has no room for them
+     * @param  array<int, array<string, array{count: int, names?: string[], ports?: int, down?: int}>>  $endDeviceGroups
+     *     device_id => role => the end devices (DeviceRole::END_DEVICES) seen as LLDP/CDP neighbours of the device, drawn
+     *     as one node per device and role instead of one each (their rows are not in $links): a large map has no room
+     *     for them. count: neighbours, names: theirs, ports: the device's ports they are seen on, down: those not up
      */
     public function __construct(
         private array $devices,
@@ -161,7 +159,7 @@ class L2Builder
                 foreach ($byRole as $role => $group) {
                     $id = 'g:' . $deviceId . ':' . $role;
                     $nodes[$id] = $this->groupNode($id, (int) $deviceId, (string) $role, (int) $group['count'], $group['names'] ?? []);
-                    $edges[] = $this->groupEdge('e' . count($edges), (int) $deviceId, $id, (int) $group['count']);
+                    $edges[] = $this->groupEdge('e' . count($edges), (int) $deviceId, $id, (int) ($group['ports'] ?? $group['count']), (int) ($group['down'] ?? 0));
                     $grouped += (int) $group['count'];
                 }
             }
@@ -388,7 +386,8 @@ class L2Builder
     }
 
     /**
-     * Map node for the end devices of one role seen by a device: "20 phones", with the first names.
+     * Map node for the end devices of one role seen by a device: "20 phones", with their names (the map's search
+     * finds them).
      *
      * @param  string[]  $names
      */
@@ -411,23 +410,29 @@ class L2Builder
             'version' => '',
             'stp' => null,
             'vlanMember' => null,
-            'group' => ['device_id' => $deviceId, 'count' => $count, 'names' => array_values(array_slice($names, 0, self::GROUP_NAMES))],
+            'group' => ['device_id' => $deviceId, 'count' => $count, 'names' => array_values($names)],
         ];
     }
 
     /**
-     * Edge from a device to a group of end devices: one per port, the ports are not loaded.
+     * Edge from a device to a group of end devices, standing for its links on $count ports of which $down are not up:
+     * down when all are, degraded when some are (as a port-channel's edge).
      */
-    private function groupEdge(string $id, int $deviceId, string $node, int $count): array
+    private function groupEdge(string $id, int $deviceId, string $node, int $count, int $down = 0): array
     {
-        $ports = $count . ' port' . ($count === 1 ? '' : 's');
+        $ports = $count > 0 ? $count . ' port' . ($count === 1 ? '' : 's') : '';
         $a = ['device_id' => $deviceId, 'managed' => true, 'name' => $ports, 'short' => $ports] + $this->unmanagedEndpoint(['b_name' => '']);
         $b = $this->unmanagedEndpoint(['b_name' => '']);
 
         return [
             'id' => $id, 'from' => 'd:' . $deviceId, 'to' => $node, 'a' => $a, 'b' => $b, 'lag' => null, 'members' => [], 'speed' => 0,
-            'status' => 'up', 'trunk' => false, 'vlans' => [], 'native_vlan' => null, 'carriesVlan' => null, 'blocked' => false,
-            'util' => null, 'in_bps' => 0, 'out_bps' => 0, 'errors' => 0, 'protocols' => [], 'group' => ['count' => $count],
+            'status' => match (true) {
+                $down === 0 => 'up',
+                $down >= $count => 'down',
+                default => 'degraded',
+            },
+            'trunk' => false, 'vlans' => [], 'native_vlan' => null, 'carriesVlan' => null, 'blocked' => false,
+            'util' => null, 'in_bps' => 0, 'out_bps' => 0, 'errors' => 0, 'protocols' => [], 'group' => ['count' => $count, 'down' => $down],
         ];
     }
 

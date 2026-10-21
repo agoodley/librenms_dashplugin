@@ -148,19 +148,25 @@ class SupportTest extends TestCase
         $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromNeighbor('', null));
     }
 
-    public function testEndDevicesAndInterSwitchLinks(): void
+    public function testEndDevicesAndHosts(): void
     {
         foreach ([DeviceRole::PHONE, DeviceRole::SERVER, DeviceRole::WIRELESS, DeviceRole::OTHER] as $role) {
             $this->assertTrue(DeviceRole::isEndDevice($role), $role);
-            $this->assertFalse(DeviceRole::interSwitch(DeviceRole::SWITCH, $role), $role);
         }
         foreach ([DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER, DeviceRole::FIREWALL, DeviceRole::UNKNOWN, null] as $role) {
             $this->assertFalse(DeviceRole::isEndDevice($role), (string) $role);
         }
-        // an unknown neighbor may be a switch, a router-switch link is part of the network
-        $this->assertTrue(DeviceRole::interSwitch(DeviceRole::SWITCH, DeviceRole::UNKNOWN));
-        $this->assertTrue(DeviceRole::interSwitch(DeviceRole::ROUTER, DeviceRole::L3SWITCH));
         $this->assertSame([], array_intersect(DeviceRole::NETWORK, DeviceRole::END_DEVICES));
+
+        // hosts by the LibreNMS device type that gave them their role: not appliances, load balancers or storage
+        $host = fn (string $type) => DeviceRole::isHost(['type' => $type, 'role' => DeviceRole::classify(['type' => $type])]);
+        foreach (['server', 'workstation', 'collaboration'] as $type) {
+            $this->assertTrue($host($type), $type);
+        }
+        foreach (['appliance', 'loadbalancer', 'storage', 'wireless', 'firewall', 'network', 'power', 'printer'] as $type) {
+            $this->assertFalse($host($type), $type);
+        }
+        $this->assertTrue(DeviceRole::isHost(['role' => DeviceRole::SERVER]));
     }
 
     public function testRolesOfLldpNeighborsComeFromTheirSystemDescription(): void

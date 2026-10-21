@@ -35,12 +35,18 @@ class DeviceRole
     }
 
     /**
-     * A link between two devices of these roles connects two parts of the network (an inter-switch
-     * link in the wide sense): neither end is an end device.
+     * A monitored phone, server or workstation: a host, whose switch port needs no description. Appliances, load
+     * balancers and storage (DeviceRole::SERVER too), controllers and access points are part of the infrastructure.
+     *
+     * @param  array  $device  devices row with role (and type)
      */
-    public static function interSwitch(?string $role, ?string $otherRole): bool
+    public static function isHost(array $device): bool
     {
-        return ! self::isEndDevice($role) && ! self::isEndDevice($otherRole);
+        return match ($device['role'] ?? null) {
+            self::PHONE => true,
+            self::SERVER => ! in_array(strtolower((string) ($device['type'] ?? '')), ['appliance', 'loadbalancer', 'storage'], true),
+            default => false,
+        };
     }
 
     /**

@@ -133,11 +133,14 @@ class TopologyRepository extends ScopedRepository
 
     /**
      * The rows of links() that $keep accepts, streamed: a network's thousands of phones and servers
-     * are never held at once by callers that only need some of them or a count.
+     * are never held at once by callers that only need some of them or a count. The query is links()'
+     * own, so the rows come in its order; each kept row is keyed by its position among all the rows of
+     * these devices, so that the rows two reads of the same devices keep merge back into that order
+     * ($first + $second, then ksort()).
      *
      * @param  int[]  $ids
      * @param  callable(array): bool  $keep  gets every row, anonymized like links() does
-     * @return array<int, array> the kept rows, in links.id order
+     * @return array<int, array> position => kept row
      */
     public function linksWhere(array $ids, callable $keep): array
     {
@@ -147,20 +150,55 @@ class TopologyRepository extends ScopedRepository
 
         $accessible = $this->accessible();
         $links = [];
+        $position = 0;
         foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $ids)
             ->select(['id', 'local_device_id', 'local_port_id', 'remote_device_id', 'remote_port_id', 'remote_hostname',
-                'remote_port', 'remote_platform', 'remote_version', 'protocol'])->orderBy('id')->cursor() as $link) {
+                'remote_port', 'remote_platform', 'remote_version', 'protocol'])->cursor() as $link) {
             $link = (array) $link;
             if ($link['remote_device_id'] && ! isset($accessible[(int) $link['remote_device_id']])) {
                 $link['remote_device_id'] = 0;
                 $link['remote_port_id'] = null;
             }
             if ($keep($link)) {
-                $links[] = $link;
+                $links[$position] = $link;
             }
+            $position++;
         }
 
         return $links;
+    }
+
+    /**
+     * Port descriptions (ifAlias) of these ports that are set, streamed: port_id => description.
+     *
+     * @param  int[]  $portIds
+     * @return iterable<int, string>
+     */
+    public function portDescriptions(array $portIds): iterable
+    {
+        foreach (array_chunk(array_values(array_unique(array_filter(array_map('intval', $portIds)))), 5000) as $chunk) {
+            foreach (DB::table('ports')->whereIntegerInRaw('port_id', $chunk)->where('ifAlias', '<>', '')
+                ->select(['port_id', 'ifAlias'])->cursor() as $row) {
+                yield (int) $row->port_id => (string) $row->ifAlias;
+            }
+        }
+    }
+
+    /**
+     * Ports of these that are not up (ifOperStatus down, lowerLayerDown...), streamed; ports without a status count as up
+     * (L2Builder::isUp()).
+     *
+     * @param  int[]  $portIds
+     * @return iterable<int, int> port ids
+     */
+    public function portsNotUp(array $portIds): iterable
+    {
+        foreach (array_chunk(array_values(array_unique(array_filter(array_map('intval', $portIds)))), 5000) as $chunk) {
+            foreach (DB::table('ports')->whereIntegerInRaw('port_id', $chunk)->whereNotNull('ifOperStatus')
+                ->whereNotIn('ifOperStatus', ['', 'up'])->select(['port_id'])->cursor() as $row) {
+                yield (int) $row->port_id;
+            }
+        }
     }
 
     /**
