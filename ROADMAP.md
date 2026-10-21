@@ -1,7 +1,6 @@
 # Roadmap
 
-The plugin's tools and what could come next. Items 1 to 14 are built and described in the [README](README.md); the
-open item uses data LibreNMS already collects and names the tables it needs, so it can be picked up directly. Ideas
+The plugin's tools and what could come next. Items 1 to 15 are built and described in the [README](README.md). Ideas
 that do not fit this plugin are listed as [separate plugins](#ideas-for-separate-plugins).
 
 The plugin's conventions, which every tool follows and a new one should too:
@@ -36,7 +35,7 @@ The plugin's conventions, which every tool follows and a new one should too:
 | 12 | [Monitoring coverage](README.md#monitoring-coverage) | **done** | – |
 | 13 | [A→B path trace](README.md#path-trace) | **done** | – |
 | 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
-| 15 | [Maps at a point in time](#15-maps-at-a-point-in-time) | later | M |
+| 15 | [Maps at a point in time](README.md#maps-at-a-point-in-time) | **done** | – |
 
 Effort: S = new checks or an overlay on data the plugin already loads; M = new queries plus a page or tab;
 L = several new parts (tables, jobs, UI).
@@ -49,15 +48,6 @@ L = several new parts (tables, jobs, UI).
   (LibreNMS runs Laravel's scheduler).
 * The only ways onto a LibreNMS dashboard are indirect: the eventlog widget (the background checks write their
   findings there) and the Custom Map widget (a map exported as a [Custom Map](README.md#sharing--export)).
-
-## Later
-
-### 15. Maps at a point in time
-
-* Draw the L2/L3 maps as they were at a given time, or mark on today's map what changed since then, from the facts
-  the topology history keeps (`topology_facts`: links, port-channel members, root bridges, blocked ports, OSPF
-  adjacencies and BGP sessions, with their first seen and removed times).
-* Ports, VLANs and device details are not in the history: the past map shows them as they are now.
 
 ## Ideas for separate plugins
 
