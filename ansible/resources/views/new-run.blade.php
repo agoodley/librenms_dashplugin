@@ -142,16 +142,20 @@
         </div>
         <div id="ans-preview" class="ans-preview"></div>
 
-        <script type="application/json" id="ans-new-run-config">@json([
-            'targets' => route('ansible.api.targets'),
-            'preview' => route('ansible.api.preview'),
-            'store' => route('ansible.runs.store'),
-            'template' => $template->id,
-            'requestToken' => $requestToken,
-            'device' => $device,
-            'maxTargets' => $maxTargets,
-            'deviceUrl' => url('device'),
-        ])</script>
+        @php
+            $config = [
+                'targets' => route('ansible.api.targets'),
+                'preview' => route('ansible.api.preview'),
+                'store' => route('ansible.runs.store'),
+                'template' => $template->id,
+                'requestToken' => $requestToken,
+                'device' => $device,
+                'maxTargets' => $maxTargets,
+                'deviceUrl' => url('device'),
+            ];
+        @endphp
+        {{-- @json() splits its argument on commas: it gets one variable --}}
+        <script type="application/json" id="ans-new-run-config">@json($config)</script>
     @endif
 </div>
 @endsection

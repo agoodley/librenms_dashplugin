@@ -122,7 +122,12 @@ final class RunLauncher
             return ['run_id' => $existing, 'plan' => $plan, 'errors' => [], 'existing' => true];
         }
         $plan = $this->plan($templateId, $deviceIds, $answers);
-        if (! $plan->ok()) {
+        if (! $plan->ok() || $plan->refused) {
+            // a second submit of the same form sees the targets busy in the run the first one just recorded
+            $existing = $this->runs->byRequestToken($requestToken);
+            if ($existing !== null) {
+                return ['run_id' => $existing, 'plan' => $plan, 'errors' => [], 'existing' => true];
+            }
             $errors = $plan->errors;
             if ($plan->variableErrors) {
                 $errors[] = 'Fix the answers to the survey variables.';

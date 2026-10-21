@@ -132,12 +132,16 @@
         </div>
     </div>
 </div>
-<script type="application/json" id="ans-run-config">@json([
-    'poll' => route('ansible.api.runs.show', $run['id']),
-    'stop' => $canRun ? route('ansible.runs.stop', $run['id']) : null,
-    'final' => $final,
-    'next' => count($lines),
-])</script>
+@php
+    $config = [
+        'poll' => route('ansible.api.runs.show', $run['id']),
+        'stop' => $canRun ? route('ansible.runs.stop', $run['id']) : null,
+        'final' => $final,
+        'next' => count($lines),
+    ];
+@endphp
+{{-- @json() splits its argument on commas: it gets one variable --}}
+<script type="application/json" id="ans-run-config">@json($config)</script>
 @endsection
 
 @section('scripts')

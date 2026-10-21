@@ -40,11 +40,12 @@ final class LaunchPlan
     public int $maxTargets = 0;
 
     /**
-     * Can it be launched as it is?
+     * Can its targets be launched as they are? Refused devices are left out of the run (the preview lists them);
+     * a launch request that names one is refused (RunLauncher::launch()).
      */
     public function ok(): bool
     {
-        return ! $this->errors && ! $this->variableErrors && ! $this->refused && $this->targets && $this->template !== null;
+        return ! $this->errors && ! $this->variableErrors && $this->targets && $this->template !== null;
     }
 
     /**
