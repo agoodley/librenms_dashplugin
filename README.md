@@ -115,7 +115,9 @@ their map are used (and sent to their browser); a node the view does not place, 
 unmanaged neighbor, goes next to the nodes it is linked to; the view's scope names no device, group, location or VRF
 they may not see, but its name is shown as it was typed. The map leaves the view when its scope changes (device, hops,
 group, location, VRF); *Update* saves the map as it is now into the open view. Users change and delete their own views,
-LibreNMS admins also any shared view. A saved view holds up to 1 MB of layout, and each user up to 200 views.
+LibreNMS admins also any shared view and the personal views of users that no longer exist (listed as owned by "a former
+user" on *Saved Views*). A user keeps up to 200 views; a view stores the positions of the nodes of its map only, at most
+1 MB.
 *Saved Views* lists them (rename, share, delete) and the layouts saved in this browser with the save button, each of
 which becomes a view in one click.
 
@@ -701,7 +703,7 @@ Custom maps the plugin made are LibreNMS' own: they stay either way.
   failure simulation, `api/hosts?q=...` the host locator's answer, `api/path?a=...&b=...` the path trace and
   `api/views` the saved views (`api/l2?view=12` adds a view's positions). Like the pages, they need a LibreNMS login
   session (a LibreNMS API token does not open them) and answer with the user's permissions; API answers list the
-  kinds of data the user's role hides in `role_hidden`. `api/coverage` cuts each list at the same 500 rows as the page
+  kinds of data the user's role hides in `role_hidden` (an empty list when nothing is hidden). `api/coverage` cuts each list at the same 500 rows as the page
   and returns the full counts as `findings_total`, `neighbors_total`, `devices_total` and `ports_total`: narrow it with
   `device`, `group` or `location` for the rest. Phones and servers among the neighbors are only counted, in
   `summary.other_neighbors`. The POST routes behind the map buttons (`api/views`, `api/views/{id}` and
@@ -765,22 +767,27 @@ shows a user the changes of their devices, names other devices by their LLDP/CDP
 lists background findings about their devices alone. Only LibreNMS admins can apply derived device dependencies and
 save, clear or accept items of the baseline; other users see those pages read only. A baseline change for a device, group
 or location that no longer resolves (disabled, deleted or not permitted) is refused rather than applied to everything.
+A baseline change, a dependency apply or a Custom Map export whose device, group or location is not an id (`device=abc`,
+`0`, `-1`) is refused too (HTTP 422, nothing changes); an empty one still means the whole network.
 
 Only LibreNMS admins who may create custom maps (and update them, to replace one) can export a map to a LibreNMS Custom
 Map; the map is built with their permissions. Everyone who can open the maps may save views and share their own; they
-change and delete their own views, LibreNMS admins any shared view. A shared view is built with the permissions of
+change and delete their own views, LibreNMS admins any shared view and the personal views of users that no longer
+exist. A shared view is built with the permissions of
 whoever opens it: its positions are only sent for the nodes of their map, and it names no device, group, location or VRF
 they may not see.
 
 Besides the devices a user may see, LibreNMS checks a role permission for each kind of data (`port.view` for ports and
 what LibreNMS keeps of them: interface addresses, VLAN memberships, port-channel stacks, statistics, forwarding, ARP,
 IPv6 neighbor, 802.1X and spanning tree rows; `link.view` for LLDP/CDP links, `routing.view` for OSPF, BGP, IS-IS, MPLS
-and pseudowires, `outage.view`, `eventlog.view`, `syslog.view` ...), and admins can give custom roles only some of them
+and pseudowires, `sensor.view` for optical receive levels, `inventory.view` for stack members and line cards,
+`outage.view`, `eventlog.view`, `syslog.view` ...), and admins can give custom roles only some of them
 (the built-in user role has them all). The plugin leaves out what a user's role may not view, as LibreNMS' own pages do:
 LLDP/CDP links on the maps and the link based pages, spanning tree data, OSPF / BGP / OSPFv3 / IS-IS / IPsec / MPLS /
 pseudowire data on the L3 map, routing and site pages, outages, STP eventlog entries, interface addresses on every page
 (with them the subnets of the L3 and site maps, the IP checks of the routing page and the routers of the host locator),
-VLAN memberships, port-channels and statistics of ports, forwarding / ARP / IPv6 neighbor tables and 802.1X sessions in
+VLAN memberships, port-channels and statistics of ports, optical levels on the links page, stack members and line cards
+on the redundancy page, forwarding / ARP / IPv6 neighbor tables and 802.1X sessions in
 the host locator and the port tab (which also need the permission to view ports), and the matching facts and findings on
 the Changes page. Each page says what its user's role hides ("Your LibreNMS role may not view BGP sessions"), so an
 empty answer is not taken for "nothing found"; the JSON API, saved views and the file and Custom Map exports hold the
