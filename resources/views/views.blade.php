@@ -60,6 +60,8 @@
                                     <input type="hidden" name="action" value="{{ $view['shared'] ? 'unshare' : 'share' }}">
                                     <button type="submit" class="btn btn-xs btn-default">{{ $view['shared'] ? 'Stop sharing' : 'Share' }}</button>
                                 </form>
+                            @endif
+                            @if($view['can_delete'])
                                 <form method="post" action="{{ route('topology.views.act') }}" class="topo-inline-form" data-confirm="Delete the view &quot;{{ $view['name'] }}&quot;?"
                                       onsubmit="return window.confirm(this.getAttribute('data-confirm'))">
                                     @csrf

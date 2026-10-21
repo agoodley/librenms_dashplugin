@@ -15,8 +15,10 @@ use Illuminate\Routing\Controller;
 
 /**
  * Saved views of the maps: the Saved Views page and its actions, and the JSON API the maps' Views menu
- * uses (list, save, change, delete). Everyone who can open the maps saves their own views and may share
- * them; LibreNMS admins may also change and delete any shared view.
+ * uses (list, save, change, delete). Everyone who can open the maps saves their own views (at most
+ * SavedView::MAX_PER_USER) and may share them; LibreNMS admins may also change and delete any shared view,
+ * and delete the personal views of users that no longer exist. A view keeps the positions of the nodes
+ * of its map only.
  */
 class ViewController extends Controller
 {
@@ -31,7 +33,7 @@ class ViewController extends Controller
 
         return view('topology::views', [
             'available' => $views->available(),
-            'views' => $views->visible(),
+            'views' => $views->visible(null, true),
             // per map: what the user's role may not view of its data (the view shows the map without it)
             'roleHidden' => array_map(fn ($tables) => $views->hiddenKinds($tables), array_intersect_key(RoleData::PAGES, SavedView::PAGES)),
             'pages' => SavedView::PAGES,
@@ -57,7 +59,7 @@ class ViewController extends Controller
         $done = fn (bool $changed, string $message) => $changed
             ? [true, $message] : [false, "\"{$view['name']}\" could not be changed: it may have been changed or deleted meanwhile."];
         [$ok, $message] = match (true) {
-            $view === null || ! $view['can_edit'] => [false, 'You may not change that view.'],
+            $view === null || ! $view[$action === 'delete' ? 'can_delete' : 'can_edit'] => [false, 'You may not change that view.'],
             $action === 'rename' && $name === null => [false, 'Give the view a name.'],
             $action === 'rename' => $done($views->update($id, ['name' => $name]), "Renamed \"{$view['name']}\" to \"$name\"."),
             $action === 'share' => $done($views->update($id, ['shared' => true]), "\"{$view['name']}\" is shared with everyone who can open the maps."),
@@ -93,10 +95,21 @@ class ViewController extends Controller
         if (! $views->available()) {
             return response()->json(['error' => 'The plugin\'s table topology_views is missing: run ./lnms migrate.'], 409);
         }
+        if (($error = SavedView::tooMany($views->countOwn())) !== null) {
+            return response()->json(['error' => $error], 422);
+        }
+        $params = $this->params($request);
+        try {
+            [$positions, $error] = $this->storable($request, $page, $params, SavedView::positions($request->input('positions')));
+        } catch (\Throwable $e) {
+            return response()->json(['error' => $this->failure('saved view', $e)], 500);
+        }
+        if ($error !== null) {
+            return response()->json(['error' => $error], 422);
+        }
 
-        return $this->json('saved view', function () use ($request, $views, $page, $name) {
-            $id = $views->create($name, $page, $this->params($request), SavedView::positions($request->input('positions')),
-                SavedView::options($request->input('options')), $request->boolean('shared'));
+        return $this->json('saved view', function () use ($request, $views, $page, $name, $params, $positions) {
+            $id = $views->create($name, $page, $params, $positions, SavedView::options($request->input('options')), $request->boolean('shared'));
             $view = $views->find($id);
             unset($view['positions']);
 
@@ -129,7 +142,16 @@ class ViewController extends Controller
             $changes['params'] = $this->params($request);
         }
         if ($request->has('positions')) {
-            $changes['positions'] = SavedView::positions($request->input('positions'));
+            // the positions of the map of the view's parameters, the new ones or those it keeps
+            $params = $changes['params'] ?? MapParams::parse(SavedView::query($view['page'], $view['params']), $this->settings());
+            try {
+                [$changes['positions'], $error] = $this->storable($request, $view['page'], $params, SavedView::positions($request->input('positions')));
+            } catch (\Throwable $e) {
+                return response()->json(['error' => $this->failure('saved view', $e)], 500);
+            }
+            if ($error !== null) {
+                return response()->json(['error' => $error], 422);
+            }
         }
         if ($request->has('options')) {
             $changes['options'] = SavedView::options($request->input('options'));
@@ -142,18 +164,35 @@ class ViewController extends Controller
     }
 
     /**
-     * POST api/views/{id}/delete: delete a view the user may change.
+     * POST api/views/{id}/delete: delete a view the user may delete (SavedView::canDelete()).
      */
     public function destroy(Request $request, int $id): JsonResponse
     {
         $views = new ViewRepository($request->user());
         $view = $views->find($id);
-        if ($view === null || ! $view['can_edit']) {
+        if ($view === null || ! $view['can_delete']) {
             return response()->json(['error' => 'You may not change that view.'], $view === null ? 404 : 403);
         }
         $views->delete($id);
 
         return response()->json(['deleted' => $id]);
+    }
+
+    /**
+     * The positions a view keeps: those of the nodes of its map (its page and parameters, built for this
+     * user), and why they cannot be stored, or null (SavedView::forStorage()). The map is only built when
+     * there are positions.
+     *
+     * @param  array<string, array{0: float, 1: float}>  $positions  SavedView::positions()
+     * @return array{0: array<string, array{0: float, 1: float}>, 1: ?string}
+     */
+    private function storable(Request $request, string $page, array $params, array $positions): array
+    {
+        if (! $positions) {
+            return [[], null];
+        }
+
+        return SavedView::forStorage($positions, $this->service($request)->$page($params)['nodes'] ?? []);
     }
 
     /**

@@ -9,8 +9,9 @@ use Illuminate\Support\Facades\Schema;
 /**
  * Saved views of the maps (topology_views): storage, and the facts SavedView's rules need (the user,
  * whether they are an admin, the names they may see). A user sees their own views and the ones others
- * shared, and changes their own; LibreNMS admins may also change and delete any shared view. A view's
- * positions are only handed out for the nodes of the map the viewer is shown (layoutFor()).
+ * shared, and changes their own; LibreNMS admins may also change and delete any shared view, and delete
+ * the personal views of users that no longer exist. A view's positions are only handed out for the nodes
+ * of the map the viewer is shown (layoutFor()).
  */
 class ViewRepository extends ScopedRepository
 {
@@ -39,21 +40,22 @@ class ViewRepository extends ScopedRepository
 
     /**
      * Views the user may open, of one map or all: their own and the shared ones, by map and name,
-     * without positions.
+     * without positions; with $orphans, for an admin also the personal views of users that no longer
+     * exist (the Saved Views page lists them to delete them).
      *
      * @return array<int, array> see meta()
      */
-    public function visible(?string $page = null): array
+    public function visible(?string $page = null, bool $orphans = false): array
     {
         if (! $this->available()) {
             return [];
         }
         $me = $this->userId();
         $rows = DB::table('topology_views as v')->leftJoin('users as u', 'u.user_id', '=', 'v.user_id')
-            ->where(fn ($q) => $q->where('v.user_id', $me)->orWhere('v.shared', 1))
+            ->where(fn ($q) => $q->where('v.user_id', $me)->orWhere('v.shared', 1)->when($orphans && $this->isAdmin(), fn ($q) => $q->orWhereNull('u.user_id')))
             ->when($page !== null, fn ($q) => $q->where('v.page', $page))
             ->orderBy('v.page')->orderBy('v.name')->orderBy('v.id')
-            ->get(['v.id', 'v.user_id', 'v.name', 'v.page', 'v.query', 'v.options', 'v.shared', 'v.updated_at', 'u.username']);
+            ->get(['v.id', 'v.user_id', 'v.name', 'v.page', 'v.query', 'v.options', 'v.shared', 'v.updated_at', 'u.username', 'u.user_id as owner_id']);
 
         // the names of all centered devices in one query
         $ids = [];
@@ -70,8 +72,9 @@ class ViewRepository extends ScopedRepository
     }
 
     /**
-     * A view the user may open (their own or a shared one) with its positions, null otherwise: a view
-     * that does not exist and another user's personal view look the same.
+     * A view the user may open (their own or a shared one; for an admin also one whose owner no longer
+     * exists) with its positions, null otherwise: a view that does not exist and another user's personal
+     * view look the same.
      */
     public function find(int $id): ?array
     {
@@ -79,8 +82,9 @@ class ViewRepository extends ScopedRepository
             return null;
         }
         $row = DB::table('topology_views as v')->leftJoin('users as u', 'u.user_id', '=', 'v.user_id')->where('v.id', $id)
-            ->first(['v.id', 'v.user_id', 'v.name', 'v.page', 'v.query', 'v.layout', 'v.options', 'v.shared', 'v.updated_at', 'u.username']);
-        if (! $row || ! SavedView::canOpen((array) $row, $this->userId())) {
+            ->first(['v.id', 'v.user_id', 'v.name', 'v.page', 'v.query', 'v.layout', 'v.options', 'v.shared', 'v.updated_at', 'u.username',
+                'u.user_id as owner_id']);
+        if (! $row || ! SavedView::canOpen((array) $row, $this->userId(), $this->isAdmin())) {
             return null;
         }
 
@@ -165,12 +169,12 @@ class ViewRepository extends ScopedRepository
     }
 
     /**
-     * Delete a view the user may change; false otherwise.
+     * Delete a view the user may delete (SavedView::canDelete()); false otherwise.
      */
     public function delete(int $id): bool
     {
         $view = $this->find($id);
-        if ($view === null || ! $view['can_edit']) {
+        if ($view === null || ! $view['can_delete']) {
             return false;
         }
 
@@ -178,10 +182,18 @@ class ViewRepository extends ScopedRepository
     }
 
     /**
+     * Number of views the user keeps (SavedView::MAX_PER_USER).
+     */
+    public function countOwn(): int
+    {
+        return $this->available() ? DB::table('topology_views')->where('user_id', $this->userId())->count() : 0;
+    }
+
+    /**
      * What the user is shown of a view (SavedView::present()) and its URL.
      *
      * @return array{id: int, name: string, page: string, params: array, options: array, scope: string, owner: string, mine: bool,
-     *     shared: bool, can_edit: bool, updated_at: ?string, url: string}
+     *     shared: bool, can_edit: bool, can_delete: bool, updated_at: ?string, url: string}
      */
     public function meta(array $row): array
     {
