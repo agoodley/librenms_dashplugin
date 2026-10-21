@@ -112,7 +112,7 @@
                         <option value="">Every device</option>
                         @php($allowed = (string) ($settings['allowed_group'] ?? ''))
                         @if($allowed !== '' && ! isset($a['groups'][(int) $allowed]))
-                            <option value="{{ $allowed }}" selected>#{{ $allowed }} (no longer exists: no device can be a target)</option>
+                            <option value="{{ $allowed }}" selected>#{{ $allowed }}{{ $a['groupsVisible'] ? ' (no longer exists: no device can be a target)' : '' }}</option>
                         @endif
                         @foreach($a['groups'] as $groupId => $name)
                             <option value="{{ $groupId }}" @selected($allowed === (string) $groupId)>{{ $name }}</option>

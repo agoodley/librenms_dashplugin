@@ -214,6 +214,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 * **Launching and stopping** runs also needs the plugin's own permission, `ansible.run`, which an admin grants on the
   settings page (*Run permission*). Admins do not get it automatically: an admin without it sees everything, but no
   *New run* or *Stop*, and the plugin answers 403 to such requests.
+* The permission keeps launch rights explicit and visible; it is no barrier between admins (an admin can grant it,
+  also to themselves).
 * `ansible.run` is a **direct permission of the user**, not of a role. LibreNMS' role editor (*Roles*) saves only the
   permissions of its own list (`resources/definitions/permissions.yaml`), so a plugin permission given to a role is
   dropped the next time someone saves that role; its user editor sets roles only, and keeps a user's direct
@@ -298,7 +300,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 * **Who:** admins only, and only those holding `ansible.run` may launch and stop.
 * **Targets:** only devices that exist, are enabled, in the allowed group, mapped, not busy, visible to the
   inventory's user, at most the max; the limit is made only of the plugin's own inventory names, which cannot be
-  Ansible patterns (no `,` `:` `!` `&` `*` `?` `[` `]` `~` `@`) or group names.
+  Ansible patterns (no `,` `:` `!` `&` `*` `?` `[` `]` `~` `@`) or group names. Ansible applies the limit to every
+  play of a playbook: a play on `localhost` or on a host the playbook adds at run time is skipped (checked with
+  Ansible core 2.20); tasks delegated to another host still run there, on behalf of a target.
 * **Network data is untrusted:** sysName, location, hardware, version and display, device group and location names
   can be anything a device or user reported. Before they go into the inventory, control and format characters become
   spaces and everything outside letters, digits, space and `.,:_-/()@+=` is dropped (so no `{`, `}`, `%` or `#`, and no

@@ -34,12 +34,14 @@ class Settings implements SettingsHook
     {
         // LibreNMS disables a plugin whose hook throws: nothing may escape
         $merged = PluginSettings::merge($settings);
-        $data = ['admin' => false, 'connection' => null, 'connectionError' => null, 'holders' => [], 'candidates' => [], 'groups' => [],
+        $data = ['admin' => false, 'connection' => null, 'connectionError' => null, 'holders' => [], 'candidates' => [], 'groups' => [], 'groupsVisible' => false,
             'mapErrors' => [], 'fetch' => null];
         try {
             $plugin = new Plugin();
             $data['admin'] = Access::canView(auth()->user());
-            $data['groups'] = (new DeviceRepository())->deviceGroups();
+            // the device group names, for those LibreNMS lets list device groups (plugin.admin alone does not)
+            $data['groupsVisible'] = \Illuminate\Support\Facades\Gate::allows('viewAny', \App\Models\DeviceGroup::class);
+            $data['groups'] = $data['groupsVisible'] ? (new DeviceRepository())->deviceGroups() : [];
             $data['mapErrors'] = (new PluginSettings($settings))->platformMap()->errors();
             if ($data['admin']) {
                 $data['connection'] = $plugin->connection()->forPage();

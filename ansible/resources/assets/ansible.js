@@ -359,7 +359,7 @@
                     el('td', 'ans-code', device.name || '-'),
                     el('td', null, device.os),
                     el('td', 'ans-code', device.platform || el('span', 'text-muted', 'no mapping')),
-                    el('td', null, el('span', 'topo-status ' + (device.status === 'up' ? 'text-success' : (device.status === 'down' ? 'text-danger' : 'text-muted')), device.status)),
+                    el('td', null, el('span', (device.status === 'up' ? 'text-success' : (device.status === 'down' ? 'text-danger' : 'text-muted')), device.status)),
                     el('td', 'ans-wrap', device.location || ''),
                     el('td', device.refusal ? 'ans-refusal' : 'text-success', device.refusal ? device.refusal.text : 'yes')
                 ]);
