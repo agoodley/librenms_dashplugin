@@ -226,6 +226,24 @@ class SupportTest extends TestCase
         $this->assertTrue($params['ospf']);
     }
 
+    public function testAScopeThatIsNoIdIsRefusedForWrites(): void
+    {
+        // parse() reads these as "no filter": a write would cover every device
+        foreach (['abc', '0', '-1', '1x', [5], [], true, false] as $value) {
+            $this->assertSame('device', MapParams::invalidScope(['device' => $value]), var_export($value, true));
+        }
+        $this->assertSame('group', MapParams::invalidScope(['device' => '5', 'group' => '0']));
+        $this->assertSame('location', MapParams::invalidScope(['location' => 'none']));
+
+        // not given, or valid ids
+        foreach ([[], ['device' => ''], ['device' => '  '], ['device' => null], ['device' => '12', 'group' => '3', 'location' => 7]] as $input) {
+            $this->assertNull(MapParams::invalidScope($input), json_encode($input));
+        }
+        $settings = new PluginSettings();
+        $this->assertSame([12, 3, 7], array_values(array_intersect_key(MapParams::parse(['device' => '12', 'group' => '3', 'location' => 7], $settings),
+            array_flip(['device', 'group', 'location']))));
+    }
+
     public function testCheckboxGroupsAreStoredAsLists(): void
     {
         // LibreNMS stores settings[history_checks][] as a list; the hidden empty entry keeps "none checked" apart from unset

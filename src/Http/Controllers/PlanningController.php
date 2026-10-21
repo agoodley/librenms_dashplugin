@@ -90,6 +90,9 @@ class PlanningController extends Controller
         abort_unless($this->canApply($request), 403);
 
         $filter = $request->input('filter');
+        // a device, group or location of the view that is no id would be read as "every device"
+        $invalid = is_array($filter) ? MapParams::invalidScope($filter) : ($request->filled('filter') ? 'filter' : null);
+        abort_if($invalid !== null, 422, "The $invalid of this view is not a valid id: nothing changed.");
         $view = [];
         foreach (['device', 'group', 'location'] as $key) {
             $value = is_array($filter) ? ($filter[$key] ?? null) : null;
