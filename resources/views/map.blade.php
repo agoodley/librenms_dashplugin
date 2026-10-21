@@ -145,7 +145,8 @@
                 <input id="topo-time-value" type="datetime-local" class="form-control" step="60" aria-label="Date and time (server time, {{ $time['timezone'] }})"
                     value="{{ $timeValue }}" min="{{ $time['earliest_minute'] }}" max="{{ $time['now'] }}" list="topo-time-snapshots"
                     @if($timeMode === '' || ($timeMode === 'since' && $sinceBaseline)) style="display: none" @endif>
-                <span id="topo-time-zone" class="topo-time-zone" title="The server's time zone ({{ $time['timezone'] }})" @if($timeMode === '' || ($timeMode === 'since' && $sinceBaseline)) style="display: none" @endif>{{ $time['zone'] }}</span>
+                {{-- the zone's name, not an abbreviation: one of today (CET) would mislabel a time of summer (CEST) --}}
+                <span id="topo-time-zone" class="topo-time-zone" title="The server's time zone: the times are its" @if($timeMode === '' || ($timeMode === 'since' && $sinceBaseline)) style="display: none" @endif>{{ $time['timezone'] }}</span>
                 <span id="topo-time-baseline" class="topo-time-baseline" @if(! ($timeMode === 'since' && $sinceBaseline)) style="display: none" @endif>the baseline</span>
                 <datalist id="topo-time-snapshots">
                     @foreach($time['snapshots'] as $snapshot)

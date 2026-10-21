@@ -306,7 +306,17 @@ class MapHistoryTest extends TestCase
         $this->assertSame([], $history->asOf($past, self::S0 + 60, 'l2', [], false)['not_shown'], 'no phones drawn without unmanaged neighbours');
         $l3 = $history->asOf($past, self::S0 + 60, 'l3', ['isis' => 2, 'mpls' => 0]);
         $this->assertSame(['IS-IS adjacencies'], $l3['not_shown']);
+        $this->assertSame(['subnets and addresses', 'device details'], $l3['from_today']);
         $this->assertSame(date('Y-m-d H:i:s', self::S0 + 60), $l3['requested']);
+
+        // a role that may view devices only: no ports from today, no phones it could not see anyway
+        $repo->hidden = ['links' => 'LLDP/CDP links', 'ports' => 'ports', 'stp' => 'spanning tree', 'ports_stp' => 'spanning tree ports',
+            'ipv4_addresses' => 'IP addresses', 'ipv6_addresses' => 'IP addresses'];
+        $role = $history->asOf($past, self::S0 + 60, 'l2', [], true);
+        $this->assertSame(['device details'], $role['from_today']);
+        $this->assertSame([], $role['not_shown']);
+        $this->assertSame([], $role['from_history'], 'nothing of the history it may read (links, port-channels and spanning tree hidden)');
+        $this->assertSame(['device details'], $history->asOf($past, self::S0 + 60, 'l3')['from_today']);
     }
 
     public function testThePageFallbackHasEveryKey(): void

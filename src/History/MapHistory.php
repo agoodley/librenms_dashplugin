@@ -33,9 +33,10 @@ class MapHistory
         'l3' => [FactCollector::OSPF => 'OSPF adjacencies', FactCollector::BGP => 'BGP sessions'],
     ];
 
+    /** ... and what from today, with the tables it comes from (the role must read one of them). */
     private const FROM_TODAY = [
-        'l2' => ['ports with their speeds and VLANs', 'device details'],
-        'l3' => ['subnets and addresses', 'device details'],
+        'l2' => ['ports with their speeds and VLANs' => ['ports'], 'device details' => []],
+        'l3' => ['subnets and addresses' => ['ipv4_addresses', 'ipv6_addresses'], 'device details' => []],
     ];
 
     /** How a past map draws what has no state in the history. */
@@ -95,7 +96,8 @@ class MapHistory
     /**
      * What a map as of $time shows (its response's as_of): the time asked for, the snapshot drawn and the next one,
      * what came from the history and what from today, what it leaves out (the L3 overlays the history does not
-     * record, and the phones it leaves out), the kinds of facts not recorded yet then.
+     * record, and the phones it leaves out), the kinds of facts not recorded yet then; of the data the user's role
+     * may read.
      *
      * @param  string  $mode  l2 or l3
      * @param  array<string, int>  $layers  L3 overlay => devices of the map with such data today (left out)
@@ -119,16 +121,18 @@ class MapHistory
                 . ': they are as the snapshot before recorded them.';
         }
         $notShown = array_values(array_intersect_key(self::UNRECORDED_LAYERS, array_filter($layers)));
-        if ($mode === 'l2' && $phones) {
+        if ($mode === 'l2' && $phones && $this->history->allowsTable('links')) {
             $notShown[] = 'phones';
         }
+        $today = array_keys(array_filter(self::FROM_TODAY[$mode], fn (array $tables) => ! $tables
+            || array_filter($tables, fn (string $table) => $this->history->allowsTable($table))));
 
         return [
             'requested' => self::format($time, true),
             'snapshot' => self::format($snapshot['time'], true),
             'next' => $snapshot['next'] !== null ? self::format($snapshot['next'], true) : null,
             'from_history' => array_values(array_map(fn ($kind) => self::FROM_HISTORY[$mode][$kind], $allowed)),
-            'from_today' => self::FROM_TODAY[$mode],
+            'from_today' => $today,
             'not_shown' => $notShown,
             'not_recorded' => array_values(array_map(fn ($kind) => self::FROM_HISTORY[$mode][$kind], array_diff($allowed, $snapshot['recorded']))),
             'notes' => $notes,
@@ -290,7 +294,7 @@ class MapHistory
         return [
             'available' => false, 'reason' => $reason, 'earliest' => null, 'earliest_minute' => null, 'latest' => null, 'snapshots' => [], 'count' => 0,
             'baseline' => null, 'picks' => [], 'defaults' => ['at' => null, 'since' => null], 'now' => self::format($now),
-            'timezone' => date_default_timezone_get(), 'zone' => date('T', $now), 'interval' => $settings->int('history_interval', 5, 1440),
+            'timezone' => date_default_timezone_get(), 'interval' => $settings->int('history_interval', 5, 1440),
         ];
     }
 
