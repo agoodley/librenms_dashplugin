@@ -751,21 +751,35 @@ whoever opens it: its positions are only sent for the nodes of their map, and it
 they may not see.
 
 Besides the devices a user may see, LibreNMS checks a role permission for each kind of data (`port.view` for ports and
-their forwarding, ARP, IPv6 neighbor, 802.1X and spanning tree rows, `link.view` for LLDP/CDP links, `routing.view` for
-OSPF, BGP, IS-IS, MPLS and pseudowires, `outage.view`, `eventlog.view`, `syslog.view` ...), and admins can give custom
-roles only some of them (the built-in user role has them all). The plugin leaves out what a user's role may not view, as
-LibreNMS' own pages do: LLDP/CDP links on the maps and the link based pages, spanning tree data, OSPF / BGP / OSPFv3 /
-IS-IS / IPsec / MPLS / pseudowire data on the L3 map, routing and site pages, outages, STP eventlog entries, forwarding
-/ ARP / IPv6 neighbor tables and 802.1X sessions in the host locator and the port tab (which also need the permission to
-view ports), and the matching facts and findings on the Changes page. Each page says what its user's role hides ("Your
-LibreNMS role may not view BGP sessions"), so an empty answer is not taken for "nothing found"; the JSON API, saved
-views and the file and Custom Map exports hold the same reduced data, and the Saved Views page marks with a lock the
-views whose map leaves something out. The syslog evidence of the spanning tree page, and the findings of its syslog
-based checks on the Changes page, are only shown to users whose role may view syslog (the eventlog entries of the
-spanning tree check name those checks to everyone who may see the device). The background checks run without a user and
-read everything; their eventlog entries name the check only, and an entry capped at the first devices says "and on other
-devices" without a count. Applying device dependencies writes the number of parents to the device's eventlog (the names
-go to the LibreNMS log), as users who may see the device may not see its parents.
+what LibreNMS keeps of them: interface addresses, VLAN memberships, port-channel stacks, statistics, forwarding, ARP,
+IPv6 neighbor, 802.1X and spanning tree rows; `link.view` for LLDP/CDP links, `routing.view` for OSPF, BGP, IS-IS, MPLS
+and pseudowires, `outage.view`, `eventlog.view`, `syslog.view` ...), and admins can give custom roles only some of them
+(the built-in user role has them all). The plugin leaves out what a user's role may not view, as LibreNMS' own pages do:
+LLDP/CDP links on the maps and the link based pages, spanning tree data, OSPF / BGP / OSPFv3 / IS-IS / IPsec / MPLS /
+pseudowire data on the L3 map, routing and site pages, outages, STP eventlog entries, interface addresses on every page
+(with them the subnets of the L3 and site maps, the IP checks of the routing page and the routers of the host locator),
+VLAN memberships, port-channels and statistics of ports, forwarding / ARP / IPv6 neighbor tables and 802.1X sessions in
+the host locator and the port tab (which also need the permission to view ports), and the matching facts and findings on
+the Changes page. Each page says what its user's role hides ("Your LibreNMS role may not view BGP sessions"), so an
+empty answer is not taken for "nothing found"; the JSON API, saved views and the file and Custom Map exports hold the
+same reduced data, and the Saved Views page marks with a lock the views whose map leaves something out. The syslog
+evidence of the spanning tree page, and the findings of its syslog based checks on the Changes page, are only shown to
+users whose role may view syslog (the eventlog entries of the spanning tree check name those checks to everyone who may
+see the device). The background checks run without a user and read everything; their eventlog entries name the check
+only, and an entry capped at the first devices says "and on other devices" without a count. Applying device dependencies
+writes the number of parents to the device's eventlog (the names go to the LibreNMS log), as users who may see the
+device may not see its parents.
+
+VRF names have no role permission of their own in the plugin. LibreNMS shows the VRF of a port to everyone who may view
+the port, and the plugin needs the names to keep apart the subnets and sessions of different VRFs: without them the L3
+map would join subnets of different VRFs into links that do not exist. So they come with the addresses (`port.view`) and
+the sessions (`routing.view`) they belong to, and the VRF filter of the routing page and the scope of a saved view name
+the VRFs of the devices the user may see without asking for either.
+
+LibreNMS 26.10 checks `link.view` or `link.viewAll` for LLDP/CDP links. Its installation creates neither permission,
+only `link.viewAny`, which the link policy does not check; LibreNMS' role editor creates `link.view` and `link.viewAll`
+when a role is saved with *Links → View links* or *View all links*. A custom role without one of them sees no LLDP/CDP
+links, in LibreNMS or in the plugin; the admin, global-read and user roles are not affected.
 
 A path trace only resolves ends the user may see and shows devices out of their sight on the path without name, ports
 or addresses; only admins see the size of the whole route table. It leaves out what the user's role may not view and

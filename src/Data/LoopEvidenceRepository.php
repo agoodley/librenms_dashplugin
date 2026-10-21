@@ -31,6 +31,9 @@ class LoopEvidenceRepository extends ScopedRepository
     public function portRates(array $portIds): array
     {
         $result = [];
+        if (! $this->allowsTable('ports') || ! $this->allowsTable('ports_statistics')) {
+            return $result;
+        }
         try {
             foreach (array_chunk(array_values(array_unique(array_filter(array_map('intval', $portIds)))), 5000) as $chunk) {
                 foreach (DB::table('ports as p')->leftJoin('ports_statistics as s', 's.port_id', '=', 'p.port_id')

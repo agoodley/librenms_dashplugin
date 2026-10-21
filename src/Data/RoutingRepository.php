@@ -130,9 +130,15 @@ class RoutingRepository extends ScopedRepository
             return;
         }
 
+        $tables = array_filter(self::ADDRESS_TABLES, fn (array $table) => $this->allowsTable($table[0]));
+        if (! $tables) {
+            return;
+        }
+
+        // VRF names have no role permission of their own here (see the README's Permissions)
         $vrfs = $this->vrfNames($ids);
         $columns = array_map(fn ($c) => "p.$c", $this->existing('ports', ['device_id', 'port_id', 'ifName', 'ifDescr', 'ifType', 'ifMtu', 'ifOperStatus', 'ifVrf']));
-        foreach (self::ADDRESS_TABLES as [$table, $key, $address, $prefix]) {
+        foreach ($tables as [$table, $key, $address, $prefix]) {
             try {
                 $rows = DB::table("$table as a")->join('ports as p', 'p.port_id', '=', 'a.port_id')
                     ->whereIntegerInRaw('p.device_id', $ids)->where('p.deleted', 0)
@@ -164,7 +170,7 @@ class RoutingRepository extends ScopedRepository
 
         $devices = [];
         foreach (self::ADDRESS_TABLES as [$table, , $address]) {
-            foreach (array_chunk($addresses, 1000) as $chunk) {
+            foreach ($this->allowsTable($table) ? array_chunk($addresses, 1000) : [] as $chunk) {
                 try {
                     foreach (DB::table("$table as a")->join('ports as p', 'p.port_id', '=', 'a.port_id')
                         ->whereIntegerInRaw('p.device_id', $ids)->where('p.deleted', 0)->whereIn("a.$address", $chunk)

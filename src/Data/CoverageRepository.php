@@ -348,13 +348,13 @@ class CoverageRepository extends ScopedRepository
 
         $owners = [];
         try {
-            foreach (array_chunk($v4, 1000) as $chunk) {
+            foreach ($this->allowsTable('ipv4_addresses') ? array_chunk($v4, 1000) : [] as $chunk) {
                 foreach (DB::table('ipv4_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
                     ->whereIn('a.ipv4_address', $chunk)->get(['a.ipv4_address', 'p.device_id']) as $row) {
                     $owners[(string) $row->ipv4_address][] = (int) $row->device_id;
                 }
             }
-            foreach (array_chunk(array_keys($v6), 1000) as $chunk) {
+            foreach ($this->allowsTable('ipv6_addresses') ? array_chunk(array_keys($v6), 1000) : [] as $chunk) {
                 foreach (DB::table('ipv6_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
                     ->whereIn('a.ipv6_compressed', $chunk)->get(['a.ipv6_compressed', 'p.device_id']) as $row) {
                     $owners[strtolower($v6[strtolower((string) $row->ipv6_compressed)] ?? (string) $row->ipv6_compressed)][] = (int) $row->device_id;

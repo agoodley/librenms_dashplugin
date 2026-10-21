@@ -52,6 +52,16 @@ class RolePermissionsTest extends TestCase
         $this->assertSame(3, $repo->checks, 'one check per model and repository');
     }
 
+    public function testATableReadWithAnAliasIsGuardedToo(): void
+    {
+        $repo = self::repository(['App\Models\Ipv4Address', 'App\Models\Pseudowire']);
+
+        $this->assertFalse($repo->allowsTable('ipv4_addresses as a'));
+        $this->assertFalse($repo->allowsTable(' pseudowires as l'));
+        $this->assertTrue($repo->allowsTable('ipv6_addresses as a'));
+        $this->assertTrue($repo->allowsTable(''), 'no table, nothing to hide');
+    }
+
     public function testEveryPageNamesTablesWithAModel(): void
     {
         foreach (RoleData::PAGES as $page => $tables) {

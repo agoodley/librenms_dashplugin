@@ -504,6 +504,9 @@ class HostRepository extends ScopedRepository
 
         $addresses = [];
         foreach ([4 => ['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen'], 6 => ['ipv6_addresses', 'ipv6_address', 'ipv6_prefixlen']] as $family => [$table, $column, $prefix]) {
+            if (! $this->readable($table)) {
+                continue;
+            }
             try {
                 foreach (DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')->whereIntegerInRaw('p.device_id', $deviceIds)
                     ->limit(5000)->get(['p.device_id', 'p.port_id', 'p.ifName', 'p.ifDescr', 'a.' . $column . ' as ip', 'a.' . $prefix . ' as prefix']) as $row) {
@@ -586,6 +589,9 @@ class HostRepository extends ScopedRepository
     public function portVlans(int $deviceId, int $portId): array
     {
         $vlans = [];
+        if (! $this->readable('ports_vlans')) {
+            return $vlans;
+        }
         try {
             foreach (DB::table('ports_vlans')->where('device_id', $deviceId)->where('port_id', $portId)
                 ->orderBy('vlan')->get(['vlan', 'untagged', 'state']) as $row) {
