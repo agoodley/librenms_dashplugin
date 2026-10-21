@@ -97,7 +97,7 @@
             <div class="form-group row">
                 <label class="col-sm-4 control-label" for="ans-setting-platform_map" style="font-weight: normal">Platform mapping</label>
                 <div class="col-sm-8">
-                    <textarea id="ans-setting-platform_map" class="form-control input-sm ans-code" name="settings[platform_map]" placeholder="{{ \Agoodley\LibrenmsAnsible\Inventory\PlatformMap::DEFAULT }}">{{ $settings['platform_map'] ?? '' }}</textarea>
+                    <textarea id="ans-setting-platform_map" rows="11" class="form-control input-sm ans-code" name="settings[platform_map]" placeholder="{{ \Agoodley\LibrenmsAnsible\Inventory\PlatformMap::DEFAULT }}">{{ $settings['platform_map'] ?? '' }}</textarea>
                     <span class="help-block" style="margin: 2px 0 0; font-size: 12px">one line per LibreNMS os: os, ansible_network_os, optionally the connection
                         (network_cli, netconf, httpapi or a full name) and "become" (enable mode); empty: the defaults shown. A device whose os has no line cannot be a target.</span>
                     @foreach($a['mapErrors'] as $mapError)

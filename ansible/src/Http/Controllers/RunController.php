@@ -59,7 +59,7 @@ class RunController extends Controller
         return response()->json(['total' => $result['total'], 'per_page' => self::PER_PAGE, 'runs' => array_map(fn ($run) => [
             'id' => (int) $run['id'], 'created_at' => $run['created_at'], 'started_at' => $run['started_at'], 'finished_at' => $run['finished_at'],
             'user' => $run['username'], 'template_id' => $run['template_id'], 'template' => $run['template_name'], 'status' => $run['status'],
-            'targets' => $run['targets'], 'results' => (object) ($run['summary'] ?? []), 'unexpected_hosts' => $run['unexpected_hosts'] ?? [],
+            'targets' => $run['targets'], 'target_names' => $run['target_names'], 'results' => (object) ($run['summary'] ?? []), 'unexpected_hosts' => $run['unexpected_hosts'] ?? [],
             'url' => route('ansible.runs.show', $run['id']),
         ], $result['rows'])]);
     }

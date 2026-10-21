@@ -90,9 +90,51 @@
         </div>
     </details>
 
+    <div class="row">
+        <div class="col-md-6">
+            <div class="panel panel-default">
+                <div class="panel-heading"><strong>Groups</strong> <span class="text-muted">({{ count($groups) }})</span></div>
+                <div style="max-height: 520px; overflow-y: auto">
+                <table class="table table-condensed ans-table" id="ans-inventory-groups">
+                    <thead><tr><th>Group</th><th>From</th><th class="ans-num">Hosts</th></tr></thead>
+                    <tbody>
+                    @foreach($groups as $group => $members)
+                        <tr>
+                            <td class="ans-code">{{ $group }}</td>
+                            <td class="ans-wrap">{{ $kinds[$groupInfo[$group]['kind'] ?? ''] ?? '' }}: {{ $groupInfo[$group]['label'] ?? '' }}</td>
+                            <td class="ans-num">{{ count($members) }}</td>
+                        </tr>
+                    @endforeach
+                    </tbody>
+                </table>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="panel panel-default">
+                <div class="panel-heading"><strong>Left out</strong> <span class="text-muted">({{ count($leftOut) }})</span></div>
+                <div style="max-height: 520px; overflow-y: auto">
+                    <table class="table table-condensed ans-table" id="ans-inventory-left-out">
+                        <thead><tr><th>Device</th><th>Why</th></tr></thead>
+                        <tbody>
+                        @forelse($leftOut as $deviceId => $reason)
+                            <tr data-device="{{ $deviceId }}" data-reason="{{ $reason['reason'] }}">
+                                <td class="ans-wrap"><a href="{{ url('device/' . $deviceId) }}">{{ $names[$deviceId] ?? '#' . $deviceId }}</a></td>
+                                <td class="ans-wrap" title="{{ $reasonLabels[$reason['reason']] ?? $reason['reason'] }}">{{ $reason['text'] }}</td>
+                            </tr>
+                        @empty
+                            <tr><td colspan="2" class="text-muted">None.</td></tr>
+                        @endforelse
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="panel panel-default">
         <div class="panel-heading"><strong>Hosts</strong> <span class="text-muted">({{ count($hosts) }})</span></div>
-        <div class="table-responsive">
+        <div class="table-responsive" style="max-height: 720px; overflow-y: auto">
             <table class="table table-condensed table-hover ans-table" id="ans-inventory-hosts-table">
                 <thead><tr><th>Inventory name</th><th>Device</th><th>ansible_host</th><th>Platform</th><th>Connection</th><th>Facts</th><th>Groups</th></tr></thead>
                 <tbody>
@@ -102,7 +144,7 @@
                         <td class="ans-wrap"><a href="{{ url('device/' . $vars['librenms_device_id']) }}">{{ $names[$vars['librenms_device_id']] ?? $vars['librenms_hostname'] }}</a></td>
                         <td class="ans-code">{{ $vars['ansible_host'] }}</td>
                         <td class="ans-code">{{ $vars['ansible_network_os'] }}</td>
-                        <td class="ans-code">{{ $vars['ansible_connection'] }}{{ ! empty($vars['ansible_become']) ? ' + enable' : '' }}</td>
+                        <td class="ans-code" title="{{ $vars['ansible_connection'] }}">{{ \Illuminate\Support\Str::afterLast($vars['ansible_connection'], '.') }}{{ ! empty($vars['ansible_become']) ? ' + enable' : '' }}</td>
                         <td class="ans-wrap" style="font-size: 12px">
                             {{ $vars['librenms_os'] }}@if($vars['librenms_sysname']) · {{ $vars['librenms_sysname'] }}@endif
                             @if($vars['librenms_hardware']) · {{ $vars['librenms_hardware'] }}@endif
@@ -116,46 +158,6 @@
                 @endforelse
                 </tbody>
             </table>
-        </div>
-    </div>
-
-    <div class="row">
-        <div class="col-md-6">
-            <div class="panel panel-default">
-                <div class="panel-heading"><strong>Groups</strong> <span class="text-muted">({{ count($groups) }})</span></div>
-                <table class="table table-condensed ans-table" id="ans-inventory-groups">
-                    <thead><tr><th>Group</th><th>From</th><th class="ans-num">Hosts</th></tr></thead>
-                    <tbody>
-                    @foreach($groups as $group => $members)
-                        <tr>
-                            <td class="ans-code">{{ $group }}</td>
-                            <td class="ans-wrap">{{ $kinds[$groupInfo[$group]['kind'] ?? ''] ?? '' }}: {{ $groupInfo[$group]['label'] ?? '' }}</td>
-                            <td class="ans-num">{{ count($members) }}</td>
-                        </tr>
-                    @endforeach
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        <div class="col-md-6">
-            <div class="panel panel-default">
-                <div class="panel-heading"><strong>Left out</strong> <span class="text-muted">({{ count($leftOut) }})</span></div>
-                <div style="max-height: 520px; overflow-y: auto">
-                    <table class="table table-condensed ans-table" id="ans-inventory-left-out">
-                        <thead><tr><th>Device</th><th>Why</th></tr></thead>
-                        <tbody>
-                        @forelse($leftOut as $deviceId => $reason)
-                            <tr data-device="{{ $deviceId }}" data-reason="{{ $reason['reason'] }}">
-                                <td class="ans-wrap"><a href="{{ url('device/' . $deviceId) }}">{{ $names[$deviceId] ?? '#' . $deviceId }}</a></td>
-                                <td><span class="label label-default">{{ $reasonLabels[$reason['reason']] ?? $reason['reason'] }}</span> <span class="ans-muted" style="font-size: 12px">{{ $reason['text'] }}</span></td>
-                            </tr>
-                        @empty
-                            <tr><td colspan="2" class="text-muted">None.</td></tr>
-                        @endforelse
-                        </tbody>
-                    </table>
-                </div>
-            </div>
         </div>
     </div>
 

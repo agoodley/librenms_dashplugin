@@ -44,7 +44,7 @@
 .ans-launchbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
 .ans-settings fieldset { margin-bottom: 20px; }
 .ans-settings legend { font-size: 15px; }
-.ans-settings textarea.ans-code { min-height: 170px; }
+.ans-settings textarea.ans-code { min-height: 190px; }
 .ans-test-result { margin-top: 10px; }
 .ans-warning-loud { border: 2px solid #c0392b; background: #fbeeec; color: #5a1a13; padding: 8px 10px; border-radius: 4px; font-weight: 600; margin: 8px 0; }
 .ans-device-panel .panel-heading .pull-right .btn { margin-left: 4px; }

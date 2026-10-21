@@ -109,7 +109,7 @@
                             </td>
                         </tr>
                     @empty
-                        <tr><td class="text-muted">The template has no survey variables.</td></tr>
+                        <tr><td colspan="2" class="text-muted">The template has no survey variables.</td></tr>
                     @endforelse
                     <tr><th>Limit</th><td class="ans-code ans-wrap">{{ str_replace(',', ', ', $run['limit']) }}</td></tr>
                 </table>

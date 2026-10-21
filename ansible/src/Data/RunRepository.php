@@ -150,7 +150,7 @@ final class RunRepository
     }
 
     /**
-     * A page of runs, newest first, with the number of targets.
+     * A page of runs, newest first, with the number of targets and the names of the first three.
      *
      * @param  array{device?: ?int, user?: ?string, template?: ?string, status?: ?string, from?: ?string, to?: ?string}  $filters
      * @return array{rows: array<int, array>, total: int}
@@ -184,15 +184,16 @@ final class RunRepository
             ->get(['r.id', 'r.username', 'r.template_id', 'r.template_name', 'r.status', 'r.runner_status', 'r.summary', 'r.unexpected_hosts',
                 'r.created_at', 'r.started_at', 'r.finished_at'])
             ->map(fn ($r) => self::decode((array) $r))->all();
-        $counts = [];
+        $names = [];
         if ($rows) {
-            foreach (DB::table('ansible_run_targets')->whereIn('run_id', array_column($rows, 'id'))->groupBy('run_id')
-                ->get(['run_id', DB::raw('count(*) as targets')]) as $row) {
-                $counts[(int) $row->run_id] = (int) $row->targets;
+            foreach (DB::table('ansible_run_targets')->whereIn('run_id', array_column($rows, 'id'))->orderBy('id')
+                ->get(['run_id', 'display', 'hostname']) as $target) {
+                $names[(int) $target->run_id][] = (string) ($target->display ?: $target->hostname);
             }
         }
         foreach ($rows as &$row) {
-            $row['targets'] = $counts[(int) $row['id']] ?? 0;
+            $row['targets'] = count($names[(int) $row['id']] ?? []);
+            $row['target_names'] = array_slice($names[(int) $row['id']] ?? [], 0, 3);
         }
 
         return ['rows' => $rows, 'total' => $total];

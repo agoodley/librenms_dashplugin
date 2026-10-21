@@ -26,7 +26,7 @@ final class CurlTransport implements Transport
     /**
      * {@inheritdoc}
      */
-    public function send(string $method, string $url, array $headers = [], ?string $body = null): HttpResponse
+    public function send(string $method, string $url, #[\SensitiveParameter] array $headers = [], #[\SensitiveParameter] ?string $body = null): HttpResponse
     {
         if (! preg_match('#^https?://#i', $url)) {
             throw new TransportError('the runner URL must start with http:// or https://');

@@ -48,10 +48,24 @@ abstract class Controller extends BaseController
      */
     protected function failure(string $what, \Throwable $e): string
     {
-        Log::error("ansible plugin: $what failed: " . $e->getMessage() . PHP_EOL . $e->getTraceAsString());
+        Log::error("ansible plugin: $what failed: " . $e->getMessage() . PHP_EOL . self::trace($e));
         $message = "The $what failed: see logs/librenms.log for details.";
 
         return config('app.debug') ? $message . ' (' . $e->getMessage() . ')' : $message;
+    }
+
+    /**
+     * The stack trace without the arguments of the calls: they can hold survey answers and the runner token.
+     */
+    protected static function trace(\Throwable $e): string
+    {
+        $lines = [];
+        foreach ($e->getTrace() as $index => $frame) {
+            $lines[] = "#$index " . ($frame['file'] ?? '[internal]') . '(' . ($frame['line'] ?? '') . '): '
+                . ($frame['class'] ?? '') . ($frame['type'] ?? '') . ($frame['function'] ?? '') . '()';
+        }
+
+        return implode(PHP_EOL, $lines);
     }
 
     /**

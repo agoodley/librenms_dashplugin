@@ -44,7 +44,7 @@ final class RunLauncher
      * @param  int[]  $deviceIds
      * @param  array<string, mixed>  $answers
      */
-    public function plan(string $templateId, array $deviceIds, array $answers): LaunchPlan
+    public function plan(string $templateId, array $deviceIds, #[\SensitiveParameter] array $answers): LaunchPlan
     {
         $plan = new LaunchPlan();
         $plan->maxTargets = $this->settings->maxTargets();
@@ -52,10 +52,16 @@ final class RunLauncher
         try {
             $plan->runner = $this->plugin->runner($connection);
             $plan->template = $plan->runner->template($templateId);
+            $inventory = $plan->runner->inventory((string) $connection->inventory);
         } catch (RunnerError $e) {
             $plan->errors[] = $e->getMessage();
 
             return $plan;
+        }
+        if (! $inventory->isFile()) {
+            // a static copy of the inventory drifts from LibreNMS (and from the targets the plugin allows)
+            $plan->errors[] = "The LibreNMS inventory (#{$inventory->id}, {$inventory->name}) is a {$inventory->type} inventory in the runner: "
+                . 'make it a file inventory that runs the plugin\'s inventory script, so the runner gets the hosts from LibreNMS.';
         }
         $reasons = TemplateCheck::reasons($plan->template, (string) $connection->inventory);
         if ($reasons) {
@@ -111,7 +117,7 @@ final class RunLauncher
      * @param  array<string, mixed>  $answers
      * @return array{run_id: int|null, plan: LaunchPlan, errors: string[], existing: bool}
      */
-    public function launch($user, string $templateId, array $deviceIds, array $answers, string $requestToken): array
+    public function launch($user, string $templateId, array $deviceIds, #[\SensitiveParameter] array $answers, string $requestToken): array
     {
         $plan = new LaunchPlan();
         if (! preg_match('/^[a-f0-9]{32}$/D', $requestToken)) {

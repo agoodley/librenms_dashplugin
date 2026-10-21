@@ -12,5 +12,5 @@ interface Transport
      *
      * @param  array<string, string>  $headers
      */
-    public function send(string $method, string $url, array $headers = [], ?string $body = null): HttpResponse;
+    public function send(string $method, string $url, #[\SensitiveParameter] array $headers = [], #[\SensitiveParameter] ?string $body = null): HttpResponse;
 }

@@ -319,7 +319,7 @@ final class SemaphoreRunner implements Runner
      *
      * @param  bool  $missingTask  is a 400 the answer for a task Semaphore does not have
      */
-    private function call(string $method, string $path, string $what, ?array $body = null, bool $missingTask = false): array
+    private function call(string $method, string $path, string $what, #[\SensitiveParameter] ?array $body = null, bool $missingTask = false): array
     {
         $headers = ['Authorization' => 'Bearer ' . $this->token, 'Accept' => 'application/json'];
         if ($body !== null) {

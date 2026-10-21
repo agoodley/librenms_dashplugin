@@ -40,7 +40,7 @@ final class Connection
      * @param  array<string, mixed>  $input  url, token, project, inventory, verify_tls, ca_bundle, timeout
      * @return array{connection: self|null, errors: array<string, string>}
      */
-    public static function fromInput(array $input, self $current, string $user, int $now, bool $removeToken = false): array
+    public static function fromInput(#[\SensitiveParameter] array $input, self $current, string $user, int $now, bool $removeToken = false): array
     {
         $errors = [];
         $url = self::url((string) ($input['url'] ?? ''), $errors);

@@ -28,7 +28,7 @@ final class VariableValidator
      * @param  array<string, mixed>  $input  posted answers, name => value; other names are ignored
      * @return array{values: array<string, string|int>, secrets: array<string, string>, errors: array<string, string>}
      */
-    public static function validate(array $vars, array $input): array
+    public static function validate(array $vars, #[\SensitiveParameter] array $input): array
     {
         $values = [];
         $secrets = [];
@@ -69,7 +69,7 @@ final class VariableValidator
      *
      * @return array{0: string|int|null, 1: string|null}
      */
-    private static function check(SurveyVar $var, string $value): array
+    private static function check(SurveyVar $var, #[\SensitiveParameter] string $value): array
     {
         if (! mb_check_encoding($value, 'UTF-8')) {
             return [null, 'is not valid UTF-8 text'];
@@ -91,7 +91,7 @@ final class VariableValidator
      *
      * @return array{0: string|null, 1: string|null}
      */
-    private static function text(string $value, bool $multiLine, int $max): array
+    private static function text(#[\SensitiveParameter] string $value, bool $multiLine, int $max): array
     {
         $checked = $multiLine ? str_replace("\n", '', $value) : $value;
         if (preg_match('/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u', $checked)) {

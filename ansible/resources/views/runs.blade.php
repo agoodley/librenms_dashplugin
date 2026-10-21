@@ -78,7 +78,7 @@
                     <td>{{ $run['username'] }}</td>
                     <td class="ans-wrap">{{ $run['template_name'] }}</td>
                     <td>
-                        {{ \Agoodley\LibrenmsAnsible\Support\Format::count((int) $run['targets'], 'device') }}
+                        <span class="ans-wrap">{{ implode(', ', $run['target_names']) }}{{ $run['targets'] > count($run['target_names']) ? ' and ' . ($run['targets'] - count($run['target_names'])) . ' more' : '' }}</span>
                         @if($run['summary'])
                             <br>@include('ansible::partials.results', ['summary' => $run['summary']])
                         @endif
