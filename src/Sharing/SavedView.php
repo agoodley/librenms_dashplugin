@@ -2,6 +2,8 @@
 
 namespace Agoodley\LibrenmsTopology\Sharing;
 
+use Agoodley\LibrenmsTopology\Support\MapParams;
+
 /**
  * What a saved map view holds and the rules for reading it back: the map's parameters as MapParams
  * parses them, the positions of its nodes and the options of the map's view bar; who may open and
@@ -53,7 +55,8 @@ class SavedView
         $other = self::ONLY[$page === 'l2' ? 'l3' : 'l2'];
         $query = [];
         foreach ($params as $key => $value) {
-            if (in_array($key, $other, true) || $value === null || $value === '') {
+            // a view shows the map as it is when opened, never one of the past (MapParams::time())
+            if (in_array($key, $other, true) || in_array($key, [...MapParams::TIME_KEYS, 'time_error'], true) || $value === null || $value === '') {
                 continue;
             }
             $query[$key] = is_bool($value) ? ($value ? '1' : '0') : (string) $value;
