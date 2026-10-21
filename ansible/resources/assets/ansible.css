@@ -1,0 +1,83 @@
+/* LibreNMS Ansible plugin */
+.ans-page { padding-bottom: 12px; }
+.ans-nav { margin-bottom: 12px; }
+.ans-nav .nav-tabs > li > a { padding: 6px 14px; }
+.ans-filterbar {
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 10px;
+    padding: 8px 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 4px; background: #f8f9fa;
+}
+.ans-filterbar label { margin: 0; font-weight: normal; font-size: 12px; color: #555; }
+.ans-filterbar .form-control { display: block; width: auto; height: 28px; padding: 2px 6px; font-size: 13px; }
+.ans-filterbar .ans-spacer { flex: 1 1 auto; }
+
+.ans-cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 6px 0 14px; }
+.ans-card { flex: 1 1 200px; padding: 12px 14px; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
+.ans-card h4 { margin: 0 0 4px; font-size: 14px; color: #555; }
+.ans-card .ans-card-value { font-size: 22px; font-weight: 600; word-break: break-word; }
+.ans-card p { margin: 2px 0 0; color: #666; font-size: 12px; }
+.ans-card.ans-ok { border-left: 5px solid #2e9e44; }
+.ans-card.ans-warning { border-left: 5px solid #e67e22; }
+.ans-card.ans-critical { border-left: 5px solid #c0392b; }
+.ans-card.ans-info { border-left: 5px solid #1f6fb2; }
+
+.ans-table td, .ans-table th { vertical-align: middle !important; }
+.ans-table .ans-num { text-align: right; white-space: nowrap; }
+.ans-wrap { overflow-wrap: anywhere; }
+.ans-muted { color: #6c757d; }
+.ans-result { display: inline-block; min-width: 76px; text-align: center; }
+.ans-results .label { margin-right: 3px; display: inline-block; }
+.ans-code { font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ans-refusal { color: #b85c00; font-size: 12px; }
+.ans-step { margin: 18px 0 8px; font-size: 16px; }
+.ans-step .badge { background: #1f6fb2; margin-right: 6px; }
+.ans-help { margin: 2px 0 0; font-size: 12px; color: #6c757d; }
+.ans-error-text { color: #c0392b; font-size: 12px; margin-top: 2px; }
+.ans-targets-wrap { max-height: 460px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; }
+.ans-targets-wrap table { margin-bottom: 0; }
+.ans-targets-wrap thead th { position: sticky; top: 0; background: #f5f5f5; z-index: 1; }
+.ans-targets tr.ans-refused td { color: #8a949e; }
+.ans-targets tr.ans-selected td { background: rgba(31, 111, 178, 0.08); }
+.ans-preview { margin-top: 12px; }
+.ans-preview dl { margin-bottom: 6px; }
+.ans-preview dt { width: 140px; }
+.ans-preview dd { margin-left: 160px; overflow-wrap: anywhere; }
+.ans-launchbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.ans-settings fieldset { margin-bottom: 20px; }
+.ans-settings legend { font-size: 15px; }
+.ans-settings textarea.ans-code { min-height: 170px; }
+.ans-test-result { margin-top: 10px; }
+.ans-warning-loud { border: 2px solid #c0392b; background: #fbeeec; color: #5a1a13; padding: 8px 10px; border-radius: 4px; font-weight: 600; margin: 8px 0; }
+.ans-device-panel .panel-heading .pull-right .btn { margin-left: 4px; }
+
+/* the run's log: text only, colours from ANSI codes as classes */
+.ans-log {
+    max-height: 640px; overflow: auto; margin: 0; padding: 8px 10px; border-radius: 4px;
+    background: #1e1f22; color: #d8dade; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.ans-log .ans-black { color: #6c7079; }
+.ans-log .ans-red { color: #f0857a; }
+.ans-log .ans-green { color: #6fd283; }
+.ans-log .ans-yellow { color: #e9c46a; }
+.ans-log .ans-blue { color: #7fb4ee; }
+.ans-log .ans-magenta { color: #d39ce6; }
+.ans-log .ans-cyan { color: #6fd0d6; }
+.ans-log .ans-white { color: #f2f2f2; }
+.ans-log .ans-grey { color: #9aa0a6; }
+.ans-log .ans-bold { font-weight: 700; }
+.ans-log-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 6px; font-size: 12px; }
+
+/* dark mode (LibreNMS toggles html.dark) */
+html.dark .ans-filterbar { background: #24272c; border-color: #3a3f45; }
+html.dark .ans-filterbar label, html.dark .ans-card h4 { color: #b0b8be; }
+html.dark .ans-card { background: #1d2024; border-color: #3a3f45; }
+html.dark .ans-card p, html.dark .ans-muted, html.dark .ans-help, html.dark .ans-page .text-muted, html.dark .ans-device-panel .text-muted,
+html.dark .ans-settings .text-muted, html.dark .ans-settings .help-block { color: #b0b8be; }
+html.dark .ans-refusal { color: #f0a35e; }
+html.dark .ans-error-text { color: #f08a80; }
+html.dark .ans-targets-wrap { border-color: #3a3f45; }
+html.dark .ans-targets-wrap thead th { background: #2a2e33; }
+html.dark .ans-targets tr.ans-refused td { color: #8f979e; }
+html.dark .ans-targets tr.ans-selected td { background: rgba(110, 168, 222, 0.16); }
+html.dark .ans-warning-loud { background: #3a1f1c; border-color: #f08a80; color: #f6d5d1; }
+html.dark .ans-log { background: #111214; color: #d8dade; }
+html.dark .ans-page .alert-warning, html.dark .ans-settings .alert-warning { color: #2b1a00; }

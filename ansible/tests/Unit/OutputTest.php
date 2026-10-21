@@ -35,6 +35,13 @@ class OutputTest extends TestCase
         $this->assertSame([], Ansi::segments("\e[0m"));
     }
 
+    public function testHtmlEscapesEverything(): void
+    {
+        $this->assertSame('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp;amp;', Ansi::html('<script>alert("x")</script> &amp;'));
+        $this->assertSame('<span class="ans-green">ok: [sw1] =&gt; &lt;b&gt;</span>', Ansi::html("\e[0;32mok: [sw1] => <b>\e[0m"));
+        $this->assertSame('&#039;onmouseover=&#039;x', Ansi::html("\e[38;5;1m'onmouseover='x"), 'unknown codes give no class');
+    }
+
     public function testBufferCapsWholeLines(): void
     {
         $first = OutputBuffer::append('', ['one', 'two'], 20);
