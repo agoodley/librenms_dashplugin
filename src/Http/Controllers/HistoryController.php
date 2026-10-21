@@ -54,7 +54,7 @@ class HistoryController extends Controller
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json('topology history', fn () => self::forUser($this->history($request, $settings)->changes($params, $from, $to), self::isAdmin($request)));
+        return $this->json('topology history', fn () => self::forUser($this->history($request, $settings)->changes($params, $from, $to), self::isAdmin($request)), 'changes');
     }
 
     /**

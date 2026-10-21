@@ -37,6 +37,6 @@ class SiteController extends Controller
         $params = MapParams::parse($request->query(), $settings);
         $service = new SiteService(new TopologyRepository($request->user()), new SiteRepository($request->user()), $settings);
 
-        return $this->json('site map', fn () => $service->sites($params));
+        return $this->json('site map', fn () => $service->sites($params), 'sites');
     }
 }

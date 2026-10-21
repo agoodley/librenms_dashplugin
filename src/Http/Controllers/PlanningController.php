@@ -55,7 +55,7 @@ class PlanningController extends Controller
         [$picked, $size, $network] = $this->rolloutInput($request, $settings);
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json('rollout plan', fn () => $this->planning($request, $settings)->rollout($params, $picked, $size, $network));
+        return $this->json('rollout plan', fn () => $this->planning($request, $settings)->rollout($params, $picked, $size, $network), 'rollout');
     }
 
     /**
@@ -76,7 +76,7 @@ class PlanningController extends Controller
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
 
-        return $this->json('device dependencies', fn () => $this->planning($request, $settings)->dependencies($params));
+        return $this->json('device dependencies', fn () => $this->planning($request, $settings)->dependencies($params), 'dependencies');
     }
 
     /**

@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
+use Agoodley\LibrenmsTopology\Support\RoleData;
 use Agoodley\LibrenmsTopology\Topology\TopologyService;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use Illuminate\Contracts\View\View;
@@ -87,15 +88,32 @@ trait BuildsTopology
     }
 
     /**
-     * JSON of $build(); a failure becomes {error} with HTTP 500.
+     * JSON of $build(); a failure becomes {error} with HTTP 500. The answer for a page (RoleData::PAGES) says
+     * what the user's LibreNMS role may not view of the data it reads (role_hidden, empty when nothing is
+     * hidden), as the page itself does, so that an empty answer is not taken for "nothing found".
      */
-    protected function json(string $what, callable $build): JsonResponse
+    protected function json(string $what, callable $build, ?string $page = null): JsonResponse
     {
         try {
-            return response()->json($build());
+            $result = $build();
+            if ($page !== null && is_array($result)) {
+                $result['role_hidden'] ??= self::roleHidden($page);
+            }
+
+            return response()->json($result);
         } catch (\Throwable $e) {
             return response()->json(['error' => $this->failure($what, $e)], 500);
         }
+    }
+
+    /**
+     * What the user's LibreNMS role may not view of the data a page reads (RoleData::PAGES).
+     *
+     * @return string[]
+     */
+    protected static function roleHidden(string $page): array
+    {
+        return (new TopologyRepository(request()->user()))->hiddenKinds(RoleData::PAGES[$page] ?? []);
     }
 
     /**

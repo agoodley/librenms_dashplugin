@@ -35,7 +35,7 @@ class PathController extends Controller
 
     public function api(Request $request): JsonResponse
     {
-        return $this->json('path trace', fn () => $this->paths($request, $this->settings())->trace(self::query($request)));
+        return $this->json('path trace', fn () => $this->paths($request, $this->settings())->trace(self::query($request)), 'path');
     }
 
     private function paths(Request $request, PluginSettings $settings): PathService

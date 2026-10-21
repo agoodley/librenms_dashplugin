@@ -78,7 +78,7 @@ class ViewController extends Controller
     {
         $page = $request->query('page');
 
-        return $this->json('saved views', fn () => ['views' => (new ViewRepository($request->user()))->visible(isset(SavedView::PAGES[$page]) ? $page : null)]);
+        return $this->json('saved views', fn () => ['views' => (new ViewRepository($request->user()))->visible(isset(SavedView::PAGES[$page]) ? $page : null)], 'views');
     }
 
     /**
@@ -114,7 +114,7 @@ class ViewController extends Controller
             unset($view['positions']);
 
             return $view;
-        });
+        }, 'views');
     }
 
     /**
@@ -160,7 +160,7 @@ class ViewController extends Controller
         $view = $views->find($id);
         unset($view['positions']);
 
-        return response()->json($view);
+        return response()->json($view + ['role_hidden' => self::roleHidden('views')]);
     }
 
     /**
@@ -175,7 +175,7 @@ class ViewController extends Controller
         }
         $views->delete($id);
 
-        return response()->json(['deleted' => $id]);
+        return response()->json(['deleted' => $id, 'role_hidden' => self::roleHidden('views')]);
     }
 
     /**
