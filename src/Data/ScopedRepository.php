@@ -128,7 +128,7 @@ abstract class ScopedRepository
 
     /**
      * May the user read this kind of LibreNMS data? Besides the devices a user may see, LibreNMS checks a
-     * role permission per kind (port.view, link.view, bgp-peer.view ... through its policies), and admins
+     * role permission per kind (port.view, link.view, routing.view ... through its policies), and admins
      * can create roles without some of them; the plugin then leaves that data out, as LibreNMS' own pages
      * do. A LibreNMS version without a policy for the model shows it to anyone who may see the device, and
      * the system scope of the scheduled jobs reads everything. Checked once per model.
@@ -145,11 +145,12 @@ abstract class ScopedRepository
     }
 
     /**
-     * allows() for the model of a LibreNMS table (TABLE_MODELS); other tables are readable.
+     * allows() for the model of a LibreNMS table (TABLE_MODELS), also given with an alias ("ipv4_addresses as a");
+     * other tables are readable.
      */
     public function allowsTable(string $table): bool
     {
-        $model = self::TABLE_MODELS[$table][0] ?? null;
+        $model = self::TABLE_MODELS[explode(' ', trim($table), 2)[0]][0] ?? null;
 
         return $model === null || $this->allows($model);
     }

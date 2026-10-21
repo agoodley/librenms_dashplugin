@@ -234,8 +234,8 @@ class ViewRepository extends ScopedRepository
             $ports = fn ($query) => $query->select('port_id')->from('ports')->whereIntegerInRaw('device_id', $ids);
             try {
                 $this->vrfs[$vrf] = $ids && (DB::table('vrfs')->whereIntegerInRaw('device_id', $ids)->where('vrf_name', $vrf)->exists()
-                    || DB::table('ipv4_addresses')->where('context_name', $vrf)->whereIn('port_id', $ports)->exists()
-                    || DB::table('ipv6_addresses')->where('context_name', $vrf)->whereIn('port_id', $ports)->exists());
+                    || ($this->allowsTable('ipv4_addresses') && DB::table('ipv4_addresses')->where('context_name', $vrf)->whereIn('port_id', $ports)->exists())
+                    || ($this->allowsTable('ipv6_addresses') && DB::table('ipv6_addresses')->where('context_name', $vrf)->whereIn('port_id', $ports)->exists()));
             } catch (\Throwable) {
                 $this->vrfs[$vrf] = false;
             }
