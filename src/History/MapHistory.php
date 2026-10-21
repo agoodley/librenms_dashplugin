@@ -174,8 +174,8 @@ class MapHistory
         $this->check((int) $since);
         $from = Carbon::createFromTimestamp((int) $since + 1, date_default_timezone_get());
         $to = Carbon::now();
-        $window = $this->service()->window($ids, $from, $to, $text);
-        $rows = array_values(array_filter($window['rows'], fn ($row) => in_array($row['kind'], $kinds, true)));
+        $window = $this->service()->window($ids, $from, $to, $text, $kinds);
+        $rows = $window['rows'];
         $start = $window['from']->getTimestamp() - 1;
         $before = [];
         $after = [];

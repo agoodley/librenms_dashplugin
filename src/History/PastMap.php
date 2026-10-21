@@ -183,13 +183,14 @@ class PastMap
     }
 
     /**
-     * The built map as of the snapshot (finish()), with the devices it found that LibreNMS no longer has.
+     * The built map as of the snapshot (neutral()), with the devices it found that LibreNMS no longer has; changed in
+     * place, as a copy of a whole network's map would double its memory.
      *
      * @param  array<int, string>  $states  device_id => up, down, new or unknown at the snapshot (HistoryRepository::deviceStatesAt())
      */
-    public function finish(array $result, array $states): array
+    public function finish(array &$result, array $states): void
     {
-        return self::neutral($result, $states, $this->deletedNodes);
+        self::neutral($result, $states, $this->deletedNodes);
     }
 
     // ---------------------------------------------------------------- conversions
@@ -363,7 +364,7 @@ class PastMap
      * @param  array<int, string>  $states  device_id => up, down, new or unknown
      * @param  array<string, true>  $deletedNodes  node ids of devices LibreNMS no longer has
      */
-    public static function neutral(array $result, array $states, array $deletedNodes = []): array
+    public static function neutral(array &$result, array $states, array $deletedNodes = []): void
     {
         foreach ($result['edges'] as &$edge) {
             $edge['status'] = 'unknown';
@@ -412,8 +413,6 @@ class PastMap
         if (isset($result['stats']['down'])) {
             $result['stats']['down'] = 0;
         }
-
-        return $result;
     }
 
     /**

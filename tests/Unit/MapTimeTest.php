@@ -210,8 +210,8 @@ class MapTimeTest extends TestCase
         foreach ($ids as $id) {
             $devices[$id] = ['device_id' => $id, 'hostname' => self::NAMES[$id], 'role' => 'switch', 'status' => 1, 'disabled' => 0];
         }
-        $built = (new L2Builder($devices, $rows, $ports, [], $lagParents, $index))->build(['collapseLag' => true]);
-        $result = $past->finish($built, [1 => 'up', 2 => 'down', 3 => 'new']);
+        $result = (new L2Builder($devices, $rows, $ports, [], $lagParents, $index))->build(['collapseLag' => true]);
+        $past->finish($result, [1 => 'up', 2 => 'down', 3 => 'new']);
 
         $edges = [];
         foreach ($result['edges'] as $edge) {

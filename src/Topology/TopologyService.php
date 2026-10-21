@@ -172,8 +172,9 @@ class TopologyService
             'root' => $root,
         ]);
         $result['scope'] = $this->scopeInfo($p, $root, $total, count($ids), $truncated);
+        $this->atTime('l2', $p, $result, $past);
 
-        return $this->atTime('l2', $p, $result, $past);
+        return $result;
     }
 
     /**
@@ -265,30 +266,29 @@ class TopologyService
             $truncated = true;
         }
         $result['scope'] = $this->scopeInfo($p, $root, $total, $shown, $truncated);
+        $this->atTime('l3', $p, $result, $past, $today);
 
-        return $this->atTime('l3', $p, $result, $past, $today);
+        return $result;
     }
 
     /**
-     * A built map at the time its parameters ask for: as of a time (the past map drawn without today's statuses,
-     * with the devices' state then and as_of), with the changes since a time (marks, ghosts and changes), or as it
-     * is now (unchanged).
+     * A built map at the time its parameters ask for, changed in place: as of a time (the past map drawn without
+     * today's statuses, with the devices' state then and as_of), with the changes since a time (marks, ghosts and
+     * changes), or as it is now (unchanged).
      *
      * @param  array<string, int>  $layers  L3 overlays with data today (what a past map leaves out)
      *
      * @throws TimeRefused
      */
-    private function atTime(string $mode, array $p, array $result, ?PastMap $past, array $layers = []): array
+    private function atTime(string $mode, array $p, array &$result, ?PastMap $past, array $layers = []): void
     {
         if ($past !== null) {
             $ids = array_values(array_filter(array_map(fn (array $node) => ($node['type'] ?? '') === 'device' ? (int) ($node['device_id'] ?? 0) : 0, $result['nodes'])));
-            $result = $past->finish($result, $this->mapHistory()->deviceStates($ids, $past->snapshot['time']));
+            $past->finish($result, $this->mapHistory()->deviceStates($ids, $past->snapshot['time']));
             $result['as_of'] = $this->mapHistory()->asOf($past, (int) $p['at'], $mode, $layers);
         } elseif (($p['since'] ?? null) !== null) {
             $result = $this->mapHistory()->changes($mode, $p['since'], $result);
         }
-
-        return $result;
     }
 
     /**

@@ -258,12 +258,13 @@ class HistoryService
      * report. A map's changes since a time (MapHistory) read the same.
      *
      * @param  int[]  $ids
+     * @param  string[]|null  $kinds  only these kinds of facts (a map's), null: all
      * @return array{rows: array<int, array>, report: array{events: array<int, array>, counts: array<string, int>},
      *     from: CarbonInterface, since: ?CarbonInterface, truncated: bool, dropped: ?array}
      */
-    public function window(array $ids, CarbonInterface $from, CarbonInterface $to, FactText $text): array
+    public function window(array $ids, CarbonInterface $from, CarbonInterface $to, FactText $text, ?array $kinds = null): array
     {
-        $window = $this->history->windowFacts($from, $to, $ids);
+        $window = $this->history->windowFacts($from, $to, $ids, $kinds);
         $rows = array_values(array_filter($window['rows'], fn ($row) => $this->factAllowed($row['kind'])));
         $since = null;
         if ($window['since'] !== null) {

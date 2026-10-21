@@ -371,17 +371,19 @@ class HistoryRepository extends ScopedRepository
      * Facts of the devices that started (not with the first snapshot of their kind) or ended in
      * [$from, $to], with their data decoded: the newest WINDOW_LIMIT of each, cut at a common
      * boundary when there were more (Window::merge()). The snapshots the cut leaves out are
-     * counted per kind of fact (`dropped`, Window::dropped()).
+     * counted per kind of fact (`dropped`, Window::dropped()). Rows are decoded as they are read,
+     * not held twice.
      *
      * @param  int[]  $ids
+     * @param  string[]|null  $kinds  only these kinds of facts (a map reads its own), null: all
      * @return array{rows: array<int, array>, truncated: bool, since: ?int, dropped: ?array}
      */
-    public function windowFacts(CarbonInterface $from, CarbonInterface $to, array $ids): array
+    public function windowFacts(CarbonInterface $from, CarbonInterface $to, array $ids, ?array $kinds = null): array
     {
-        $started = fn (CarbonInterface $until) => $this->touching(DB::table('topology_facts'), $ids)->whereBetween('first_seen', [$from, $until])
-            ->where('initial', 0);
-        $ended = fn (CarbonInterface $until) => $this->touching(DB::table('topology_facts'), $ids)->whereBetween('removed_at', [$from, $until]);
-        $read = fn (Builder $query, string $column) => $query->orderByDesc($column)->orderByDesc('id')->limit(self::WINDOW_LIMIT)->get()
+        $facts = fn () => $kinds === null ? $this->touching(DB::table('topology_facts'), $ids) : $this->touching(DB::table('topology_facts'), $ids)->whereIn('kind', $kinds);
+        $started = fn (CarbonInterface $until) => $facts()->whereBetween('first_seen', [$from, $until])->where('initial', 0);
+        $ended = fn (CarbonInterface $until) => $facts()->whereBetween('removed_at', [$from, $until]);
+        $read = fn (Builder $query, string $column) => $query->orderByDesc($column)->orderByDesc('id')->limit(self::WINDOW_LIMIT)->cursor()
             ->map(fn ($row) => self::factRow((array) $row))->all();
         $window = Window::merge($read($started($to), 'first_seen'), $read($ended($to), 'removed_at'), self::WINDOW_LIMIT);
         $window['dropped'] = null;
