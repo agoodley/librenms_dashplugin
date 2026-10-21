@@ -55,7 +55,8 @@ These are useful but are not about topology, or would change devices, so they fi
 
 * **Change automation with Ansible:** push configuration changes to all or some devices from LibreNMS, made safer by
   this plugin's topology data. It is the largest of these ideas, so it is worked out
-  [below](#change-automation-with-ansible).
+  [below](#change-automation-with-ansible); phase 1 is built, as [a plugin of its own](ansible/README.md) in this
+  repository.
 * **Switch port capacity:** ports unused for N days (`ifLastChange` and uptime), err-disabled ports, free (PoE) ports
   per wiring closet or location.
 * **Config compliance via Oxidized:** rule checks on backed-up configurations (portfast and BPDU guard on edge ports,
@@ -79,7 +80,11 @@ from the LibreNMS pages.
   * [Semaphore UI](https://semaphoreui.com) by default: open source (MIT), one binary and a database. Check which
     features are only in its paid edition.
   * [AWX](https://github.com/ansible/awx) for full RBAC, approvals and a credential vault. It installs on Kubernetes,
-    and its releases have been paused since July 2024 for a refactoring, so check its status first.
+    and has had no release since 24.6.1 (2 July 2024): its refactoring was merged in January 2026, the web UI moved to
+    a repository of its own (April 2026) and a new gateway fronts the API at `/api/controller/v2/` (May 2026), but as
+    of October 2026 there is no release or release date. Its job template API (`/api/v2/job_templates/{id}/launch/`,
+    `/jobs/{id}/stdout/`, `/jobs/{id}/cancel/`) is unchanged, while its OAuth2 token endpoints are gone, so an AWX
+    adapter needs a configurable API path and authentication.
 
   The runner keeps the SSH credentials and the playbooks stay in Git, where they are reviewed. The plugin picks the
   targets, launches, follows and verifies. A small adapter interface keeps other runners possible.
@@ -92,7 +97,7 @@ from the LibreNMS pages.
 
 | Phase | Scope | Needs |
 |---|---|---|
-| 1 | Connection to the runner; an Ansible inventory from LibreNMS (device groups, locations, LibreNMS `os` mapped to `ansible_network_os`; devices without a mapping are refused); run a template on selected devices; live status and log; an audit log (who, what, when, result), also in each device's eventlog | – |
+| 1 | **Done:** [the Ansible plugin](ansible/README.md). Connection to the runner; an Ansible inventory from LibreNMS (device groups, locations, LibreNMS `os` mapped to `ansible_network_os`; devices without a mapping are refused); run a template on selected devices; live status and log; an audit log (who, what, when, result), also in each device's eventlog | – |
 | 2 | Dry run (`--check --diff`) showing the diff per device; approval, optionally by a second admin; batches that stop at the first failures; Oxidized backups before and after (its REST API's `node/next`); a LibreNMS maintenance window for the targets | 1 |
 | 3 | Rollout plan and blast radius from this plugin (`api/rollout` and `api/simulate`); the maintenance window also covers what each batch cuts off | 1 |
 | 4 | Verification: topology and findings before and after the change (root bridge moved, uplink lost, new single point of failure); one-click fixes for findings with a clear configuration (port descriptions, STP root priority) | 1; this plugin's topology history and background checks (items 5 and 6) |

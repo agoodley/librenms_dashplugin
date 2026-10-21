@@ -1,0 +1,2 @@
+# the topology plugin's package archive (composer, GitHub's "Download ZIP") does not carry the Ansible plugin
+/ansible export-ignore
