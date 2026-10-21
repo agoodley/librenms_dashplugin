@@ -18,6 +18,9 @@ use Illuminate\Support\Facades\Log;
  */
 class TopologyRepository extends ScopedRepository
 {
+    /** @var array<string, array<int, array{0: int, 1: int}>> stackPairs() of each set of devices read in this request */
+    private array $stackPairs = [];
+
     private const PORT_COLUMNS = [
         'port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifAlias', 'ifSpeed', 'ifOperStatus',
         'ifAdminStatus', 'ifType', 'ifVlan', 'ifTrunk', 'ifDuplex', 'ifMtu', 'ifPhysAddress',
@@ -132,6 +135,82 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
+     * The rows of links() that $keep accepts, streamed: a network's thousands of phones and servers
+     * are never held at once by callers that only need some of them or a count. The query is links()'
+     * own, so the rows come in its order; each kept row is keyed by its position among all the rows of
+     * these devices, so that the rows two reads of the same devices keep merge back into that order
+     * ($first + $second, then ksort()).
+     *
+     * @param  int[]  $ids
+     * @param  callable(array): bool  $keep  gets every row, anonymized like links() does
+     * @return array<int, array> position => kept row
+     */
+    public function linksWhere(array $ids, callable $keep): array
+    {
+        if (! $ids || ! $this->allowsTable('links')) {
+            return [];
+        }
+
+        $accessible = $this->accessible();
+        $links = [];
+        $position = 0;
+        foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $ids)
+            ->select(['id', 'local_device_id', 'local_port_id', 'remote_device_id', 'remote_port_id', 'remote_hostname',
+                'remote_port', 'remote_platform', 'remote_version', 'protocol'])->cursor() as $link) {
+            $link = (array) $link;
+            if ($link['remote_device_id'] && ! isset($accessible[(int) $link['remote_device_id']])) {
+                $link['remote_device_id'] = 0;
+                $link['remote_port_id'] = null;
+            }
+            if ($keep($link)) {
+                $links[$position] = $link;
+            }
+            $position++;
+        }
+
+        return $links;
+    }
+
+    /**
+     * Port descriptions (ifAlias) of these ports that are set, streamed: port_id => description.
+     *
+     * @param  int[]  $portIds
+     * @return iterable<int, string>
+     */
+    public function portDescriptions(array $portIds): iterable
+    {
+        if (! $this->allowsTable('ports')) {
+            return;
+        }
+        foreach (array_chunk(array_values(array_unique(array_filter(array_map('intval', $portIds)))), 5000) as $chunk) {
+            foreach (DB::table('ports')->whereIntegerInRaw('port_id', $chunk)->where('ifAlias', '<>', '')
+                ->select(['port_id', 'ifAlias'])->cursor() as $row) {
+                yield (int) $row->port_id => (string) $row->ifAlias;
+            }
+        }
+    }
+
+    /**
+     * Ports of these that are not up (ifOperStatus down, lowerLayerDown...), streamed; ports without a status count as up
+     * (L2Builder::isUp()).
+     *
+     * @param  int[]  $portIds
+     * @return iterable<int, int> port ids
+     */
+    public function portsNotUp(array $portIds): iterable
+    {
+        if (! $this->allowsTable('ports')) {
+            return;
+        }
+        foreach (array_chunk(array_values(array_unique(array_filter(array_map('intval', $portIds)))), 5000) as $chunk) {
+            foreach (DB::table('ports')->whereIntegerInRaw('port_id', $chunk)->whereNotNull('ifOperStatus')
+                ->whereNotIn('ifOperStatus', ['', 'up'])->select(['port_id'])->cursor() as $row) {
+                yield (int) $row->port_id;
+            }
+        }
+    }
+
+    /**
      * How many LLDP/CDP links of these devices lead to devices the user may not see (links() hides their far end).
      *
      * @param  int[]  $ids
@@ -193,44 +272,7 @@ class TopologyRepository extends ScopedRepository
             return [];
         }
 
-        // stack pairs in either orientation (see Support\PortStack): the current schema has both port
-        // ids (resolved from the ifIndexes when LibreNMS could not), the one before 24.8 only ifIndexes
-        $pairs = [];
-        $byIndex = [];
-        try {
-            $rows = DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)
-                ->get(['device_id', 'high_ifIndex', 'low_ifIndex', 'high_port_id', 'low_port_id']);
-            foreach ($rows as $row) {
-                if ($row->high_port_id && $row->low_port_id) {
-                    $pairs[] = [(int) $row->high_port_id, (int) $row->low_port_id];
-                } else {
-                    $byIndex[] = [(int) $row->device_id, (int) $row->high_ifIndex, (int) $row->low_ifIndex];
-                }
-            }
-        } catch (\Throwable $e) {
-            try {
-                foreach (DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)->get(['device_id', 'port_id_high', 'port_id_low']) as $row) {
-                    $byIndex[] = [(int) $row->device_id, (int) $row->port_id_high, (int) $row->port_id_low];
-                }
-            } catch (\Throwable $e) {
-                if ($strict) {
-                    throw $e;
-                }
-                Log::debug('topology plugin: cannot read ports_stack: ' . $e->getMessage());
-            }
-        }
-        if ($byIndex) {
-            $portIds = [];
-            foreach (DB::table('ports')->whereIntegerInRaw('device_id', array_values(array_unique(array_column($byIndex, 0))))
-                ->get(['port_id', 'device_id', 'ifIndex']) as $port) {
-                $portIds[$port->device_id . ':' . $port->ifIndex] = (int) $port->port_id;
-            }
-            foreach ($byIndex as [$deviceId, $high, $low]) {
-                if (isset($portIds["$deviceId:$high"], $portIds["$deviceId:$low"])) {
-                    $pairs[] = [$portIds["$deviceId:$high"], $portIds["$deviceId:$low"]];
-                }
-            }
-        }
+        $pairs = $this->stackPairs($ids, $strict);
 
         // Cisco PAgP / LACP group membership
         try {
@@ -263,6 +305,71 @@ class TopologyRepository extends ScopedRepository
         }
 
         return PortStack::lagMembers($pairs, $ports);
+    }
+
+    /**
+     * Interface stack pairs of the devices (IF-MIB ifStackTable) as port id pairs, in no particular
+     * order: since LibreNMS 24.8 ports_stack keeps the higher layer (a sub-interface, a port-channel)
+     * in low_port_id, before it kept it as the ifIndex in port_id_high (Support\PortStack and
+     * SiteConnections::stack() tell the upper port from the lower one by the ports themselves). Rows
+     * without port ids are resolved from their ifIndexes. Read once per set of devices and request.
+     *
+     * @param  int[]  $ids
+     * @param  bool  $strict  throw read errors instead of returning what could be read (see lagParents())
+     * @return array<int, array{0: int, 1: int}>
+     */
+    public function stackPairs(array $ids, bool $strict = false): array
+    {
+        $ids = array_values(array_unique(array_map('intval', $ids)));
+        sort($ids);
+        $key = md5(implode(',', $ids));
+        if (isset($this->stackPairs[$key])) {
+            return $this->stackPairs[$key];
+        }
+        if (! $ids || ! $this->allowsTable('ports_stack')) {
+            return [];
+        }
+
+        $pairs = [];
+        $byIndex = [];
+        try {
+            $rows = DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)
+                ->get(['device_id', 'high_ifIndex', 'low_ifIndex', 'high_port_id', 'low_port_id']);
+            foreach ($rows as $row) {
+                if ($row->high_port_id && $row->low_port_id) {
+                    $pairs[] = [(int) $row->high_port_id, (int) $row->low_port_id];
+                } else {
+                    $byIndex[] = [(int) $row->device_id, (int) $row->high_ifIndex, (int) $row->low_ifIndex];
+                }
+            }
+        } catch (\Throwable $e) {
+            try {
+                foreach (DB::table('ports_stack')->whereIntegerInRaw('device_id', $ids)->get(['device_id', 'port_id_high', 'port_id_low']) as $row) {
+                    $byIndex[] = [(int) $row->device_id, (int) $row->port_id_high, (int) $row->port_id_low];
+                }
+            } catch (\Throwable $e) {
+                if ($strict) {
+                    throw $e;
+                }
+                Log::debug('topology plugin: cannot read ports_stack: ' . $e->getMessage());
+
+                return [];   // not remembered: a strict read of the same devices must see the error
+            }
+        }
+        if ($byIndex) {
+            $portIds = [];
+            foreach (DB::table('ports')->whereIntegerInRaw('device_id', array_values(array_unique(array_column($byIndex, 0))))
+                ->get(['port_id', 'device_id', 'ifIndex']) as $port) {
+                $portIds[$port->device_id . ':' . $port->ifIndex] = (int) $port->port_id;
+            }
+            foreach ($byIndex as [$deviceId, $high, $low]) {
+                if (isset($portIds["$deviceId:$high"], $portIds["$deviceId:$low"])) {
+                    $pairs[] = [$portIds["$deviceId:$high"], $portIds["$deviceId:$low"]];
+                }
+            }
+        }
+
+        return $this->stackPairs[$key] = array_values(array_filter($pairs, fn (array $pair) => $pair[0] > 0 && $pair[1] > 0 && $pair[0] !== $pair[1]));
     }
 
     /**
@@ -341,13 +448,14 @@ class TopologyRepository extends ScopedRepository
             }
         }
 
-        // VLAN interfaces: Vlan30, vlan30, Vlanif30 (Huawei), Vlan-interface30 (Comware)
+        // VLAN interfaces (InterfaceName::vlanInterface()): Vlan30, Vlanif30, Vlan-interface30, ve 30, irb.30
+        $prefixes = fn (Builder $q, string $column) => $q->orWhere($column, 'like', 'vl%')->orWhere($column, 'like', 've%')->orWhere($column, 'like', 'irb.%');
         foreach (DB::table('ports')->whereIntegerInRaw('device_id', $ids)->where('ifOperStatus', 'up')->where('deleted', 0)
-            ->where(fn (Builder $q) => $q->where('ifType', 'l3ipvlan')->orWhere('ifName', 'like', 'vlan%')->orWhere('ifDescr', 'like', 'vlan%'))
+            ->where(fn (Builder $q) => $prefixes($prefixes($q->where('ifType', 'l3ipvlan'), 'ifName'), 'ifDescr'))
             ->get(['device_id', 'ifName', 'ifDescr']) as $row) {
             foreach ([$row->ifName, $row->ifDescr] as $name) {
-                if (preg_match('/^vlan(?:-interface|if)?\s*(\d{1,4})$/i', trim((string) $name), $matches) && (int) $matches[1] > 0) {
-                    $result[(int) $row->device_id][(int) $matches[1]] = true;
+                if (($vlan = InterfaceName::vlanInterface($name)) !== null) {
+                    $result[(int) $row->device_id][$vlan] = true;
                     break;
                 }
             }
@@ -482,6 +590,79 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
+     * VLAN keys of the devices' spanning tree instances and the bridge MACs of all of them, without
+     * holding whole rows (Stp\StpIndex::partial()).
+     *
+     * @param  int[]  $ids
+     * @return array{keys: array<int, int[]>, bridges: array<string, int>, count: int} count: instances
+     */
+    public function stpKeys(array $ids): array
+    {
+        $keys = [];
+        $bridges = [];
+        $count = 0;
+        if ($ids && $this->allowsTable('stp')) {
+            foreach (DB::table('stp')->whereIntegerInRaw('device_id', $ids)->select(['device_id', 'vlan', 'bridgeAddress'])->cursor() as $row) {
+                $count++;
+                $keys[(int) $row->device_id][StpIndex::vlanKey($row->vlan)] = true;
+                $mac = StpIndex::mac($row->bridgeAddress);
+                if ($mac !== '') {
+                    $bridges[$mac] ??= (int) $row->device_id;
+                }
+            }
+        }
+
+        return ['keys' => array_map('array_keys', $keys), 'bridges' => $bridges, 'count' => $count];
+    }
+
+    /**
+     * stp rows of some instances of the devices.
+     *
+     * @param  array<int, int|int[]>  $keys  device_id => VLAN key(s) (0 = default instance)
+     */
+    public function stpInstancesFor(array $keys): array
+    {
+        if (! $this->allowsTable('stp')) {
+            return [];
+        }
+
+        $rows = [];
+        foreach (self::devicesByKey($keys) as $key => $deviceIds) {
+            foreach (self::whereVlanKey(DB::table('stp')->whereIntegerInRaw('device_id', $deviceIds), $key)->orderBy('stp_id')->get() as $row) {
+                $rows[] = (array) $row;
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @param  array<int, int|int[]|null>  $keys  device_id => VLAN key(s)
+     * @return array<int, int[]> VLAN key => device ids
+     */
+    private static function devicesByKey(array $keys): array
+    {
+        $devices = [];
+        foreach ($keys as $deviceId => $deviceKeys) {
+            foreach ((array) $deviceKeys as $key) {
+                if ($key !== null) {
+                    $devices[(int) $key][] = (int) $deviceId;
+                }
+            }
+        }
+
+        return $devices;
+    }
+
+    /**
+     * The rows of a VLAN key: LibreNMS stores the default instance (and Cisco PVST VLAN 1) with vlan NULL.
+     */
+    private static function whereVlanKey(Builder $query, int $key): Builder
+    {
+        return $key === 0 ? $query->where(fn (Builder $q) => $q->whereNull('vlan')->orWhereIn('vlan', [0, 1])) : $query->where('vlan', $key);
+    }
+
+    /**
      * stp rows of the devices, one at a time (a PVST network has one per switch and VLAN).
      *
      * @param  int[]  $ids
@@ -497,8 +678,8 @@ class TopologyRepository extends ScopedRepository
      * so callers usually load a single instance per device.
      *
      * @param  int[]  $ids
-     * @param  array<int, int|null>|null  $keys  device_id => VLAN key (0 = default instance) to load,
-     *                                           null loads every instance
+     * @param  array<int, int|int[]|null>|null  $keys  device_id => VLAN key(s) (0 = default instance) to load,
+     *                                                 null loads every instance
      */
     public function stpPorts(array $ids, ?array $keys = null): array
     {
@@ -510,24 +691,9 @@ class TopologyRepository extends ScopedRepository
             return DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids)->get()->map(fn ($r) => (array) $r)->all();
         }
 
-        $wanted = array_flip($ids);
-        $devicesByKey = [];
-        foreach ($keys as $deviceId => $key) {
-            if ($key !== null && isset($wanted[$deviceId])) {
-                $devicesByKey[$key][] = $deviceId;
-            }
-        }
-
         $rows = [];
-        foreach ($devicesByKey as $key => $deviceIds) {
-            $query = DB::table('ports_stp')->whereIntegerInRaw('device_id', $deviceIds);
-            if ($key === 0) {
-                // LibreNMS stores the default instance (and Cisco PVST VLAN 1) with vlan NULL
-                $query->where(fn (Builder $q) => $q->whereNull('vlan')->orWhereIn('vlan', [0, 1]));
-            } else {
-                $query->where('vlan', $key);
-            }
-            foreach ($query->get() as $row) {
+        foreach (self::devicesByKey(array_intersect_key($keys, array_flip($ids))) as $key => $deviceIds) {
+            foreach (self::whereVlanKey(DB::table('ports_stp')->whereIntegerInRaw('device_id', $deviceIds), $key)->get() as $row) {
                 $rows[] = (array) $row;
             }
         }
@@ -536,11 +702,47 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
-     * Number of ports_stp rows of the devices (decides whether the STP page can analyze every VLAN at once).
+     * Ports of the devices with ports_stp rows, in any instance.
+     *
+     * @param  int[]  $ids
+     * @return array<int, true>
      */
-    public function stpPortCount(array $ids): int
+    public function stpPortIds(array $ids): array
     {
-        return $ids && $this->allowsTable('ports_stp') ? DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids)->count() : 0;
+        $ports = [];
+        if ($ids && $this->allowsTable('ports_stp')) {
+            foreach (DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids)->distinct()->select(['port_id'])->cursor() as $row) {
+                $ports[(int) $row->port_id] = true;
+            }
+        }
+
+        return $ports;
+    }
+
+    /**
+     * Number of ports_stp rows of the devices, or of these VLAN keys of them (decides whether the STP page can
+     * analyze those instances at once).
+     *
+     * @param  int[]|null  $vlanKeys
+     */
+    public function stpPortCount(array $ids, ?array $vlanKeys = null): int
+    {
+        if (! $ids || ! $this->allowsTable('ports_stp') || $vlanKeys === []) {
+            return 0;
+        }
+
+        $query = DB::table('ports_stp')->whereIntegerInRaw('device_id', $ids);
+        if ($vlanKeys !== null) {
+            $vlanKeys = array_map('intval', $vlanKeys);
+            $query->where(function (Builder $q) use ($vlanKeys): void {
+                $q->whereIn('vlan', array_values(array_filter($vlanKeys)));
+                if (in_array(0, $vlanKeys, true)) {
+                    $q->orWhereNull('vlan')->orWhereIn('vlan', [0, 1]);
+                }
+            });
+        }
+
+        return $query->count();
     }
 
     /**
@@ -919,7 +1121,7 @@ class TopologyRepository extends ScopedRepository
             return $best;
         }
         foreach (array_chunk($ids, 5000) as $chunk) {
-            foreach (DB::table('stp')->whereIntegerInRaw('device_id', $chunk)->get(['device_id', 'vlan', 'priority']) as $row) {
+            foreach (DB::table('stp')->whereIntegerInRaw('device_id', $chunk)->select(['device_id', 'vlan', 'priority'])->cursor() as $row) {
                 $deviceId = (int) $row->device_id;
                 $key = StpIndex::vlanKey($row->vlan);
                 if (! isset($best[$deviceId]) || $key < $best[$deviceId][0]) {

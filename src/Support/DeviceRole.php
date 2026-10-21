@@ -18,7 +18,36 @@ class DeviceRole
     public const OTHER = 'other';
     public const UNKNOWN = 'unknown';
 
+    /** Roles of the network itself: devices that forward traffic between their links. */
+    public const NETWORK = [self::SWITCH, self::L3SWITCH, self::ROUTER, self::FIREWALL];
+
+    /**
+     * Roles of end devices: phones, servers, access points (they bridge their own clients only) and
+     * other appliances do not forward between their links. An unknown device may be a switch.
+     */
+    public const END_DEVICES = [self::PHONE, self::SERVER, self::WIRELESS, self::OTHER];
+
     private const ROUTER_OS = ['iosxr', 'junos', 'vrp', 'routeros', 'vyos', 'edgeos', 'timos', 'ironware', 'xos-router', 'iosxe-router'];
+
+    public static function isEndDevice(?string $role): bool
+    {
+        return in_array($role, self::END_DEVICES, true);
+    }
+
+    /**
+     * A monitored phone, server or workstation: a host, whose switch port needs no description. Appliances, load
+     * balancers and storage (DeviceRole::SERVER too), controllers and access points are part of the infrastructure.
+     *
+     * @param  array  $device  devices row with role (and type)
+     */
+    public static function isHost(array $device): bool
+    {
+        return match ($device['role'] ?? null) {
+            self::PHONE => true,
+            self::SERVER => ! in_array(strtolower((string) ($device['type'] ?? '')), ['appliance', 'loadbalancer', 'storage'], true),
+            default => false,
+        };
+    }
 
     /**
      * @param  array  $device  devices row (type, os, hardware)

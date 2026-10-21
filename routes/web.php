@@ -12,12 +12,13 @@ use Agoodley\LibrenmsTopology\Http\Controllers\PlanningController;
 use Agoodley\LibrenmsTopology\Http\Controllers\RoutingController;
 use Agoodley\LibrenmsTopology\Http\Controllers\SiteController;
 use Agoodley\LibrenmsTopology\Http\Controllers\ViewController;
+use Agoodley\LibrenmsTopology\Http\Middleware\RaiseMemoryLimit;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
 use Illuminate\Support\Facades\Route;
 
 // Every URI has at least two segments after "plugin/" so it can never collide with
-// LibreNMS' own "plugin/{plugin}" page route.
-Route::middleware(['web', 'auth'])
+// LibreNMS' own "plugin/{plugin}" page route. Every request may work on the whole network: enough memory for it.
+Route::middleware(['web', 'auth', RaiseMemoryLimit::class])
     ->prefix(TopologyServiceProvider::URI_PREFIX)
     ->name('topology.')
     ->group(function (): void {

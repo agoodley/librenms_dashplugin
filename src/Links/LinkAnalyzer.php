@@ -958,8 +958,10 @@ class LinkAnalyzer
     }
 
     /**
-     * Port descriptions of inter-switch ports: missing, or naming a monitored device that is not
-     * the neighbour. Both come with configuration lines built from the LLDP/CDP neighbour.
+     * Port descriptions naming a monitored device that is not the neighbour (also on ports that now face
+     * an unmanaged switch, access point or phone), and missing ones between monitored devices, except on
+     * links to phones and servers (DeviceRole::isHost()). Both come with configuration lines built from
+     * the LLDP/CDP neighbour.
      */
     private function checkDescriptions(): void
     {
@@ -967,29 +969,36 @@ class LinkAnalyzer
             return;
         }
 
-        // expected neighbour of every inter-switch port and aggregate
+        // expected neighbour of every port and aggregate between monitored devices; a port toward a phone or a
+        // server needs no description (optional), a wrong one is still reported
         $expect = [];
+        $hostLink = fn (array $link): bool => DeviceRole::isHost($this->devices[$link['a_dev']] ?? []) || DeviceRole::isHost($this->devices[$link['b_dev']] ?? []);
         foreach ($this->physical as $link) {
+            $optional = $hostLink($link);
             foreach ([['a', 'b'], ['b', 'a']] as [$x, $y]) {
                 // a port can see several neighbours (through an unmanaged switch passing LLDP/CDP)
                 $expect[$link[$x . '_port']]['device_id'] = $link[$x . '_dev'];
                 $expect[$link[$x . '_port']]['far'][$link[$y . '_dev']] = $this->portName($link[$y . '_port']);
                 $expect[$link[$x . '_port']]['host'] = null;
+                $expect[$link[$x . '_port']]['optional'] = ($expect[$link[$x . '_port']]['optional'] ?? true) && $optional;
             }
         }
         foreach ($this->logical as $link) {
+            $optional = $hostLink($link);
             foreach ([['a', 'b'], ['b', 'a']] as [$x, $y]) {
                 if (! empty($this->lagMembers[$link[$x . '_port']])) {
                     $expect[$link[$x . '_port']]['device_id'] = $link[$x . '_dev'];
                     $expect[$link[$x . '_port']]['far'][$link[$y . '_dev']] = $this->portName($link[$y . '_port']);
                     $expect[$link[$x . '_port']]['host'] = null;
+                    $expect[$link[$x . '_port']]['optional'] = ($expect[$link[$x . '_port']]['optional'] ?? true) && $optional;
                 }
             }
         }
-        // ports now facing an unmanaged neighbour can still carry a stale description of a monitored device
+        // ports now facing an unmanaged neighbour (a switch, an access point, a phone) can still carry a stale
+        // description of a monitored device
         foreach ($this->partial as $partial) {
             if (! $partial['remote_device_id'] && $partial['host'] !== '' && ! isset($expect[$partial['port_id']])) {
-                $expect[$partial['port_id']] = ['device_id' => $partial['device_id'], 'far' => [], 'host' => $partial];
+                $expect[$partial['port_id']] = ['device_id' => $partial['device_id'], 'far' => [], 'host' => $partial, 'optional' => true];
             }
         }
 
@@ -1006,7 +1015,7 @@ class LinkAnalyzer
             $suggestion = $this->suggestDescription($expected);
             $alias = trim((string) ($port['ifAlias'] ?? ''));
             if ($alias === '' || strcasecmp($alias, (string) ($port['ifName'] ?? '')) === 0 || strcasecmp($alias, (string) ($port['ifDescr'] ?? '')) === 0) {
-                if (! $expected['host']) {
+                if (! $expected['optional']) {
                     $missing[$deviceId][$portId] = $suggestion;
                 }
                 continue;
@@ -1131,8 +1140,38 @@ class LinkAnalyzer
      */
     private function nameIndex(): array
     {
+        return self::nameIndexOf($this->devices);
+    }
+
+    /**
+     * Ports whose description names one of these devices, as the description checks find names in them: the
+     * descriptions toward end devices that can be stale (TopologyService::links() keeps only their rows).
+     *
+     * @param  iterable<int, string>  $descriptions  port_id => description
+     * @param  array<int, array>  $devices  device_id => devices row (hostname, sysName, display)
+     * @return array<int, true> port ids
+     */
+    public static function portsNamingDevices(iterable $descriptions, array $devices): array
+    {
+        [$patterns] = self::nameIndexOf($devices);
+        $ports = [];
+        foreach ($descriptions as $portId => $description) {
+            if ($patterns && self::mentions($description, $patterns, [])) {
+                $ports[(int) $portId] = true;
+            }
+        }
+
+        return $ports;
+    }
+
+    /**
+     * @param  array<int, array>  $devices
+     * @return array{0: string[], 1: array<string, int[]>} name patterns, name => device ids
+     */
+    private static function nameIndexOf(array $devices): array
+    {
         $names = [];
-        foreach ($this->devices as $deviceId => $device) {
+        foreach ($devices as $deviceId => $device) {
             foreach (['hostname', 'sysName', 'display'] as $field) {
                 $name = L2Builder::shortHost(strtolower(trim((string) ($device[$field] ?? ''))));
                 if (strlen($name) >= 3 && ! ctype_digit($name) && ! in_array($name, self::GENERIC_NAMES, true)) {

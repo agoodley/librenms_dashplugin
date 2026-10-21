@@ -2,6 +2,9 @@
 
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
+use Agoodley\LibrenmsTopology\Redundancy\LeafNeighbors;
+use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
+use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use PHPUnit\Framework\TestCase;
 
 class RedundancyAnalyzerTest extends TestCase
@@ -618,5 +621,42 @@ class RedundancyAnalyzerTest extends TestCase
         }
         unset($link);
         $this->assertSame(['spof_device', 'spof_link'], self::codes($net->analyzer()->analyze()));
+    }
+
+    public function testNeighborsOnOnePortCountTheSameWithoutTheirLinks(): void
+    {
+        // acc3 hangs off dist1 alone, with two phones (one reported by LLDP and CDP) and a server it shares with acc2
+        $net = RedundancyFixture::campus();
+        $net->device(8, 'acc3')->link(8, 'Gi1/0/49', self::D1, 'Gi1/0/3');
+        $net->neighbor(8, 'Gi1/0/1', 'SEP001122334401', 'Cisco IP Phone 8845')->neighbor(8, 'Gi1/0/2', 'SEP001122334402', 'Cisco IP Phone 8845');
+        $net->links[] = ['protocol' => 'cdp'] + RedundancyFixture::row(8, $net->portId(8, 'Gi1/0/1'), 0, null, 'sep001122334401.example.net', 'Port 1', 'Cisco IP Phone 8845');
+        $net->neighbor(8, 'Gi1/0/20', 'esx01', 'VMware ESXi 8.0.2')->neighbor(self::A2, 'Gi1/0/20', 'esx01', 'VMware ESXi 8.0.2');
+        // a nameless neighbour of acc1, and an unmanaged switch now on acc2 that the baseline had on acc1
+        $net->neighbor(self::A1, 'Gi1/0/5', '', '', 'Linux 6.1');
+        $net->neighbor(self::A2, 'Gi1/0/40', 'desk-sw', 'HP ProCurve Switch');
+        $missing = [['protocol' => 'baseline', 'missing' => '2026-10-01 10:00:00']
+            + RedundancyFixture::row(self::A1, $net->port(self::A1, 'Gi1/0/40'), 0, null, 'desk-sw', 'port1', 'HP ProCurve Switch')];
+
+        // the service keeps the other rows and passes the ports of the neighbours seen on one port
+        $leafNeighbors = new LeafNeighbors($missing);
+        $links = array_values(array_filter($net->links, $leafNeighbors->keep(...)));
+        $links = array_merge($links, array_values(array_filter($net->links, $leafNeighbors->several(...))), $missing);
+        // left out: the three rows of the two phones and the nameless neighbour's
+        $this->assertCount(count($net->links) - 4 + count($missing), $links);
+        $this->assertEqualsCanonicalizing([8 => [$net->portId(8, 'Gi1/0/1'), $net->portId(8, 'Gi1/0/2')], self::A1 => [$net->portId(self::A1, 'Gi1/0/5')]], $leafNeighbors->leaves());
+
+        $net->links = array_merge($net->links, $missing);
+        $full = $net->analyzer();
+        $split = new RedundancyAnalyzer($net->devices, array_keys($net->devices), $links, $net->ports, $net->lag,
+            new PluginSettings(['redundancy_core' => 'core1 core2']), [], [], [], $leafNeighbors->leaves());
+
+        $result = $split->analyze();
+        $this->assertSame($full->analyze(), $result);
+        $this->assertStringContainsString('acc3', self::find($result, 'spof_device', 'dist1')['detail']);
+        foreach ([['d:' . self::D1], ['d:8'], ['d:' . self::A1], ['p:' . $net->portId(8, 'Gi1/0/49')], ['u:desk-sw']] as $refs) {
+            $this->assertSame($full->simulate($refs), $split->simulate($refs), implode(' ', $refs));
+        }
+        // dist1 cuts off acc3 and its phones; the server keeps its link to acc2
+        $this->assertSame(2, $split->simulate(['d:' . self::D1])['unmanaged']);
     }
 }

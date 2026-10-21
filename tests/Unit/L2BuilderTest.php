@@ -8,17 +8,18 @@ use PHPUnit\Framework\TestCase;
 
 class L2BuilderTest extends TestCase
 {
-    private function build(array $options = [], ?array $stpPorts = null): array
+    private function build(array $options = [], ?array $stpPorts = null, ?array $links = null, array $groups = []): array
     {
         $stp = new StpIndex(CampusFixture::stpInstances(), $stpPorts ?? CampusFixture::stpPorts(), CampusFixture::lagParent());
         $builder = new L2Builder(
             CampusFixture::devices(),
-            CampusFixture::links(),
+            $links ?? CampusFixture::links(),
             CampusFixture::ports(),
             CampusFixture::portVlans(),
             CampusFixture::lagParent(),
             $stp,
             [1 => [1 => 'default', 10 => 'users', 20 => 'voice'], 2 => [1 => 'default', 10 => 'users', 20 => 'voice'], 3 => [1 => 'default', 10 => 'users'], 4 => [1 => 'default', 20 => 'voice']],
+            $groups,
         );
 
         return $builder->build($options);
@@ -56,6 +57,37 @@ class L2BuilderTest extends TestCase
         $phone = array_values(array_filter($result['nodes'], fn ($n) => $n['type'] === 'unmanaged'));
         $this->assertCount(1, $phone);
         $this->assertSame('phone', $phone[0]['role']);
+    }
+
+    public function testEndDevicesOfALargeMapAreGroupedPerSwitchAndKind(): void
+    {
+        // the phone's row is not among the links: the service noted it and the like (TopologyService::l2())
+        $links = array_values(array_filter(CampusFixture::links(), fn (array $link) => ! empty($link['remote_device_id'])));
+        $names = array_map(fn ($i) => sprintf('SEP%012d', $i), range(1, 25));
+        $groups = [3 => [
+            'phone' => ['count' => 30, 'names' => $names, 'ports' => 28, 'down' => 3],
+            'wireless' => ['count' => 1, 'names' => ['ap-1'], 'ports' => 1, 'down' => 1],
+            'server' => ['count' => 2, 'names' => ['esx1', 'esx2'], 'ports' => 2, 'down' => 0],
+        ]];
+        $result = $this->build([], null, $links, $groups);
+
+        $phones = array_values(array_filter($result['nodes'], fn ($n) => $n['id'] === 'g:3:phone'));
+        $this->assertCount(1, $phones);
+        $this->assertSame(['30 phones', '30 phones on acc1', 'phone', false], [$phones[0]['label'], $phones[0]['name'], $phones[0]['role'], $phones[0]['managed']]);
+        // every name, for the map's search
+        $this->assertSame(['device_id' => 3, 'count' => 30, 'names' => $names], $phones[0]['group']);
+        $this->assertSame('1 access point', array_values(array_filter($result['nodes'], fn ($n) => $n['id'] === 'g:3:wireless'))[0]['label']);
+
+        // an edge per group, with the status of its ports: degraded when some are not up, down when all are
+        [$edge] = $this->edgeBetween($result, 'd:3', 'g:3:phone');
+        $this->assertSame(['28 ports', null, [], 'degraded', ['count' => 28, 'down' => 3]],
+            [$edge['a']['name'], $edge['b']['port_id'], $edge['members'], $edge['status'], $edge['group']]);
+        $this->assertSame('down', $this->edgeBetween($result, 'd:3', 'g:3:wireless')[0]['status']);
+        $this->assertSame('up', $this->edgeBetween($result, 'd:3', 'g:3:server')[0]['status']);
+        $this->assertSame(33, $result['stats']['grouped']);
+        $this->assertSame(3, $result['stats']['unmanaged'], 'the group nodes');
+
+        $this->assertSame(0, $this->build(['unmanaged' => false], null, $links, $groups)['stats']['grouped'], 'no neighbors, no groups');
     }
 
     public function testAggregatesThatAreWhollyTheLinkAreFlagged(): void

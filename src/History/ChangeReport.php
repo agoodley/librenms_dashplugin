@@ -15,7 +15,11 @@ use Agoodley\LibrenmsTopology\Support\DeviceRole;
  */
 class ChangeReport
 {
-    /** Unmanaged neighbors that are no news when they show up (any other LLDP/CDP speaker may forward traffic). */
+    /**
+     * Unmanaged neighbors that are no news when they show up: phones and servers come and go all day. Not
+     * DeviceRole::END_DEVICES on purpose: a new access point is reported as a new unmanaged device (an AP nobody
+     * planned, or a rogue one), as is any other LLDP/CDP speaker, which may forward traffic.
+     */
     private const END_ROLES = [DeviceRole::PHONE, DeviceRole::SERVER];
 
     /** Events of one change: what it is about, how much attention it needs. */

@@ -128,7 +128,7 @@ class SiteService
     private function stack(array $ports): array
     {
         $deviceIds = array_values(array_unique(array_map('intval', array_column($ports, 'device_id'))));
-        $pairs = $this->sites->stackPairs($deviceIds);
+        $pairs = $this->repo->stackPairs($deviceIds);
         $paired = $pairs ? $this->repo->ports(array_merge(...$pairs), ['port_id', 'device_id', 'ifName', 'ifDescr', 'ifType']) : [];
         $stack = SiteConnections::stack($pairs, $paired, $this->repo->lagParents($deviceIds));
 

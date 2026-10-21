@@ -19,6 +19,14 @@ class L2Builder
         DeviceRole::SWITCH => 2,
     ];
 
+    /** How a group of end devices of a role is called on the map. */
+    private const GROUP_LABELS = [
+        DeviceRole::PHONE => ['phone', 'phones'],
+        DeviceRole::SERVER => ['server', 'servers'],
+        DeviceRole::WIRELESS => ['access point', 'access points'],
+        DeviceRole::OTHER => ['end device', 'end devices'],
+    ];
+
     /** Factory default names that many unrelated devices advertise. */
     public const GENERIC_HOSTNAMES = [
         'switch', 'router', 'ap', 'phone', 'host', 'localhost', 'localhost.localdomain', 'none', '(none)',
@@ -35,6 +43,10 @@ class L2Builder
      * @param  array<int, array<int, bool>>  $portVlans  port_id => [vlan => untagged]
      * @param  array<int, int>  $lagParent  member port_id => aggregate port_id
      * @param  array<int, array<int, string>>  $deviceVlans  device_id => [vlan => name]
+     * @param  array<int, array<string, array{count: int, names?: string[], ports?: int, down?: int}>>  $endDeviceGroups
+     *     device_id => role => the end devices (DeviceRole::END_DEVICES) seen as LLDP/CDP neighbours of the device, drawn
+     *     as one node per device and role instead of one each (their rows are not in $links): a large map has no room
+     *     for them. count: neighbours, names: theirs, ports: the device's ports they are seen on, down: those not up
      */
     public function __construct(
         private array $devices,
@@ -44,6 +56,7 @@ class L2Builder
         private array $lagParent,
         private StpIndex $stp,
         private array $deviceVlans = [],
+        private array $endDeviceGroups = [],
     ) {
     }
 
@@ -136,6 +149,21 @@ class L2Builder
         foreach ($groups as $group) {
             $edges[] = $this->edge('e' . count($edges), $group['from'], $group['to'], $group['links'], $vlan, $collapseLag);
         }
+        $grouped = 0;
+        if ($showUnmanaged) {
+            foreach ($this->endDeviceGroups as $deviceId => $byRole) {
+                if (! isset($this->devices[$deviceId])) {
+                    continue;
+                }
+                ksort($byRole);
+                foreach ($byRole as $role => $group) {
+                    $id = 'g:' . $deviceId . ':' . $role;
+                    $nodes[$id] = $this->groupNode($id, (int) $deviceId, (string) $role, (int) $group['count'], $group['names'] ?? []);
+                    $edges[] = $this->groupEdge('e' . count($edges), (int) $deviceId, $id, (int) ($group['ports'] ?? $group['count']), (int) ($group['down'] ?? 0));
+                    $grouped += (int) $group['count'];
+                }
+            }
+        }
 
         $this->markSuspectedRoots($nodes, $edges, $vlan);
         $this->assignParallelIndexes($edges);
@@ -157,6 +185,7 @@ class L2Builder
             'stats' => [
                 'devices' => count($this->devices),
                 'unmanaged' => count($nodes) - count($this->devices),
+                'grouped' => $grouped,
                 'links' => count($edges),
                 'down' => count(array_filter($edges, fn ($e) => $e['status'] === 'down')),
                 'blocked' => count(array_filter($edges, fn ($e) => $e['blocked'])),
@@ -353,6 +382,57 @@ class L2Builder
             'version' => mb_substr($link['b_version'], 0, 200),
             'stp' => null,
             'vlanMember' => null,
+        ];
+    }
+
+    /**
+     * Map node for the end devices of one role seen by a device: "20 phones", with their names (the map's search
+     * finds them).
+     *
+     * @param  string[]  $names
+     */
+    private function groupNode(string $id, int $deviceId, string $role, int $count, array $names): array
+    {
+        [$one, $many] = self::GROUP_LABELS[$role] ?? self::GROUP_LABELS[DeviceRole::OTHER];
+        $label = $count . ' ' . ($count === 1 ? $one : $many);
+        $device = $this->devices[$deviceId];
+
+        return [
+            'id' => $id,
+            'type' => 'unmanaged',
+            'managed' => false,
+            'device_id' => null,
+            'label' => $label,
+            'name' => $label . ' on ' . (($device['display'] ?? '') ?: ($device['hostname'] ?? $deviceId)),
+            'role' => $role,
+            'status' => 'unknown',
+            'platform' => '',
+            'version' => '',
+            'stp' => null,
+            'vlanMember' => null,
+            'group' => ['device_id' => $deviceId, 'count' => $count, 'names' => array_values($names)],
+        ];
+    }
+
+    /**
+     * Edge from a device to a group of end devices, standing for its links on $count ports of which $down are not up:
+     * down when all are, degraded when some are (as a port-channel's edge).
+     */
+    private function groupEdge(string $id, int $deviceId, string $node, int $count, int $down = 0): array
+    {
+        $ports = $count > 0 ? $count . ' port' . ($count === 1 ? '' : 's') : '';
+        $a = ['device_id' => $deviceId, 'managed' => true, 'name' => $ports, 'short' => $ports] + $this->unmanagedEndpoint(['b_name' => '']);
+        $b = $this->unmanagedEndpoint(['b_name' => '']);
+
+        return [
+            'id' => $id, 'from' => 'd:' . $deviceId, 'to' => $node, 'a' => $a, 'b' => $b, 'lag' => null, 'members' => [], 'speed' => 0,
+            'status' => match (true) {
+                $down === 0 => 'up',
+                $down >= $count => 'down',
+                default => 'degraded',
+            },
+            'trunk' => false, 'vlans' => [], 'native_vlan' => null, 'carriesVlan' => null, 'blocked' => false,
+            'util' => null, 'in_bps' => 0, 'out_bps' => 0, 'errors' => 0, 'protocols' => [], 'group' => ['count' => $count, 'down' => $down],
         ];
     }
 

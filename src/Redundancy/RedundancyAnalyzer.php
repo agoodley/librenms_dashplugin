@@ -36,10 +36,7 @@ class RedundancyAnalyzer
     private const CATEGORY_ORDER = ['outages', 'lost', 'fake', 'spof'];
 
     /** Roles that make up the network: the findings are about cutting these off. */
-    public const NETWORK_ROLES = [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER, DeviceRole::FIREWALL];
-
-    /** Unmanaged neighbours that do not forward between their links, by the role of their LLDP/CDP platform. */
-    private const END_ROLES = [DeviceRole::SERVER, DeviceRole::PHONE, DeviceRole::WIRELESS];
+    public const NETWORK_ROLES = DeviceRole::NETWORK;
 
     /** Roles whose interface names tell the stack member or slot (other devices name ports by type, e.g. NetScaler 10/1). */
     private const NAMED_UNIT_ROLES = [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER];
@@ -113,6 +110,9 @@ class RedundancyAnalyzer
      *                                                                                    (even without units) does not use interface names
      * @param  array<int, int>  $outageSince  device_id => unix time the current outage started
      * @param  array<int, int>  $stpPriority  device_id => bridge priority of the default spanning tree instance
+     * @param  array<int, int[]>  $leaves  device_id => ports of unmanaged neighbours seen on that one port only, which
+     *                                     the caller left out of $links (the rows of thousands of phones); build() finds
+     *                                     the others in $links
      */
     public function __construct(
         private array $devices,
@@ -124,7 +124,13 @@ class RedundancyAnalyzer
         private array $entityUnits = [],
         private array $outageSince = [],
         private array $stpPriority = [],
+        array $leaves = [],
     ) {
+        foreach ($leaves as $deviceId => $portIds) {
+            if (isset($this->devices[(int) $deviceId])) {
+                $this->leaves['d:' . (int) $deviceId] = array_map('intval', $portIds);
+            }
+        }
         $this->scope = array_fill_keys(array_map('intval', $scope), true);
         $this->disabled = array_fill_keys(array_map('strtolower', $settings->list('redundancy_disabled_checks')), true);
         $this->build();
@@ -730,7 +736,7 @@ class RedundancyAnalyzer
             return false;
         }
 
-        return $node['managed'] ? $node['network'] : ! in_array($node['role'], self::END_ROLES, true);
+        return $node['managed'] ? $node['network'] : ! DeviceRole::isEndDevice($node['role']);
     }
 
     /**
@@ -779,7 +785,7 @@ class RedundancyAnalyzer
      * Unmanaged neighbour of a links row: its short name, or the local port for missing and
      * factory default names (as L2Builder::unmanagedNodeId() separates them).
      */
-    private static function neighborKey(array $link): string
+    public static function neighborKey(array $link): string
     {
         $host = strtolower(trim((string) ($link['remote_hostname'] ?? '')));
         $short = L2Builder::shortHost($host);

@@ -108,17 +108,19 @@ class StpAnalyzer
      *
      * @param  array<string, array{owners?: array, fdb?: array, vendor?: string, hidden?: bool}>  $rootLookups  keyed by root MAC
      * @param  int|null  $vlanFilter  only analyze the instance of this VLAN (1 = default instance)
+     * @param  int[]|null  $vlanKeys  only analyze the instances of these VLAN keys (a device's page)
      */
-    public function analyze(array $rootLookups = [], ?int $vlanFilter = null): array
+    public function analyze(array $rootLookups = [], ?int $vlanFilter = null, ?array $vlanKeys = null): array
     {
         $this->findings = [];
         $this->rootLookups = $rootLookups;
         $domains = [];
         $bridges = [];
         $blocked = [];
+        $wanted = $vlanKeys === null ? null : array_fill_keys(array_map('intval', $vlanKeys), true);
 
         foreach ($this->stp->byVlan() as $key => $members) {
-            if ($vlanFilter !== null && $key !== StpIndex::vlanKey($vlanFilter)) {
+            if (($vlanFilter !== null && $key !== StpIndex::vlanKey($vlanFilter)) || ($wanted !== null && ! isset($wanted[$key]))) {
                 continue;
             }
 
@@ -350,7 +352,7 @@ class StpAnalyzer
 
         if ($key !== 0) {
             foreach ($this->stp->deviceIds() as $deviceId) {
-                if (array_keys($this->stp->instancesFor($deviceId)) === [0]) {
+                if ($this->stp->keysFor($deviceId) === [0]) {
                     $participants[$deviceId] = true;
                 }
             }
@@ -989,7 +991,7 @@ class StpAnalyzer
             return false;
         }
 
-        foreach (array_keys($this->stp->instancesFor($deviceId)) as $key) {
+        foreach ($this->stp->keysFor($deviceId) as $key) {
             if ($this->stp->portRow($deviceId, $key, $portId)) {
                 return true;
             }

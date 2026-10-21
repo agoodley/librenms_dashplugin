@@ -45,6 +45,32 @@ class SupportTest extends TestCase
         $this->assertFalse(InterfaceName::isLagName('GigabitEthernet1/0/1'));
     }
 
+    public function testSubInterfacesAndVlanInterfaces(): void
+    {
+        foreach (['Gi0/0.100', 'ae0.0', 'Po1.100', 'GigabitEthernet0/0/1.20 '] as $name) {
+            $this->assertTrue(InterfaceName::isSubInterface($name), $name);
+        }
+        foreach (['Gi0/0', 'Vlan100', 'xe-0/0/0', '10.10.10.1/24 ', ''] as $name) {
+            $this->assertFalse(InterfaceName::isSubInterface($name), $name);
+        }
+        $this->assertSame('Gi0/0', InterfaceName::parentName('Gi0/0.100'));
+        $this->assertSame('ae0', InterfaceName::parentName('ae0.0'));
+        $this->assertNull(InterfaceName::parentName('Gi0/0'));
+
+        // VLAN interfaces: the "VLAN in use" of the link checks and the host locator's router interfaces
+        foreach (['Vl10' => 10, 'Vlan10' => 10, 'vlan 20' => 20, 'Vlanif30' => 30, 'Vlan-interface40' => 40, 'irb.50' => 50,
+            'vlan.60' => 60, 've 70' => 70, 'Ve80' => 80] as $name => $vlan) {
+            $this->assertSame($vlan, InterfaceName::vlanInterface($name), $name);
+        }
+        foreach (['Vlan0', 'Vlan4095', 'Gi0/0.10', 'veth0', 'BVI1', 'irb', 'Vl10a'] as $name) {
+            $this->assertNull(InterfaceName::vlanInterface($name), $name);
+        }
+        $this->assertSame(10, InterfaceName::subInterfaceUnit('Gi0/0.10'));
+        $this->assertSame(40, InterfaceName::subInterfaceUnit('ae0.40'));
+        $this->assertNull(InterfaceName::subInterfaceUnit('xe-0/0/0.0'));
+        $this->assertNull(InterfaceName::subInterfaceUnit('10.10.10.1'));
+    }
+
     public function testCidr(): void
     {
         $this->assertSame('10.1.2.0/24', Cidr::network('10.1.2.77', 24));
@@ -120,6 +146,27 @@ class SupportTest extends TestCase
         $this->assertSame(DeviceRole::SWITCH, DeviceRole::fromNeighbor('cisco WS-C2960X-48FPD-L', null));
         $this->assertSame(DeviceRole::SERVER, DeviceRole::fromNeighbor('VMware ESX', null));
         $this->assertSame(DeviceRole::UNKNOWN, DeviceRole::fromNeighbor('', null));
+    }
+
+    public function testEndDevicesAndHosts(): void
+    {
+        foreach ([DeviceRole::PHONE, DeviceRole::SERVER, DeviceRole::WIRELESS, DeviceRole::OTHER] as $role) {
+            $this->assertTrue(DeviceRole::isEndDevice($role), $role);
+        }
+        foreach ([DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER, DeviceRole::FIREWALL, DeviceRole::UNKNOWN, null] as $role) {
+            $this->assertFalse(DeviceRole::isEndDevice($role), (string) $role);
+        }
+        $this->assertSame([], array_intersect(DeviceRole::NETWORK, DeviceRole::END_DEVICES));
+
+        // hosts by the LibreNMS device type that gave them their role: not appliances, load balancers or storage
+        $host = fn (string $type) => DeviceRole::isHost(['type' => $type, 'role' => DeviceRole::classify(['type' => $type])]);
+        foreach (['server', 'workstation', 'collaboration'] as $type) {
+            $this->assertTrue($host($type), $type);
+        }
+        foreach (['appliance', 'loadbalancer', 'storage', 'wireless', 'firewall', 'network', 'power', 'printer'] as $type) {
+            $this->assertFalse($host($type), $type);
+        }
+        $this->assertTrue(DeviceRole::isHost(['role' => DeviceRole::SERVER]));
     }
 
     public function testRolesOfLldpNeighborsComeFromTheirSystemDescription(): void

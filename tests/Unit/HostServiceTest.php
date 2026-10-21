@@ -254,9 +254,10 @@ class HostServiceTest extends TestCase
     {
         // a name matching many devices without a stored address: their hostnames are looked up one after another
         $calls = [];
+        ShortBudgetHostService::$now = 1000.0;
         $resolver = function (string $name, float $timeout) use (&$calls): array {
             $calls[] = $timeout;
-            usleep(120_000);
+            ShortBudgetHostService::$now += 0.12; // each lookup takes 120 ms
 
             return [];
         };
@@ -266,11 +267,11 @@ class HostServiceTest extends TestCase
 
             return $data;
         };
-        $started = microtime(true);
         self::service($repo, [], $resolver, $named, ShortBudgetHostService::class)->search('lab');
 
-        $this->assertLessThan(0.6, microtime(true) - $started, 'the budget bounds the search: ' . json_encode($calls));
-        $this->assertLessThanOrEqual(3, count($calls));
+        // 20 names, 0.3 s in all: the lookups stop when less than 0.1 s is left
+        $this->assertCount(2, $calls, 'the budget bounds the search: ' . json_encode($calls));
+        $this->assertLessThanOrEqual(1000.0 + ShortBudgetHostService::BUDGET, ShortBudgetHostService::$now);
         foreach ($calls as $timeout) {
             $this->assertLessThanOrEqual(ShortBudgetHostService::BUDGET, $timeout, 'each lookup gets at most the time that is left');
         }
@@ -699,9 +700,17 @@ final class ShortBudgetHostService extends HostService
 {
     public const BUDGET = 0.3;
 
+    /** The time of the DNS budget's clock, advanced by the test's resolver. */
+    public static float $now = 0.0;
+
     protected function dnsBudget(): float
     {
         return self::BUDGET;
+    }
+
+    protected function seconds(): float
+    {
+        return self::$now;
     }
 }
 

@@ -19,6 +19,6 @@ jobs:
       - run: composer install --no-interaction --no-progress
       - run: vendor/bin/phpunit
       - name: Lint PHP
-        run: find src routes -name '*.php' -print0 | xargs -0 -n1 php -l
+        run: find src routes database -name '*.php' -print0 | xargs -0 -n1 php -l
       - name: Check JavaScript syntax
         run: node --check resources/assets/topology.js

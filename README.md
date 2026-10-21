@@ -217,12 +217,12 @@ every VLAN is followed across the trunks:
 | Optical receive power below the transceiver's alarm threshold (the DOM thresholds the device reports) | critical |
 | Speed, duplex and MTU mismatches between the two ends, half-duplex links (MTU differences up to 22 bytes are header accounting) | warning |
 | Trunk facing an access port, native VLAN mismatch, access ports in different VLANs | warning |
-| **Split VLAN**: a VLAN in use (hosts or a VLAN interface) on switches of one L2 domain that no trunk path connects, naming the trunks that allow it on one end only | warning / info |
+| **Split VLAN**: a VLAN in use (hosts or a VLAN interface such as Vlan30, irb.30 or ve 30) on switches of one L2 domain that no trunk path connects, naming the trunks that allow it on one end only | warning / info |
 | Allowed VLANs differ on a trunk although both switches use the VLAN (a redundant path that silently does not carry it) | warning |
 | Port-channel on one end only, members landing in different port-channels, degraded port-channel (members down), uneven load across members | warning |
 | Interface errors and packet discards in the last poll | warning |
 | Optical receive power below the warning threshold, or within a margin of the alarm threshold | warning / info |
-| Port descriptions naming the wrong neighbor (also ports that now face an unmanaged AP or phone), inter-switch ports without description – with the configuration lines that fix them (Cisco-style, Junos, ProCurve, RouterOS) | warning / info |
+| Port descriptions naming the wrong neighbor (also ports that now face an unmanaged AP or phone), inter-switch ports without description – with the configuration lines that fix them (Cisco-style, Junos, ProCurve, RouterOS). Ports toward phones and servers need no description | warning / info |
 | Neighbors listed by one end only (LLDP/CDP off on one side, or a unidirectional link), devices without neighbor data | info |
 
 The page also lists every link with both ends side by side (speed, duplex, MTU, mode and native VLAN, VLANs, errors,
@@ -636,7 +636,9 @@ Custom maps the plugin made are LibreNMS' own: they stay either way.
 ## Usage tips
 
 * **Center on a device** and pick the number of hops for large networks (the map is capped at *Maximum devices*,
-  default 400). Double-click any device to re-center on it.
+  default 400). Double-click any device to re-center on it. When the devices and their unmanaged neighbors are more
+  than that, the phones, servers and access points of each switch are drawn as one node per kind ("20 phones"), and
+  **Find device** finds a device in its group; centered on a switch with few hops, they are drawn one by one again.
 * Pick a **VLAN** on the L2 map to see which switches/trunks carry it and that VLAN's spanning tree
   (root bridge, port roles, blocked ports). Domain rows and findings on the STP page link straight to that view.
 * Arrange devices by dragging, then **Save layout** (stored in your browser for that map scope), or save the map as a
@@ -898,6 +900,11 @@ vendor/bin/phpunit
   `multicast_storm` there.
 * Stacks / virtual chassis that are not modeled as one device, and MLAG pairs without a detected port-channel, can
   produce a "possible bridging loop" warning – the finding says so.
+* The STP page analyzes every VLAN at once when their spanning tree instances (a PVST network has one per switch and
+  VLAN) fit in the memory a page may use: about 8,000 instances at PHP's 128 MB default, 25,000 at the 256 MB the
+  plugin's pages take unless LibreNMS sets `php_memory_limit`; a device's page needs only the instances of that device's
+  VLANs. Beyond that, or above 150,000 STP port rows, it analyzes one VLAN at a time, VLAN 1 / CST until another is
+  picked; the background check covers every VLAN.
 
 **Link & VLAN, routing & IP**
 
@@ -1008,8 +1015,8 @@ vendor/bin/phpunit
   it had never been recorded, without a "Link gone".
 * The snapshot and each background check run over the whole network, one after the other, each in its own process with
   LibreNMS' `php_memory_limit` (512 MB when it is not set). For 1,242 switches with 23,000 phones and 50 PVST VLANs:
-  snapshot 1 s and 115 MB, spanning tree check with loop evidence 5 s and 250 MB (one VLAN at a time), link check 1 s and
-  160 MB, redundancy check 1 s and 125 MB, the Changes page 0.4 s and 72 MB. For 2,000 routers with 50,000 addresses,
+  snapshot 1 s and 115 MB, spanning tree check with loop evidence 5 s and 250 MB (one VLAN at a time), link check 0.6 s
+  and 86 MB, redundancy check 0.8 s and 98 MB, the Changes page 0.4 s and 72 MB. For 2,000 routers with 50,000 addresses,
   8,000 OSPF adjacencies and 8,000 BGP sessions: snapshot 1.3 s and 80 MB, routing & IP check 1.3 s and 107 MB (with 1,800
   findings). A check that fails or takes more than an hour is logged in `topology-snapshot.log` and the eventlog, and the
   others still run. A lock lasts as long as the longest run could (5 hours 10 minutes: the snapshot and four checks of
@@ -1034,6 +1041,10 @@ vendor/bin/phpunit
 
 * `./validate.php` warns about the plugin's migrations while the plugin is installed and then skips its checks of
   LibreNMS' own schema (see [Installation](#installation)).
+* The pages of the whole network fit in PHP's default 128 MB on 1,242 switches with 23,000 phones and 50 PVST VLANs
+  (largest: redundancy and device dependencies 96 MB, links 86 MB, spanning tree 84 MB, L2 map 66 MB); a page also
+  raises PHP's memory limit to LibreNMS' `php_memory_limit`, or 256 MB when it is not set. One VLAN of a very large
+  PVST network with STP port rows for every port can still need more.
 
 ## Roadmap
 

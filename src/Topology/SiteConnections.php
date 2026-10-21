@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsTopology\Topology;
 
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
+use Agoodley\LibrenmsTopology\Support\PortStack;
 
 /**
  * Links between devices at different sites, for SiteBuilder: neighbor links (one per cable) and
@@ -138,7 +139,7 @@ class SiteConnections
      * other logical interface over a port, a port-channel over its members. Pairs of two ports of the
      * same kind say nothing and are left out.
      *
-     * @param  array<int, array{0: int, 1: int}>  $pairs  port id pairs (SiteRepository::stackPairs())
+     * @param  array<int, array{0: int, 1: int}>  $pairs  port id pairs (TopologyRepository::stackPairs())
      * @param  array<int, array>  $ports  port_id => row (ifName, ifDescr, ifType) of the paired ports
      * @param  array<int, int>  $lag  member port_id => port-channel port_id (TopologyRepository::lagParents())
      * @return array<int, int[]>
@@ -203,8 +204,8 @@ class SiteConnections
             }
             $names = [];
             foreach (['ifName', 'ifDescr'] as $field) {
-                if (preg_match('/^(.+)\.\d+$/', trim((string) ($port[$field] ?? '')), $match)) {
-                    $names[] = $match[1];
+                if (($parent = InterfaceName::parentName($port[$field] ?? '')) !== null) {
+                    $names[] = $parent;
                 }
             }
             if ($names) {
@@ -471,7 +472,7 @@ class SiteConnections
         $name = InterfaceName::label($port);
 
         return in_array(strtolower((string) ($port['ifType'] ?? '')), self::LOGICAL_TYPES, true) || self::isTunnel($port)
-            || preg_match(self::LOGICAL_NAMES, $name) || preg_match('/\.\d+$/', $name);
+            || preg_match(self::LOGICAL_NAMES, $name) || InterfaceName::isSubInterface($name);
     }
 
     /**
@@ -481,7 +482,7 @@ class SiteConnections
     private static function layer(array $port): int
     {
         return match (true) {
-            (bool) preg_match('/\.\d+$/', InterfaceName::label($port)) => 3,
+            InterfaceName::isSubInterface(InterfaceName::label($port)) => 3,
             self::isAggregate($port) => 1,
             self::isLogical($port) || strtolower((string) ($port['ifType'] ?? '')) === 'other' => 2,
             default => 0,
@@ -490,10 +491,7 @@ class SiteConnections
 
     private static function isAggregate(array $port): bool
     {
-        $name = InterfaceName::label($port);
-
-        return strtolower((string) ($port['ifType'] ?? '')) === 'ieee8023adlag'
-            || (InterfaceName::isLagName($name) && ! preg_match('/\.\d+$/', $name));
+        return PortStack::isAggregate($port);
     }
 
     /**

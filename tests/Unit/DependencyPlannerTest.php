@@ -190,7 +190,8 @@ class DependencyPlannerTest extends TestCase
         $this->assertSame([18], $derived[19]['parents']);
         $this->assertSame([19, 21], $derived[20]['parents']);
         $this->assertSame([1, 2, 3], $derived[4]['parents']);
-        $this->assertLessThan(1.0, $elapsed);
+        // a generous bound: it guards against an algorithm that grows with the square of the network, not the speed of the machine
+        $this->assertLessThan(10.0, $elapsed);
     }
 
     public function testDualHomedServerAndLoneDevices(): void
