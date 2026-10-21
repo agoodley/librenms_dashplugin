@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\Support\DeviceRole;
 use Agoodley\LibrenmsTopology\Support\Graph;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
+use Agoodley\LibrenmsTopology\Support\Text;
 
 /**
  * Spanning tree health analysis built on the LibreNMS STP, link (LLDP/CDP) and port data.
@@ -14,6 +15,37 @@ use Agoodley\LibrenmsTopology\Support\PluginSettings;
 class StpAnalyzer
 {
     private const DEFAULT_PRIORITY = 32768;
+
+    /**
+     * Check codes and their category; the "disabled checks" setting accepts either (the loop
+     * evidence checks are in LoopEvidence::CHECKS).
+     */
+    public const CHECKS = [
+        'root_mismatch' => 'root',
+        'root_not_polled' => 'root',
+        'root_unmanaged' => 'root',
+        'root_default_priority' => 'root',
+        'root_not_preferred' => 'root',
+        'root_at_edge' => 'root',
+        'root_changed' => 'root',
+        'timers_non_default' => 'config',
+        'timer_relation' => 'config',
+        'timer_mismatch' => 'config',
+        'protocol_mix' => 'config',
+        'diameter' => 'config',
+        'tc_rate' => 'changes',
+        'tc_recent' => 'changes',
+        'root_port_changed' => 'changes',
+        'port_broken' => 'ports',
+        'port_flapping' => 'ports',
+        'nondesignated_forwarding' => 'ports',
+        'port_transitioning' => 'ports',
+        'no_root_port' => 'ports',
+        'stp_disabled_port' => 'ports',
+        'forwarding_loop' => 'loops',
+        'loop_without_stp' => 'loops',
+        'no_stp_data' => 'loops',
+    ];
 
     /** @var array<int, array{a_dev: int, a_port: int, b_dev: int, b_port: int}> */
     private array $physLinks = [];
@@ -28,6 +60,9 @@ class StpAnalyzer
 
     /** @var Finding[] */
     private array $findings = [];
+
+    /** @var array<string, true> disabled check codes and categories */
+    private array $disabled;
 
     /** @var array<string, array> root bridge MAC lookups (owners, FDB sightings, vendor) */
     private array $rootLookups = [];
@@ -50,6 +85,7 @@ class StpAnalyzer
         private ?int $now = null,
     ) {
         $this->now ??= time();
+        $this->disabled = array_fill_keys(array_map('strtolower', $settings->list('stp_disabled_checks')), true);
         foreach ($this->lagParent as $member => $parent) {
             $this->lagMembers[$parent][] = $member;
         }
@@ -73,17 +109,19 @@ class StpAnalyzer
      *
      * @param  array<string, array{owners?: array, fdb?: array, vendor?: string, hidden?: bool}>  $rootLookups  keyed by root MAC
      * @param  int|null  $vlanFilter  only analyze the instance of this VLAN (1 = default instance)
+     * @param  int[]|null  $vlanKeys  only analyze the instances of these VLAN keys (a device's page)
      */
-    public function analyze(array $rootLookups = [], ?int $vlanFilter = null): array
+    public function analyze(array $rootLookups = [], ?int $vlanFilter = null, ?array $vlanKeys = null): array
     {
         $this->findings = [];
         $this->rootLookups = $rootLookups;
         $domains = [];
         $bridges = [];
         $blocked = [];
+        $wanted = $vlanKeys === null ? null : array_fill_keys(array_map('intval', $vlanKeys), true);
 
         foreach ($this->stp->byVlan() as $key => $members) {
-            if ($vlanFilter !== null && $key !== StpIndex::vlanKey($vlanFilter)) {
+            if (($vlanFilter !== null && $key !== StpIndex::vlanKey($vlanFilter)) || ($wanted !== null && ! isset($wanted[$key]))) {
                 continue;
             }
 
@@ -106,7 +144,7 @@ class StpAnalyzer
         $this->checkLoopsWithoutStp();
         $this->checkEvents();
 
-        $findings = self::mergeAcrossVlans(array_map(fn (Finding $f) => $f->toArray(), $this->findings));
+        $findings = self::mergeAcrossVlans(array_map(fn (Finding $f) => $f->toArray() + ['category' => self::CHECKS[$f->code] ?? 'other'], $this->findings));
         usort($findings, fn ($a, $b) => [Finding::SEVERITY_ORDER[$a['severity']], $a['vlan'] ?? -1, $a['title']]
             <=> [Finding::SEVERITY_ORDER[$b['severity']], $b['vlan'] ?? -1, $b['title']]);
 
@@ -126,6 +164,48 @@ class StpAnalyzer
             'blocked' => $blocked,
             'events' => $this->eventRows(),
         ];
+    }
+
+    /**
+     * The same analysis on another index and port rows, keeping the prepared links: the
+     * background checks analyze one instance (VLAN) at a time.
+     *
+     * @param  array<int, array>  $ports  port_id => port row (the link ports and those of the index)
+     */
+    public function withInstance(StpIndex $index, array $ports): static
+    {
+        $analyzer = clone $this;
+        $analyzer->stp = $index;
+        $analyzer->ports = $ports;
+
+        return $analyzer;
+    }
+
+    /**
+     * Findings of one instance (VLAN key), without the bridge, port and domain rows of the page;
+     * with $networkWide also the checks that do not depend on an instance (inter-switch ports and
+     * switches without spanning tree, loops through them, eventlog), which the background checks
+     * run in one pass only. Merge the passes with mergeAcrossVlans().
+     *
+     * @param  array<string, array>  $rootLookups  keyed by root MAC
+     * @return array<int, array> findings in their array form
+     */
+    public function instanceFindings(array $rootLookups, int $vlanKey, bool $networkWide): array
+    {
+        $this->findings = [];
+        $this->rootLookups = $rootLookups;
+        $members = $this->stp->byVlan()[$vlanKey] ?? [];
+        foreach ($this->domainsFor($vlanKey, $members) as [$memberIds, $graph]) {
+            $this->analyzeDomain($vlanKey, $memberIds, $members, $graph, $rootLookups);
+        }
+        if ($networkWide) {
+            $this->checkPortsWithoutStp();
+            $this->checkDevicesWithoutStp();
+            $this->checkLoopsWithoutStp();
+            $this->checkEvents();
+        }
+
+        return array_map(fn (Finding $f) => $f->toArray() + ['category' => self::CHECKS[$f->code] ?? 'other'], $this->findings);
     }
 
     /**
@@ -155,7 +235,8 @@ class StpAnalyzer
 
     /**
      * PVST runs one instance per VLAN, so the same problem is usually found in many VLANs:
-     * report it once with the list of affected VLANs.
+     * report it once with the list of affected VLANs (the union of the lists of already merged
+     * findings, so results of several passes can be merged again).
      */
     public static function mergeAcrossVlans(array $findings): array
     {
@@ -163,12 +244,15 @@ class StpAnalyzer
         foreach ($findings as $finding) {
             $key = implode('|', [$finding['severity'], $finding['code'], $finding['title'], $finding['detail'],
                 implode(',', $finding['devices']), implode(',', $finding['ports'])]);
+            $vlans = array_merge($finding['vlans'] ?? [], $finding['vlan'] !== null ? [$finding['vlan']] : []);
             if (! isset($merged[$key])) {
                 $merged[$key] = $finding;
-                continue;
+                $merged[$key]['vlans'] = [];
             }
-            if ($finding['vlan'] !== null && ! in_array($finding['vlan'], $merged[$key]['vlans'], true)) {
-                $merged[$key]['vlans'][] = $finding['vlan'];
+            foreach ($vlans as $vlan) {
+                if (! in_array($vlan, $merged[$key]['vlans'], true)) {
+                    $merged[$key]['vlans'][] = $vlan;
+                }
             }
         }
 
@@ -202,37 +286,41 @@ class StpAnalyzer
             $instances[] = $row;
         }
 
-        // the same issue usually shows in every PVST instance: list it once with its VLANs
+        // the same issue usually shows in every PVST instance: list it once with its VLANs; the disabled
+        // checks of the STP page are left out here too
         $issues = [];
-        $add = function (string $severity, string $text, array $row) use (&$issues): void {
+        $add = function (string $code, string $severity, string $text, array $row) use (&$issues): void {
+            if (! $this->enabled($code)) {
+                return;
+            }
             $issues[$severity . '|' . $text]['severity'] = $severity;
             $issues[$severity . '|' . $text]['text'] = $text;
             $issues[$severity . '|' . $text]['vlans'][] = $row['label'];
         };
         foreach ($instances as $row) {
             if ($row['is_root'] && $this->isDefaultPriority($row['priority'], $row['vlan'])) {
-                $add(Finding::WARNING, 'root bridge with default priority', $row);
+                $add('root_default_priority', Finding::WARNING, 'root bridge with default priority', $row);
             }
             if ($row['last_tc'] !== null && $row['last_tc'] < $this->tcRecentSeconds()) {
-                $add(Finding::INFO, 'topology change ' . self::duration($row['last_tc']) . ' ago', $row);
+                $add('tc_recent', Finding::INFO, 'topology change ' . self::duration($row['last_tc']) . ' ago', $row);
             }
             if ($row['tc_rate'] !== null && $row['tc_rate'] > $this->settings->int('stp_tc_rate_per_day', 1)) {
-                $add(Finding::WARNING, $row['tc_rate'] . ' topology changes per day', $row);
+                $add('tc_rate', Finding::WARNING, $row['tc_rate'] . ' topology changes per day', $row);
             }
             foreach ($row['blocked_ports'] as $port) {
                 if ($port['state'] === 'broken') {
-                    $add(Finding::CRITICAL, 'port ' . $port['port'] . ' is in broken state', $row);
+                    $add('port_broken', Finding::CRITICAL, 'port ' . $port['port'] . ' is in broken state', $row);
                 }
             }
             foreach ($this->stp->portsFor($deviceId, $row['vlan']) as $port) {
                 if ($port['forwardTransitions'] >= $this->settings->int('stp_flap_transitions', 1)) {
-                    $add(Finding::WARNING, $this->portName($port['port_id']) . ' changed to forwarding ' . $port['forwardTransitions'] . ' times', $row);
+                    $add('port_flapping', Finding::WARNING, $this->portName($port['port_id']) . ' changed to forwarding ' . $port['forwardTransitions'] . ' times', $row);
                 }
             }
             // only bridge addresses are looked up here (cheap); the STP page also checks interface MACs
             $rootMac = $this->stp->instance($deviceId, $row['vlan'])['designatedRoot'] ?? '';
             if (! $row['is_root'] && $rootMac !== '' && $this->stp->bridgeOwner($rootMac) === null && empty($rootLookups[$rootMac]['owners']) && empty($rootLookups[$rootMac]['hidden'])) {
-                $add(Finding::WARNING, 'root bridge ' . $row['root_id'] . ' is not a monitored bridge (possible rogue switch, see STP diagnostics)', $row);
+                $add('root_unmanaged', Finding::WARNING, 'root bridge ' . $row['root_id'] . ' is not a monitored bridge (possible rogue switch, see STP diagnostics)', $row);
             }
         }
 
@@ -265,7 +353,7 @@ class StpAnalyzer
 
         if ($key !== 0) {
             foreach ($this->stp->deviceIds() as $deviceId) {
-                if (array_keys($this->stp->instancesFor($deviceId)) === [0]) {
+                if ($this->stp->keysFor($deviceId) === [0]) {
                     $participants[$deviceId] = true;
                 }
             }
@@ -700,7 +788,7 @@ class StpAnalyzer
             $this->add(new Finding(
                 Finding::INFO, 'tc_recent',
                 "topology change " . self::duration($last) . ' ago',
-                count($recent) . ' bridge(s) saw a topology change in the last ' . self::duration($this->tcRecentSeconds()) . '.' . $suspectText,
+                Text::count(count($recent), 'bridge') . ' saw a topology change in the last ' . self::duration($this->tcRecentSeconds()) . '.' . $suspectText,
                 'Correlate with link up/down events; a single change after maintenance is expected.',
                 $key, array_keys($recent), array_map(fn ($s) => $s[2], $suspects),
             ));
@@ -904,7 +992,7 @@ class StpAnalyzer
             return false;
         }
 
-        foreach (array_keys($this->stp->instancesFor($deviceId)) as $key) {
+        foreach ($this->stp->keysFor($deviceId) as $key) {
             if ($this->stp->portRow($deviceId, $key, $portId)) {
                 return true;
             }
@@ -1008,12 +1096,13 @@ class StpAnalyzer
         [$rootChanges, $rootPortChanges] = [$changes['root'], $changes['port']];
 
         $days = $this->settings->int('stp_event_days', 1);
+        $window = $days === 1 ? 'the last day' : "the last $days days";
         if ($rootChanges) {
             arsort($rootChanges);
             $this->add(new Finding(
                 max($rootChanges) >= 3 ? Finding::CRITICAL : Finding::WARNING, 'root_changed',
                 'Root bridge changes detected',
-                "Designated root changed in the last $days day(s) on: " . $this->countList($rootChanges) . '.',
+                "Designated root changed in $window on: " . $this->countList($rootChanges) . '.',
                 'Root changes cause network-wide reconvergence. Check for new switches with low priority, root guard violations or failing core links.',
                 null, array_keys($rootChanges),
             ));
@@ -1024,7 +1113,7 @@ class StpAnalyzer
             $this->add(new Finding(
                 max($rootPortChanges) >= 5 ? Finding::WARNING : Finding::INFO, 'root_port_changed',
                 'Root port changes detected',
-                "Root port changed in the last $days day(s) on: " . $this->countList($rootPortChanges) . '.',
+                "Root port changed in $window on: " . $this->countList($rootPortChanges) . '.',
                 'A changing root port means the uplink toward the root failed or flapped.',
                 null, array_keys($rootPortChanges),
             ));
@@ -1333,7 +1422,7 @@ class StpAnalyzer
             return $owner['name'] ?? $this->deviceName((int) $owner['device_id']);
         }
         if (! empty($lookups[$mac]['hidden'])) {
-            return 'monitored bridge (no access)';
+            return 'a bridge you may not see';
         }
 
         return ! empty($lookups[$mac]['vendor']) ? 'unmonitored ' . $lookups[$mac]['vendor'] : 'unmonitored bridge';
@@ -1412,7 +1501,17 @@ class StpAnalyzer
 
     private function add(Finding $finding): void
     {
-        $this->findings[] = $finding;
+        if ($this->enabled($finding->code)) {
+            $this->findings[] = $finding;
+        }
+    }
+
+    /**
+     * Neither the check nor its category is in the disabled checks setting.
+     */
+    private function enabled(string $code): bool
+    {
+        return ! isset($this->disabled[$code]) && ! isset($this->disabled[self::CHECKS[$code] ?? '']);
     }
 
     /**

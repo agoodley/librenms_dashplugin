@@ -21,7 +21,7 @@
         'speed_mismatch' => 'speed', 'duplex_mismatch' => 'duplex', 'half_duplex' => 'half duplex', 'mtu_mismatch' => 'MTU',
         'mode_mismatch' => 'trunk / access', 'native_vlan_mismatch' => 'native VLAN', 'access_vlan_mismatch' => 'access VLAN',
         'trunk_vlan_mismatch' => 'allowed VLANs', 'vlan_split' => 'split VLAN',
-        'lag_unbundled' => 'LAG on one end', 'lag_split' => 'LAG split', 'lag_degraded' => 'LAG degraded', 'lag_imbalance' => 'LAG load',
+        'lag_unbundled' => 'port-channel on one end', 'lag_split' => 'port-channel split', 'lag_degraded' => 'port-channel degraded', 'lag_imbalance' => 'port-channel load',
         'link_errors' => 'errors', 'link_discards' => 'discards', 'optical_rx' => 'optics',
         'neighbor_not_reported' => 'one-sided', 'no_neighbor_data' => 'no LLDP/CDP', 'description_wrong' => 'description', 'description_missing' => 'no description',
     ];
@@ -80,15 +80,19 @@
             $problemLinks = count(array_filter($result['links'], fn ($l) => in_array($l['severity'], ['critical', 'warning'], true)));
         @endphp
         <div class="topo-cards">
-            <div class="topo-card topo-{{ $summary['status'] }}">
-                <h4>Health</h4>
-                <div class="topo-card-value"><span class="topo-sev topo-sev-{{ $summary['status'] }}" style="font-size: 16px">{{ $summary['status'] }}</span></div>
-                <p>{{ $summary['findings']['critical'] }} critical, {{ $summary['findings']['warning'] }} warnings, {{ $summary['findings']['info'] }} info</p>
-            </div>
+            @if($summary['links'])
+                @include('topology::partials.health-card', ['summary' => $summary])
+            @else
+                <div class="topo-card topo-info">
+                    <h4>Health</h4>
+                    <div class="topo-card-value"><span class="topo-sev topo-sev-muted" style="font-size: 16px">no links</span></div>
+                    <p>nothing to check</p>
+                </div>
+            @endif
             <div class="topo-card topo-info">
                 <h4>Links</h4>
                 <div class="topo-card-value">{{ $summary['links'] }}</div>
-                <p>{{ $summary['physical'] }} cables, {{ $summary['lags'] }} port-channel(s), {{ $summary['devices'] }} devices</p>
+                <p>{{ \Agoodley\LibrenmsTopology\Support\Text::count($summary['physical'], 'cable') }}, {{ \Agoodley\LibrenmsTopology\Support\Text::count($summary['lags'], 'port-channel') }}, {{ \Agoodley\LibrenmsTopology\Support\Text::count($summary['devices'], 'device') }}</p>
             </div>
             @foreach($cards as $title => [$categories, $text])
                 @php
@@ -113,6 +117,7 @@
                         <td><span class="topo-sev topo-sev-{{ $finding['severity'] }}">{{ $finding['severity'] }}</span></td>
                         <td class="topo-wrap">
                             <strong>{{ ucfirst($finding['title']) }}</strong>
+                            @include('topology::partials.finding-age')
                             @if($finding['devices'])
                                 <a href="{{ $mapUrl($finding['devices'][0], $finding['vlan']) }}" title="Show on the L2 map"><i class="fa fa-sitemap"></i></a>
                             @endif
@@ -132,7 +137,7 @@
                         </td>
                     </tr>
                 @empty
-                    <tr><td colspan="3"><span class="topo-sev topo-sev-ok">ok</span> No link or VLAN problems detected.</td></tr>
+                    <tr><td colspan="3">@if($summary['links'])<span class="topo-sev topo-sev-ok">ok</span> No link or VLAN problems detected.@else No links to check.@endif</td></tr>
                 @endforelse
                 </tbody>
             </table>
@@ -199,7 +204,13 @@
                         </td>
                     </tr>
                 @empty
-                    <tr><td colspan="13">No links between monitored devices. Make sure the <code>discovery-protocols</code> module (LLDP/CDP) is enabled.</td></tr>
+                    <tr><td colspan="13">
+                        @if(($result['hidden_links'] ?? 0) > 0)
+                            No links between devices you may see: links to devices outside your permissions are not shown.
+                        @else
+                            No links between monitored devices. Make sure the <code>discovery-protocols</code> module (LLDP/CDP) is enabled.
+                        @endif
+                    </td></tr>
                 @endforelse
                 </tbody>
             </table>

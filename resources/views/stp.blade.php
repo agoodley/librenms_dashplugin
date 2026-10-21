@@ -67,15 +67,11 @@
 
         @php($summary = $result['summary'])
         <div class="topo-cards">
-            <div class="topo-card topo-{{ $summary['status'] }}">
-                <h4>Health</h4>
-                <div class="topo-card-value"><span class="topo-sev topo-sev-{{ $summary['status'] }}" style="font-size: 16px">{{ $summary['status'] }}</span></div>
-                <p>{{ $summary['findings']['critical'] }} critical, {{ $summary['findings']['warning'] }} warnings, {{ $summary['findings']['info'] }} info</p>
-            </div>
+            @include('topology::partials.health-card', ['summary' => $summary])
             <div class="topo-card topo-info">
                 <h4>Bridges</h4>
                 <div class="topo-card-value">{{ $summary['bridges'] }}</div>
-                <p>{{ $summary['instances'] }} STP instances in {{ $summary['domains'] }} L2 domain(s)</p>
+                <p>{{ \Agoodley\LibrenmsTopology\Support\Text::count($summary['instances'], 'STP instance') }} in {{ \Agoodley\LibrenmsTopology\Support\Text::count($summary['domains'], 'L2 domain') }}</p>
             </div>
             <div class="topo-card topo-info">
                 <h4>Root bridges</h4>
@@ -104,6 +100,7 @@
                         <td><span class="topo-sev topo-sev-{{ $finding['severity'] }}">{{ $finding['severity'] }}</span></td>
                         <td class="topo-wrap">
                             <strong>@if($finding['vlan_label']){{ $finding['vlan_label'] }}: @endif{{ ucfirst($finding['title']) }}</strong>
+                            @include('topology::partials.finding-age')
                             @if($finding['vlan'] !== null)
                                 <a href="{{ $mapUrl($finding['vlan'], $finding['devices'][0] ?? null) }}" title="Show on the L2 map with STP overlay"><i class="fa fa-sitemap"></i></a>
                             @endif
@@ -125,6 +122,8 @@
                 </tbody>
             </table>
         </div>
+
+        @include('topology::partials.stp-loop-evidence')
 
         <div class="panel panel-default">
             <div class="panel-heading"><strong>Spanning tree domains</strong> <span class="text-muted">(one row per VLAN instance and connected L2 domain)</span></div>

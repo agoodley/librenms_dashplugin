@@ -1,0 +1,328 @@
+<?php
+
+namespace Agoodley\LibrenmsTopology\Data;
+
+use Illuminate\Support\Facades\DB;
+
+/**
+ * Database access of the site / WAN map: the location of every device, the neighbor links and
+ * point-to-point addresses that can join locations, the interface stack under those addresses and
+ * the devices owning the addresses of routing neighbors.
+ */
+class SiteRepository extends ScopedRepository
+{
+    /** Device ids or addresses per query (large IN lists are split). */
+    private const CHUNK = 5000;
+
+    /** From this many devices on, subnetAddresses() scans the address tables instead of listing the devices. */
+    private const SCAN_FROM = 1000;
+
+    /**
+     * Location (the site) of each device: id, name and coordinates. A device whose location row is
+     * gone has none.
+     *
+     * @param  int[]  $ids  devices the user may see
+     * @return array<int, array{location_id: int|null, location: string|null, lat: mixed, lng: mixed}> device_id => location
+     */
+    public function locations(array $ids): array
+    {
+        $locations = [];
+        foreach (array_chunk(array_values(array_unique($ids)), self::CHUNK) as $chunk) {
+            foreach (DB::table('devices')->leftJoin('locations', 'devices.location_id', '=', 'locations.id')
+                ->whereIntegerInRaw('devices.device_id', $chunk)
+                ->get(['devices.device_id', 'locations.id as location_id', 'locations.location', 'locations.lat', 'locations.lng']) as $row) {
+                $locations[(int) $row->device_id] = [
+                    'location_id' => $row->location_id !== null ? (int) $row->location_id : null,
+                    'location' => $row->location,
+                    'lat' => $row->lat,
+                    'lng' => $row->lng,
+                ];
+            }
+        }
+
+        return $locations;
+    }
+
+    /**
+     * Active neighbor links (LLDP, CDP...) between two of the given devices that are at different
+     * locations (devices without a location count as one location).
+     *
+     * @param  int[]  $ids  devices the user may see
+     * @return array<int, array> links rows
+     */
+    public function siteLinks(array $ids): array
+    {
+        if (! $ids || ! $this->allowsTable('links')) {
+            return [];
+        }
+
+        $links = [];
+        foreach (array_chunk(array_values(array_unique($ids)), self::CHUNK) as $chunk) {
+            // compare the location rows, not the ids: a device pointing at a deleted location has none
+            foreach (DB::table('links as l')
+                ->join('devices as a', 'a.device_id', '=', 'l.local_device_id')
+                ->join('devices as b', 'b.device_id', '=', 'l.remote_device_id')
+                ->leftJoin('locations as la', 'la.id', '=', 'a.location_id')
+                ->leftJoin('locations as lb', 'lb.id', '=', 'b.location_id')
+                ->where('l.active', 1)
+                ->whereIntegerInRaw('l.local_device_id', $chunk)
+                ->whereIntegerInRaw('l.remote_device_id', $ids)
+                ->whereRaw('NOT (la.id <=> lb.id)')
+                ->get(['l.id', 'l.local_device_id', 'l.local_port_id', 'l.remote_device_id', 'l.remote_port_id', 'l.remote_hostname',
+                    'l.remote_port', 'l.remote_platform', 'l.remote_version', 'l.protocol']) as $link) {
+                $links[] = (array) $link;
+            }
+        }
+
+        return $links;
+    }
+
+    /**
+     * The monitored devices the user may see on the far side of the given ports, with their
+     * locations (active LLDP / CDP links reported by either side): whether a port faces a switch of
+     * its own site, a device at another site, or nothing LibreNMS knows (a carrier handoff).
+     *
+     * @param  int[]  $portIds
+     * @return array<int, array<int, array{device_id: int, location_id: int|null}>> port_id => its neighbors (location
+     *     null: none)
+     */
+    public function portNeighbors(array $portIds): array
+    {
+        $portIds = array_values(array_unique(array_filter(array_map('intval', $portIds))));
+        $wanted = array_flip($portIds);
+        $neighbors = [];
+        foreach ($this->allowsTable('links') ? array_chunk($portIds, self::CHUNK) : [] as $chunk) {
+            foreach (DB::table('links as l')
+                ->join('devices as a', 'a.device_id', '=', 'l.local_device_id')
+                ->join('devices as b', 'b.device_id', '=', 'l.remote_device_id')
+                ->leftJoin('locations as la', 'la.id', '=', 'a.location_id')
+                ->leftJoin('locations as lb', 'lb.id', '=', 'b.location_id')
+                ->where('l.active', 1)
+                ->where(fn ($query) => $query->whereIntegerInRaw('l.local_port_id', $chunk)->orWhereIntegerInRaw('l.remote_port_id', $chunk))
+                ->get(['l.local_port_id', 'l.remote_port_id', 'l.local_device_id', 'l.remote_device_id', 'la.id as local_location', 'lb.id as remote_location']) as $link) {
+                foreach ([['local', 'remote'], ['remote', 'local']] as [$near, $far]) {
+                    if (isset($wanted[(int) $link->{$near . '_port_id'}]) && $this->canSee((int) $link->{$far . '_device_id'})) {
+                        $location = $link->{$far . '_location'};
+                        $neighbors[(int) $link->{$near . '_port_id'}][] = [
+                            'device_id' => (int) $link->{$far . '_device_id'},
+                            'location_id' => $location !== null ? (int) $location : null,
+                        ];
+                    }
+                }
+            }
+        }
+
+        return $neighbors;
+    }
+
+    /**
+     * Neighbor links among the devices the user may see at each of the given locations, as device
+     * adjacency per location (location 0: the devices without one).
+     *
+     * @param  int[]  $locationIds
+     * @return array<int, array<int, int[]>> location id => device_id => devices at the same location it has a link with
+     */
+    public function siteAdjacency(array $locationIds): array
+    {
+        $ids = array_values(array_filter(array_unique(array_map('intval', $locationIds))));
+        $none = in_array(0, array_map('intval', $locationIds), true);
+        if ((! $ids && ! $none) || ! $this->allowsTable('links')) {
+            return [];
+        }
+
+        $at = [];
+        foreach (DB::table('devices as d')->leftJoin('locations as l', 'l.id', '=', 'd.location_id')
+            ->where(function ($query) use ($ids, $none): void {
+                if ($ids) {
+                    $query->whereIntegerInRaw('l.id', $ids);
+                }
+                if ($none) {
+                    $query->orWhereNull('l.id');
+                }
+            })
+            ->get(['d.device_id', 'l.id as location_id']) as $row) {
+            if ($this->canSee((int) $row->device_id)) {
+                $at[(int) $row->device_id] = (int) ($row->location_id ?? 0);
+            }
+        }
+
+        $adjacency = [];
+        foreach (array_chunk(array_keys($at), self::CHUNK) as $chunk) {
+            foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $chunk)
+                ->get(['local_device_id', 'remote_device_id']) as $link) {
+                [$a, $b] = [(int) $link->local_device_id, (int) $link->remote_device_id];
+                if ($a !== $b && isset($at[$b]) && $at[$a] === $at[$b]) {
+                    $adjacency[$at[$a]][$a][$b] = true;
+                    $adjacency[$at[$a]][$b][$a] = true;
+                }
+            }
+        }
+
+        return array_map(fn (array $devices) => array_map('array_keys', $devices), $adjacency);
+    }
+
+    /**
+     * Interface addresses with their prefix length (IPv4 and IPv6) of a few devices, and the type and
+     * name of their interfaces.
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, array<int, array{0: string, 1: int, 2: array}>> device_id => [address, prefix length,
+     *     port (ifType, ifName, ifDescr)]
+     */
+    public function interfaceAddresses(array $deviceIds): array
+    {
+        $addresses = [];
+        foreach (array_chunk(array_values(array_unique($deviceIds)), self::CHUNK) as $chunk) {
+            foreach ([['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen'], ['ipv6_addresses', 'ipv6_compressed', 'ipv6_prefixlen']] as [$table, $address, $prefixlen]) {
+                if (! $this->allowsTable($table)) {
+                    continue;
+                }
+                foreach (DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
+                    ->whereIntegerInRaw('p.device_id', $chunk)->where('p.deleted', 0)
+                    ->get(['p.device_id', 'p.ifType', 'p.ifName', 'p.ifDescr', 'a.' . $address . ' as address', 'a.' . $prefixlen . ' as prefixlen']) as $row) {
+                    $addresses[(int) $row->device_id][] = [(string) $row->address, (int) $row->prefixlen,
+                        ['ifType' => $row->ifType, 'ifName' => $row->ifName, 'ifDescr' => $row->ifDescr]];
+                }
+            }
+        }
+
+        return $addresses;
+    }
+
+    /**
+     * Interface addresses that can make a point-to-point subnet (IPv4 with a prefix of at least
+     * $prefix4, IPv6 of at least $prefix6, no host routes), in the format of
+     * TopologyRepository::addresses(). The rest of an address plan (LANs, loopbacks) never joins
+     * two sites, so it is not loaded.
+     *
+     * @param  int[]  $ids  devices the user may see
+     * @return array<int, array> rows: device_id, port_id, ifName, ifDescr, ifAlias, ifOperStatus, ifType, address, prefixlen, vrf
+     */
+    public function subnetAddresses(array $ids, int $prefix4, int $prefix6): array
+    {
+        $ids = array_values(array_unique($ids));
+        if (! $ids) {
+            return [];
+        }
+
+        // a long device list makes the database look up the addresses of every port of those devices: from
+        // SCAN_FROM devices on, scanning the address tables for the few point-to-point prefixes is much faster
+        $wanted = array_flip($ids);
+        $rows = [];
+        foreach (count($ids) >= self::SCAN_FROM ? [null] : array_chunk($ids, self::CHUNK) as $chunk) {
+            foreach ([['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen', $prefix4, 32], ['ipv6_addresses', 'ipv6_compressed', 'ipv6_prefixlen', $prefix6, 128]]
+                as [$table, $address, $prefixlen, $min, $host]) {
+                if (! $this->allowsTable($table)) {
+                    continue;
+                }
+                $query = DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')->where('p.deleted', 0)
+                    ->where('a.' . $prefixlen, '>=', $min)->where('a.' . $prefixlen, '<', $host);
+                if ($chunk !== null) {
+                    $query->whereIntegerInRaw('p.device_id', $chunk);
+                }
+                foreach ($query->get(['p.device_id', 'p.port_id', 'p.ifName', 'p.ifDescr', 'p.ifAlias', 'p.ifOperStatus', 'p.ifType', 'p.ifVrf',
+                    'a.' . $address . ' as address', 'a.' . $prefixlen . ' as prefixlen', 'a.context_name']) as $row) {
+                    if (isset($wanted[(int) $row->device_id])) {
+                        $rows[] = (array) $row;
+                    }
+                }
+            }
+        }
+
+        $vrfIds = array_values(array_unique(array_filter(array_map('intval', array_column($rows, 'ifVrf')))));
+        $vrfs = $vrfIds ? DB::table('vrfs')->whereIntegerInRaw('vrf_id', $vrfIds)->pluck('vrf_name', 'vrf_id')->all() : [];
+        foreach ($rows as &$row) {
+            $row['vrf'] = (string) (($row['ifVrf'] ? ($vrfs[$row['ifVrf']] ?? '') : '') ?: ($row['context_name'] ?? ''));
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /**
+     * Devices the user may see that have one of the given interface addresses, to find the routers
+     * behind OSPF neighbors and BGP peers. Every visible device counts, not only those on the map:
+     * a session to a device outside the map's scope is not a session to an unknown network.
+     *
+     * @param  string[]  $addresses  IPv4 / IPv6 addresses
+     * @return array<string, array<int, array{device_id: int, prefixlen: int, vrf: string, port: array}>> address (canonical
+     *     form) => owners (a device once per VRF; port: ifType, ifName, ifDescr of the interface), by device id
+     */
+    public function addressOwners(array $addresses): array
+    {
+        $wanted = [4 => [], 6 => []];
+        foreach ($addresses as $address) {
+            $packed = @inet_pton(trim((string) $address));
+            if ($packed !== false) {
+                $family = strlen($packed) === 4 ? 4 : 6;
+                $wanted[$family][inet_ntop($packed)] = true;
+                $wanted[$family][strtoupper(inet_ntop($packed))] = true;
+            }
+        }
+
+        $rows = [];
+        foreach ([4 => ['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen'], 6 => ['ipv6_addresses', 'ipv6_compressed', 'ipv6_prefixlen']]
+            as $family => [$table, $address, $prefixlen]) {
+            foreach ($this->allowsTable($table) ? array_chunk(array_keys($wanted[$family]), self::CHUNK) : [] as $chunk) {
+                // the address columns are not indexed: comparing bytes rather than collated text makes the scan several times faster
+                foreach (DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
+                    ->whereIn(DB::raw('CAST(a.' . $address . ' AS BINARY)'), $chunk)->where('p.deleted', 0)
+                    ->get(['p.device_id', 'p.ifVrf', 'p.ifType', 'p.ifName', 'p.ifDescr', 'a.' . $address . ' as address',
+                        'a.' . $prefixlen . ' as prefixlen', 'a.context_name']) as $row) {
+                    if ($this->canSee((int) $row->device_id)) {
+                        $rows[] = (array) $row;
+                    }
+                }
+            }
+        }
+
+        $vrfIds = array_values(array_unique(array_filter(array_map('intval', array_column($rows, 'ifVrf')))));
+        $vrfs = $vrfIds ? DB::table('vrfs')->whereIntegerInRaw('vrf_id', $vrfIds)->pluck('vrf_name', 'vrf_id')->all() : [];
+        $owners = [];
+        foreach ($rows as $row) {
+            $packed = @inet_pton((string) $row['address']);
+            if ($packed === false) {
+                continue;
+            }
+            $vrf = (string) (($row['ifVrf'] ? ($vrfs[$row['ifVrf']] ?? '') : '') ?: ($row['context_name'] ?? ''));
+            $owners[inet_ntop($packed)][$row['device_id'] . '|' . $vrf] ??= ['device_id' => (int) $row['device_id'], 'prefixlen' => (int) $row['prefixlen'],
+                'vrf' => $vrf, 'port' => ['ifType' => $row['ifType'], 'ifName' => $row['ifName'], 'ifDescr' => $row['ifDescr']]];
+        }
+        foreach ($owners as &$list) {
+            usort($list, fn (array $a, array $b) => [$a['device_id'], $a['vrf']] <=> [$b['device_id'], $b['vrf']]);
+        }
+        unset($list);
+
+        return $owners;
+    }
+
+    /**
+     * Ports by interface name (ifName or ifDescr), such as the parent of a sub-interface that the
+     * interface stack does not list.
+     *
+     * @param  array<int, string[]>  $names  device_id => names
+     * @return array<int, array<string, int>> device_id => name => port_id
+     */
+    public function portsByName(array $names): array
+    {
+        $names = array_filter($names);
+        if (! $names) {
+            return [];
+        }
+
+        $all = array_values(array_unique(array_merge(...array_values($names))));
+        $found = [];
+        foreach (DB::table('ports')->whereIntegerInRaw('device_id', array_keys($names))->where('deleted', 0)
+            ->where(fn ($query) => $query->whereIn('ifName', $all)->orWhereIn('ifDescr', $all))
+            ->orderBy('port_id')
+            ->get(['port_id', 'device_id', 'ifName', 'ifDescr']) as $row) {
+            foreach ([$row->ifName, $row->ifDescr] as $name) {
+                if ($name !== null && in_array($name, $names[(int) $row->device_id] ?? [], true)) {
+                    $found[(int) $row->device_id][$name] ??= (int) $row->port_id;
+                }
+            }
+        }
+
+        return $found;
+    }
+}

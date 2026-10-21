@@ -289,7 +289,10 @@ class LinkAnalyzerTest extends TestCase
     public function testPortDescriptions(): void
     {
         $links = LinkFixture::links();
-        $links[] = LinkFixture::link(3, 33, 0, null, 'ap-12.example.net', 'eth0', 'Cisco AIR-AP2802I');
+        $links[] = LinkFixture::link(3, 33, 0, null, 'lab-sw.example.net', 'Gi0/1', 'cisco WS-C2960X-24TS');
+        // an old uplink that now faces an access point, a phone that kept its port's description
+        $links[] = LinkFixture::link(3, 34, 0, null, 'ap-12.example.net', 'eth0', 'Cisco AIR-AP2802I');
+        $links[] = LinkFixture::link(3, 35, 0, null, 'SEP001122334455', 'Port 1', 'Cisco IP Phone 8845');
         $codes = $this->codes($this->analyze(
             ports: [
                 31 => ['ifAlias' => 'uplink to core2'],   // the neighbor is core1
@@ -299,17 +302,23 @@ class LinkAnalyzerTest extends TestCase
                 42 => ['ifAlias' => 'to core20'],         // no such device
             ],
             links: $links,
-            extraPorts: [33 => LinkFixture::port(33, 3, 'GigabitEthernet1/0/33', ['ifAlias' => 'to acc2'])],
+            extraPorts: [
+                33 => LinkFixture::port(33, 3, 'GigabitEthernet1/0/33', ['ifAlias' => 'to acc2']),
+                34 => LinkFixture::port(34, 3, 'GigabitEthernet1/0/34', ['ifAlias' => 'to acc2']),
+                35 => LinkFixture::port(35, 3, 'GigabitEthernet1/0/35', ['ifAlias' => 'desk 12']),
+            ],
         ));
 
         $this->assertCount(1, $codes['description_wrong']);
         $wrong = $codes['description_wrong'][0];
         $this->assertSame('port descriptions name the wrong neighbor: acc1', $wrong['title']);
-        $this->assertSame('Te1/1/1 "uplink to core2" connects to core1 Te1/0/3; Gi1/0/33 "to acc2" connects to ap-12 eth0.', $wrong['detail']);
-        $this->assertSame("interface TenGigabitEthernet1/1/1\n description core1 Te1/0/3\ninterface GigabitEthernet1/0/33\n description ap-12 eth0", $wrong['config']);
+        $this->assertSame('Te1/1/1 "uplink to core2" connects to core1 Te1/0/3; Gi1/0/33 "to acc2" connects to lab-sw Gi0/1; '
+            . 'Gi1/0/34 "to acc2" connects to ap-12 eth0.', $wrong['detail']);
+        $this->assertSame("interface TenGigabitEthernet1/1/1\n description core1 Te1/0/3\ninterface GigabitEthernet1/0/33\n description lab-sw Gi0/1\n"
+            . "interface GigabitEthernet1/0/34\n description ap-12 eth0", $wrong['config']);
 
         $this->assertCount(1, $codes['description_missing']);
-        $this->assertSame('1 port(s): Te1/1/2 (core2 Te1/0/3).', $codes['description_missing'][0]['detail']);
+        $this->assertSame('1 port: Te1/1/2 (core2 Te1/0/3).', $codes['description_missing'][0]['detail']);
     }
 
     public function testDescriptionConfigUsesTheSyntaxOfTheOs(): void
@@ -388,17 +397,51 @@ class LinkAnalyzerTest extends TestCase
         }
     }
 
+    public function testPortsTowardMonitoredEndDevicesNeedNoDescription(): void
+    {
+        // acc2 is a monitored ESXi host here: its vmnic and the switch port toward it are no inter-switch ports
+        $devices = LinkFixture::devices();
+        $devices[4] = ['type' => 'server', 'role' => 'server'] + $devices[4];
+        $codes = $this->codes($this->analyze(ports: [32 => ['ifAlias' => ''], 41 => ['ifAlias' => ''], 42 => ['ifAlias' => '']], devices: $devices));
+
+        foreach ($codes['description_missing'] ?? [] as $finding) {
+            $this->assertStringNotContainsString('acc2', $finding['title'] . ' ' . $finding['detail']);
+        }
+        $this->assertSame(['inter-switch ports without description: acc1'], array_column($codes['description_missing'], 'title'));
+    }
+
+    public function testPortsTowardControllersAndAppliancesNeedADescription(): void
+    {
+        // acc2 as a wireless controller, a load balancer or an appliance is part of the infrastructure, unlike a server
+        foreach (['wireless' => 'wireless', 'loadbalancer' => 'server', 'appliance' => 'server'] as $type => $role) {
+            $devices = LinkFixture::devices();
+            $devices[4] = ['type' => $type, 'role' => $role] + $devices[4];
+            $codes = $this->codes($this->analyze(ports: [32 => ['ifAlias' => ''], 41 => ['ifAlias' => ''], 42 => ['ifAlias' => '']], devices: $devices));
+
+            $this->assertSame(['inter-switch ports without description: acc1', 'inter-switch ports without description: acc2'],
+                array_column($codes['description_missing'], 'title'), $type);
+        }
+    }
+
+    public function testPortsWhoseDescriptionNamesAMonitoredDevice(): void
+    {
+        // TopologyService::links() keeps the rows of end devices on these ports only
+        $descriptions = [33 => 'uplink to acc2', 34 => 'desk 12', 35 => 'old core1 link', 36 => 'acc20', 37 => 'ACC2 Gi1/0/1'];
+        $this->assertSame([33 => true, 35 => true, 37 => true], LinkAnalyzer::portsNamingDevices($descriptions, LinkFixture::devices()));
+        $this->assertSame([], LinkAnalyzer::portsNamingDevices($descriptions, []));
+    }
+
     public function testSuggestedConfigurationCannotCarryCommandsFromAnLldpName(): void
     {
         $links = LinkFixture::links();
-        $links[] = LinkFixture::link(3, 33, 0, null, "phone\nusername backdoor privilege 15 secret 0 pw", "port 1\r\nend");
+        $links[] = LinkFixture::link(3, 33, 0, null, "switch\nusername backdoor privilege 15 secret 0 pw", "port 1\r\nend");
         $codes = $this->codes($this->analyze(
             links: $links,
             extraPorts: [33 => LinkFixture::port(33, 3, 'GigabitEthernet1/0/33', ['ifAlias' => 'to acc2'])],
         ));
 
         $config = $codes['description_wrong'][0]['config'];
-        $this->assertSame(['interface GigabitEthernet1/0/33', ' description phone_username backdoor privilege 15 secret 0 pw port 1_end'], explode("\n", $config));
+        $this->assertSame(['interface GigabitEthernet1/0/33', ' description switch_username backdoor privilege 15 secret 0 pw port 1_end'], explode("\n", $config));
     }
 
     public function testPortWithTwoMonitoredNeighborsMayNameEither(): void
@@ -443,6 +486,30 @@ class LinkAnalyzerTest extends TestCase
         $this->assertSame('warning', $split['severity']);
         $this->assertStringEndsWith('Where it stops: acc Te1/0/1 carries it, dist Te1/0/2 does not; core Te1/0/1 carries it, dist Te1/0/1 does not.', $split['detail']);
         $this->assertEqualsCanonicalizing([10, 20, 21, 30], $split['ports']);
+    }
+
+    public function testLldpNeighborsJoinASplitVlanOnlyWhenTheirDescriptionMayBeASwitch(): void
+    {
+        // core1 Gi1/0/15 and acc1 Gi1/0/33 see the same LLDP neighbor, known by its system description only (LibreNMS
+        // stores no platform for LLDP): a switch may carry VLAN 10 from one to the other, a server or a phone does not
+        $split = function (string $sysDescr): bool {
+            $links = LinkFixture::links();
+            foreach ([[1, 15], [3, 33]] as [$deviceId, $portId]) {
+                $links[] = ['remote_platform' => null, 'remote_version' => $sysDescr] + LinkFixture::link($deviceId, $portId, 0, null, 'host-01', 'eth' . $deviceId);
+            }
+            $codes = $this->codes($this->analyze(
+                vlans: [31 => [1 => true], 32 => [1 => true], 15 => [10 => false], 33 => [10 => false]],
+                links: $links,
+                extraPorts: [15 => LinkFixture::port(15, 1, 'GigabitEthernet1/0/15'), 33 => LinkFixture::port(33, 3, 'GigabitEthernet1/0/33')],
+            ));
+
+            return isset($codes['vlan_split']);
+        };
+
+        $this->assertFalse($split('Juniper Networks, Inc. ex2300-c-12p Ethernet Switch, kernel JUNOS 21.4R3-S4'));
+        $this->assertFalse($split('Acme NetOS 1.2'), 'a neighbor of unknown type may be a switch');
+        $this->assertTrue($split('VMware ESXi 8.0.2 build-22380479 VMware, Inc. VMware7,1'), 'a dual-homed server');
+        $this->assertTrue($split('Cisco IP Phone CP-8845, V3, sip88xx.14-1-1-0001-136'));
     }
 
     public function testUnmanagedSwitchesWithFactoryNamesDoNotJoinASplitVlan(): void

@@ -24,6 +24,9 @@ class StpIndex
     /** @var array<string, int> bridge MAC => device_id */
     private array $bridges = [];
 
+    /** @var array<int, int[]> device_id => VLAN keys of all its instances, also those whose rows are not loaded (partial()) */
+    private array $keys = [];
+
     /**
      * @param  iterable<array|object>  $instances  rows of the stp table
      * @param  iterable<array|object>  $ports  rows of the ports_stp table
@@ -39,14 +42,59 @@ class StpIndex
             }
         }
 
+        $this->addPorts($ports);
+
+        foreach ($this->instances as $deviceId => &$byVlan) {
+            ksort($byVlan);
+            $this->keys[$deviceId] = array_keys($byVlan);
+        }
+    }
+
+    /**
+     * Index holding the rows of some instances only, usually the one instance per device that
+     * carries a VLAN, while it knows every device's other instances by their VLAN key and every
+     * bridge MAC: enough for the map overlay and the analysis of one VLAN on a PVST network, whose
+     * stp table has a row per switch and VLAN.
+     *
+     * @param  array<int, int[]>  $keys  device_id => VLAN keys of all its instances
+     * @param  iterable<array|object>  $instances  rows of the stp table of the instances to load
+     * @param  iterable<array|object>  $ports  rows of the ports_stp table
+     * @param  array<int, int>  $lagParent  member port_id => aggregate port_id
+     * @param  array<string, int>  $bridges  bridge MAC (12 hex characters) => device_id, of all instances
+     */
+    public static function partial(array $keys, iterable $instances, iterable $ports, array $lagParent, array $bridges): static
+    {
+        $index = new static($instances, $ports, $lagParent);
+        foreach ($keys as $deviceId => $deviceKeys) {
+            $deviceKeys = array_values(array_unique(array_map('intval', $deviceKeys)));
+            sort($deviceKeys);
+            $index->keys[(int) $deviceId] = $deviceKeys;
+        }
+        $index->bridges = $bridges + $index->bridges;
+
+        return $index;
+    }
+
+    /**
+     * The same bridges and instances with other port rows: the background checks load the port
+     * rows of one instance (VLAN) at a time.
+     */
+    public function withPorts(iterable $ports): static
+    {
+        $index = clone $this;
+        $index->ports = [];
+        $index->portsByIndex = [];
+        $index->addPorts($ports);
+
+        return $index;
+    }
+
+    private function addPorts(iterable $ports): void
+    {
         foreach ($ports as $row) {
             $row = self::normalizePort((array) $row);
             $this->ports[$row['device_id']][$row['vlan']][$row['port_id']] = $row;
             $this->portsByIndex[$row['device_id']][$row['vlan']][$row['port_index']] = $row;
-        }
-
-        foreach ($this->instances as &$byVlan) {
-            ksort($byVlan);
         }
     }
 
@@ -224,7 +272,7 @@ class StpIndex
      */
     public function hasStp(int $deviceId): bool
     {
-        return ! empty($this->instances[$deviceId]);
+        return ! empty($this->keys[$deviceId]);
     }
 
     /**
@@ -232,7 +280,17 @@ class StpIndex
      */
     public function deviceIds(): array
     {
-        return array_keys($this->instances);
+        return array_keys($this->keys);
+    }
+
+    /**
+     * VLAN keys of all instances of a device, lowest first (also those whose rows are not loaded).
+     *
+     * @return int[]
+     */
+    public function keysFor(int $deviceId): array
+    {
+        return $this->keys[$deviceId] ?? [];
     }
 
     /**
@@ -275,7 +333,16 @@ class StpIndex
      */
     public function keyFor(int $deviceId, ?int $vlan): ?int
     {
-        $keys = array_keys($this->instances[$deviceId] ?? []);
+        return self::selectKey($this->keys[$deviceId] ?? [], $vlan);
+    }
+
+    /**
+     * keyFor() on a device's VLAN keys.
+     *
+     * @param  int[]  $keys
+     */
+    public static function selectKey(array $keys, ?int $vlan): ?int
+    {
         if (! $keys) {
             return null;
         }

@@ -19,19 +19,34 @@ class L2Builder
         DeviceRole::SWITCH => 2,
     ];
 
+    /** How a group of end devices of a role is called on the map. */
+    private const GROUP_LABELS = [
+        DeviceRole::PHONE => ['phone', 'phones'],
+        DeviceRole::SERVER => ['server', 'servers'],
+        DeviceRole::WIRELESS => ['access point', 'access points'],
+        DeviceRole::OTHER => ['end device', 'end devices'],
+    ];
+
     /** Factory default names that many unrelated devices advertise. */
     public const GENERIC_HOSTNAMES = [
         'switch', 'router', 'ap', 'phone', 'host', 'localhost', 'localhost.localdomain', 'none', '(none)',
         'unknown', 'default', 'openwrt', 'ubnt', 'mikrotik', 'linux', 'esxi', 'debian', 'ubuntu',
     ];
 
+    /** @var array<int, int[]>|null aggregate port_id => its member ports (the port stack) */
+    private ?array $lagMembers = null;
+
     /**
      * @param  array<int, array>  $devices  device_id => device row (with 'role', 'url')
      * @param  array<int, array>  $links  rows of the links table
-     * @param  array<int, array>  $ports  port_id => port row (link ports and their aggregates)
+     * @param  array<int, array>  $ports  port_id => port row (link ports, their aggregates and the aggregates' members)
      * @param  array<int, array<int, bool>>  $portVlans  port_id => [vlan => untagged]
      * @param  array<int, int>  $lagParent  member port_id => aggregate port_id
      * @param  array<int, array<int, string>>  $deviceVlans  device_id => [vlan => name]
+     * @param  array<int, array<string, array{count: int, names?: string[], ports?: int, down?: int}>>  $endDeviceGroups
+     *     device_id => role => the end devices (DeviceRole::END_DEVICES) seen as LLDP/CDP neighbours of the device, drawn
+     *     as one node per device and role instead of one each (their rows are not in $links): a large map has no room
+     *     for them. count: neighbours, names: theirs, ports: the device's ports they are seen on, down: those not up
      */
     public function __construct(
         private array $devices,
@@ -41,6 +56,7 @@ class L2Builder
         private array $lagParent,
         private StpIndex $stp,
         private array $deviceVlans = [],
+        private array $endDeviceGroups = [],
     ) {
     }
 
@@ -133,6 +149,21 @@ class L2Builder
         foreach ($groups as $group) {
             $edges[] = $this->edge('e' . count($edges), $group['from'], $group['to'], $group['links'], $vlan, $collapseLag);
         }
+        $grouped = 0;
+        if ($showUnmanaged) {
+            foreach ($this->endDeviceGroups as $deviceId => $byRole) {
+                if (! isset($this->devices[$deviceId])) {
+                    continue;
+                }
+                ksort($byRole);
+                foreach ($byRole as $role => $group) {
+                    $id = 'g:' . $deviceId . ':' . $role;
+                    $nodes[$id] = $this->groupNode($id, (int) $deviceId, (string) $role, (int) $group['count'], $group['names'] ?? []);
+                    $edges[] = $this->groupEdge('e' . count($edges), (int) $deviceId, $id, (int) ($group['ports'] ?? $group['count']), (int) ($group['down'] ?? 0));
+                    $grouped += (int) $group['count'];
+                }
+            }
+        }
 
         $this->markSuspectedRoots($nodes, $edges, $vlan);
         $this->assignParallelIndexes($edges);
@@ -154,6 +185,7 @@ class L2Builder
             'stats' => [
                 'devices' => count($this->devices),
                 'unmanaged' => count($nodes) - count($this->devices),
+                'grouped' => $grouped,
                 'links' => count($edges),
                 'down' => count(array_filter($edges, fn ($e) => $e['status'] === 'down')),
                 'blocked' => count(array_filter($edges, fn ($e) => $e['blocked'])),
@@ -255,7 +287,7 @@ class L2Builder
 
     /**
      * Normalized link: side a is the reporting (local) device, side b the neighbour; b_device is
-     * null for unmanaged neighbours.
+     * null for unmanaged neighbours; missing is set for baseline links LLDP/CDP no longer reports.
      */
     private static function rawLink(array $link, int $ld, int $lp, int $rd, int $rp): array
     {
@@ -270,6 +302,8 @@ class L2Builder
             'b_platform' => (string) ($link['remote_platform'] ?? ''),
             'b_version' => (string) ($link['remote_version'] ?? ''),
             'protocols' => array_filter([strtolower((string) ($link['protocol'] ?? ''))]),
+            // a baseline link that LLDP/CDP no longer reports: since when ('' if unknown)
+            'missing' => isset($link['missing']) ? (string) $link['missing'] : null,
         ];
     }
 
@@ -342,12 +376,63 @@ class L2Builder
             'device_id' => null,
             'label' => self::shortHost($name),
             'name' => $name,
-            'role' => DeviceRole::fromPlatform($link['b_platform'], $link['b_host']),
+            'role' => DeviceRole::fromNeighbor($link['b_platform'], $link['b_version'], $link['b_host']),
             'status' => 'unknown',
             'platform' => $link['b_platform'],
             'version' => mb_substr($link['b_version'], 0, 200),
             'stp' => null,
             'vlanMember' => null,
+        ];
+    }
+
+    /**
+     * Map node for the end devices of one role seen by a device: "20 phones", with their names (the map's search
+     * finds them).
+     *
+     * @param  string[]  $names
+     */
+    private function groupNode(string $id, int $deviceId, string $role, int $count, array $names): array
+    {
+        [$one, $many] = self::GROUP_LABELS[$role] ?? self::GROUP_LABELS[DeviceRole::OTHER];
+        $label = $count . ' ' . ($count === 1 ? $one : $many);
+        $device = $this->devices[$deviceId];
+
+        return [
+            'id' => $id,
+            'type' => 'unmanaged',
+            'managed' => false,
+            'device_id' => null,
+            'label' => $label,
+            'name' => $label . ' on ' . (($device['display'] ?? '') ?: ($device['hostname'] ?? $deviceId)),
+            'role' => $role,
+            'status' => 'unknown',
+            'platform' => '',
+            'version' => '',
+            'stp' => null,
+            'vlanMember' => null,
+            'group' => ['device_id' => $deviceId, 'count' => $count, 'names' => array_values($names)],
+        ];
+    }
+
+    /**
+     * Edge from a device to a group of end devices, standing for its links on $count ports of which $down are not up:
+     * down when all are, degraded when some are (as a port-channel's edge).
+     */
+    private function groupEdge(string $id, int $deviceId, string $node, int $count, int $down = 0): array
+    {
+        $ports = $count > 0 ? $count . ' port' . ($count === 1 ? '' : 's') : '';
+        $a = ['device_id' => $deviceId, 'managed' => true, 'name' => $ports, 'short' => $ports] + $this->unmanagedEndpoint(['b_name' => '']);
+        $b = $this->unmanagedEndpoint(['b_name' => '']);
+
+        return [
+            'id' => $id, 'from' => 'd:' . $deviceId, 'to' => $node, 'a' => $a, 'b' => $b, 'lag' => null, 'members' => [], 'speed' => 0,
+            'status' => match (true) {
+                $down === 0 => 'up',
+                $down >= $count => 'down',
+                default => 'degraded',
+            },
+            'trunk' => false, 'vlans' => [], 'native_vlan' => null, 'carriesVlan' => null, 'blocked' => false,
+            'util' => null, 'in_bps' => 0, 'out_bps' => 0, 'errors' => 0, 'protocols' => [], 'group' => ['count' => $count, 'down' => $down],
         ];
     }
 
@@ -519,6 +604,10 @@ class L2Builder
                 'b' => $bParent ? $b['short'] : null,
                 'members' => count($members),
                 'up' => $up,
+                // the aggregate of a side is only this link (its counters and status are the link's): not one
+                // split over two switches (MLAG) or one whose other members go elsewhere
+                'a_whole' => $this->wholeAggregate($aParent, array_column($members, 'a_port')),
+                'b_whole' => $this->wholeAggregate($bParent, array_column($members, 'b_port')),
             ] : null,
             'members' => $memberDetails,
             'speed' => $speed,
@@ -534,6 +623,36 @@ class L2Builder
             'errors' => $errors,
             'protocols' => array_values(array_unique($protocols)),
         ];
+    }
+
+    /**
+     * Is this aggregate only this edge ($ports: the edge's member ports on that side)? Every member of it in the
+     * port stack that is up must run in this edge, whether LLDP/CDP reports its cable or not (a neighbor that
+     * speaks only the other protocol). Members that are down do not count: a cable whose link went down with its
+     * LLDP row still belongs to its port-channel. A member whose port row is missing counts as up.
+     *
+     * @param  array<int, ?int>  $ports
+     */
+    private function wholeAggregate(?int $parent, array $ports): bool
+    {
+        $edge = array_flip(array_filter($ports));
+        if (! $parent || ! $edge) {
+            return false;
+        }
+        if ($this->lagMembers === null) {
+            $this->lagMembers = [];
+            foreach ($this->lagParent as $member => $aggregate) {
+                $this->lagMembers[$aggregate][] = (int) $member;
+            }
+        }
+        foreach ($this->lagMembers[$parent] ?? [] as $member) {
+            $oper = $this->ports[$member]['ifOperStatus'] ?? 'up';
+            if (! isset($edge[$member]) && ! in_array($oper, ['down', 'lowerLayerDown', 'notPresent'], true)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

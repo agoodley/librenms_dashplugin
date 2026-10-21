@@ -8,17 +8,18 @@ use PHPUnit\Framework\TestCase;
 
 class L2BuilderTest extends TestCase
 {
-    private function build(array $options = [], ?array $stpPorts = null): array
+    private function build(array $options = [], ?array $stpPorts = null, ?array $links = null, array $groups = []): array
     {
         $stp = new StpIndex(CampusFixture::stpInstances(), $stpPorts ?? CampusFixture::stpPorts(), CampusFixture::lagParent());
         $builder = new L2Builder(
             CampusFixture::devices(),
-            CampusFixture::links(),
+            $links ?? CampusFixture::links(),
             CampusFixture::ports(),
             CampusFixture::portVlans(),
             CampusFixture::lagParent(),
             $stp,
             [1 => [1 => 'default', 10 => 'users', 20 => 'voice'], 2 => [1 => 'default', 10 => 'users', 20 => 'voice'], 3 => [1 => 'default', 10 => 'users'], 4 => [1 => 'default', 20 => 'voice']],
+            $groups,
         );
 
         return $builder->build($options);
@@ -56,6 +57,95 @@ class L2BuilderTest extends TestCase
         $phone = array_values(array_filter($result['nodes'], fn ($n) => $n['type'] === 'unmanaged'));
         $this->assertCount(1, $phone);
         $this->assertSame('phone', $phone[0]['role']);
+    }
+
+    public function testEndDevicesOfALargeMapAreGroupedPerSwitchAndKind(): void
+    {
+        // the phone's row is not among the links: the service noted it and the like (TopologyService::l2())
+        $links = array_values(array_filter(CampusFixture::links(), fn (array $link) => ! empty($link['remote_device_id'])));
+        $names = array_map(fn ($i) => sprintf('SEP%012d', $i), range(1, 25));
+        $groups = [3 => [
+            'phone' => ['count' => 30, 'names' => $names, 'ports' => 28, 'down' => 3],
+            'wireless' => ['count' => 1, 'names' => ['ap-1'], 'ports' => 1, 'down' => 1],
+            'server' => ['count' => 2, 'names' => ['esx1', 'esx2'], 'ports' => 2, 'down' => 0],
+        ]];
+        $result = $this->build([], null, $links, $groups);
+
+        $phones = array_values(array_filter($result['nodes'], fn ($n) => $n['id'] === 'g:3:phone'));
+        $this->assertCount(1, $phones);
+        $this->assertSame(['30 phones', '30 phones on acc1', 'phone', false], [$phones[0]['label'], $phones[0]['name'], $phones[0]['role'], $phones[0]['managed']]);
+        // every name, for the map's search
+        $this->assertSame(['device_id' => 3, 'count' => 30, 'names' => $names], $phones[0]['group']);
+        $this->assertSame('1 access point', array_values(array_filter($result['nodes'], fn ($n) => $n['id'] === 'g:3:wireless'))[0]['label']);
+
+        // an edge per group, with the status of its ports: degraded when some are not up, down when all are
+        [$edge] = $this->edgeBetween($result, 'd:3', 'g:3:phone');
+        $this->assertSame(['28 ports', null, [], 'degraded', ['count' => 28, 'down' => 3]],
+            [$edge['a']['name'], $edge['b']['port_id'], $edge['members'], $edge['status'], $edge['group']]);
+        $this->assertSame('down', $this->edgeBetween($result, 'd:3', 'g:3:wireless')[0]['status']);
+        $this->assertSame('up', $this->edgeBetween($result, 'd:3', 'g:3:server')[0]['status']);
+        $this->assertSame(33, $result['stats']['grouped']);
+        $this->assertSame(3, $result['stats']['unmanaged'], 'the group nodes');
+
+        $this->assertSame(0, $this->build(['unmanaged' => false], null, $links, $groups)['stats']['grouped'], 'no neighbors, no groups');
+    }
+
+    public function testAggregatesThatAreWhollyTheLinkAreFlagged(): void
+    {
+        [$po] = $this->edgeBetween($this->build(), 'd:1', 'd:2');
+        $this->assertTrue($po['lag']['a_whole']);
+        $this->assertTrue($po['lag']['b_whole']);
+
+        // core1's Po1 also takes the uplink to acc1 (an MLAG member): it is not only the link to core2
+        $lagParent = CampusFixture::lagParent() + [13 => 10];
+        $builder = new L2Builder(CampusFixture::devices(), CampusFixture::links(), CampusFixture::ports(), CampusFixture::portVlans(), $lagParent,
+            new StpIndex(CampusFixture::stpInstances(), CampusFixture::stpPorts(), $lagParent));
+        [$po] = $this->edgeBetween($builder->build(), 'd:1', 'd:2');
+        $this->assertFalse($po['lag']['a_whole']);
+        $this->assertTrue($po['lag']['b_whole']);
+    }
+
+    /**
+     * acc10 (device 10) bundles Te1/1/1-4 (101-104) in Po1 (100). Its links rows only show Te1/1/1-2 to core-a (device
+     * 30): Te1/1/3-4 go to core-b, which speaks CDP while acc10 speaks LLDP. Whether Po1 is only the link to core-a
+     * follows the port stack and the status of the members, not the links rows.
+     */
+    public function testAWholeAggregateCountsTheMembersThatAreUpInThePortStack(): void
+    {
+        $whole = function (array $oper, array $lagParent = [101 => 100, 102 => 100, 103 => 100, 104 => 100], array $missing = []): bool {
+            $devices = [];
+            foreach ([10 => 'acc10', 30 => 'core-a'] as $id => $name) {
+                $devices[$id] = ['device_id' => $id, 'hostname' => $name, 'display' => $name, 'status' => 1, 'disabled' => 0, 'role' => 'switch'];
+            }
+            $ports = [];
+            foreach ([100 => 'Port-channel1', 101 => 'Te1/1/1', 102 => 'Te1/1/2', 103 => 'Te1/1/3', 104 => 'Te1/1/4', 301 => 'Te1/0/1', 302 => 'Te1/0/2'] as $id => $name) {
+                if (! in_array($id, $missing, true)) {
+                    $ports[$id] = ['port_id' => $id, 'device_id' => $id < 300 ? 10 : 30, 'ifIndex' => $id, 'ifName' => $name, 'ifDescr' => $name,
+                        'ifSpeed' => 10000000000, 'ifOperStatus' => $oper[$id] ?? 'up', 'ifAdminStatus' => 'up', 'ifType' => 'ethernetCsmacd'];
+                }
+            }
+            $links = [];
+            foreach ([[101, 301], [102, 302]] as [$local, $remote]) {
+                $links[] = ['local_device_id' => 10, 'local_port_id' => $local, 'remote_device_id' => 30, 'remote_port_id' => $remote,
+                    'remote_hostname' => 'core-a', 'remote_port' => $ports[$remote]['ifName'] ?? '', 'remote_platform' => '', 'remote_version' => '', 'protocol' => 'lldp'];
+            }
+            $map = (new L2Builder($devices, $links, $ports, [], $lagParent, new StpIndex([], [], $lagParent)))->build(['collapseLag' => true]);
+            [$edge] = $this->edgeBetween($map, 'd:10', 'd:30');
+            $this->assertSame('d:10', $edge['from']);
+
+            return $edge['lag']['a_whole'];
+        };
+
+        // the cables to core-a are down, those to core-b up: Po1 is up and carries core-b's traffic
+        $this->assertFalse($whole([101 => 'down', 102 => 'down', 301 => 'down', 302 => 'down']));
+        $this->assertFalse($whole([]), 'Te1/1/3-4 are up: Po1 also goes elsewhere');
+        // members that are down do not count, with or without a links row
+        $this->assertTrue($whole([103 => 'down', 104 => 'lowerLayerDown']));
+        $this->assertTrue($whole([102 => 'down', 103 => 'notPresent', 104 => 'down'], [101 => 100, 102 => 100, 103 => 100, 104 => 100]));
+        // a member without its port row may carry traffic
+        $this->assertFalse($whole([103 => 'down'], [101 => 100, 102 => 100, 103 => 100, 104 => 100], [104]));
+        // only the members of this port-channel count
+        $this->assertTrue($whole([], [101 => 100, 102 => 100, 103 => 105, 104 => 105]));
     }
 
     public function testWithoutLagCollapseMembersAreParallelEdges(): void

@@ -120,9 +120,57 @@ class InterfaceName
 
     /**
      * Does the name look like an aggregate (Port-channel, ae, bond, Bundle-Ether, Eth-Trunk...)?
+     * Sub-interfaces of one (Po1.100, ae0.0) match too: see PortStack::isAggregate().
      */
     public static function isLagName(?string $name): bool
     {
         return (bool) preg_match('/^(port-?channel|po\d|ae\d|bond|lag|trk|bundle-ether|be\d|bagg|eth-trunk|agg)/i', trim((string) $name));
+    }
+
+    /**
+     * Is it a sub-interface or logical unit (Gi0/0.100, ae0.0, Po1.100), named by its parent and a number?
+     */
+    public static function isSubInterface(?string $name): bool
+    {
+        return (bool) preg_match('/\.\d+$/', trim((string) $name));
+    }
+
+    /**
+     * Name of the interface a sub-interface sits on (Gi0/0.100 => Gi0/0), null for other names.
+     */
+    public static function parentName(?string $name): ?string
+    {
+        return preg_match('/^(.+)\.\d+$/', trim((string) $name), $match) ? $match[1] : null;
+    }
+
+    /**
+     * VLAN of a VLAN interface: Vlan30, Vl30, Vlanif30 (Huawei), Vlan-interface30 (Comware), ve 30
+     * (Ruckus, Brocade), irb.30 and vlan.30 (Junos). Null for other names.
+     */
+    public static function vlanInterface(?string $name): ?int
+    {
+        if (! preg_match('/^(?:vl|vlan|vlanif|vlan-interface|ve|irb\.|vlan\.)\s*(\d{1,4})$/i', trim((string) $name), $match)) {
+            return null;
+        }
+
+        return self::vlan((int) $match[1]);
+    }
+
+    /**
+     * Unit number of a sub-interface (Gi0/0.20 => 20, ae0.40 => 40), which is its VLAN by the usual
+     * convention, but not necessarily (encapsulation and vlan-id are configured separately).
+     */
+    public static function subInterfaceUnit(?string $name): ?int
+    {
+        if (! preg_match('#^[a-z][\w/:-]*\.(\d{1,4})$#i', trim((string) $name), $match)) {
+            return null;
+        }
+
+        return self::vlan((int) $match[1]);
+    }
+
+    private static function vlan(int $vlan): ?int
+    {
+        return $vlan >= 1 && $vlan <= 4094 ? $vlan : null;
     }
 }

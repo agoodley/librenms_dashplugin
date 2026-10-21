@@ -36,10 +36,7 @@ class RedundancyAnalyzer
     private const CATEGORY_ORDER = ['outages', 'lost', 'fake', 'spof'];
 
     /** Roles that make up the network: the findings are about cutting these off. */
-    public const NETWORK_ROLES = [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER, DeviceRole::FIREWALL];
-
-    /** Unmanaged neighbours that do not forward between their links, by the role of their LLDP/CDP platform. */
-    private const END_ROLES = [DeviceRole::SERVER, DeviceRole::PHONE, DeviceRole::WIRELESS];
+    public const NETWORK_ROLES = DeviceRole::NETWORK;
 
     /** Roles whose interface names tell the stack member or slot (other devices name ports by type, e.g. NetScaler 10/1). */
     private const NAMED_UNIT_ROLES = [DeviceRole::SWITCH, DeviceRole::L3SWITCH, DeviceRole::ROUTER];
@@ -113,6 +110,9 @@ class RedundancyAnalyzer
      *                                                                                    (even without units) does not use interface names
      * @param  array<int, int>  $outageSince  device_id => unix time the current outage started
      * @param  array<int, int>  $stpPriority  device_id => bridge priority of the default spanning tree instance
+     * @param  array<int, int[]>  $leaves  device_id => ports of unmanaged neighbours seen on that one port only, which
+     *                                     the caller left out of $links (the rows of thousands of phones); build() finds
+     *                                     the others in $links
      */
     public function __construct(
         private array $devices,
@@ -124,7 +124,13 @@ class RedundancyAnalyzer
         private array $entityUnits = [],
         private array $outageSince = [],
         private array $stpPriority = [],
+        array $leaves = [],
     ) {
+        foreach ($leaves as $deviceId => $portIds) {
+            if (isset($this->devices[(int) $deviceId])) {
+                $this->leaves['d:' . (int) $deviceId] = array_map('intval', $portIds);
+            }
+        }
         $this->scope = array_fill_keys(array_map('intval', $scope), true);
         $this->disabled = array_fill_keys(array_map('strtolower', $settings->list('redundancy_disabled_checks')), true);
         $this->build();
@@ -246,6 +252,68 @@ class RedundancyAnalyzer
     }
 
     /**
+     * Nodes of the graphs and the devices they stand for: node id => device_id (null for unmanaged
+     * neighbours), name, role, managed, network, up; the copies of an end device (see build()) also
+     * carry 'of', the node id of their device, which is kept here for its name but is no graph node.
+     *
+     * @return array<string, array>
+     */
+    public function nodes(): array
+    {
+        return $this->nodes;
+    }
+
+    /**
+     * Copy of the design graph (every device and link) or of the current one (only what is up),
+     * both with the CORE node joined to the core devices.
+     */
+    public function graph(bool $current = false): Graph
+    {
+        return clone ($current ? $this->current : $this->design);
+    }
+
+    /**
+     * End devices with several links => their copies in the graphs (one per link).
+     *
+     * @return array<string, string[]>
+     */
+    public function copies(): array
+    {
+        return $this->copies;
+    }
+
+    /**
+     * Unmanaged neighbours that hang off a node alone (phones, PCs, access points): node => their local
+     * ports; they are no graph nodes and go down with that node.
+     *
+     * @return array<string, int[]>
+     */
+    public function leaves(): array
+    {
+        return $this->leaves;
+    }
+
+    /**
+     * Part of the network (connected component of the design graph) of every graph node.
+     *
+     * @return array<string, int>
+     */
+    public function parts(): array
+    {
+        return $this->part;
+    }
+
+    /**
+     * Bridge priority of the default spanning tree instance of the devices that report one.
+     *
+     * @return array<int, int> device_id => priority
+     */
+    public function bridgePriorities(): array
+    {
+        return $this->stpPriority;
+    }
+
+    /**
      * What the given failures cut off the core now, on top of what is down already: the failure
      * simulation of the map, computed on the whole network. References: node ids of the map
      * (d:<device_id>, u:<neighbour>), p:<port_id> for a link by one of its ports (a port-channel
@@ -305,7 +373,7 @@ class RedundancyAnalyzer
             }
             foreach ($edge['members'] as $member) {
                 if (! isset($ports[(int) $member['a_port']]) && ! isset($ports[(int) $member['b_port']])
-                    && L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port']))) {
+                    && $this->memberUp($member)) {
                     return false;
                 }
             }
@@ -530,7 +598,7 @@ class RedundancyAnalyzer
                 $this->nodes[$to] ??= [
                     'device_id' => null,
                     'name' => $link['b_host'] !== '' ? $link['b_host'] : 'unknown neighbor of ' . $this->nodes[$from]['name'] . ' ' . $this->portName((int) $link['a_port']),
-                    'role' => DeviceRole::fromPlatform($link['b_platform'], $link['b_host']),
+                    'role' => DeviceRole::fromNeighbor($link['b_platform'], $link['b_version'], $link['b_host']),
                     'managed' => false,
                     'network' => false,
                     'up' => true,
@@ -622,7 +690,7 @@ class RedundancyAnalyzer
         foreach ($groups as $key => $group) {
             $up = 0;
             foreach ($group['members'] as $member) {
-                $up += L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port'])) ? 1 : 0;
+                $up += $this->memberUp($member) ? 1 : 0;
             }
             $this->edges[$key] = ['key' => $key, 'from' => $group['from'], 'to' => $group['to'], 'members' => $group['members'], 'up' => $up];
             $this->design->addEdge($group['from'], $group['to'], $key);
@@ -668,7 +736,7 @@ class RedundancyAnalyzer
             return false;
         }
 
-        return $node['managed'] ? $node['network'] : ! in_array($node['role'], self::END_ROLES, true);
+        return $node['managed'] ? $node['network'] : ! DeviceRole::isEndDevice($node['role']);
     }
 
     /**
@@ -717,7 +785,7 @@ class RedundancyAnalyzer
      * Unmanaged neighbour of a links row: its short name, or the local port for missing and
      * factory default names (as L2Builder::unmanagedNodeId() separates them).
      */
-    private static function neighborKey(array $link): string
+    public static function neighborKey(array $link): string
     {
         $host = strtolower(trim((string) ($link['remote_hostname'] ?? '')));
         $short = L2Builder::shortHost($host);
@@ -802,8 +870,9 @@ class RedundancyAnalyzer
                 'single point of failure: ' . $name . ($this->nodes[$node]['managed'] ? '' : ' (unmanaged neighbor)'),
                 ($chosen ? "$name is the only core device of this part of the network. " : '')
                 . match (true) {
-                    $tie => "If $name fails, the network splits into $pieces parts of the same size and " . $this->lostText($lost, $node) . ' lose their connection: ',
-                    $onlyCore => "If $name fails, the network splits into $pieces parts and " . $this->lostText($lost, $node) . ' are cut off from the largest of them: ',
+                    $tie => "If $name fails, the network splits into $pieces parts of the same size and " . $this->lostText($lost, $node) . ' ' . $this->lose($lost, $node) . ' connection: ',
+                    $onlyCore => "If $name fails, the network splits into $pieces parts and " . $this->lostText($lost, $node)
+                        . ($this->lostCount($lost, $node) === 1 ? ' is' : ' are') . ' cut off from the largest of them: ',
                     default => "If $name fails, " . $this->lostText($lost, $node) . ' ' . $this->lose($lost, $node) . ' path to the core: ',
                 }
                 . $this->nameList($lost) . '.',
@@ -1130,14 +1199,18 @@ class RedundancyAnalyzer
             $named = array_values(array_filter($exposed, fn ($n) => isset($group['ends'][$n]))) ?: $exposed;
             $behind = array_values(array_diff($exposed, $named));
             $plural = count(array_filter($named, fn ($n) => $this->nodes[$n]['managed'])) > 1;
+            $namedIds = array_values(array_filter(array_map(fn ($n) => $this->nodes[$n]['device_id'] ?? null, $named)));
             $this->add(new Finding(
                 Finding::WARNING, 'redundancy_lost',
                 'redundancy lost: ' . $this->nameList($named, 3),
                 $this->nameList($named) . ($plural ? ' normally have' : ' normally has') . ' a second path to the core, but it is down: '
                 . implode('; ', array_slice($group['broken'], 0, 10)) . '. Single points of failure now: ' . implode('; ', array_unique($group['points']))
                 . ($behind ? '. Behind ' . ($plural ? 'them' : 'it') . ': ' . $this->nameList($behind) : '') . '.',
-                'Restore the link or device that is down. LibreNMS removes links that LLDP/CDP no longer sees at the next discovery, '
-                . 'so this finding disappears then even if the link stays down.',
+                empty($group['missing'])
+                    ? 'Restore the link or device that is down. LibreNMS removes links that LLDP/CDP no longer sees at the next discovery, '
+                        . 'so this finding disappears then even if the link stays down, unless a baseline is saved on the Topology Changes page.'
+                    : 'Restore the link. If it was removed on purpose, an admin accepts that on the Topology Changes page: '
+                        . 'plugin/topology/changes' . ($namedIds ? '?device=' . $namedIds[0] : '') . '.',
                 null, array_merge(array_map(fn ($n) => $this->nodes[$n]['device_id'], $exposed), $group['devices']), $group['ports'],
             ));
         }
@@ -1220,6 +1293,7 @@ class RedundancyAnalyzer
                     $group['devices'][] = $this->nodes[$down]['device_id'];
                 } else {
                     $group['broken'][] = $this->edgeLabel($edge, $x) . ' (' . $this->edgeState($edge) . ')';
+                    $group['missing'] = ($group['missing'] ?? false) || $this->missingSince($edge) !== null;
                     $group['devices'] = array_merge($group['devices'], $this->edgeDevices($edge));
                     $group['ports'] = array_merge($group['ports'], $this->edgePorts($edge));
                 }
@@ -1246,7 +1320,7 @@ class RedundancyAnalyzer
         $down = [];
         $ports = [];
         foreach ($edge['members'] as $member) {
-            if (! L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port']))) {
+            if (! $this->memberUp($member)) {
                 $down[] = $member['a_port']
                     ? $this->nodeName($edge['from']) . ' ' . $this->portName((int) $member['a_port'])
                     : $this->nodeName($edge['to']) . ' ' . $this->portName((int) $member['b_port']);
@@ -1614,8 +1688,17 @@ class RedundancyAnalyzer
      */
     private function lose(array $nodes, ?string $failed = null): string
     {
-        return count($nodes) + $this->unmanagedCount($nodes, $failed) - count(array_filter($nodes, fn ($n) => ! $this->nodes[$n]['managed'])) === 1
-            ? 'loses its' : 'lose their';
+        return $this->lostCount($nodes, $failed) === 1 ? 'loses its' : 'lose their';
+    }
+
+    /**
+     * Number of devices lostText() counts: monitored devices and unmanaged neighbours.
+     *
+     * @param  array<int, string>  $nodes
+     */
+    private function lostCount(array $nodes, ?string $failed = null): int
+    {
+        return count(array_filter($nodes, fn ($n) => $this->nodes[$n]['managed'])) + $this->unmanagedCount($nodes, $failed);
     }
 
     /**
@@ -1754,6 +1837,11 @@ class RedundancyAnalyzer
      */
     private function edgeState(array $edge): string
     {
+        $since = $this->missingSince($edge);
+        if ($since !== null) {
+            return 'missing' . ($since !== '' ? ' since ' . substr($since, 0, 16) : '') . ': in the baseline, no longer reported by LLDP/CDP';
+        }
+
         foreach ([$edge['from'], $edge['to']] as $node) {
             if (! $this->nodes[$node]['up']) {
                 return $this->nodeName($node) . ' is down';
@@ -1766,6 +1854,26 @@ class RedundancyAnalyzer
         }
 
         return 'link down';
+    }
+
+    /**
+     * Since when a link of the baseline is no longer reported by LLDP/CDP ('' if unknown), null
+     * for a link LLDP/CDP reports.
+     */
+    private function missingSince(array $edge): ?string
+    {
+        $missing = array_column($edge['members'], 'missing');
+
+        return count(array_filter($missing, fn ($since) => $since !== null)) === count($edge['members']) ? max($missing) : null;
+    }
+
+    /**
+     * Is a cable of a link up? A baseline link that LLDP/CDP no longer reports is down whatever its
+     * ports say (they may be up and cabled elsewhere).
+     */
+    private function memberUp(array $member): bool
+    {
+        return ($member['missing'] ?? null) === null && L2Builder::isUp($this->port($member['a_port']), $this->port($member['b_port']));
     }
 
     /**

@@ -21,6 +21,22 @@ class PluginSettings
         'stp_max_diameter' => '7',
         'stp_preferred_roots' => '',
         'stp_event_days' => '7',
+        'stp_disabled_checks' => '',
+        'stp_storm_pps' => '1000',
+        'stp_storm_percent' => '20',
+        'stp_syslog_hours' => '24',
+        'stp_syslog_loop_detected' => 'loop[ _-]?back[ _-]?detected|loopback error|loops?[ _-]?detect|detected loop',
+        'stp_syslog_udld' => 'udld|unidirectional link',
+        'stp_syslog_bpdu_guard' => 'bpdu[ _-]?guard|bpdu[ _-]?block|bpdu[ _-]?protection',
+        'stp_syslog_loop_guard' => 'loop[ _-]?guard|loop[ _-]protect[ _]in[ _]effect',
+        'stp_syslog_root_guard' => 'root[ _-]?guard|root[ _-]protect',
+        'stp_syslog_storm_control' => 'storm[ _-]?control|st_ctl|packet storm|broadcast storm|multicast storm|excessive[ _-]?(broad|multi)casts?',
+        'stp_syslog_mac_flapping' => 'mac[ _-]?flap|mac[ _-]?move|host[ _-]flapping|flapping between|has moved from',
+        'stp_syslog_native_vlan' => 'native[ _-]?vlan[ _-]?mismatch|pvid[ _-]?(err|mismatch|inc)|block[ _-]pvid|inconsistent peer vlan|port vlan id mismatch',
+        'stp_syslog_duplex' => 'duplex[ _-]?mismatch',
+        'stp_syslog_err_disabled' => 'err[ _-]?disable|error[ _-]?disabled|disabled due to',
+        'stp_syslog_ignore' => 'logged command|CFGLOG_LOGGEDCMD|CONFIG_I\b|configured from|\bUI_(CMDLINE|COMMIT|CFG_AUDIT|LOAD|NETCONF)|\bcommand\s*[:=\']|\bcmd='
+            . '|_UNBLOCK|UNBLOCK_|ERR_?RECOVER|ERRDIS(ABLE)?_RECOVER|_CLEARED\b|BELOW_THRESHOLD|RE_ENABLE',
         'links_error_threshold' => '10',
         'links_discard_percent' => '1',
         'links_lag_imbalance' => '40',
@@ -30,6 +46,23 @@ class PluginSettings
         'redundancy_core' => '',
         'redundancy_warn_devices' => '2',
         'redundancy_disabled_checks' => '',
+        'routing_bgp_reset_hours' => '24',
+        'routing_prefix_warn_percent' => '80',
+        'routing_ignore_addresses' => '',
+        'routing_disabled_checks' => '',
+        'hosts_dns' => '1',
+        'shared_port_macs' => '4',
+        'coverage_disabled_checks' => '',
+        'history_enabled' => '1',
+        'history_interval' => '60',
+        'history_retention_days' => '90',
+        'history_checks' => 'stp links redundancy routing',
+        'history_eventlog_severity' => 'warning',
+        'history_eventlog_skip' => 'link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent multicast_storm bgp_recent_reset ip_duplicate:info',
+        'rollout_batch_size' => '0',
+        'dependencies_outage_days' => '30',
+        'path_util_percent' => '80',
+        'path_route_rows' => '500000',
     ];
 
     /** @var array<string, string> */
@@ -51,7 +84,10 @@ class PluginSettings
         $values = self::DEFAULTS;
         foreach (self::DEFAULTS as $key => $default) {
             if (array_key_exists($key, $stored) && $stored[$key] !== null) {
-                $values[$key] = trim((string) $stored[$key]);
+                // a group of checkboxes (settings[key][]) is stored as a list
+                $values[$key] = is_array($stored[$key])
+                    ? implode(' ', array_filter(array_map(fn ($v) => trim((string) $v), $stored[$key]), fn ($v) => $v !== ''))
+                    : trim((string) $stored[$key]);
             }
         }
 
@@ -75,6 +111,17 @@ class PluginSettings
         $int = is_numeric($value) ? (int) $value : (int) (self::DEFAULTS[$key] ?? 0);
 
         return max($min, min($max, $int));
+    }
+
+    /**
+     * MAC addresses on an access port without LLDP/CDP neighbor from which the coverage report and the
+     * host locator call it a probable hub or unmanaged switch; 0 switches that off, 1 counts as 2.
+     */
+    public function sharedPortMacs(): int
+    {
+        $value = $this->int('shared_port_macs', 0, 1000000);
+
+        return $value === 0 ? 0 : max(2, $value);
     }
 
     /**

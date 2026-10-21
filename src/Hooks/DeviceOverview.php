@@ -10,12 +10,12 @@ use Illuminate\Support\Facades\Log;
 use LibreNMS\Interfaces\Plugins\Hooks\DeviceOverviewHook;
 
 /**
- * Topology / spanning tree panel on the device overview page.
+ * Topology panel on the device overview page: neighbors, spanning tree state, routing, and links to the plugin's pages.
  */
 class DeviceOverview implements DeviceOverviewHook
 {
     /**
-     * Shown on every device; the panel hides itself when the device has no neighbours or STP data.
+     * Shown on every device; the panel hides itself when the device has no neighbours, STP or routing data.
      */
     public function authorize(): bool
     {
@@ -34,10 +34,12 @@ class DeviceOverview implements DeviceOverviewHook
         // LibreNMS disables a plugin whose hook throws, and the view is rendered later inside the
         // device page: render it here so no error can escape
         try {
-            $service = new TopologyService(new TopologyRepository(auth()->user()), new PluginSettings($settings));
+            $settings = new PluginSettings($settings);
+            $service = new TopologyService(new TopologyRepository(auth()->user()), $settings);
             $view = view("$pluginName::device-overview", [
                 'device' => $device,
                 'summary' => $service->deviceSummary((int) $device->device_id),
+                'history' => $settings->bool('history_enabled'),
             ]);
             $view->render();
 
@@ -45,7 +47,7 @@ class DeviceOverview implements DeviceOverviewHook
         } catch (\Throwable $e) {
             Log::error('topology plugin: device overview failed: ' . $e->getMessage());
 
-            return view("$pluginName::device-overview", ['device' => $device, 'summary' => null]);
+            return view("$pluginName::device-overview", ['device' => $device, 'summary' => null, 'history' => false]);
         }
     }
 }

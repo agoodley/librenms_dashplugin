@@ -79,11 +79,7 @@
             }
         @endphp
         <div class="topo-cards">
-            <div class="topo-card topo-{{ $summary['status'] }}">
-                <h4>Health</h4>
-                <div class="topo-card-value"><span class="topo-sev topo-sev-{{ $summary['status'] }}" style="font-size: 16px">{{ $summary['status'] }}</span></div>
-                <p>{{ $summary['findings']['critical'] }} critical, {{ $summary['findings']['warning'] }} warnings, {{ $summary['findings']['info'] }} info</p>
-            </div>
+            @include('topology::partials.health-card', ['summary' => $summary])
             <div class="topo-card topo-info">
                 <h4>Core</h4>
                 <div class="topo-card-value" style="font-size: 16px; line-height: 31px">
@@ -139,7 +135,7 @@
                                         <a href="{{ $deviceUrl($deviceId) }}">{{ $name($deviceId) }}</a>@if(! $loop->last), @endif
                                     @endforeach
                                 @endif
-                                @if($outage['unmanaged'])<br><small class="text-muted">and {{ $outage['unmanaged'] }} unmanaged neighbor(s)</small>@endif
+                                @if($outage['unmanaged'])<br><small class="text-muted">and {{ \Agoodley\LibrenmsTopology\Support\Text::count($outage['unmanaged'], 'unmanaged neighbor') }}</small>@endif
                                 @if(! $outage['behind'] && ! $outage['shared'] && ! $outage['isolated'] && ! $outage['unmanaged'])<span class="text-muted">-</span>@endif
                             </td>
                             <td><a href="{{ $mapUrl($outage['device_id']) }}" title="Show on the L2 map"><i class="fa fa-sitemap"></i></a></td>
@@ -160,6 +156,7 @@
                         <td><span class="topo-sev topo-sev-{{ $finding['severity'] }}">{{ $finding['severity'] }}</span></td>
                         <td class="topo-wrap">
                             <strong>{{ ucfirst($finding['title']) }}</strong>
+                            @include('topology::partials.finding-age')
                             @if($finding['devices'])
                                 <a href="{{ $mapUrl($finding['devices'][0]) }}" title="Show on the L2 map"><i class="fa fa-sitemap"></i></a>
                             @endif
@@ -226,7 +223,8 @@
         <p class="text-muted" style="font-size: 12px">
             Every device should keep a path to the core: {{ $coreText ?: 'none found' }}. Change it with <i>Core devices</i> in the plugin settings.
             Paths are followed through all devices you can see, across LLDP/CDP links (port-channels count as one link).
-            LibreNMS forgets links that LLDP/CDP no longer sees at the next discovery, so links that are down for longer are missing here.
+            LibreNMS forgets links that LLDP/CDP no longer sees at the next discovery, so links that are down for longer are missing here,
+            unless a baseline is saved on the <a href="{{ route('topology.changes') }}">Topology Changes</a> page: a baseline link that LLDP/CDP no longer reports counts as down.
         </p>
     @endif
 </div>
