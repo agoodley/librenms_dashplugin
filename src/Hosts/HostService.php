@@ -632,7 +632,10 @@ class HostService
     /**
      * Does the device route in one of the VLANs or subnets? It needs an interface in one of the VLANs (Vlan20, irb.20) or
      * an address whose subnet holds one of the addresses, and to be a router: a switch has its management address in a
-     * VLAN too. A router has two or more routed IPv4 interfaces or OSPF / BGP, as the maps tell routers (roleFacts).
+     * VLAN too. A router has two or more routed IPv4 interfaces or OSPF / BGP, as the maps tell routers
+     * (TopologyRepository::roleFacts()), except that the addresses of deleted ports count here (decided in the host
+     * locator's review) and not there: a device whose second routed interface is on a deleted port routes for the host
+     * locator, but without OSPF / BGP it is no router on the maps.
      *
      * @param  int[]  $vlans
      * @param  string[]  $ips

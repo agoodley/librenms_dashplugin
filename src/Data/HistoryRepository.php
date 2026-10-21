@@ -219,7 +219,7 @@ class HistoryRepository extends ScopedRepository
 
         $owners = [];
         $wanted = array_flip($ids);
-        if (Schema::hasTable('ipv4_addresses')) {
+        if ($this->allowsTable('ipv4_addresses') && Schema::hasTable('ipv4_addresses')) {
             foreach (array_chunk($v4, 1000) as $chunk) {
                 foreach (DB::table('ipv4_addresses')->join('ports', 'ports.port_id', '=', 'ipv4_addresses.port_id')
                     ->whereIn('ipv4_addresses.ipv4_address', $chunk)->get(['ipv4_addresses.ipv4_address as address', 'ports.device_id']) as $row) {
@@ -229,7 +229,7 @@ class HistoryRepository extends ScopedRepository
                 }
             }
         }
-        if (Schema::hasTable('ipv6_addresses')) {
+        if ($this->allowsTable('ipv6_addresses') && Schema::hasTable('ipv6_addresses')) {
             foreach (array_chunk($v6, 1000) as $chunk) {
                 foreach (DB::table('ipv6_addresses')->join('ports', 'ports.port_id', '=', 'ipv6_addresses.port_id')
                     ->where(fn (Builder $q) => $q->whereIn('ipv6_addresses.ipv6_compressed', $chunk)->orWhereIn('ipv6_addresses.ipv6_address', $chunk))

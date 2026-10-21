@@ -337,7 +337,7 @@ it failed). Each list stops at 500 rows (the most important first) and says how 
 
 ## Tools
 
-*Overview → Plugins → Topology tools*: Host Locator, Rollout Planner and Device Dependencies.
+*Overview → Plugins → Topology tools*: Host Locator, Path Trace, Rollout Planner and Device Dependencies.
 
 ### Host locator and port tab
 
@@ -391,6 +391,53 @@ link each) and its 802.1X / MAB sessions.
 ![Host locator](docs/images/host-locator.png)
 
 ![Port tab](docs/images/port-tab.png)
+
+### Path trace
+
+*Which way does traffic from A to B go, and is anything on the way?* Under **Overview → Plugins → Topology tools → Path Trace** enter both ends: an IP
+or MAC address, a hostname or the name of a device in LibreNMS. Hosts are located with the host locator (their switch
+port and VLAN), an address of a device's interface is that device and interface (`path?a_device=12&a_port=345` gives a
+device and port by id). The page lists every hop with the ports it comes in and goes out by: speed, utilization in and
+out, errors, duplex, spanning tree state and role, port-channel members, the router interface and address the traffic
+uses, and how the router forwards it.
+
+* **Within a subnet** (or a VLAN, for ends without an IP address) the path follows the LLDP/CDP links whose ports are up,
+  carry the VLAN and forward in the spanning tree instance of that VLAN (PVST: its own instance, else the common one), so
+  a blocked uplink is avoided and a different VLAN can take another way. A port-channel is one hop. Only switches pass
+  frames on: a router, firewall or server is never a hop in the middle. Where ports have no spanning tree data, or a
+  port-channel spans a switch pair (MLAG / vPC), several paths of the same length remain: the page says so and shows the
+  one with ports known to forward, then the faster links.
+* **Between subnets** the path goes from A's gateway (the router with A's subnet connected, preferably the one with A's
+  ARP entry) router by router: each looks up B's address in its route table in LibreNMS and its connected subnets
+  (longest prefix, in the VRF of the interface the traffic arrives on; an interface that is down does not count, nor a
+  route over it; equal cost next hops are listed and the path follows the lowest), and the next hop leads to the router
+  that owns that address, until a router has B's subnet connected. An IPv6 link-local next hop is the router on the
+  route's interface (the one with that address, or the router LLDP/CDP or a shared subnet shows on that link); a
+  recursive one (iBGP from a loopback, an MPLS VPN toward the far PE) is reached through the router's own route toward
+  it, and the routers after it route B themselves when they have a route to it, else forward toward that next hop. When
+  several devices have the next hop's address (overlapping VRF subnets, anycast gateways), the one on the egress link
+  counts: its LLDP/CDP neighbor, else the one on its subnet; else the page says it cannot tell and goes on at the first
+  whose own route does not lead back, and what it finds after such a guess (or an estimate) is a warning, not critical.
+  The switches between two routers, and between the last router and B, are the Layer 2 path in the VLAN of the router
+  interfaces (an SVI or a sub-interface: its parent port).
+* A router without current routes in LibreNMS is crossed by an **estimate**: the first step of the shortest way, over
+  its OSPF / BGP neighbors and the subnets it shares with other routers (never back to a router already on the path),
+  toward a router with B's subnet connected. The estimate says why: the `route` discovery module is off (the default),
+  its routes were not read again at its last discovery (the module was turned off, or it has more routes than
+  LibreNMS reads of a device), it has none in that VRF, the route table is larger than a trace reads, the routes toward
+  that address were not read (a trace reads the route table toward 6 addresses at most), or your LibreNMS role may not
+  view routes.
+* **Problems on the path** are listed with a fix: ports down, half duplex, interface errors and discards (the link
+  diagnostics' thresholds), links at 80 % or more (*Busy link*, critical from 95 %), port-channels missing members, no
+  route or a null route toward B, a routing loop (only "path unknown" when an estimated hop is part of it), no
+  forwarding path in the VLAN (with the ports that stop it on the shortest chains of links), and a next hop that is no
+  device you can see, after which the path resumes at the router with B's subnet connected when there is one (the
+  routers between are not known, so the path counts as incomplete). The summary names the slowest link and the
+  busiest port; every routed hop says when its routes were read.
+* **Show on the L2 map** opens the map around the path with its devices framed and its links highlighted
+  (`l2?...&path=d:12,d:7&path_ports=345:678`). A path across a device you may not see is shown only up to it.
+
+![Path trace](docs/images/path-trace.png)
 
 ### Rollout planner
 
@@ -628,16 +675,18 @@ Custom maps the plugin made are LibreNMS' own: they stay either way.
 * **Host locator** links are shareable: `hosts?q=10.10.10.55`, and `l2?device=7&host=d4bed9010203` opens the L2 map
   around device 7 with that host drawn next to the switch it is plugged into (the switch has to be on the map). On a port
   page, *Plugins* → *Locate* on a MAC finds where that host really is when the port is an uplink.
+* **Path trace** links are shareable too: `path?a=10.10.10.55&b=10.20.30.40`; the ⇄ button traces the way back, which
+  can differ (asymmetric routing, a different gateway).
 * Give the locations a latitude and longitude (LibreNMS can look them up from the address) and the site map can lay
   the network out geographically; the first visit uses that layout.
 * `plugin/topology/api/l2`, `api/l3`, `api/sites`, `api/stp`, `api/links`, `api/routing`, `api/redundancy`,
   `api/coverage`, `api/rollout`, `api/dependencies` and `api/changes` return the same data as JSON (same query
   parameters as the pages, e.g. `api/stp?vlan=30&group=2`, `api/links?device=12`, `api/routing?vrf=PROD`,
   `api/changes?window=7d` or `api/changes?from=2026-10-01&to=2026-10-07`) for automation, `api/hosts?q=...` the host
-  locator's answer and `api/views` the saved views (`api/l2?view=12` adds a view's positions). `api/coverage` cuts each
-  list at the same 500 rows as the page and returns the full counts as `findings_total`, `neighbors_total`,
-  `devices_total` and `ports_total`: narrow it with `device`, `group` or `location` for the rest. Phones and servers
-  among the neighbors are only counted, in `summary.other_neighbors`.
+  locator's answer, `api/path?a=...&b=...` the path trace and `api/views` the saved views (`api/l2?view=12` adds a
+  view's positions). `api/coverage` cuts each list at the same 500 rows as the page and returns the full counts as
+  `findings_total`, `neighbors_total`, `devices_total` and `ports_total`: narrow it with `device`, `group` or `location`
+  for the rest. Phones and servers among the neighbors are only counted, in `summary.other_neighbors`.
 
 ## Settings
 
@@ -673,6 +722,8 @@ Custom maps the plugin made are LibreNMS' own: they stay either way.
 | DNS lookups | on | hostnames that are not LibreNMS devices are resolved with the server's resolver (`/usr/bin/getent` or `/bin/getent`) in a subprocess stopped after 2 seconds, 4 seconds per search; answers and failures are cached for 5 minutes, 20 lookups per user and minute |
 | Hub or unmanaged switch from | 4 MAC addresses | an access port with at least this many MAC addresses in its last forwarding table and no LLDP/CDP neighbor that explains them is probably a hub or unmanaged switch: reported by the coverage report and noted by the host locator (0 switches it off; several neighbors on one port are still reported) |
 | Disabled coverage checks | – | check codes or categories (`unmonitored`, `devices`, `ports`), e.g. `not_linked hub_suspected` |
+| Busy link on a path | 80 % | utilization in or out from which a port on a traced path is a finding (critical from 95 %) |
+| Route table limit | 500,000 | a path trace reads LibreNMS' route table (no index but its key: one full read per address it routes toward; the per-router summary is kept for 5 minutes) only while it holds fewer routes than this; larger, every router is crossed by an estimate (0: no limit) |
 | Rollout batch size | 0 | default most devices per rollout batch (0: no limit); the planner page can change it |
 | Outage history | 30 days | outages the derived dependencies are checked against |
 | Record the topology history | on | every *History interval* through the LibreNMS scheduler |
@@ -702,21 +753,42 @@ whoever opens it: its positions are only sent for the nodes of their map, and it
 they may not see.
 
 Besides the devices a user may see, LibreNMS checks a role permission for each kind of data (`port.view` for ports and
-their forwarding, ARP, IPv6 neighbor, 802.1X and spanning tree rows, `link.view` for LLDP/CDP links, `routing.view` for
-OSPF, BGP, IS-IS, MPLS and pseudowires, `outage.view`, `eventlog.view`, `syslog.view` ...), and admins can give custom
-roles only some of them (the built-in user role has them all). The plugin leaves out what a user's role may not view, as
-LibreNMS' own pages do: LLDP/CDP links on the maps and the link based pages, spanning tree data, OSPF / BGP / OSPFv3 /
-IS-IS / IPsec / MPLS / pseudowire data on the L3 map, routing and site pages, outages, STP eventlog entries, forwarding
-/ ARP / IPv6 neighbor tables and 802.1X sessions in the host locator and the port tab (which also need the permission to
-view ports), and the matching facts and findings on the Changes page. Each page says what its user's role hides ("Your
-LibreNMS role may not view BGP sessions"), so an empty answer is not taken for "nothing found"; the JSON API, saved
-views and the file and Custom Map exports hold the same reduced data, and the Saved Views page marks with a lock the
-views whose map leaves something out. The syslog evidence of the spanning tree page, and the findings of its syslog
-based checks on the Changes page, are only shown to users whose role may view syslog (the eventlog entries of the
-spanning tree check name those checks to everyone who may see the device). The background checks run without a user and
-read everything; their eventlog entries name the check only, and an entry capped at the first devices says "and on other
-devices" without a count. Applying device dependencies writes the number of parents to the device's eventlog (the names
-go to the LibreNMS log), as users who may see the device may not see its parents.
+what LibreNMS keeps of them: interface addresses, VLAN memberships, port-channel stacks, statistics, forwarding, ARP,
+IPv6 neighbor, 802.1X and spanning tree rows; `link.view` for LLDP/CDP links, `routing.view` for OSPF, BGP, IS-IS, MPLS
+and pseudowires, `outage.view`, `eventlog.view`, `syslog.view` ...), and admins can give custom roles only some of them
+(the built-in user role has them all). The plugin leaves out what a user's role may not view, as LibreNMS' own pages do:
+LLDP/CDP links on the maps and the link based pages, spanning tree data, OSPF / BGP / OSPFv3 / IS-IS / IPsec / MPLS /
+pseudowire data on the L3 map, routing and site pages, outages, STP eventlog entries, interface addresses on every page
+(with them the subnets of the L3 and site maps, the IP checks of the routing page and the routers of the host locator),
+VLAN memberships, port-channels and statistics of ports, forwarding / ARP / IPv6 neighbor tables and 802.1X sessions in
+the host locator and the port tab (which also need the permission to view ports), and the matching facts and findings on
+the Changes page. Each page says what its user's role hides ("Your LibreNMS role may not view BGP sessions"), so an
+empty answer is not taken for "nothing found"; the JSON API, saved views and the file and Custom Map exports hold the
+same reduced data, and the Saved Views page marks with a lock the views whose map leaves something out. The syslog
+evidence of the spanning tree page, and the findings of its syslog based checks on the Changes page, are only shown to
+users whose role may view syslog (the eventlog entries of the spanning tree check name those checks to everyone who may
+see the device). The background checks run without a user and read everything; their eventlog entries name the check
+only, and an entry capped at the first devices says "and on other devices" without a count. Applying device dependencies
+writes the number of parents to the device's eventlog (the names go to the LibreNMS log), as users who may see the
+device may not see its parents.
+
+VRF names have no role permission of their own in the plugin. LibreNMS shows the VRF of a port to everyone who may view
+the port, and the plugin needs the names to keep apart the subnets and sessions of different VRFs: without them the L3
+map would join subnets of different VRFs into links that do not exist. So they come with the addresses (`port.view`) and
+the sessions (`routing.view`) they belong to, and the VRF filter of the routing page and the scope of a saved view name
+the VRFs of the devices the user may see without asking for either.
+
+LibreNMS 26.10 checks `link.view` or `link.viewAll` for LLDP/CDP links. Its installation creates neither permission,
+only `link.viewAny`, which the link policy does not check; LibreNMS' role editor creates `link.view` and `link.viewAll`
+when a role is saved with *Links → View links* or *View all links*. A custom role without one of them sees no LLDP/CDP
+links, in LibreNMS or in the plugin; the admin, global-read and user roles are not affected.
+
+A path trace only resolves ends the user may see and shows devices out of their sight on the path without name, ports
+or addresses; only admins see the size of the whole route table. It leaves out what the user's role may not view and
+says so on the trace: without LLDP/CDP links a Layer 2 path is "not shown", without `port.view` (which also covers
+interface addresses, ARP and forwarding tables) the hops show no ports, hosts are not located and the routed path is
+not followed, and without `routing.view` every router is crossed by an estimate that says the role may not view routes
+(OSPF / BGP neighbors are then left out of the estimates too).
 
 ## How it works
 
@@ -739,6 +811,11 @@ go to the LibreNMS log), as users who may see the device may not see its parents
   with a device selected, `RoutingService` reads only the addresses its checks need.
 * `src/Hosts/HostLocator.php` – follows a MAC's forwarding table entries to the switch port it is plugged into;
   `HostService` turns IP addresses and names into MACs and builds the port tab.
+* `src/Path/L2Tracer.php`, `src/Path/L3Tracer.php` – the forwarding path in a VLAN's spanning tree instance (and how
+  far its links must be read to be sure of it) and the router by router lookups (with the estimate for routers without
+  current routes); `PathNetwork` reads what a trace needs, `PathEndpoints` resolves the ends (with the host locator),
+  `PathAssembler` joins the Layer 2 segments and the routers, `PathReport` describes the hops and their problems
+  (`Data\PathRepository` reads the links, keeping devices out of the user's sight anonymous, and the route table).
 * `src/Redundancy/RedundancyAnalyzer.php` – single points of failure (cut vertices and bridges toward the core,
   `Support\Graph::cuts()`), fake and lost redundancy and outages; `CoreFinder` picks the core, `PortUnits` reads stack
   members and line cards from the hardware inventory.
@@ -886,6 +963,35 @@ vendor/bin/phpunit
   when none of them has a current one. Whether a session is on a switch behind the one a trail ends at follows the
   LLDP/CDP links of each device once per search, by indexed lookups (the links a device reports, and those reported to
   its ports: a link without a known far port is missed).
+
+**Path trace**
+
+* Path trace query cost: the links are read outward from both ends of each Layer 2 segment, a few devices at a time,
+  until the path found is the shortest one (every path that could be as short is loaded) or one end has nothing left to
+  read; at most 3,000 devices' links per trace. Only the VLAN rows and the spanning tree rows of the traced VLAN on those
+  links are read, and the counters of the ports on the answer. Routing reads what the walk needs: the interfaces of the
+  routers it reaches, the owners of an address and the subnets that hold it (through LibreNMS' networks tables), the
+  neighbors of the routers an estimate looks at (at most 500), and the route table once per address routed toward (the
+  destination, a recursive next hop).
+* The path trace is worked out from what LibreNMS last read, not sent through the network: no live traceroute, so
+  policy routing, ECMP hashing (the path follows the lowest next hop), asymmetric return paths and changes since the last
+  discovery can make the real path differ. Route tables need the `route` discovery module, which LibreNMS skips on
+  routers with more than `routes_max_number` routes (1,000 by default, so not on routers with a full BGP table) and
+  keeps their last table: a table older than its router's last discovery is not used, those routers are estimated. A
+  route whose next hop is no address of a device you can see (an unmonitored router) leaves the devices you can see
+  there; the path resumes at the router with B's subnet connected when there is one, without the routers between. A
+  next hop out of an unnumbered interface is the device LLDP/CDP sees on it. VRFs are followed by name. After a
+  recursive next hop (iBGP, an MPLS VPN) a router with a route to B is taken to route B itself, and one without goes
+  toward that next hop: right for plain IP and for a label switched path through a BGP-free core, but with MPLS a router
+  that also has a route to B still label-switches, and the real path can differ. Gateway redundancy (HSRP / VRRP) is
+  not resolved: the path leaves A's subnet through the router with A's ARP entry. A device you may not see is crossed as
+  "a device you may not see" when the visible devices on both sides report it as their LLDP/CDP neighbor; its ports and
+  name are not shown, and it is assumed to pass frames on. A bridge with a single spanning tree instance in LibreNMS
+  (RSTP, or MSTP, whose other instances LibreNMS does not read) has its states taken for every VLAN, which the page
+  notes. A gateway (the router with an end's subnet connected) and the subnets an estimate crosses are found through
+  LibreNMS' networks tables (ipv4_networks, ipv6_networks), which it fills for every address with a subnet. For an
+  address row without a network the gateway is the router whose interface holds the host's ARP / neighbor entry, and
+  an estimate does not cross that subnet (it still follows OSPF / BGP neighbors).
 
 **Rollout planner and device dependencies**
 

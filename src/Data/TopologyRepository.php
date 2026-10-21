@@ -84,10 +84,13 @@ class TopologyRepository extends ScopedRepository
             $facts[$id]['bridge'] = true;
         }
 
-        foreach (DB::table('ipv4_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
-            ->whereIntegerInRaw('p.device_id', $ids)->where('a.ipv4_prefixlen', '<', 32)
+        // routed interfaces on ports LibreNMS still has (a deleted port no longer routes). HostService::routes() counts the
+        // addresses of deleted ports too, on purpose (decided in the host locator's review): the two can differ for a device
+        // with a deleted routed port
+        foreach ($this->allowsTable('ipv4_addresses') ? DB::table('ipv4_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
+            ->whereIntegerInRaw('p.device_id', $ids)->where('p.deleted', 0)->where('a.ipv4_prefixlen', '<', 32)
             ->groupBy('p.device_id')->selectRaw('p.device_id, COUNT(DISTINCT a.port_id) as c')
-            ->pluck('c', 'device_id') as $id => $count) {
+            ->pluck('c', 'device_id') : [] as $id => $count) {
             $facts[$id] = ($facts[$id] ?? $default);
             $facts[$id]['l3_interfaces'] = (int) $count;
         }
@@ -176,6 +179,9 @@ class TopologyRepository extends ScopedRepository
      */
     public function portDescriptions(array $portIds): iterable
     {
+        if (! $this->allowsTable('ports')) {
+            return;
+        }
         foreach (array_chunk(array_values(array_unique(array_filter(array_map('intval', $portIds)))), 5000) as $chunk) {
             foreach (DB::table('ports')->whereIntegerInRaw('port_id', $chunk)->where('ifAlias', '<>', '')
                 ->select(['port_id', 'ifAlias'])->cursor() as $row) {
@@ -193,6 +199,9 @@ class TopologyRepository extends ScopedRepository
      */
     public function portsNotUp(array $portIds): iterable
     {
+        if (! $this->allowsTable('ports')) {
+            return;
+        }
         foreach (array_chunk(array_values(array_unique(array_filter(array_map('intval', $portIds)))), 5000) as $chunk) {
             foreach (DB::table('ports')->whereIntegerInRaw('port_id', $chunk)->whereNotNull('ifOperStatus')
                 ->whereNotIn('ifOperStatus', ['', 'up'])->select(['port_id'])->cursor() as $row) {
@@ -259,7 +268,7 @@ class TopologyRepository extends ScopedRepository
      */
     public function lagParents(array $ids, bool $strict = false): array
     {
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('ports_stack')) {
             return [];
         }
 
@@ -317,7 +326,7 @@ class TopologyRepository extends ScopedRepository
         if (isset($this->stackPairs[$key])) {
             return $this->stackPairs[$key];
         }
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('ports_stack')) {
             return [];
         }
 
@@ -370,7 +379,7 @@ class TopologyRepository extends ScopedRepository
     public function portVlans(array $portIds): array
     {
         $result = [];
-        foreach (array_chunk(array_values(array_unique($portIds)), 5000) as $chunk) {
+        foreach ($this->allowsTable('ports_vlans') ? array_chunk(array_values(array_unique($portIds)), 5000) : [] as $chunk) {
             foreach (DB::table('ports_vlans')->whereIntegerInRaw('port_id', $chunk)->get(['port_id', 'vlan', 'untagged']) as $row) {
                 $result[(int) $row->port_id][(int) $row->vlan] = (bool) $row->untagged;
             }
@@ -387,7 +396,7 @@ class TopologyRepository extends ScopedRepository
     public function portVlanCount(array $portIds): int
     {
         $count = 0;
-        foreach (array_chunk(array_values(array_unique($portIds)), 5000) as $chunk) {
+        foreach ($this->allowsTable('ports_vlans') ? array_chunk(array_values(array_unique($portIds)), 5000) : [] as $chunk) {
             $count += DB::table('ports_vlans')->whereIntegerInRaw('port_id', $chunk)->count();
         }
 
@@ -405,7 +414,7 @@ class TopologyRepository extends ScopedRepository
      */
     public function activeVlans(array $ids, array $interSwitchPorts): array
     {
-        if (! $ids) {
+        if (! $ids || ! $this->allowsTable('ports_vlans')) {
             return [];
         }
 
@@ -465,7 +474,7 @@ class TopologyRepository extends ScopedRepository
     {
         $result = [];
         try {
-            foreach (array_chunk(array_values(array_unique($portIds)), 5000) as $chunk) {
+            foreach ($this->allowsTable('ports_statistics') ? array_chunk(array_values(array_unique($portIds)), 5000) : [] as $chunk) {
                 foreach (DB::table('ports_statistics')->whereIntegerInRaw('port_id', $chunk)
                     ->get(['port_id', 'ifInDiscards_delta', 'ifOutDiscards_delta', 'ifInNUcastPkts_delta', 'ifOutNUcastPkts_delta']) as $row) {
                     $result[(int) $row->port_id] = (array) $row;
@@ -763,7 +772,7 @@ class TopologyRepository extends ScopedRepository
     public function portsWithIp(array $portIds): array
     {
         $result = [];
-        foreach (array_chunk(array_values(array_unique($portIds)), 5000) as $chunk) {
+        foreach ($this->allowsTable('ipv4_addresses') ? array_chunk(array_values(array_unique($portIds)), 5000) : [] as $chunk) {
             foreach (DB::table('ipv4_addresses')->whereIntegerInRaw('port_id', $chunk)->distinct()->pluck('port_id') as $portId) {
                 $result[(int) $portId] = true;
             }
@@ -779,17 +788,20 @@ class TopologyRepository extends ScopedRepository
      */
     public function addresses(array $ids, bool $ipv6 = false): array
     {
-        if (! $ids) {
+        $ipv4 = $this->allowsTable('ipv4_addresses');
+        $ipv6 = $ipv6 && $this->allowsTable('ipv6_addresses');
+        if (! $ids || (! $ipv4 && ! $ipv6)) {
             return [];
         }
 
+        // VRF names have no role permission of their own here (see the README's Permissions)
         $vrfs = DB::table('vrfs')->whereIntegerInRaw('device_id', $ids)->pluck('vrf_name', 'vrf_id')->all();
         $columns = ['p.device_id', 'p.port_id', 'p.ifName', 'p.ifDescr', 'p.ifAlias', 'p.ifOperStatus', 'p.ifAdminStatus', 'p.ifType', 'p.ifVrf'];
 
         $rows = [];
-        $query = DB::table('ipv4_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
+        $query = $ipv4 ? DB::table('ipv4_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
             ->whereIntegerInRaw('p.device_id', $ids)->where('p.deleted', 0)
-            ->get(array_merge($columns, ['a.ipv4_address as address', 'a.ipv4_prefixlen as prefixlen', 'a.context_name']));
+            ->get(array_merge($columns, ['a.ipv4_address as address', 'a.ipv4_prefixlen as prefixlen', 'a.context_name'])) : [];
         foreach ($query as $row) {
             $rows[] = $this->addressRow((array) $row, $vrfs);
         }
@@ -855,7 +867,7 @@ class TopologyRepository extends ScopedRepository
         return [
             'ospf' => $this->allowsTable('ospf_nbrs') && $check('ospf_nbrs', fn () => DB::table('ospf_nbrs')->where('device_id', $deviceId)->exists()),
             'bgp' => $this->allowsTable('bgpPeers') && $check('bgpPeers', fn () => DB::table('bgpPeers')->where('device_id', $deviceId)->exists()),
-            'routed' => $check('ipv4_addresses', fn () => DB::table('ipv4_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
+            'routed' => $this->allowsTable('ipv4_addresses') && $check('ipv4_addresses', fn () => DB::table('ipv4_addresses as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
                 ->where('p.device_id', $deviceId)->distinct()->limit(2)->pluck('a.port_id')->count() >= 2),
         ];
     }

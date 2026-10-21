@@ -174,6 +174,9 @@ class SiteRepository extends ScopedRepository
         $addresses = [];
         foreach (array_chunk(array_values(array_unique($deviceIds)), self::CHUNK) as $chunk) {
             foreach ([['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen'], ['ipv6_addresses', 'ipv6_compressed', 'ipv6_prefixlen']] as [$table, $address, $prefixlen]) {
+                if (! $this->allowsTable($table)) {
+                    continue;
+                }
                 foreach (DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
                     ->whereIntegerInRaw('p.device_id', $chunk)->where('p.deleted', 0)
                     ->get(['p.device_id', 'p.ifType', 'p.ifName', 'p.ifDescr', 'a.' . $address . ' as address', 'a.' . $prefixlen . ' as prefixlen']) as $row) {
@@ -209,6 +212,9 @@ class SiteRepository extends ScopedRepository
         foreach (count($ids) >= self::SCAN_FROM ? [null] : array_chunk($ids, self::CHUNK) as $chunk) {
             foreach ([['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen', $prefix4, 32], ['ipv6_addresses', 'ipv6_compressed', 'ipv6_prefixlen', $prefix6, 128]]
                 as [$table, $address, $prefixlen, $min, $host]) {
+                if (! $this->allowsTable($table)) {
+                    continue;
+                }
                 $query = DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')->where('p.deleted', 0)
                     ->where('a.' . $prefixlen, '>=', $min)->where('a.' . $prefixlen, '<', $host);
                 if ($chunk !== null) {
@@ -257,7 +263,7 @@ class SiteRepository extends ScopedRepository
         $rows = [];
         foreach ([4 => ['ipv4_addresses', 'ipv4_address', 'ipv4_prefixlen'], 6 => ['ipv6_addresses', 'ipv6_compressed', 'ipv6_prefixlen']]
             as $family => [$table, $address, $prefixlen]) {
-            foreach (array_chunk(array_keys($wanted[$family]), self::CHUNK) as $chunk) {
+            foreach ($this->allowsTable($table) ? array_chunk(array_keys($wanted[$family]), self::CHUNK) : [] as $chunk) {
                 // the address columns are not indexed: comparing bytes rather than collated text makes the scan several times faster
                 foreach (DB::table($table . ' as a')->join('ports as p', 'p.port_id', '=', 'a.port_id')
                     ->whereIn(DB::raw('CAST(a.' . $address . ' AS BINARY)'), $chunk)->where('p.deleted', 0)
