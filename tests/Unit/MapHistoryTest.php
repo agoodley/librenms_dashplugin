@@ -248,6 +248,47 @@ class MapHistoryTest extends TestCase
     }
 
     /**
+     * newsw on core1 Te1/0/2 as an unmanaged neighbour (its period) and once LibreNMS monitors it (its period), with
+     * the events the Changes page reports and the marks: new as an unmanaged neighbour at S1 and monitored from S2,
+     * today's link is new since S0; an unmanaged neighbour at the start, monitored from S1 and its cable pulled at S2,
+     * it is gone, drawn to newsw.
+     *
+     * @return array<string, array{0: array{0: int, 1: ?int}, 1: array{0: int, 1: ?int}, 2: string[], 3: string[]}>
+     */
+    public static function monitoredLater(): array
+    {
+        return [
+            'new, then monitored' => [[self::S1, self::S2], [self::S2, null], ['link_added'], ['{link} link_new S1 New link core1 Te1/0/2 ↔ newsw Gi0/1']],
+            'monitored, then gone' => [[self::S0 - 86400, self::S1], [self::S1, self::S2], ['link_removed'], ['d:1->d:4 link_gone S2 Link gone: core1 Te1/0/2 ↔ newsw Gi0/1']],
+        ];
+    }
+
+    /**
+     * The same cable is two facts, the link to an unmanaged neighbour and the link between the two devices, which the
+     * Changes page takes as one: what it reports of one is marked on the other.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('monitoredLater')]
+    public function testANeighbourMonitoredLaterKeepsItsChange(array $unmanagedPeriod, array $monitoredPeriod, array $events, array $marks): void
+    {
+        Carbon::setTestNow(Carbon::createFromTimestamp(self::NOW));
+        $c = new FactCollector(self::NAMES, self::ports());
+        $history = array_merge(self::rows($c->links([self::link(1, 12, 0, null, 'newsw', 'Gi0/1')]), ...$unmanagedPeriod),
+            self::rows($c->links([self::link(1, 12, 4, 41, 'newsw', 'Gi0/1')]), ...$monitoredPeriod));
+        $links = [self::link(3, 31, 2, 21, 'core2', 'Te1/0/1')];
+        if ($monitoredPeriod[1] === null) {
+            $links[] = self::link(1, 12, 4, 41, 'newsw', 'Gi0/1');
+        }
+        $map = (new L2Builder(self::devices(), $links, self::ports(), [], [], new StpIndex))->build();
+
+        $result = (new MapHistory(new FakeMapHistory($history, [self::S0, self::S1, self::S2], self::NAMES), new PluginSettings))->changes('l2', self::S0 + 600, $map);
+
+        $this->assertSame($events, array_column($result['changes']['events'], 'type'));
+        $link = array_column($result['edges'], 'id', 'to')['d:4'] ?? null;
+        $this->assertSame(str_replace('{link}', (string) $link, $marks), self::marks($result, [self::S1 => 'S1', self::S2 => 'S2']), 'as the Changes page reports it');
+        $this->assertSame(0, $result['changes']['unplaced']);
+    }
+
+    /**
      * A link that flapped tells the event of its state now: acc1's uplink went at T1, came back at T2 and went again at
      * T3 (gone since T3, not "back" at T2); a link new at T1, gone at T2 and back at T3 is there since T3.
      */

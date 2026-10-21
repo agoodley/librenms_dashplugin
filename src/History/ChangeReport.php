@@ -47,6 +47,9 @@ class ChangeReport
     /** @var array<int, array> */
     private array $events = [];
 
+    /** @var array<int, array{0: int, 1: int}> the cables whose neighbor LibreNMS started or stopped monitoring: [removed row id, added row id] */
+    private array $cablePairs = [];
+
     /**
      * @param  array<int, true>  $newDevices  device_id => true for devices added to LibreNMS in the window
      * @param  array<string, true>  $priorNodes  unmanaged neighbor node ids already seen before the window
@@ -59,8 +62,10 @@ class ChangeReport
      * @param  array<int, array>  $rows  stored facts (kind, fact_key, device_a, device_b, data as array, initial,
      *                                   first_seen and removed_at as timestamps) that started or ended in the window
      * @return array{events: array<int, array{time: int, type: string, category: string, level: string, text: string, devices: int[],
-     *     facts: int[]}>, counts: array<string, int>} facts: ids of the stored rows the event comes from (the maps' change marks
-     *     find their event by them; HistoryService::changes() leaves them out)
+     *     facts: int[]}>, counts: array<string, int>, same_cables: array<int, array{0: int, 1: int}>} facts: ids of the stored rows the
+     *     event comes from (the maps' change marks find their event by them; HistoryService::changes() leaves them out). same_cables:
+     *     the ids of the removed and the added row of each cable whose neighbor LibreNMS started or stopped monitoring (no event: the
+     *     maps take the two rows as one fact)
      */
     public static function build(array $rows, int $from, int $to, FactText $text, array $newDevices = [], array $priorNodes = []): array
     {
@@ -96,7 +101,7 @@ class ChangeReport
             $counts[$event['type']]++;
         }
 
-        return ['events' => $report->events, 'counts' => $counts];
+        return ['events' => $report->events, 'counts' => $counts, 'same_cables' => $report->cablePairs];
     }
 
     /**
@@ -146,7 +151,8 @@ class ChangeReport
     /**
      * LibreNMS starting or stopping to monitor a neighbor turns the same cable from an unmanaged
      * neighbor into a link between two monitored devices, or back: no change of the network. Such
-     * pairs are left out; the link of a device added to LibreNMS stays for its "added" event.
+     * pairs are left out (and kept as pairs, for the maps); the link of a device added to LibreNMS
+     * stays for its "added" event.
      *
      * @return array{0: array<int, array>, 1: array<int, array>} added and removed link rows left
      */
@@ -168,6 +174,9 @@ class ChangeReport
                     [, $was] = self::splitAt($removed[$index], $port);
                     [, $now] = self::splitAt($row, $port);
                     if (FactCollector::sameNeighbor($was['end'], $now['end'])) {
+                        if (isset($removed[$index]['id'], $row['id'])) {
+                            $this->cablePairs[] = [(int) $removed[$index]['id'], (int) $row['id']];
+                        }
                         unset($removed[$index]);
                         if (! isset($this->newDevices[(int) $row['device_a']]) && ! isset($this->newDevices[(int) $row['device_b']])) {
                             unset($added[$addedIndex]);

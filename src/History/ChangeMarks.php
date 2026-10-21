@@ -14,11 +14,12 @@ use Agoodley\LibrenmsTopology\Topology\L2Builder;
  * start that changed or went (before) and those present now that are new or changed (after), as the Changes
  * page reads them (HistoryService::window()) or as the baseline holds them; a fact in both is no change. Since
  * a time, only the facts of the Changes page's events count, each with all its periods (a fact's data can change
- * without a change of the network, a switch renamed or a port re-created: a period no event names): what the
- * Changes page does not report (a neighbour LibreNMS started or stopped monitoring is the same cable) is not
- * marked either, and a mark tells the event that brought about the state now (a link gone: the last time it went).
- * Root bridges compare per switch and VLAN (Baseline::rootChanges()), blocked ports per port (its device and name)
- * and VLAN; on a map of one VLAN only the spanning tree instance it shows counts.
+ * without a change of the network, a switch renamed or a port re-created: a period no event names), and the cable
+ * to a neighbour LibreNMS started or stopped monitoring is one fact, as the Changes page takes it (the link to the
+ * unmanaged neighbour, then the link between the two devices): what the Changes page does not report is not marked
+ * either, and a mark tells the event that brought about the state now (a link gone: the last time it went). Root
+ * bridges compare per switch and VLAN (Baseline::rootChanges()), blocked ports per port (its device and name) and
+ * VLAN; on a map of one VLAN only the spanning tree instance it shows counts.
  *
  * Names come from FactText, so a device the user may not see is named as on the Changes page; a ghost node's id
  * is a number of this answer, which tells nothing about the device behind it.
@@ -54,13 +55,16 @@ class ChangeMarks
     /** @var array<string, int> "kind|node id|address" => index of an OSPF / BGP edge */
     private array $sessionEdges = [];
 
-    /** @var array<string, array{at: int, event: array}> fact hash => the ChangeReport event that started its latest period with one (at: that start) */
+    /** @var array<string, string> fact hash => its identity, for the facts of a cable whose neighbour LibreNMS started or stopped monitoring */
+    private readonly array $identity;
+
+    /** @var array<string, array{at: int, event: array}> identity => the ChangeReport event that started its latest period with one (at: that start) */
     private array $started = [];
 
-    /** @var array<string, array{at: int, event: array}> fact hash => the ChangeReport event that ended its latest period with one (at: that end) */
+    /** @var array<string, array{at: int, event: array}> identity => the ChangeReport event that ended its latest period with one (at: that end) */
     private array $ended = [];
 
-    /** @var array<string, array> fact hash => its row that ended last: a fact that is gone, as it last was */
+    /** @var array<string, array> identity => its row that ended last: a fact that is gone, as it last was */
     private array $lastEnded = [];
 
     /** @var array<int, array<string, int>> switch => root bridge (MAC) => when the Changes page last saw a root move to it */
@@ -99,10 +103,12 @@ class ChangeMarks
     /**
      * @param  array<int, array>  $events  ChangeReport events with the ids of their rows (facts)
      * @param  array<int, array>  $rows  the stored rows the events come from
+     * @param  array<string, string>  $identity  hash => identity (identities())
      * @param  array{vlan?: ?int, unmanaged?: bool, existing?: ?array}  $options
      */
-    private function __construct(private readonly array $result, private readonly FactText $text, array $events, array $rows, array $options)
+    private function __construct(private readonly array $result, private readonly FactText $text, array $events, array $rows, array $identity, array $options)
     {
+        $this->identity = $identity;
         $this->vlan = $options['vlan'] ?? null;
         $this->unmanaged = $options['unmanaged'] ?? true;
         $this->existing = $options['existing'] ?? null;
@@ -142,12 +148,12 @@ class ChangeMarks
     }
 
     /**
-     * What the Changes page's events say about the facts: per fact (its hash, with all its periods: a later one may
-     * have no event) the event that started the latest of its periods that an event started and the event that ended
-     * the latest that one ended, when a switch's root bridge last moved to each root bridge, and when a port (its
-     * device and name) last started or stopped blocking each VLAN. An event at or after the end of a period ended it
-     * (a link gone, the old end of a moved cable, the link before a link back after it was gone), else it started it.
-     * Also each fact's row that ended last.
+     * What the Changes page's events say about the facts: per fact (its identity, with all its periods: a later one
+     * may have no event) the event that started the latest of its periods that an event started and the event that
+     * ended the latest that one ended, when a switch's root bridge last moved to each root bridge, and when a port
+     * (its device and name) last started or stopped blocking each VLAN. An event at or after the end of a period ended
+     * it (a link gone, the old end of a moved cable, the link before a link back after it was gone), else it started
+     * it. Also each fact's row that ended last.
      *
      * @param  array<int, array>  $events
      * @param  array<int, array>  $rows
@@ -159,8 +165,9 @@ class ChangeMarks
             if (isset($row['id'])) {
                 $rowsById[(int) $row['id']] = $row;
             }
-            if ($row['removed_at'] !== null && (int) $row['removed_at'] > (int) ($this->lastEnded[$row['hash']]['removed_at'] ?? PHP_INT_MIN)) {
-                $this->lastEnded[$row['hash']] = $row;
+            $identity = $this->identityOf($row);
+            if ($row['removed_at'] !== null && (int) $row['removed_at'] > (int) ($this->lastEnded[$identity]['removed_at'] ?? PHP_INT_MIN)) {
+                $this->lastEnded[$identity] = $row;
             }
         }
         foreach ($events as $event) {
@@ -172,9 +179,9 @@ class ChangeMarks
                     continue;
                 }
                 if ($row['removed_at'] !== null && $time >= (int) $row['removed_at']) {
-                    self::keepLatest($this->ended, $row['hash'], (int) $row['removed_at'], $event);
+                    self::keepLatest($this->ended, $this->identityOf($row), (int) $row['removed_at'], $event);
                 } else {
-                    self::keepLatest($this->started, $row['hash'], (int) $row['first_seen'], $event);
+                    self::keepLatest($this->started, $this->identityOf($row), (int) $row['first_seen'], $event);
                 }
                 // the root bridge a switch moved to (its fact that started then) and a port's VLANs on either side
                 if ($event['type'] === 'root_changed' && $row['kind'] === FactCollector::STP_ROOT && (int) $row['first_seen'] === $time) {
@@ -203,29 +210,36 @@ class ChangeMarks
      *
      * @param  array<string, array{at: int, event: array}>  $index
      */
-    private static function keepLatest(array &$index, string $hash, int $at, array $event): void
+    private static function keepLatest(array &$index, string $identity, int $at, array $event): void
     {
-        if (! isset($index[$hash]) || [$at, (int) $event['time']] > [$index[$hash]['at'], (int) $index[$hash]['event']['time']]) {
-            $index[$hash] = ['at' => $at, 'event' => $event];
+        if (! isset($index[$identity]) || [$at, (int) $event['time']] > [$index[$identity]['at'], (int) $index[$identity]['event']['time']]) {
+            $index[$identity] = ['at' => $at, 'event' => $event];
         }
     }
 
     /**
      * The Changes page's event a mark of a fact tells, the one that brought about its state now: for a fact that is
      * gone, the one that ended its latest period (a link that went, came back and went again went the last time);
-     * for a new one, the one that started its latest period with one; null without one (the baseline).
+     * for a new one, the one that started its latest period with one (a neighbour LibreNMS monitors by now was new
+     * as an unmanaged one); null without one (the baseline).
      */
     private function event(array $row, bool $isGone): ?array
     {
-        return ($isGone ? $this->ended : $this->started)[$row['hash']]['event'] ?? null;
+        return ($isGone ? $this->ended : $this->started)[$this->identityOf($row)]['event'] ?? null;
     }
 
     /**
-     * A fact as it last was: its row that ended last (a gone link that flapped), else the row given.
+     * A fact as it last was: its row that ended last (a gone link that flapped, or whose neighbour LibreNMS monitored
+     * by then), else the row given.
      */
     private function lastPeriod(array $row): array
     {
-        return $this->lastEnded[$row['hash']] ?? $row;
+        return $this->lastEnded[$this->identityOf($row)] ?? $row;
+    }
+
+    private function identityOf(array $row): string
+    {
+        return $this->identity[$row['hash']] ?? $row['hash'];
     }
 
     /**
@@ -244,10 +258,12 @@ class ChangeMarks
      * @param  string  $mode  l2 or l3
      * @param  array<int, array>  $before  stored facts present at the start that changed or went (time: removed_at)
      * @param  array<int, array>  $after  stored facts present now that are new or changed (time: first_seen)
-     * @param  array{events?: ?array, rows?: array, gone_at?: array<string, int>, vlan?: ?int, unmanaged?: bool, existing?: ?array}  $options
+     * @param  array{events?: ?array, rows?: array, same_cables?: array, gone_at?: array<string, int>, vlan?: ?int, unmanaged?: bool, existing?: ?array}  $options
      *     events: the Changes page's events with their facts since the time (only these facts are marked, with all their
      *     periods); null when comparing with the baseline. rows: the stored rows the events come from (default: $before
-     *     and $after). gone_at: hash => when a fact of $before went, when its removed_at is not that (the baseline).
+     *     and $after). same_cables: ChangeReport's pairs of rows of a cable whose neighbour LibreNMS started or stopped
+     *     monitoring ([removed row id, added row id]): one fact. gone_at: hash => when a fact of $before went, when its
+     *     removed_at is not that (the baseline).
      *     vlan: the map's VLAN. unmanaged: the map draws unmanaged neighbours (default true). existing: every device
      *     LibreNMS has, for a user who may see all of them (a gone far end not among them was monitored then: its ghost
      *     is drawn whatever the map's unmanaged neighbours).
@@ -256,18 +272,19 @@ class ChangeMarks
     {
         $events = $options['events'] ?? null;
         $rows = $options['rows'] ?? array_merge($before, $after);
+        $identity = self::identities($rows, $options['same_cables'] ?? []);
         if ($events !== null) {
-            $reported = self::reported($events, $rows);
-            $inReport = fn (array $row) => isset($reported[$row['hash']]);
+            $reported = self::reported($events, $rows, $identity);
+            $inReport = fn (array $row) => isset($reported[$identity[$row['hash']] ?? $row['hash']]);
             $before = array_values(array_filter($before, $inReport));
             $after = array_values(array_filter($after, $inReport));
         }
         $goneAt = $options['gone_at'] ?? [];
-        $marks = new self($result, $text, $events ?? [], $rows, $options);
-        $beforeByHash = self::byHash($before);
-        $afterByHash = self::byHash($after);
-        $gone = array_map(fn (array $row) => $marks->lastPeriod($row), array_diff_key($beforeByHash, $afterByHash));
-        $new = array_diff_key($afterByHash, $beforeByHash);
+        $marks = new self($result, $text, $events ?? [], $rows, $identity, $options);
+        $beforeById = self::byIdentity($before, $identity);
+        $afterById = self::byIdentity($after, $identity);
+        $gone = array_map(fn (array $row) => $marks->lastPeriod($row), array_diff_key($beforeById, $afterById));
+        $new = array_diff_key($afterById, $beforeById);
         // when: as the Changes page saw it, else (the baseline) when the period started or ended
         $time = fn (array $row, bool $isGone) => $marks->event($row, $isGone)['time'] ?? ($isGone ? ($goneAt[$row['hash']] ?? $row['removed_at'] ?? null) : $row['first_seen']);
 
@@ -286,7 +303,7 @@ class ChangeMarks
                     default => null,
                 };
             }
-            $marks->roots(self::ofKind($beforeByHash, FactCollector::STP_ROOT), self::ofKind($afterByHash, FactCollector::STP_ROOT), $goneAt);
+            $marks->roots(self::ofKind($beforeById, FactCollector::STP_ROOT), self::ofKind($afterById, FactCollector::STP_ROOT), $goneAt);
             $marks->blocking(self::ofKind($before, FactCollector::STP_BLOCKED), self::ofKind($after, FactCollector::STP_BLOCKED), $goneAt);
         } else {
             foreach ($new as $row) {
@@ -312,15 +329,17 @@ class ChangeMarks
     }
 
     /**
-     * The facts (hashes) the Changes page's events are about. A fact counts with all its periods: one that started
+     * The facts (identities) the Changes page's events are about. A fact counts with all its periods: one that started
      * without a change of the network (its switch or the root bridge renamed, its port re-created under a new id) is
-     * named by no event, yet it is the fact's state now.
+     * named by no event, yet it is the fact's state now; so does the link of a cable whose neighbour LibreNMS started
+     * or stopped monitoring, the same fact as the link before it.
      *
      * @param  array<int, array>  $events  ChangeReport events with the ids of their rows (facts)
      * @param  array<int, array>  $rows  the stored rows the events come from
+     * @param  array<string, string>  $identity  hash => identity (identities())
      * @return array<string, true>
      */
-    public static function reported(array $events, array $rows): array
+    public static function reported(array $events, array $rows, array $identity = []): array
     {
         $ids = [];
         foreach ($events as $event) {
@@ -328,14 +347,53 @@ class ChangeMarks
                 $ids[(int) $id] = true;
             }
         }
-        $hashes = [];
+        $reported = [];
         foreach ($rows as $row) {
             if (isset($row['id'], $ids[(int) $row['id']])) {
-                $hashes[$row['hash']] = true;
+                $reported[$identity[$row['hash']] ?? $row['hash']] = true;
             }
         }
 
-        return $hashes;
+        return $reported;
+    }
+
+    /**
+     * Each fact's identity: its hash, but one for the facts of a cable whose neighbour LibreNMS started or stopped
+     * monitoring (ChangeReport's same cables: the link to the unmanaged neighbour and the link between the two
+     * devices), so that what the Changes page reports of one is of the other.
+     *
+     * @param  array<int, array>  $rows  the stored rows the pairs come from
+     * @param  array<int, array{0: int, 1: int}>  $sameCables  [removed row id, added row id]
+     * @return array<string, string> hash => identity, for the facts of these cables
+     */
+    private static function identities(array $rows, array $sameCables): array
+    {
+        $hashOf = [];
+        foreach ($rows as $row) {
+            if (isset($row['id'])) {
+                $hashOf[(int) $row['id']] = $row['hash'];
+            }
+        }
+        // a cable seen as a few facts (from either end, unmanaged and monitored, again unmanaged): one tree each
+        $parent = [];
+        $root = function (string $hash) use (&$parent): string {
+            while (isset($parent[$hash])) {
+                $hash = $parent[$hash];
+            }
+
+            return $hash;
+        };
+        foreach ($sameCables as [$removed, $added]) {
+            if (isset($hashOf[(int) $removed], $hashOf[(int) $added]) && ($from = $root($hashOf[(int) $removed])) !== ($to = $root($hashOf[(int) $added]))) {
+                $parent[$to] = $from;
+            }
+        }
+        $identity = [];
+        foreach (array_keys($parent) as $hash) {
+            $identity[$hash] = $root($hash);
+        }
+
+        return $identity;
     }
 
     /**
@@ -799,16 +857,17 @@ class ChangeMarks
 
     /**
      * @param  array<int, array>  $rows
-     * @return array<string, array> hash => row (the latest period of a fact)
+     * @param  array<string, string>  $identity  hash => identity (identities())
+     * @return array<string, array> identity (the hash, but for the facts of a cable that are one) => row
      */
-    private static function byHash(array $rows): array
+    private static function byIdentity(array $rows, array $identity): array
     {
-        $byHash = [];
+        $byIdentity = [];
         foreach ($rows as $row) {
-            $byHash[$row['hash']] = $row;
+            $byIdentity[$identity[$row['hash']] ?? $row['hash']] = $row;
         }
 
-        return $byHash;
+        return $byIdentity;
     }
 
     /**

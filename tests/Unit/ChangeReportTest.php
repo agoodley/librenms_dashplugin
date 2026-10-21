@@ -226,6 +226,31 @@ class ChangeReportTest extends TestCase
         $this->assertSame(['cable_moved'], array_column($events, 'type'));
     }
 
+    /**
+     * The maps take the cable of a neighbor LibreNMS started or stopped monitoring as one fact: the report pairs its
+     * rows (their ids), as it leaves them out.
+     */
+    public function testTheSameCablesArePairedForTheMaps(): void
+    {
+        $unmanaged = self::collector()->links([self::link(1, 12, 0, null, 'acc2', 'Gi1/0/49', 'Cisco C9300')]);
+        $managed = self::collector()->links([self::link(4, 31, 1, 12)]);
+        $id = fn (array $rows, int $id) => array_map(fn (array $row) => ['id' => $id] + $row, $rows);
+
+        $onboarded = self::report(array_merge($id(self::rows($unmanaged, self::T0 - 86400, self::T1), 7), $id(self::rows($managed, self::T1), 8)));
+        $this->assertSame([], $onboarded['events']);
+        $this->assertSame([[7, 8]], $onboarded['same_cables'], 'the removed row, the added row');
+        $deleted = self::report(array_merge($id(self::rows($managed, self::T0 - 86400, self::T1), 8), $id(self::rows($unmanaged, self::T2), 9)));
+        $this->assertSame([[8, 9]], $deleted['same_cables']);
+        // a device added to LibreNMS keeps its link for its "added" event: the same cable all the same
+        $added = self::report(array_merge($id(self::rows($unmanaged, self::T0 - 86400, self::T1), 7), $id(self::rows($managed, self::T1), 8)), null, [4 => true]);
+        $this->assertSame(['device_added'], array_column($added['events'], 'type'));
+        $this->assertSame([[7, 8]], $added['same_cables']);
+
+        // another neighbor on that port is a moved cable, no pair
+        $other = self::collector()->links([self::link(1, 12, 0, null, 'old-hub', 'port 2', 'HP ProCurve')]);
+        $this->assertSame([], self::report(array_merge($id(self::rows($managed, self::T0 - 86400, self::T1), 8), $id(self::rows($other, self::T1), 10)))['same_cables']);
+    }
+
     public function testPvstRootMoves(): void
     {
         // core1 is the root of the odd VLANs, core2 of the even ones; then core1 fails

@@ -259,12 +259,13 @@ class ChangeMarksTest extends TestCase
             $before = self::rows($collector->links($was), self::T0 - 86400, self::T1);
             $after = self::rows((new FactCollector(array_intersect_key($names, $devs), $ports))->links($now), self::T1);
             $text = new FactText(array_intersect_key($names, $devs), array_fill_keys(array_keys($devs), true));
-            $events = ChangeReport::build(array_merge($before, $after), self::T0 + 1, self::T1 + 60, $text)['events'];
+            $report = ChangeReport::build(array_merge($before, $after), self::T0 + 1, self::T1 + 60, $text);
             $map = (new L2Builder($devs, $now, $ports, [], [], new StpIndex))->build();
 
-            $result = ChangeMarks::apply('l2', $map, $before, $after, $text, ['events' => $events]);
+            $result = ChangeMarks::apply('l2', $map, $before, $after, $text, ['events' => $report['events'], 'same_cables' => $report['same_cables']]);
 
-            $this->assertSame([], $events, "$case: the Changes page reports nothing");
+            $this->assertSame([], $report['events'], "$case: the Changes page reports nothing");
+            $this->assertCount(1, $report['same_cables'], "$case: one cable, two facts");
             $this->assertSame([], $result['changes']['counts'], "$case: no mark");
             $this->assertSame([], $result['changes']['ghosts']['edges'], "$case: no ghost");
         }
@@ -285,7 +286,7 @@ class ChangeMarksTest extends TestCase
         $map = ['nodes' => [['id' => 'd:1', 'type' => 'device', 'device_id' => 1, 'name' => 'core1'], ['id' => 'd:2', 'type' => 'device', 'device_id' => 2, 'name' => 'core2']],
             'edges' => []];
 
-        $result = ChangeMarks::apply('l3', $map, $first, [], $text, ['events' => $report['events'], 'rows' => $rows]);
+        $result = ChangeMarks::apply('l3', $map, $first, [], $text, ['events' => $report['events'], 'rows' => $rows, 'same_cables' => $report['same_cables']]);
 
         $this->assertSame(['ospf_lost', 'ospf_up', 'ospf_lost'], array_column($report['events'], 'type'));
         $this->assertSame([['type' => 'ospf_lost', 'time' => $lostAgain, 'text' => $report['events'][0]['text']]], $result['changes']['ghosts']['edges'][0]['changes']);
