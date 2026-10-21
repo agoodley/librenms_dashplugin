@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
 use Agoodley\LibrenmsTopology\Data\ScopedRepository;
+use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Sharing\SavedView;
 use Agoodley\LibrenmsTopology\Support\RoleData;
 use PHPUnit\Framework\TestCase;
@@ -60,6 +61,26 @@ class RolePermissionsTest extends TestCase
         $this->assertFalse($repo->allowsTable(' pseudowires as l'));
         $this->assertTrue($repo->allowsTable('ipv6_addresses as a'));
         $this->assertTrue($repo->allowsTable(''), 'no table, nothing to hide');
+    }
+
+    public function testPortRowsOpticalLevelsAndStackMembersFollowTheirPermissions(): void
+    {
+        // a role that may view links but not ports, sensors or the inventory: nothing is read (no query runs here)
+        $repo = new class(null) extends TopologyRepository
+        {
+            protected function policyAllows(string $modelClass): bool
+            {
+                return ! in_array($modelClass, ['App\Models\Port', 'App\Models\Sensor', 'App\Models\EntPhysical'], true);
+            }
+        };
+        $this->assertSame([], $repo->ports([1, 2]));
+        $this->assertSame([], $repo->opticalRx([1, 2]));
+        $this->assertSame([], $repo->portEntities([['device_id' => 1, 'port_id' => 2, 'ifIndex' => 3]]));
+        $this->assertSame([], iterator_to_array($repo->portDescriptions([1, 2])));
+        $this->assertSame(['ports', 'optical levels', 'stack members and line cards'], $repo->hiddenKinds(['ports', 'transceivers', 'sensors', 'entPhysical']));
+
+        $this->assertSame(['App\Models\Sensor', 'App\Models\Transceiver', 'App\Models\EntPhysical'],
+            array_map(fn (string $table) => ScopedRepository::TABLE_MODELS[$table][0], ['sensors', 'transceivers', 'entPhysical']));
     }
 
     public function testEveryPageNamesTablesWithAModel(): void

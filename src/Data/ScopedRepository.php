@@ -52,6 +52,11 @@ abstract class ScopedRepository
         'ipv4_networks' => [\App\Models\Ipv4Network::class, 'IP addresses'],
         'ipv6_networks' => [\App\Models\Ipv6Network::class, 'IP addresses'],
         'route' => [\App\Models\Route::class, 'routes'],
+        // optical receive levels (sensor.view; transceivers are port data, port.view) and stack members / line cards
+        // of ports (inventory.view)
+        'sensors' => [\App\Models\Sensor::class, 'optical levels'],
+        'transceivers' => [\App\Models\Transceiver::class, 'ports'],
+        'entPhysical' => [\App\Models\EntPhysical::class, 'stack members and line cards'],
     ];
 
     /** @var array<int, true>|null */
