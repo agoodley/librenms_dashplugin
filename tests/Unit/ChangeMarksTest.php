@@ -33,7 +33,7 @@ class ChangeMarksTest extends TestCase
     private static function ports(): array
     {
         $ports = [];
-        foreach ([[11, 1, 'Te1/0/1'], [12, 1, 'Te1/0/2'], [14, 1, 'Gi1/0/1'], [15, 1, 'Te1/0/3'], [16, 1, 'Te1/0/4'], [21, 2, 'Te1/0/1'],
+        foreach ([[11, 1, 'Te1/0/1'], [12, 1, 'Te1/0/2'], [14, 1, 'Gi1/0/1'], [15, 1, 'Te1/0/3'], [16, 1, 'Te1/0/4'], [21, 2, 'Te1/0/1'], [22, 2, 'Te1/0/2'], [23, 2, 'Te1/0/3'],
             [31, 3, 'Gi1/0/49'], [32, 3, 'Gi1/0/50'], [33, 3, 'Po1'], [41, 4, 'Gi1/0/49']] as [$id, $device, $name]) {
             $ports[$id] = ['port_id' => $id, 'device_id' => $device, 'ifName' => $name, 'ifOperStatus' => 'up'];
         }
@@ -171,6 +171,26 @@ class ChangeMarksTest extends TestCase
         $ghost = $result['changes']['ghosts']['nodes'][0];
         $this->assertSame('acc1', $ghost['name']);
         $this->assertSame(3, $ghost['device_id'], 'a device the user may see keeps its id (its page)');
+    }
+
+    public function testTheLinksOfARemovedDeviceEndAtOneGhost(): void
+    {
+        // core1 and core2 each had a link to old-sw (device 5, since removed from LibreNMS) and one to lab-sw (device 6),
+        // which the user may not see and whose neighbours reported no name
+        $c = new FactCollector(self::NAMES + [5 => 'old-sw', 6 => 'lab-sw'], self::ports());
+        $before = self::rows($c->links([self::link(1, 15, 5, null, 'old-sw.example.net', 'Te1/1'), self::link(2, 22, 5, null, 'old-sw.example.net', 'Te1/2'),
+            self::link(1, 16, 6, null, '', 'Gi0/1'), self::link(2, 23, 6, null, '', 'Gi0/2')]), self::T0 - 86400, self::T1);
+        $map = (new L2Builder(self::devices([1, 2]), [], self::ports(), [], [], new StpIndex))->build();
+
+        $result = ChangeMarks::apply('l2', $map, $before, [], new FactText(self::NAMES, self::VISIBLE));
+
+        $ghosts = $result['changes']['ghosts'];
+        $this->assertCount(4, $ghosts['edges']);
+        $this->assertEquals(['old-sw.example.net' => 1, 'another device' => 2], array_count_values(array_column($ghosts['nodes'], 'name')),
+            'one ghost of old-sw for both its links; a far end without a name is one per link');
+        $old = array_column($ghosts['nodes'], 'id', 'name')['old-sw.example.net'];
+        $this->assertEqualsCanonicalizing(['d:1', 'd:2'], array_column(array_filter($ghosts['edges'], fn ($edge) => $edge['to'] === $old), 'from'));
+        $this->assertSame(['link_gone' => 4], $result['changes']['counts']);
     }
 
     public function testSinceTheBaseline(): void

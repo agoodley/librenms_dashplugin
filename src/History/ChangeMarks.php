@@ -195,7 +195,7 @@ class ChangeMarks
         $to = match (true) {
             isset($far['device']) && $this->text->visible((int) $far['device']) && isset($this->nodes['d:' . $far['device']]) => 'd:' . $far['device'],
             ! isset($far['device']) && isset($far['node']) && isset($this->nodes[$far['node']]) => (string) $far['node'],
-            default => $this->ghostNode($row['hash'] . ':' . (1 - $here), $far),
+            default => $this->ghostNode($this->farEndKey($row, 1 - $here, $far), $far),
         };
         $this->ghostEdge($from, $to, 'link', $near, $far, 'link_gone', $time, $this->eventText($row) ?? 'Link gone: ' . $this->text->describe(self::fact($row)));
     }
@@ -378,6 +378,26 @@ class ChangeMarks
         }
 
         return null;
+    }
+
+    /**
+     * Which ghost node the far end of a gone link is: one per device the user may see, or per name the neighbour
+     * reported (the links of a switch removed from LibreNMS all end at one ghost, as the L2 map joins an unmanaged
+     * neighbour's links), and one per link when the far end has no such name (no name, a generic one, or a device
+     * the user may not see that only the masked name stands for).
+     */
+    private function farEndKey(array $row, int $side, array $far): string
+    {
+        if (isset($far['device']) && $this->text->visible((int) $far['device'])) {
+            return 'device:' . (int) $far['device'];
+        }
+        $host = strtolower(trim((string) (isset($far['device']) ? ($far['host'] ?? '') : ($far['name'] ?? ''))));
+        if ($host === '' || $host === 'unknown neighbor' || in_array($host, L2Builder::GENERIC_HOSTNAMES, true)
+            || in_array(strtolower(L2Builder::shortHost($host)), L2Builder::GENERIC_HOSTNAMES, true)) {
+            return $row['hash'] . ':' . $side;
+        }
+
+        return 'host:' . $host;
     }
 
     /**
