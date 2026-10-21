@@ -83,7 +83,7 @@
                             <br>@include('ansible::partials.results', ['summary' => $run['summary']])
                         @endif
                         @if($run['unexpected_hosts'])
-                            <br><span class="label label-danger" title="The runner ran on hosts that were not targets"><i class="fa fa-exclamation-triangle"></i> {{ count($run['unexpected_hosts']) }} other host(s)</span>
+                            <br><span class="label label-danger" title="The runner ran on hosts that were not targets"><i class="fa fa-exclamation-triangle"></i> {{ \Agoodley\LibrenmsAnsible\Support\Format::count(count($run['unexpected_hosts']), 'other host') }}</span>
                         @endif
                     </td>
                     <td><span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::css($run['status']) }}">{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::label($run['status']) }}</span></td>

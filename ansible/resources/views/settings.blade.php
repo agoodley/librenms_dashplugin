@@ -16,9 +16,11 @@
     ];
 @endphp
 
-@push('styles')
-    <link href="{{ route('ansible.asset', 'ansible.css') }}?v={{ \Agoodley\LibrenmsAnsible\Http\Controllers\Controller::assetVersion() }}" rel="stylesheet">
-@endpush
+@if($a['admin'])
+    @push('styles')
+        <link href="{{ route('ansible.asset', 'ansible.css') }}?v={{ \Agoodley\LibrenmsAnsible\Http\Controllers\Controller::assetVersion() }}" rel="stylesheet">
+    @endpush
+@endif
 
 <div class="ans-settings" style="margin: 15px; max-width: 980px;">
     <h4>Ansible plugin settings <small><a href="{{ route('ansible.runs') }}">Runs</a> · <a href="{{ route('ansible.inventory') }}">Inventory</a></small></h4>
@@ -178,7 +180,10 @@
     @endif
 </div>
 
-@push('scripts')
-    <script src="{{ route('ansible.asset', 'ansible.js') }}?v={{ \Agoodley\LibrenmsAnsible\Http\Controllers\Controller::assetVersion() }}"></script>
-    <script>AnsiblePlugin.settings();</script>
-@endpush
+@if($a['admin'])
+    {{-- the plugin's assets are for admins, like its other routes --}}
+    @push('scripts')
+        <script src="{{ route('ansible.asset', 'ansible.js') }}?v={{ \Agoodley\LibrenmsAnsible\Http\Controllers\Controller::assetVersion() }}"></script>
+        <script>AnsiblePlugin.settings();</script>
+    @endpush
+@endif

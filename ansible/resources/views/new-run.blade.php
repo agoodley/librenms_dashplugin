@@ -42,7 +42,7 @@
     @endif
     @if($unusable)
         <details style="margin-top: 8px" id="ans-unusable" @if(! $usable) open @endif>
-            <summary class="text-muted">{{ count($unusable) }} template(s) the plugin cannot launch, and why</summary>
+            <summary class="text-muted">{{ \Agoodley\LibrenmsAnsible\Support\Format::count(count($unusable), 'template') }} the plugin cannot launch, and why</summary>
             <table class="table table-condensed ans-table" style="margin-top: 6px">
                 @foreach($unusable as $item)
                     <tr data-template="{{ $item['template']->id }}"><th style="width: 30%" class="ans-wrap">{{ $item['template']->name }} <span class="ans-muted ans-code">{{ $item['template']->playbook }}</span></th>

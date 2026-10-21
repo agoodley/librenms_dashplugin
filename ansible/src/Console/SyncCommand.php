@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Console;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Agoodley\LibrenmsAnsible\Services\RunFollower;
+use Agoodley\LibrenmsAnsible\Support\Format;
 use Illuminate\Console\Command;
 
 /**
@@ -46,7 +47,7 @@ class SyncCommand extends Command
             }
         }
         $left = count($runs->unfinished());
-        $this->line(sprintf('%s ansible:sync: %d unfinished run(s) followed, %d still unfinished', date('Y-m-d H:i:s'), count($ids), $left));
+        $this->line(date('Y-m-d H:i:s') . ' ansible:sync: ' . Format::count(count($ids), 'unfinished run') . ' followed, ' . $left . ' still unfinished');
 
         return self::SUCCESS;
     }
