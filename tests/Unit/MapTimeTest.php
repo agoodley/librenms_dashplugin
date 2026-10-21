@@ -67,12 +67,16 @@ class MapTimeTest extends TestCase
     public function testTimeParameters(): void
     {
         $this->assertSame(['at' => null, 'since' => null, 'time_error' => null], MapParams::time([], self::NOW));
-        $this->assertSame(strtotime('2026-10-20T09:30'), MapParams::time(['at' => '2026-10-20T09:30'], self::NOW)['at']);
-        $this->assertSame(strtotime('2026-10-20 09:30:15'), MapParams::time(['at' => '2026-10-20 09:30:15'], self::NOW)['at']);
-        $this->assertSame(strtotime('2026-10-20 00:00'), MapParams::time(['at' => '2026-10-20'], self::NOW)['at'], 'a date alone is its midnight');
-        $this->assertSame(strtotime('2026-10-20T07:30Z'), MapParams::time(['at' => '2026-10-20T09:30+02:00'], self::NOW)['at'], 'an offset is honored');
+        // a minute is taken to its end: a snapshot starts a few seconds into one (09:30 is the snapshot of 09:30:03)
+        $this->assertSame(strtotime('2026-10-20 09:30:59'), MapParams::time(['at' => '2026-10-20T09:30'], self::NOW)['at']);
+        $this->assertSame(strtotime('2026-10-20 09:30:15'), MapParams::time(['at' => '2026-10-20 09:30:15'], self::NOW)['at'], 'seconds are exact');
+        $this->assertSame(strtotime('2026-10-20 09:30:03'), MapParams::time(['at' => '2026-10-20T09:30:03'], self::NOW)['at'], 'a snapshot pick');
+        $this->assertSame(strtotime('2026-10-20 00:00:59'), MapParams::time(['at' => '2026-10-20'], self::NOW)['at'], 'a date alone is its first minute');
+        $this->assertSame(strtotime('2026-10-20T07:30:59Z'), MapParams::time(['at' => '2026-10-20T09:30+02:00'], self::NOW)['at'], 'an offset is honored');
         $this->assertSame(MapParams::BASELINE, MapParams::time(['since' => 'Baseline'], self::NOW)['since']);
-        $this->assertSame(strtotime('2026-10-14T09:00'), MapParams::time(['since' => '2026-10-14T09:00', 'at' => ''], self::NOW)['since'], 'an empty at is no time');
+        $this->assertSame(strtotime('2026-10-14 09:00:59'), MapParams::time(['since' => '2026-10-14T09:00', 'at' => ''], self::NOW)['since'], 'an empty at is no time');
+        $this->assertSame(self::NOW + 20, MapParams::time(['at' => '2026-10-21T09:00'], self::NOW + 20)['at'], 'the minute that is running is now');
+        $this->assertStringContainsString('in the future', (string) MapParams::time(['at' => '2026-10-21T09:01'], self::NOW + 20)['time_error'], 'the next minute is not yet');
 
         foreach (['yesterday', '-1 hour', '2026-13-01', '2026-02-30T10:00', '2026-10-20T25:00', '1792573200', 'baseline'] as $invalid) {
             $time = MapParams::time(['at' => $invalid], self::NOW);
@@ -237,6 +241,39 @@ class MapTimeTest extends TestCase
         $this->assertSame(0, $result['stats']['down']);
     }
 
+    public function testARecreatedPortKeepsItsBlockedState(): void
+    {
+        // acc1 Gi1/0/50 blocked VLAN 20 at the snapshot; LibreNMS re-created the port since as port 99: the history keeps
+        // the link with the new id (updated in place), the blocked port with the id of then
+        $now = array_diff_key(self::ports(), [32 => true]) + [99 => ['port_id' => 99, 'device_id' => 3, 'ifName' => 'GigabitEthernet1/0/50', 'ifOperStatus' => 'up']];
+        $link = self::rows((new FactCollector(self::NAMES, $now))->links([self::link(3, 99, 1, 12, 'core1', 'Te1/0/2')]));
+        $blocked = self::rows((new FactCollector(self::NAMES, self::ports()))->blockedPortFacts([3 => [32 => [20]]]));
+        $past = new PastMap(new FakeHistory(array_merge($link, $blocked)), ['time' => self::NOW - 3600, 'started_at' => '2026-10-21 08:00:00', 'next' => null,
+            'recorded' => FactCollector::KINDS, 'skipped' => []], [1 => true, 3 => true], FactCollector::KINDS);
+
+        $rows = array_values($past->linksWhere([1, 3], fn () => true));
+        $index = $past->stp([1, 3], null, $past->lagParents([1, 3]));
+
+        $this->assertSame('blocking', $index->portStatus(3, 99, null)['state'], 'the port of the same name');
+        $devices = [1 => ['device_id' => 1, 'hostname' => 'core1', 'status' => 1], 3 => ['device_id' => 3, 'hostname' => 'acc1', 'status' => 1]];
+        $this->assertTrue((new L2Builder($devices, $rows, $now, [], [], $index))->build()['edges'][0]['blocked'], 'drawn blocked as it was');
+        $this->assertSame(99, PastMap::portOf(['device' => 3, 'port' => 32, 'port_name' => 'Gi1/0/50'], ['3|gi1/0/50' => 99], [99 => true]));
+        $this->assertSame(32, PastMap::portOf(['device' => 3, 'port' => 32, 'port_name' => 'Gi1/0/50'], ['3|gi1/0/50' => 99], [32 => true]), 'its own id when known');
+    }
+
+    public function testARemovedDeviceStaysWithoutUnmanagedNeighbours(): void
+    {
+        // core1 had links to old-dist (device 5, deleted since) and to an unmanaged neighbour
+        $facts = self::linkFacts([self::link(1, 16, 5, 51, 'old-dist', 'Te1/1'), self::link(1, 14, 0, null, 'ap-lobby', 'eth0', 'Cisco AIR-AP2802I')]);
+        $existing = [1 => true, 2 => true, 3 => true, 4 => true];
+        $rows = array_values(array_filter(array_map(fn ($fact) => PastMap::linkRow($fact, [1 => true, 2 => true, 3 => true], [1 => true], $existing), $facts)));
+        $devices = [1 => ['device_id' => 1, 'hostname' => 'core1', 'status' => 1]];
+
+        $result = (new L2Builder($devices, $rows, self::ports(), [], [], new StpIndex))->build(['unmanaged' => false]);
+
+        $this->assertSame(['d:1', 'u:old-dist'], array_column($result['nodes'], 'id'), 'monitored then: on the map whatever the toggle; the access point left out');
+    }
+
     public function testPastRoutingRowsAndUnreadableKinds(): void
     {
         $collector = new FactCollector(self::NAMES, self::ports());
@@ -248,7 +285,7 @@ class MapTimeTest extends TestCase
 
         $past = new PastMap(new FakeHistory($facts), $snapshot, [1 => true, 2 => true], FactCollector::KINDS);
         $this->assertSame([['device_id' => 1, 'port_id' => 0, 'ospfNbrIpAddr' => '10.0.0.2', 'ospfNbrRtrId' => '10.255.0.2', 'ospfNbrState' => 'full',
-            'context_name' => '']], $past->ospfNeighbors([1, 2]));
+            'context_name' => '', 'neighbor_device_id' => 2]], $past->ospfNeighbors([1, 2]), 'with the neighbour the history recorded');
         $bgp = $past->bgpPeers([1]);
         $this->assertSame('192.0.2.1', $bgp[0]['bgpPeerIdentifier']);
         $this->assertSame(64512, $bgp[0]['bgpPeerRemoteAs']);

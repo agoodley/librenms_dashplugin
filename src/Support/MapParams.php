@@ -20,7 +20,7 @@ class MapParams
     public const BASELINE = 'baseline';
 
     /** A date, optionally with a time (minutes, seconds) and a UTC offset: 2026-10-21, 2026-10-21T09:00, 2026-10-21 09:00:00+02:00. */
-    private const ISO_TIME = '/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/i';
+    private const ISO_TIME = '/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?<seconds>:\d{2}(?:\.\d+)?)?)?(?:Z|[+-]\d{2}:?\d{2})?$/i';
 
     /**
      * Normalize the query string of a map / STP page or API call. Missing values fall back to the
@@ -39,9 +39,10 @@ class MapParams
     /**
      * The map's time: at (a timestamp: the map as the history recorded it then) or since (a timestamp, or
      * BASELINE: today's map with what changed since then), never both. A date and time is written as ISO 8601
-     * in the server's time zone unless it carries an offset ("2026-10-21T09:00"); a date alone is its midnight.
-     * One that is no such date, lies in the future or comes with the other parameter is left out and
-     * explained in time_error.
+     * in the server's time zone unless it carries an offset ("2026-10-21T09:00"). A time without seconds is
+     * the end of its minute, as snapshots start a few seconds into one: 09:00 is the map of the snapshot of
+     * 09:00:03 (a date alone is the minute 00:00); the minute that is running is now. One that is no such
+     * date, lies in the future or comes with the other parameter is left out and explained in time_error.
      *
      * @return array{at: ?int, since: int|string|null, time_error: ?string}
      */
@@ -69,12 +70,15 @@ class MapParams
             return ['since' => self::BASELINE] + $none;
         }
         [$year, $month, $day] = array_map('intval', explode('-', substr($value, 0, 10)) + [0, 0, 0]);
-        $time = preg_match(self::ISO_TIME, $value) && checkdate($month, $day, $year) ? strtotime($value) : false;
+        $time = preg_match(self::ISO_TIME, $value, $match) && checkdate($month, $day, $year) ? strtotime($value) : false;
         if ($time === false) {
             return ['time_error' => 'The time "' . mb_substr($value, 0, 40) . '" is not a date and time such as ' . date('Y-m-d\TH:i', $now) . '.'] + $none;
         }
         if ($time > $now) {
             return ['time_error' => 'The time ' . date('Y-m-d H:i', $time) . ' is in the future: the history only knows the past.'] + $none;
+        }
+        if (($match['seconds'] ?? '') === '') {
+            $time = min($time + 59, $now);
         }
 
         return [$key => $time] + $none;

@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\History\ChangeMarks;
 use Agoodley\LibrenmsTopology\History\ChangeReport;
 use Agoodley\LibrenmsTopology\History\FactCollector;
 use Agoodley\LibrenmsTopology\History\FactText;
+use Agoodley\LibrenmsTopology\History\PastMap;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Agoodley\LibrenmsTopology\Topology\L2Builder;
 use PHPUnit\Framework\TestCase;
@@ -117,7 +118,7 @@ class ChangeMarksTest extends TestCase
         $text = new FactText(self::NAMES, self::VISIBLE);
         $events = ChangeReport::build(array_merge($before, $after), self::T0 + 1, self::T1 + 60, $text)['events'];
         $map = (new L2Builder(self::devices([1, 2, 3]), $now, self::ports(), [], [32 => 33], new StpIndex))->build(['collapseLag' => true]);
-        $result = ChangeMarks::apply('l2', $map, $before, $after, $text, $events);
+        $result = ChangeMarks::apply('l2', $map, $before, $after, $text, ['events' => $events]);
 
         $edges = [];
         foreach ($result['edges'] as $edge) {
@@ -150,8 +151,8 @@ class ChangeMarksTest extends TestCase
 
         $mapNodes = array_column($result['nodes'], null, 'id');
         // core2 also reports a new instance (VLAN 20, its own root): a new instance moves no root bridge
-        $this->assertSame([['type' => 'root_new', 'time' => self::T1, 'text' => 'VLAN 20: root bridge core1 (00:00:00:00:00:a1) → core2 (00:00:00:00:00:a2) on acc1']],
-            $mapNodes['d:2']['changes']);
+        $this->assertSame([['type' => 'root_new', 'time' => self::T1, 'text' => 'VLAN 20: root bridge core1 (00:00:00:00:00:a1) → core2 (00:00:00:00:00:a2) on acc1',
+            'vlans' => [20]]], $mapNodes['d:2']['changes'], 'a map of all VLANs: the mark names its VLANs');
         $this->assertSame('VLAN 20: root bridge core1 (00:00:00:00:00:a1) → core2 (00:00:00:00:00:a2) on acc1', self::marksOf($mapNodes['d:1'])['root_old']);
         $this->assertEquals(['link_new' => 3, 'link_gone' => 3, 'member_added' => 1, 'root_new' => 1, 'root_old' => 1, 'blocking_started' => 1], $result['changes']['counts']);
         $this->assertSame(0, $result['changes']['unplaced']);
@@ -201,7 +202,7 @@ class ChangeMarksTest extends TestCase
         $goneAt = [$missing[0]['hash'] => self::T1];
         $map = (new L2Builder(self::devices([1, 3]), [], self::ports(), [], [], new StpIndex))->build();
 
-        $result = ChangeMarks::apply('l2', $map, $missing, [], new FactText(self::NAMES, self::VISIBLE), [], $goneAt);
+        $result = ChangeMarks::apply('l2', $map, $missing, [], new FactText(self::NAMES, self::VISIBLE), ['gone_at' => $goneAt]);
 
         $ghost = $result['changes']['ghosts']['edges'][0];
         $this->assertSame(['d:1', 'd:3'], [$ghost['from'], $ghost['to']]);
@@ -238,5 +239,147 @@ class ChangeMarksTest extends TestCase
         // without the Changes page's events (the baseline), each router's report is a mark of its own
         $this->assertCount(2, $ghosts['d:2']['changes']);
         $this->assertEquals(['bgp_up' => 1, 'ospf_lost' => 3], $result['changes']['counts']);
+    }
+
+    /**
+     * The same cable seen as an unmanaged neighbour and as a monitored device (LibreNMS started or stopped monitoring
+     * it) is no change on the Changes page: since a time, the map marks nothing either.
+     */
+    public function testTheSameCableIsNoChange(): void
+    {
+        $names = [1 => 'core1', 5 => 'newsw'];
+        $ports = [11 => ['port_id' => 11, 'device_id' => 1, 'ifName' => 'Te1/0/1', 'ifOperStatus' => 'up'],
+            51 => ['port_id' => 51, 'device_id' => 5, 'ifName' => 'Gi0/1', 'ifOperStatus' => 'up']];
+        $collector = new FactCollector($names, $ports);
+        $unmanaged = [self::link(1, 11, 0, null, 'newsw', 'Gi0/1', 'Cisco IOS')];
+        $monitored = [self::link(1, 11, 5, 51, 'newsw', 'Gi0/1'), self::link(5, 51, 1, 11, 'core1', 'Te1/0/1')];
+        $devices = [1 => ['device_id' => 1, 'hostname' => 'core1', 'role' => 'switch', 'status' => 1, 'disabled' => 0],
+            5 => ['device_id' => 5, 'hostname' => 'newsw', 'role' => 'switch', 'status' => 1, 'disabled' => 0]];
+        foreach (['onboarded' => [$unmanaged, $monitored, $devices], 'deleted' => [$monitored, $unmanaged, [1 => $devices[1]]]] as $case => [$was, $now, $devs]) {
+            $before = self::rows($collector->links($was), self::T0 - 86400, self::T1);
+            $after = self::rows((new FactCollector(array_intersect_key($names, $devs), $ports))->links($now), self::T1);
+            $text = new FactText(array_intersect_key($names, $devs), array_fill_keys(array_keys($devs), true));
+            $events = ChangeReport::build(array_merge($before, $after), self::T0 + 1, self::T1 + 60, $text)['events'];
+            $map = (new L2Builder($devs, $now, $ports, [], [], new StpIndex))->build();
+
+            $result = ChangeMarks::apply('l2', $map, $before, $after, $text, ['events' => $events]);
+
+            $this->assertSame([], $events, "$case: the Changes page reports nothing");
+            $this->assertSame([], $result['changes']['counts'], "$case: no mark");
+            $this->assertSame([], $result['changes']['ghosts']['edges'], "$case: no ghost");
+        }
+    }
+
+    /**
+     * On a map of one VLAN, only the spanning tree instance it shows is marked; on a map of all VLANs every change is,
+     * each mark with its VLANs.
+     */
+    public function testSpanningTreeMarksFollowTheMapsVlan(): void
+    {
+        $c = self::collector();
+        $roots = fn (string $vlan20) => $c->stpRoots([
+            ['device_id' => 3, 'vlan' => 10, 'designatedRoot' => self::A1, 'bridgeAddress' => self::C1],
+            ['device_id' => 3, 'vlan' => 20, 'designatedRoot' => $vlan20, 'bridgeAddress' => self::C1],
+            ['device_id' => 1, 'vlan' => 10, 'designatedRoot' => self::A1, 'bridgeAddress' => self::A1],
+            ['device_id' => 1, 'vlan' => 20, 'designatedRoot' => $vlan20, 'bridgeAddress' => self::A1],
+            ['device_id' => 2, 'vlan' => 10, 'designatedRoot' => self::A1, 'bridgeAddress' => self::A2],
+            ['device_id' => 2, 'vlan' => 20, 'designatedRoot' => $vlan20, 'bridgeAddress' => self::A2],
+        ]);
+        // VLAN 20's root bridge moved from core1 to core2 and acc1 Gi1/0/50 started blocking in VLAN 20; VLAN 10 stayed
+        $before = self::rows($roots(self::A1), self::T0 - 86400, self::T1);
+        $after = array_merge(self::rows($roots(self::A2), self::T1), self::rows($c->blockedPortFacts([3 => [32 => [20]]]), self::T1));
+        $unchanged = array_intersect(array_column($before, 'data_hash', 'hash'), array_column($after, 'data_hash', 'hash'));
+        $before = array_values(array_filter($before, fn ($row) => ! isset($unchanged[$row['hash']])));
+        $after = array_values(array_filter($after, fn ($row) => ! isset($unchanged[$row['hash']])));
+        $links = [self::link(3, 31, 2, 21, 'core2', 'Te1/0/1'), self::link(3, 32, 1, 12, 'core1', 'Te1/0/2')];
+        $text = new FactText(self::NAMES, self::VISIBLE);
+        $mapOf = function (?int $vlan) use ($after, $links): array {
+            $index = PastMap::stpIndex(array_column(array_filter($after, fn ($row) => $row['kind'] === FactCollector::STP_ROOT), 'data'),
+                array_column(array_filter($after, fn ($row) => $row['kind'] === FactCollector::STP_BLOCKED), 'data'), $vlan, []);
+
+            return (new L2Builder(self::devices([1, 2, 3]), $links, self::ports(), [], [], $index))->build(['vlan' => $vlan]);
+        };
+        $marks = function (array $result): array {
+            $all = [];
+            foreach (array_merge($result['nodes'], $result['edges']) as $item) {
+                foreach ($item['changes'] ?? [] as $mark) {
+                    $all[] = $mark['type'] . ' ' . ($item['id'] ?? '') . ' ' . implode(',', $mark['vlans'] ?? []);
+                }
+            }
+            sort($all);
+
+            return $all;
+        };
+
+        $vlan10 = ChangeMarks::apply('l2', $mapOf(10), $before, $after, $text, ['vlan' => 10]);
+        $this->assertSame([], $marks($vlan10), 'VLAN 10 did not change');
+        $this->assertSame(2, $vlan10['changes']['unplaced'], 'the root move and the blocked port of VLAN 20 are counted, not drawn');
+        $this->assertSame(10, $vlan10['changes']['vlan']);
+
+        $vlan20 = ChangeMarks::apply('l2', $mapOf(20), $before, $after, $text, ['vlan' => 20]);
+        $blockedEdge = array_values(array_filter($vlan20['edges'], fn ($edge) => $edge['to'] === 'd:3' && $edge['from'] === 'd:1'))[0]['id'];
+        $this->assertSame(['blocking_started ' . $blockedEdge . ' 20', 'root_new d:2 20', 'root_old d:1 20'], $marks($vlan20));
+
+        $all = ChangeMarks::apply('l2', $mapOf(null), $before, $after, $text);
+        $this->assertSame($marks($vlan20), $marks($all), 'all VLANs: every change, with its VLANs');
+        $this->assertNull($all['changes']['vlan']);
+    }
+
+    /**
+     * A blocked port LibreNMS re-created under a new port id is the same port by its device and name, as on the
+     * Changes page: no change.
+     */
+    public function testARecreatedBlockedPortIsTheSamePort(): void
+    {
+        $now = self::ports();
+        unset($now[32]);
+        $now[99] = ['port_id' => 99, 'device_id' => 3, 'ifName' => 'Gi1/0/50', 'ifOperStatus' => 'up'];
+        $before = self::rows(self::collector()->blockedPortFacts([3 => [32 => [20]]]), self::T0 - 86400, self::T1);
+        $after = self::rows((new FactCollector(self::NAMES, $now))->blockedPortFacts([3 => [99 => [20]]]), self::T1);
+        $map = (new L2Builder(self::devices([1, 3]), [self::link(3, 99, 1, 12, 'core1', 'Te1/0/2')], $now, [], [], new StpIndex))->build();
+
+        $result = ChangeMarks::apply('l2', $map, $before, $after, new FactText(self::NAMES, self::VISIBLE));
+
+        $this->assertSame([], $result['changes']['counts']);
+        $this->assertSame(0, $result['changes']['unplaced']);
+    }
+
+    /**
+     * A ghost's id is a number of the answer: nothing in it leads back to the device behind a masked far end.
+     */
+    public function testGhostIdsTellNothing(): void
+    {
+        $ids = [];
+        foreach ([48213, 77] as $hidden) {
+            $names = [1 => 'core1', $hidden => 'secret-fw'];
+            $ports = [11 => ['port_id' => 11, 'device_id' => 1, 'ifName' => 'Te1/0/1'], 900 => ['port_id' => 900, 'device_id' => $hidden, 'ifName' => 'eth7']];
+            $rows = self::rows((new FactCollector($names, $ports))->links([self::link(1, 11, $hidden, 900, '', 'eth7')]), 1000, 5000);
+            $map = (new L2Builder(self::devices([1]), [], $ports, [], [], new StpIndex))->build();
+            $result = ChangeMarks::apply('l2', $map, $rows, [], new FactText([1 => 'core1'], [1 => true]));
+            $ids[] = $result['changes']['ghosts']['nodes'][0]['id'];
+            $this->assertSame('another device', $result['changes']['ghosts']['nodes'][0]['name']);
+            $this->assertNull($result['changes']['ghosts']['nodes'][0]['device_id']);
+        }
+        $this->assertSame(['ghost:1', 'ghost:1'], $ids, 'the same id whichever device it stands for');
+    }
+
+    /**
+     * Ghosts follow the map's unmanaged neighbours: none for an unmanaged neighbour or a device the user may not see
+     * when the map leaves them out; one for a device LibreNMS monitored then and no longer has.
+     */
+    public function testGhostsFollowTheUnmanagedNeighbours(): void
+    {
+        $names = self::NAMES + [5 => 'old-sw'];
+        $rows = self::rows((new FactCollector($names, self::ports()))->links([self::link(1, 14, 0, null, 'sw-lab', 'Gi0/24', 'Cisco WS-C2960'),
+            self::link(1, 15, 4, 41, 'acc2', 'Gi1/0/49'), self::link(1, 16, 5, null, 'old-sw', 'Te1/1')]), self::T0 - 86400, self::T1);
+        $map = (new L2Builder(self::devices([1]), [], self::ports(), [], [], new StpIndex))->build(['unmanaged' => false]);
+        $existing = array_fill_keys([1, 2, 3, 4], true); // old-sw (5) was deleted from LibreNMS; acc2 (4) is hidden from the user
+
+        $result = ChangeMarks::apply('l2', $map, $rows, [], new FactText(self::NAMES, self::VISIBLE), ['unmanaged' => false, 'existing' => $existing]);
+        $this->assertSame(['old-sw'], array_column($result['changes']['ghosts']['nodes'], 'name'), 'the deleted device only');
+        $this->assertSame(2, $result['changes']['unplaced']);
+
+        $shown = ChangeMarks::apply('l2', $map, $rows, [], new FactText(self::NAMES, self::VISIBLE), ['existing' => $existing]);
+        $this->assertCount(3, $shown['changes']['ghosts']['nodes'], 'with unmanaged neighbours: all three');
     }
 }

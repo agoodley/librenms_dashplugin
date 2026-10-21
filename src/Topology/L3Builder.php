@@ -338,7 +338,8 @@ class L3Builder
     /**
      * Far ends of the overlay rows to recognize: addresses (canonical, link-local and other ignorable ones left
      * out; including loopbacks encoded in IS-IS system IDs), "context|router ID" of OSPF and OSPFv3 neighbours,
-     * the VC IDs of pseudowires (to find their other end) and the peer devices recorded for them.
+     * the VC IDs of pseudowires (to find their other end) and the peer devices recorded for them, and the OSPF and
+     * BGP neighbours the topology history recorded (a map of the past).
      *
      * @param  array<string, array<int, array>>  $layers  see the constructor
      * @param  array<int, array>  $ospf  rows of ospf_nbrs
@@ -361,9 +362,11 @@ class L3Builder
         foreach ($ospf as $row) {
             $addresses[] = (string) ($row['ospfNbrIpAddr'] ?? '');
             $routerId((string) ($row['ospfNbrRtrId'] ?? ''), (string) ($row['context_name'] ?? ''));
+            $devices[] = (int) ($row['neighbor_device_id'] ?? 0);
         }
         foreach ($bgp as $row) {
             $addresses[] = (string) ($row['bgpPeerIdentifier'] ?? '');
+            $devices[] = (int) ($row['neighbor_device_id'] ?? 0);
         }
         foreach ($layers['ospfv3'] ?? [] as $row) {
             $routerId(self::ospfv3RouterId($row), (string) ($row['context_name'] ?? ''));
@@ -541,7 +544,7 @@ class L3Builder
     /**
      * OSPF adjacencies as overlay edges, both directions merged into the worse state (down unless both
      * sides are full/2-way), also with a stub beyond the hops. The neighbour is found by its interface
-     * address, else by router ID.
+     * address, else by router ID; on a map of the past it is the one the history recorded.
      */
     private function addOspf(array &$nodes, array &$edges, array $kept): void
     {
@@ -556,7 +559,8 @@ class L3Builder
             $ip = trim((string) ($row['ospfNbrIpAddr'] ?? ''));
             $rid = self::routerKey((string) ($row['ospfNbrRtrId'] ?? ''));
             $context = (string) ($row['context_name'] ?? '');
-            $remote = $this->deviceByAddress($ip, $context) ?? ($rid !== null ? $this->deviceByRouterId($rid, $context) : null);
+            $remote = self::fromHistory($row) ? self::recordedNeighbor($row)
+                : $this->deviceByAddress($ip, $context) ?? ($rid !== null ? $this->deviceByRouterId($rid, $context) : null);
             [$from, $to] = $drawn ? ['d:' . $local, $this->farEnd($nodes, $local, $remote, $rid ?? $ip, 'OSPF neighbor', $context, [$rid, $ip])]
                 : ['d:' . $remote, $this->stubSide($nodes, $kept, $local, $remote)];
             if ($to === null) {
@@ -592,7 +596,7 @@ class L3Builder
             $remoteAs = (int) ($row['bgpPeerRemoteAs'] ?? 0);
             $localAs = (int) ($this->devices[$local]['bgpLocalAs'] ?? 0);
             $type = $remoteAs && $remoteAs === $localAs ? 'iBGP' : 'eBGP';
-            $remote = $this->deviceByAddress($peerIp, (string) ($row['context_name'] ?? ''));
+            $remote = self::fromHistory($row) ? self::recordedNeighbor($row) : $this->deviceByAddress($peerIp, (string) ($row['context_name'] ?? ''));
             if ($remote === $local) {
                 continue;
             }
@@ -1283,6 +1287,23 @@ class L3Builder
         }
 
         return isset($this->known['ambiguousRouterIds'][$key]) ? null : $this->deviceByAddress($rid, $context);
+    }
+
+    /**
+     * Is an OSPF or BGP row one of the topology history (History\PastMap, a map of the past)? Its neighbour is the
+     * device the history recorded (recordedNeighbor()), not the one with its address today.
+     */
+    private static function fromHistory(array $row): bool
+    {
+        return array_key_exists('neighbor_device_id', $row);
+    }
+
+    /**
+     * The neighbour device a row of the history recorded; null: none then (an unmonitored neighbour, external).
+     */
+    private static function recordedNeighbor(array $row): ?int
+    {
+        return $row['neighbor_device_id'] !== null ? (int) $row['neighbor_device_id'] : null;
     }
 
     /**

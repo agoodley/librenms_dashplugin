@@ -115,7 +115,7 @@ class PageController extends Controller
             $time = (new MapHistory(new HistoryRepository($request->user()), $settings))->info($repo->scope($params)[0]);
         } catch (\Throwable $e) {
             Log::warning('topology plugin: cannot read the topology history: ' . $e->getMessage());
-            $time = ['available' => false, 'reason' => 'The topology history cannot be read, see logs/librenms.log.'];
+            $time = MapHistory::emptyInfo($settings, 'The topology history cannot be read, see logs/librenms.log.');
         }
 
         return view('topology::map', [

@@ -12,11 +12,14 @@ use Agoodley\LibrenmsTopology\Topology\L2Builder;
  * sessions and devices that are new or changed, and "ghosts" (drawn dashed) for the links and sessions that
  * are gone, with a ghost far end when it is not on the map. The facts come as two sets: those present at the
  * start that changed or went (before) and those present now that are new or changed (after), as the Changes
- * page reads them (HistoryService::window()) or as the baseline holds them; a fact in both is no change.
- * Root bridges compare per switch and VLAN (Baseline::rootChanges()), blocked ports per port and VLAN.
+ * page reads them (HistoryService::window()) or as the baseline holds them; a fact in both is no change. Since
+ * a time, only the facts of the Changes page's events count: what it does not report (a neighbour LibreNMS
+ * started or stopped monitoring is the same cable) is not marked either. Root bridges compare per switch and
+ * VLAN (Baseline::rootChanges()), blocked ports per port (its device and name) and VLAN; on a map of one VLAN
+ * only the spanning tree instance it shows counts.
  *
- * Names come from FactText, so a device the user may not see is named as on the Changes page, and a ghost
- * node never carries the id of such a device.
+ * Names come from FactText, so a device the user may not see is named as on the Changes page; a ghost node's id
+ * is a number of this answer, which tells nothing about the device behind it.
  */
 class ChangeMarks
 {
@@ -43,6 +46,9 @@ class ChangeMarks
     /** @var array<int, array<int, int>> port_id => indexes of the edges with that port (members and aggregates) */
     private array $portEdges = [];
 
+    /** @var array<string, int> "device|port name" (InterfaceName::normalize()) => port_id of today's map */
+    private array $portByName = [];
+
     /** @var array<string, int> "kind|node id|address" => index of an OSPF / BGP edge */
     private array $sessionEdges = [];
 
@@ -55,6 +61,9 @@ class ChangeMarks
     /** @var array<string, array<int, array>> node id => marks */
     private array $nodeMarks = [];
 
+    /** @var array<string, string> what a ghost node stands for => its id in this answer */
+    private array $ghostIds = [];
+
     /** @var array<string, array> ghost node id => node */
     private array $ghostNodes = [];
 
@@ -64,11 +73,24 @@ class ChangeMarks
     /** Changes whose links, sessions or devices are not on this map. */
     private int $unplaced = 0;
 
+    /** The map's VLAN: only the spanning tree instance it shows is marked; null: all, with their VLANs. */
+    private readonly ?int $vlan;
+
+    /** Does the map draw unmanaged neighbours (and the devices the user may not see, drawn as such)? */
+    private readonly bool $unmanaged;
+
+    /** @var array<int, true>|null every device LibreNMS has, for a user who may see all of them (null otherwise) */
+    private readonly ?array $existing;
+
     /**
      * @param  array<int, array>  $events  ChangeReport events with the ids of their rows (facts)
+     * @param  array{vlan?: ?int, unmanaged?: bool, existing?: ?array}  $options
      */
-    private function __construct(private readonly array $result, private readonly FactText $text, array $events)
+    private function __construct(private readonly array $result, private readonly FactText $text, array $events, array $options)
     {
+        $this->vlan = $options['vlan'] ?? null;
+        $this->unmanaged = $options['unmanaged'] ?? true;
+        $this->existing = $options['existing'] ?? null;
         foreach ($result['nodes'] as $node) {
             $this->nodes[$node['id']] = $node;
         }
@@ -77,8 +99,18 @@ class ChangeMarks
                 continue; // end devices drawn as one node per switch and kind
             }
             $ports = [$edge['a']['port_id'] ?? null, $edge['b']['port_id'] ?? null];
+            foreach (['a', 'b'] as $side) {
+                if (isset($edge[$side]['device_id'], $edge[$side]['port_id'], $edge[$side]['name'])) {
+                    $this->portByName[$edge[$side]['device_id'] . '|' . InterfaceName::normalize((string) $edge[$side]['name'])] ??= (int) $edge[$side]['port_id'];
+                }
+            }
             foreach ($edge['members'] ?? [] as $member) {
                 array_push($ports, $member['a_port_id'] ?? null, $member['b_port_id'] ?? null);
+                foreach (['a', 'b'] as $side) {
+                    if (isset($edge[$side]['device_id'], $member[$side . '_port_id'], $member[$side])) {
+                        $this->portByName[$edge[$side]['device_id'] . '|' . InterfaceName::normalize((string) $member[$side])] ??= (int) $member[$side . '_port_id'];
+                    }
+                }
             }
             foreach (array_unique(array_filter($ports)) as $port) {
                 $this->portEdges[(int) $port][] = $index;
@@ -99,19 +131,36 @@ class ChangeMarks
     }
 
     /**
-     * The map with `changes` (marks: type, time, text) on its nodes and edges that changed, and the summary in
-     * changes: ghosts (nodes and edges to draw dashed), counts per type of mark and how many changes are not on
-     * this map (unplaced).
+     * The map with `changes` (marks: type, time, text, and the VLANs of a spanning tree mark) on its nodes and edges
+     * that changed, and the summary in changes: ghosts (nodes and edges to draw dashed), counts per type of mark, how
+     * many changes are not on this map (unplaced) and the VLAN the marks are of (null: all).
      *
      * @param  string  $mode  l2 or l3
      * @param  array<int, array>  $before  stored facts present at the start that changed or went (time: removed_at)
      * @param  array<int, array>  $after  stored facts present now that are new or changed (time: first_seen)
-     * @param  array<int, array>  $events  ChangeReport events with their facts (none when comparing with the baseline)
-     * @param  array<string, int>  $goneAt  hash => when a fact of $before went, when its removed_at is not that (the baseline)
+     * @param  array{events?: ?array, gone_at?: array<string, int>, vlan?: ?int, unmanaged?: bool, existing?: ?array}  $options
+     *     events: the Changes page's events with their facts since the time (only their facts are marked); null when
+     *     comparing with the baseline. gone_at: hash => when a fact of $before went, when its removed_at is not that
+     *     (the baseline). vlan: the map's VLAN. unmanaged: the map draws unmanaged neighbours (default true).
+     *     existing: every device LibreNMS has, for a user who may see all of them (a gone far end not among them was
+     *     monitored then: its ghost is drawn whatever the map's unmanaged neighbours).
      */
-    public static function apply(string $mode, array $result, array $before, array $after, FactText $text, array $events = [], array $goneAt = []): array
+    public static function apply(string $mode, array $result, array $before, array $after, FactText $text, array $options = []): array
     {
-        $marks = new self($result, $text, $events);
+        $events = $options['events'] ?? null;
+        if ($events !== null) {
+            $reported = [];
+            foreach ($events as $event) {
+                foreach ($event['facts'] ?? [] as $id) {
+                    $reported[(int) $id] = true;
+                }
+            }
+            $inReport = fn (array $row) => isset($row['id'], $reported[(int) $row['id']]);
+            $before = array_values(array_filter($before, $inReport));
+            $after = array_values(array_filter($after, $inReport));
+        }
+        $goneAt = $options['gone_at'] ?? [];
+        $marks = new self($result, $text, $events ?? [], $options);
         $beforeByHash = self::byHash($before);
         $afterByHash = self::byHash($after);
         $gone = array_diff_key($beforeByHash, $afterByHash);
@@ -147,7 +196,7 @@ class ChangeMarks
                 }
             }
         }
-        foreach ($events as $event) {
+        foreach ($events ?? [] as $event) {
             if ($event['type'] === 'device_added') {
                 foreach ($event['devices'] as $device) {
                     $marks->markNode('d:' . $device, 'device_added', $event['time'], $event['text']);
@@ -173,7 +222,9 @@ class ChangeMarks
     }
 
     /**
-     * A link that was there and is not: a ghost edge between its ends that are on the map, or to a ghost node.
+     * A link that was there and is not: a ghost edge between its ends that are on the map, or to a ghost node. A far
+     * end that was an unmanaged neighbour (or a device the user may not see, which the map draws as one) gets no
+     * ghost on a map without unmanaged neighbours; one LibreNMS monitored then does.
      */
     private function goneLink(array $row, ?int $time): void
     {
@@ -195,8 +246,16 @@ class ChangeMarks
         $to = match (true) {
             isset($far['device']) && $this->text->visible((int) $far['device']) && isset($this->nodes['d:' . $far['device']]) => 'd:' . $far['device'],
             ! isset($far['device']) && isset($far['node']) && isset($this->nodes[$far['node']]) => (string) $far['node'],
-            default => $this->ghostNode($this->farEndKey($row, 1 - $here, $far), $far),
+            default => null,
         };
+        if ($to === null) {
+            if (! $this->unmanaged && ! $this->monitored($far)) {
+                $this->unplaced++;
+
+                return;
+            }
+            $to = $this->ghostNode($this->farEndKey($row, 1 - $here, $far), $far);
+        }
         $this->ghostEdge($from, $to, 'link', $near, $far, 'link_gone', $time, $this->eventText($row) ?? 'Link gone: ' . $this->text->describe(self::fact($row)));
     }
 
@@ -219,7 +278,8 @@ class ChangeMarks
     /**
      * Root bridges per switch and VLAN before and after (Baseline::rootChanges()): where the root bridge of instances
      * moved, the new root bridge and the old one get a mark for those VLANs, when they are on the map. An instance a
-     * switch started or stopped reporting moved no root bridge.
+     * switch started or stopped reporting moved no root bridge. On a map of one VLAN, a move counts for the switches
+     * whose instance the map shows (shownVlans()).
      *
      * @param  array<string, array>  $before  hash => root bridge fact present at the start
      * @param  array<string, array>  $after  hash => root bridge fact present now
@@ -241,17 +301,34 @@ class ChangeMarks
             }
         }
         foreach (Baseline::rootChanges($before, $after) as $change) {
-            $devices = array_values(array_filter($change['devices'], fn ($id) => $this->text->visible($id)));
-            if (! $devices || $change['from'] === null || $change['to'] === null) {
+            if ($change['from'] === null || $change['to'] === null) {
                 continue;
             }
+            $deviceVlans = [];
+            foreach ($change['device_vlans'] as $device => $vlans) {
+                if ($this->text->visible($device)) {
+                    $deviceVlans[$device] = $this->shownVlans($device, $vlans);
+                }
+            }
+            if (! $deviceVlans) {
+                continue;
+            }
+            $deviceVlans = array_filter($deviceVlans);
+            if (! $deviceVlans) {
+                $this->unplaced++; // instances this map does not show
+
+                continue;
+            }
+            $devices = array_keys($deviceVlans);
+            $vlans = array_values(array_unique(array_merge(...array_values($deviceVlans))));
+            sort($vlans);
             $time = max(array_map(fn ($id) => $changed[$id] ?? 0, $devices)) ?: null;
-            $text = $this->text->rootChange(['devices' => $devices] + $change);
+            $text = $this->text->rootChange(['devices' => $devices, 'vlans' => $vlans, 'device_vlans' => $deviceVlans] + $change);
             $placed = false;
             foreach (['to' => 'root_new', 'from' => 'root_old'] as $side => $type) {
                 $root = $change[$side]['root_device'] ?? null;
                 if ($root !== null && $this->text->visible((int) $root) && isset($this->nodes['d:' . $root])) {
-                    $placed = $this->markNode('d:' . $root, $type, $time, $text) || $placed;
+                    $placed = $this->markNode('d:' . $root, $type, $time, $text, $vlans) || $placed;
                 }
             }
             if (! $placed) {
@@ -261,7 +338,8 @@ class ChangeMarks
     }
 
     /**
-     * Blocked ports per port and VLAN before and after: the edge of a port that started or stopped blocking.
+     * Blocked ports before and after per port, a port by its device and name as the Changes page takes it (LibreNMS
+     * may have re-created it under a new id), and VLAN: the edge of a port that started or stopped blocking.
      *
      * @param  array<int, array>  $before  blocked port facts present at the start
      * @param  array<int, array>  $after  blocked port facts present now
@@ -273,33 +351,60 @@ class ChangeMarks
         foreach (['before' => $before, 'after' => $after] as $side => $rows) {
             foreach ($rows as $row) {
                 $data = $row['data'];
-                $key = (int) $data['device'] . ':' . (int) $data['port'];
+                $key = (int) $data['device'] . '|' . InterfaceName::normalize((string) ($data['port_name'] ?? ''));
                 $ports[$key]['data'] = $data;
+                $ports[$key]['ids'][(int) $data['port']] = true;
                 $ports[$key][$side] = array_merge($ports[$key][$side] ?? [], FactText::vlans($data));
                 $ports[$key]['time'] = max($ports[$key]['time'] ?? 0, (int) ($side === 'after' ? $row['first_seen'] : ($goneAt[$row['hash']] ?? $row['removed_at'] ?? 0)));
-                $ports[$key]['rows'][] = $row;
             }
         }
-        foreach ($ports as $port) {
+        foreach ($ports as $key => $port) {
             $data = $port['data'];
-            $started = array_values(array_diff($port['after'] ?? [], $port['before'] ?? []));
-            $stopped = array_values(array_diff($port['before'] ?? [], $port['after'] ?? []));
+            $device = (int) $data['device'];
+            $started = $this->shownVlans($device, array_values(array_unique(array_diff($port['after'] ?? [], $port['before'] ?? []))));
+            $stopped = $this->shownVlans($device, array_values(array_unique(array_diff($port['before'] ?? [], $port['after'] ?? []))));
             if (! $started && ! $stopped) {
+                // no change, or none of the instance this map shows
+                if (array_diff($port['after'] ?? [], $port['before'] ?? []) || array_diff($port['before'] ?? [], $port['after'] ?? [])) {
+                    $this->unplaced++;
+                }
                 continue;
             }
-            $index = $this->portEdges[(int) $data['port']][0] ?? null;
-            if ($index === null || ! $this->text->visible((int) $data['device'])) {
+            $index = null;
+            foreach (array_keys($port['ids']) as $id) {
+                $index ??= $this->portEdges[$id][0] ?? null;
+            }
+            $index ??= isset($this->portByName[$key]) ? ($this->portEdges[$this->portByName[$key]][0] ?? null) : null;
+            if ($index === null || ! $this->text->visible($device)) {
                 $this->unplaced++;
                 continue;
             }
-            $name = $this->text->device((int) $data['device'], $data['device_name'] ?? null) . ' ' . ($data['port_name'] ?? '');
+            $name = $this->text->device($device, $data['device_name'] ?? null) . ' ' . ($data['port_name'] ?? '');
             foreach (['blocking_started' => $started, 'blocking_stopped' => $stopped] as $type => $vlans) {
                 if ($vlans) {
+                    sort($vlans);
                     $this->markEdge($index, $type, $port['time'] ?: null, $name . ($type === 'blocking_started' ? ' started blocking in ' : ' stopped blocking in ')
-                        . FactText::vlanList($vlans));
+                        . FactText::vlanList($vlans), $vlans);
                 }
             }
         }
+    }
+
+    /**
+     * The instances (VLAN keys) among $vlans that a mark of $device is about on this map: with a VLAN chosen, only the
+     * instance the map shows for the device (its node's spanning tree), else all of them (the mark names them).
+     *
+     * @param  int[]  $vlans
+     * @return int[]
+     */
+    private function shownVlans(int $device, array $vlans): array
+    {
+        if ($this->vlan === null) {
+            return array_values($vlans);
+        }
+        $shown = $this->nodes['d:' . $device]['stp']['vlan'] ?? null;
+
+        return $shown !== null && in_array((int) $shown, array_map('intval', $vlans), true) ? [(int) $shown] : [];
     }
 
     /**
@@ -381,6 +486,20 @@ class ChangeMarks
     }
 
     /**
+     * Was a link's far end a device LibreNMS monitored: one the user may see, or one LibreNMS no longer has (known
+     * to a user who may see every device)? The others are drawn as unmanaged neighbours.
+     */
+    private function monitored(array $far): bool
+    {
+        if (! isset($far['device'])) {
+            return false;
+        }
+        $device = (int) $far['device'];
+
+        return $this->text->visible($device) || ($this->existing !== null && ! isset($this->existing[$device]));
+    }
+
+    /**
      * Which ghost node the far end of a gone link is: one per device the user may see, or per name the neighbour
      * reported (the links of a switch removed from LibreNMS all end at one ghost, as the L2 map joins an unmanaged
      * neighbour's links), and one per link when the far end has no such name (no name, a generic one, or a device
@@ -401,11 +520,11 @@ class ChangeMarks
     }
 
     /**
-     * Ghost node of a gone far end, named as the Changes page names it.
+     * Ghost node of a gone far end, named as the Changes page names it. Its id is the next number of this answer.
      */
     private function ghostNode(string $key, array $end): string
     {
-        $id = 'ghost:' . substr(sha1($key), 0, 16);
+        $id = $this->ghostIds[$key] ??= 'ghost:' . (count($this->ghostIds) + 1);
         if (isset($end['device'])) {
             $visible = $this->text->visible((int) $end['device']);
             $name = $this->text->device((int) $end['device'], $end['name'] ?? null, $end['host'] ?? PastMap::MASKED);
@@ -444,22 +563,27 @@ class ChangeMarks
         self::addMark($this->ghostEdges[$key]['changes'], $type, $time, $text);
     }
 
-    private function markEdge(int $index, string $type, ?int $time, string $text): void
+    /**
+     * @param  int[]  $vlans  the instances a spanning tree mark is about
+     */
+    private function markEdge(int $index, string $type, ?int $time, string $text, array $vlans = []): void
     {
         $this->edgeMarks[$index] ??= [];
-        self::addMark($this->edgeMarks[$index], $type, $time, $text);
+        self::addMark($this->edgeMarks[$index], $type, $time, $text, $vlans);
     }
 
     /**
      * Mark a node of the map; false when it is not on it.
+     *
+     * @param  int[]  $vlans  the instances a spanning tree mark is about
      */
-    private function markNode(string $id, string $type, ?int $time, string $text): bool
+    private function markNode(string $id, string $type, ?int $time, string $text, array $vlans = []): bool
     {
         if (! isset($this->nodes[$id])) {
             return false;
         }
         $this->nodeMarks[$id] ??= [];
-        self::addMark($this->nodeMarks[$id], $type, $time, $text);
+        self::addMark($this->nodeMarks[$id], $type, $time, $text, $vlans);
 
         return true;
     }
@@ -468,15 +592,16 @@ class ChangeMarks
      * Add a mark once (both halves of a moved cable, both routers of a session tell the same).
      *
      * @param  array<int, array>  $marks
+     * @param  int[]  $vlans
      */
-    private static function addMark(array &$marks, string $type, ?int $time, string $text): void
+    private static function addMark(array &$marks, string $type, ?int $time, string $text, array $vlans = []): void
     {
         foreach ($marks as $mark) {
             if ($mark['type'] === $type && $mark['text'] === $text) {
                 return;
             }
         }
-        $marks[] = ['type' => $type, 'time' => $time, 'text' => $text];
+        $marks[] = ['type' => $type, 'time' => $time, 'text' => $text] + ($vlans ? ['vlans' => array_values($vlans)] : []);
     }
 
     /**
@@ -509,6 +634,8 @@ class ChangeMarks
             'ghosts' => ['nodes' => array_values($this->ghostNodes), 'edges' => array_values($this->ghostEdges)],
             'counts' => array_filter($counts),
             'unplaced' => $this->unplaced,
+            // the VLAN the marks are of; null: all, each spanning tree mark with its VLANs
+            'vlan' => $this->vlan,
         ];
 
         return $result;

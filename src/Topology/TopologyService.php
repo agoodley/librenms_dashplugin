@@ -285,9 +285,9 @@ class TopologyService
         if ($past !== null) {
             $ids = array_values(array_filter(array_map(fn (array $node) => ($node['type'] ?? '') === 'device' ? (int) ($node['device_id'] ?? 0) : 0, $result['nodes'])));
             $past->finish($result, $this->mapHistory()->deviceStates($ids, $past->snapshot['time']));
-            $result['as_of'] = $this->mapHistory()->asOf($past, (int) $p['at'], $mode, $layers);
+            $result['as_of'] = $this->mapHistory()->asOf($past, (int) $p['at'], $mode, $layers, $mode === 'l2' && ($p['unmanaged'] ?? true));
         } elseif (($p['since'] ?? null) !== null) {
-            $result = $this->mapHistory()->changes($mode, $p['since'], $result);
+            $result = $this->mapHistory()->changes($mode, $p['since'], $result, $p);
         }
     }
 

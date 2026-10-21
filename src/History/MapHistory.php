@@ -11,9 +11,9 @@ use Carbon\Carbon;
 /**
  * The L2 and L3 maps at another time, from the topology history: a map as of a time (the last snapshot at or
  * before it, PastMap), today's map with what changed since a time or since the saved baseline (ChangeMarks, from
- * the facts the Changes page reads), and what the map's Time control offers. A time the history cannot answer
- * (switched off, its tables missing, before its earliest snapshot) is refused (TimeRefused) rather than drawn
- * from today's data.
+ * the facts and events the Changes page reads), and what the map's Time control offers. A time the history cannot
+ * answer (switched off, its tables missing, before its earliest snapshot) is refused (TimeRefused) rather than
+ * drawn from today's data.
  */
 class MapHistory
 {
@@ -22,6 +22,9 @@ class MapHistory
 
     /** Changes listed with a map's marks (ChangeReport events; their counts are complete). */
     public const LISTED_EVENTS = 200;
+
+    /** Quick picks of the Time control: how long ago. */
+    private const PICKS = ['1 hour ago' => 3600, 'Yesterday, this time' => 86400, 'Last week, this time' => 7 * 86400];
 
     /** What a past map takes from the history, and what from today, by kind of fact (the banner's words). */
     private const FROM_HISTORY = [
@@ -44,6 +47,9 @@ class MapHistory
     /** L3 overlays the history does not record, as the banner names them. */
     public const UNRECORDED_LAYERS = ['ospfv3' => 'OSPFv3 adjacencies', 'isis' => 'IS-IS adjacencies', 'ipsec' => 'IPsec tunnels',
         'mpls' => 'MPLS LSPs', 'pw' => 'pseudowires'];
+
+    /** Tables each map is drawn from: a role that may not read them gets an empty map. */
+    private const MAP_TABLES = ['l2' => ['links', 'ports', 'stp', 'ports_stp'], 'l3' => ['ipv4_addresses', 'ipv6_addresses', 'ospf_nbrs', 'bgpPeers']];
 
     private ?HistoryService $service = null;
 
@@ -88,12 +94,14 @@ class MapHistory
 
     /**
      * What a map as of $time shows (its response's as_of): the time asked for, the snapshot drawn and the next one,
-     * what came from the history and what from today, the overlays left out, the kinds of facts not recorded yet then.
+     * what came from the history and what from today, what it leaves out (the L3 overlays the history does not
+     * record, and the phones it leaves out), the kinds of facts not recorded yet then.
      *
      * @param  string  $mode  l2 or l3
      * @param  array<string, int>  $layers  L3 overlay => devices of the map with such data today (left out)
+     * @param  bool  $phones  the L2 map draws unmanaged neighbors, phones among them today
      */
-    public function asOf(PastMap $past, int $time, string $mode, array $layers = []): array
+    public function asOf(PastMap $past, int $time, string $mode, array $layers = [], bool $phones = false): array
     {
         $snapshot = $past->snapshot;
         $kinds = array_keys(self::FROM_HISTORY[$mode]);
@@ -102,13 +110,17 @@ class MapHistory
         $interval = $this->settings->int('history_interval', 5, 1440) * 60;
         $until = $snapshot['next'] ?? time();
         if ($time - $snapshot['time'] > 2 * $interval && $until - $snapshot['time'] > 2 * $interval) {
-            $notes[] = 'No snapshot was taken between ' . self::format($snapshot['time']) . ' and ' . ($snapshot['next'] !== null ? self::format($snapshot['next']) : 'now')
-                . ': the map shows the earlier one.';
+            $notes[] = 'No snapshot was taken between ' . self::display($snapshot['time']) . ' and '
+                . ($snapshot['next'] !== null ? self::display($snapshot['next']) : 'now') . ': the map shows the earlier one.';
         }
         $skipped = array_values(array_intersect($allowed, $snapshot['skipped']));
         if ($skipped) {
             $notes[] = 'That snapshot could not read the ' . implode(', ', array_map(fn ($kind) => self::FROM_HISTORY[$mode][$kind], $skipped))
                 . ': they are as the snapshot before recorded them.';
+        }
+        $notShown = array_values(array_intersect_key(self::UNRECORDED_LAYERS, array_filter($layers)));
+        if ($mode === 'l2' && $phones) {
+            $notShown[] = 'phones';
         }
 
         return [
@@ -117,7 +129,7 @@ class MapHistory
             'next' => $snapshot['next'] !== null ? self::format($snapshot['next'], true) : null,
             'from_history' => array_values(array_map(fn ($kind) => self::FROM_HISTORY[$mode][$kind], $allowed)),
             'from_today' => self::FROM_TODAY[$mode],
-            'not_shown' => array_values(array_intersect_key(self::UNRECORDED_LAYERS, array_filter($layers))),
+            'not_shown' => $notShown,
             'not_recorded' => array_values(array_map(fn ($kind) => self::FROM_HISTORY[$mode][$kind], array_diff($allowed, $snapshot['recorded']))),
             'notes' => $notes,
         ];
@@ -136,14 +148,18 @@ class MapHistory
 
     /**
      * Today's map with what changed since $since (a timestamp) or since the saved baseline (MapParams::BASELINE), for
-     * its devices: the marks and ghosts (ChangeMarks) and, in changes, the time span, the counts and the events.
+     * its devices: the marks and ghosts (ChangeMarks) and, in changes, the time span, the counts and the events. Since
+     * a time, only what the Changes page reports for the same span is marked (its events); since the baseline, what
+     * the Changes page's comparison with the baseline lists. The marks follow the map's VLAN and its toggle of
+     * unmanaged neighbors.
      *
      * @param  string  $mode  l2 or l3
      * @param  int|string  $since
+     * @param  array{vlan?: ?int, unmanaged?: bool}  $p  the map's parameters
      *
      * @throws TimeRefused
      */
-    public function changes(string $mode, int|string $since, array $result): array
+    public function changes(string $mode, int|string $since, array $result, array $p = []): array
     {
         $ids = [];
         foreach ($result['nodes'] as $node) {
@@ -154,17 +170,27 @@ class MapHistory
         $visible = array_fill_keys($this->history->deviceIds(), true);
         $text = new FactText($this->history->names(array_keys($visible)), $visible);
         $kinds = array_keys(self::FROM_HISTORY[$mode]);
+        $options = [
+            'vlan' => $mode === 'l2' && isset($p['vlan']) ? (int) $p['vlan'] : null,
+            'unmanaged' => (bool) ($p['unmanaged'] ?? true),
+            'existing' => $this->history->seesEveryDevice() ? $this->history->existingDevices() : null,
+        ];
 
         if ($since === MapParams::BASELINE) {
             if (($why = $this->unavailable()) !== null) {
                 throw new TimeRefused($why);
             }
-            $saved = $ids ? $this->history->baselineInfo($ids) : null;
+            if (! $ids) {
+                $hidden = $this->history->hiddenKinds(self::MAP_TABLES[$mode]);
+                throw new TimeRefused($hidden ? 'Your LibreNMS role may not view ' . self::words($hidden) . ': this map has no devices to compare with the baseline.'
+                    : 'This map has no devices to compare with the baseline.');
+            }
+            $saved = $this->history->baselineInfo($ids);
             if ($saved === null) {
                 throw new TimeRefused('No baseline is saved for the devices of this map: an admin saves one on the Changes page.');
             }
             [$before, $after, $goneAt] = $this->baseline($ids, $kinds);
-            $result = ChangeMarks::apply($mode, $result, $before, $after, $text, [], $goneAt);
+            $result = ChangeMarks::apply($mode, $result, $before, $after, $text, ['gone_at' => $goneAt] + $options);
             $result['changes'] += ['since' => MapParams::BASELINE, 'baseline' => ['saved_at' => $saved['saved_at']], 'from' => $saved['saved_at'],
                 'to' => self::format(time(), true), 'events' => [], 'events_total' => null, 'truncated' => false, 'labels' => ChangeMarks::TYPES];
 
@@ -172,17 +198,16 @@ class MapHistory
         }
 
         $this->check((int) $since);
+        // the window starts after the time (the state then is the snapshot at or before it), as the Changes page's from
         $from = Carbon::createFromTimestamp((int) $since + 1, date_default_timezone_get());
         $to = Carbon::now();
-        $window = $this->service()->window($ids, $from, $to, $text, $kinds);
-        $rows = $window['rows'];
+        $window = $this->service()->window($ids, $from, $to, $text, $kinds, false);
         $start = $window['from']->getTimestamp() - 1;
         $before = [];
         $after = [];
-        foreach ($rows as $row) {
-            // facts of a kind's first snapshot existed before: no change (ChangeReport leaves them out too)
-            $initial = $row['initial'] && $row['first_seen'] > $start;
-            if (PastMap::presentAt($row, $start) || $initial) {
+        foreach ($window['rows'] as $row) {
+            // a fact of its kind's first snapshot existed before it (ChangeReport does not count it as new either)
+            if (PastMap::presentAt($row, $start) || ($row['initial'] && $row['first_seen'] > $start)) {
                 $before[] = $row;
             }
             if ($row['removed_at'] === null) {
@@ -190,11 +215,12 @@ class MapHistory
             }
         }
         $events = array_values(array_filter($window['report']['events'], fn ($event) => in_array($event['category'], $mode === 'l2' ? ['devices', 'links', 'stp'] : ['devices', 'routing'], true)));
-        $result = ChangeMarks::apply($mode, $result, $before, $after, $text, $events);
+        $result = ChangeMarks::apply($mode, $result, $before, $after, $text, ['events' => $events] + $options);
         $result['changes'] += [
             'since' => self::format((int) $since, true),
             'baseline' => null,
-            'from' => $window['since'] !== null ? $window['since']->toDateTimeString() : self::format((int) $since, true),
+            // the span of the marks as the Changes page takes it: from the second after the time (or after the cut)
+            'from' => $window['from']->toDateTimeString(),
             'to' => $to->toDateTimeString(),
             'events' => array_map(fn ($event) => array_diff_key($event, ['facts' => true]), array_slice($events, 0, self::LISTED_EVENTS)),
             'events_total' => count($events),
@@ -214,7 +240,7 @@ class MapHistory
         $when = function (array $items): array {
             foreach ($items as &$item) {
                 foreach ($item['changes'] ?? [] as $index => $mark) {
-                    $item['changes'][$index]['when'] = $mark['time'] !== null ? date('Y-m-d H:i', (int) $mark['time']) : null;
+                    $item['changes'][$index]['when'] = $mark['time'] !== null ? self::display((int) $mark['time']) : null;
                 }
             }
 
@@ -224,23 +250,22 @@ class MapHistory
         $result['edges'] = $when($result['edges']);
         $result['changes']['ghosts']['edges'] = $when($result['changes']['ghosts']['edges']);
         foreach ($result['changes']['events'] as $index => $event) {
-            $result['changes']['events'][$index]['when'] = date('Y-m-d H:i', (int) $event['time']);
+            $result['changes']['events'][$index]['when'] = self::display((int) $event['time']);
         }
 
         return $result;
     }
 
     /**
-     * The Time control of a map page: whether the history can draw maps at other times (reason when not), the
-     * earliest and latest snapshots (an earlier time is refused), the latest ones to pick from, when the baseline of
-     * these devices was saved, and the server's time and time zone (the times are its).
+     * The Time control of a map page (emptyInfo(), controls()): whether the history can draw maps at other times
+     * (reason when not), its snapshots, the quick picks and defaults, and when the baseline of these devices was saved.
      *
      * @param  int[]  $ids  devices of the map's scope
      */
-    public function info(array $ids): array
+    public function info(array $ids, ?int $now = null): array
     {
-        $info = ['available' => false, 'reason' => null, 'earliest' => null, 'latest' => null, 'snapshots' => [], 'count' => 0, 'baseline' => null,
-            'now' => self::format(time()), 'timezone' => date_default_timezone_get(), 'interval' => $this->settings->int('history_interval', 5, 1440)];
+        $now ??= time();
+        $info = self::emptyInfo($this->settings, null, $now);
         if (($why = $this->unavailable()) !== null) {
             return ['reason' => $why] + $info;
         }
@@ -250,23 +275,77 @@ class MapHistory
         }
         $baseline = $ids ? $this->history->baselineInfo($ids) : null;
 
-        return [
-            'available' => true,
-            'earliest' => self::format($times['earliest']),
-            'latest' => self::format((int) $times['latest']),
-            'snapshots' => array_map(fn ($time) => self::format($time), $times['recent']),
-            'count' => $times['count'],
-            'baseline' => $baseline !== null ? self::format((int) strtotime($baseline['saved_at'])) : null,
-        ] + $info;
+        return ['available' => true, 'count' => $times['count'], 'baseline' => $baseline !== null ? self::stamp((int) strtotime($baseline['saved_at'])) : null]
+            + self::controls($times['earliest'], (int) $times['latest'], $times['recent'], $now) + $info;
     }
 
     /**
-     * Date and time for the Time control (2026-10-21T09:00, what a datetime-local input holds), with seconds as the
-     * history stores them.
+     * The Time control without maps at other times (the history unavailable: $reason), with every key info() has,
+     * so that the page draws the control disabled with the reason.
+     */
+    public static function emptyInfo(PluginSettings $settings, ?string $reason = null, ?int $now = null): array
+    {
+        $now ??= time();
+
+        return [
+            'available' => false, 'reason' => $reason, 'earliest' => null, 'earliest_minute' => null, 'latest' => null, 'snapshots' => [], 'count' => 0,
+            'baseline' => null, 'picks' => [], 'defaults' => ['at' => null, 'since' => null], 'now' => self::format($now),
+            'timezone' => date_default_timezone_get(), 'zone' => date('T', $now), 'interval' => $settings->int('history_interval', 5, 1440),
+        ];
+    }
+
+    /**
+     * What the Time control offers for the snapshots the history keeps, as the date input and the URL take them:
+     * the earliest snapshot (with its seconds, and its minute for the input: a minute covers the snapshots in it,
+     * MapParams::time()), the latest, the recent ones (a pick draws exactly that snapshot), the quick picks (a
+     * minute, disabled when it ends before the earliest snapshot) and what As of / Changes since start with: an hour
+     * ago and yesterday, else the latest and the earliest snapshot.
+     *
+     * @param  int[]  $recent  starts of the latest snapshots, newest first
+     * @return array{earliest: string, earliest_minute: string, latest: string, snapshots: string[],
+     *     picks: array<int, array{label: string, value: string, early: bool}>, defaults: array{at: string, since: string}}
+     */
+    public static function controls(int $earliest, int $latest, array $recent, int $now): array
+    {
+        $picks = [];
+        foreach (self::PICKS as $label => $ago) {
+            $minute = intdiv($now - $ago, 60) * 60;
+            $picks[] = ['label' => $label, 'value' => self::format($minute), 'early' => $minute + 59 < $earliest];
+        }
+
+        return [
+            'earliest' => self::stamp($earliest),
+            'earliest_minute' => self::format($earliest),
+            'latest' => self::stamp($latest),
+            'snapshots' => array_map(fn ($time) => self::stamp((int) $time), $recent),
+            'picks' => $picks,
+            'defaults' => ['at' => $picks[0]['early'] ? self::stamp($latest) : $picks[0]['value'], 'since' => $picks[1]['early'] ? self::stamp($earliest) : $picks[1]['value']],
+        ];
+    }
+
+    /**
+     * Date and time for the Time control's input (2026-10-21T09:00, what a datetime-local input holds), with seconds
+     * as the history stores them (2026-10-21 09:00:03).
      */
     public static function format(int $time, bool $seconds = false): string
     {
         return date($seconds ? 'Y-m-d H:i:s' : 'Y-m-d\TH:i', $time);
+    }
+
+    /**
+     * A snapshot's time as the URL and the Time control's picks carry it, to the second (2026-10-21T09:00:03).
+     */
+    public static function stamp(int $time): string
+    {
+        return date('Y-m-d\TH:i:s', $time);
+    }
+
+    /**
+     * A time as the page writes it (2026-10-21 09:00).
+     */
+    public static function display(int $time): string
+    {
+        return date('Y-m-d H:i', $time);
     }
 
     /**
@@ -297,7 +376,7 @@ class MapHistory
         $pruned = $earliest <= time() - $days * 86400 + 2 * 60 * $this->settings->int('history_interval', 5, 1440);
 
         return ($pruned ? "The history keeps $days days" : 'The history starts with its first snapshot')
-            . ': the earliest map is as of ' . date('Y-m-d H:i', $earliest) . '.';
+            . ': the earliest map is as of ' . date('Y-m-d H:i:s', $earliest) . '.';
     }
 
     /**
@@ -326,6 +405,18 @@ class MapHistory
         $goneAt = array_map(fn ($date) => (int) strtotime($date), $this->history->goneSince(array_slice($missing, 0, HistoryRepository::WINDOW_LIMIT)));
 
         return [$before, $after, $goneAt];
+    }
+
+    /**
+     * "a, b and c".
+     *
+     * @param  string[]  $words
+     */
+    private static function words(array $words): string
+    {
+        $last = array_pop($words);
+
+        return $words ? implode(', ', $words) . ' and ' . $last : (string) $last;
     }
 
     private function service(): HistoryService

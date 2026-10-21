@@ -35,6 +35,7 @@
         "librenms/plugin-interfaces": "^1.0"
     },
     "require-dev": {
+        "nesbot/carbon": "^2.72|^3.0",
         "phpunit/phpunit": "^10.5|^11.0"
     },
     "extra": {

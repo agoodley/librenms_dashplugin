@@ -1,0 +1,453 @@
+<?php
+
+namespace Agoodley\LibrenmsTopology\Tests\Unit;
+
+use Agoodley\LibrenmsTopology\Data\HistoryRepository;
+use Agoodley\LibrenmsTopology\Data\ScopedRepository;
+use Agoodley\LibrenmsTopology\History\FactCollector;
+use Agoodley\LibrenmsTopology\History\MapHistory;
+use Agoodley\LibrenmsTopology\History\PastMap;
+use Agoodley\LibrenmsTopology\History\TimeRefused;
+use Agoodley\LibrenmsTopology\Stp\StpIndex;
+use Agoodley\LibrenmsTopology\Support\MapParams;
+use Agoodley\LibrenmsTopology\Support\PluginSettings;
+use Agoodley\LibrenmsTopology\Topology\L2Builder;
+use Carbon\Carbon;
+use Carbon\CarbonInterface;
+use PHPUnit\Framework\TestCase;
+
+/**
+ * The maps at another time as MapHistory serves them: the changes since a time read as the Changes page reads them
+ * (its window and events), facts of a kind's first snapshot, the baseline, the refusals, and the Time control's
+ * times (snapshots start a few seconds into a minute).
+ */
+class MapHistoryTest extends TestCase
+{
+    private const NAMES = [1 => 'core1', 2 => 'core2', 3 => 'acc1', 4 => 'newsw'];
+
+    /** Snapshots an hour apart, each 7 seconds into its minute. */
+    private const S0 = 1_792_444_807;
+    private const S1 = self::S0 + 3600;
+    private const S2 = self::S1 + 3600;
+    private const NOW = self::S2 + 1800;
+
+    private static int $id = 500;
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+    }
+
+    private static function ports(): array
+    {
+        $ports = [];
+        foreach ([[11, 1, 'Te1/0/1'], [12, 1, 'Te1/0/2'], [21, 2, 'Te1/0/1'], [31, 3, 'Gi1/0/49'], [41, 4, 'Gi0/1']] as [$id, $device, $name]) {
+            $ports[$id] = ['port_id' => $id, 'device_id' => $device, 'ifName' => $name, 'ifOperStatus' => 'up'];
+        }
+
+        return $ports;
+    }
+
+    private static function link(int $ld, int $lp, int $rd, ?int $rp, string $host, string $remotePort): array
+    {
+        return ['id' => 0, 'local_device_id' => $ld, 'local_port_id' => $lp, 'remote_device_id' => $rd, 'remote_port_id' => $rp, 'remote_hostname' => $host,
+            'remote_port' => $remotePort, 'remote_platform' => 'Cisco IOS', 'remote_version' => '', 'protocol' => 'lldp'];
+    }
+
+    /**
+     * Stored rows (HistoryRepository::factRow()) of facts with one period.
+     *
+     * @param  array<string, array>  $facts
+     */
+    private static function rows(array $facts, int $firstSeen, ?int $removedAt, bool $initial = false): array
+    {
+        $rows = [];
+        foreach ($facts as $fact) {
+            $rows[] = ['id' => self::$id++, 'kind' => $fact['kind'], 'hash' => $fact['hash'], 'key' => $fact['key'], 'fact_key' => $fact['key'],
+                'device_a' => $fact['device_a'], 'device_b' => $fact['device_b'], 'data' => $fact['data'], 'data_hash' => $fact['data_hash'],
+                'initial' => $initial, 'first_seen' => $firstSeen, 'removed_at' => $removedAt];
+        }
+
+        return $rows;
+    }
+
+    private static function devices(): array
+    {
+        $devices = [];
+        foreach (self::NAMES as $id => $name) {
+            $devices[$id] = ['device_id' => $id, 'hostname' => $name, 'role' => 'switch', 'status' => 1, 'disabled' => 0];
+        }
+
+        return $devices;
+    }
+
+    /**
+     * The history: at S0 (the first snapshot) acc1 on core1 and newsw an unmanaged neighbour of core1; at S1 acc1's
+     * cable moved to core2 and LibreNMS started to monitor newsw (the same cable).
+     */
+    private static function history(): array
+    {
+        $c = new FactCollector(self::NAMES, self::ports());
+
+        return [
+            'L1' => self::rows($c->links([self::link(3, 31, 1, 11, 'core1', 'Te1/0/1')]), self::S0, self::S1, true)[0],
+            'L2' => self::rows($c->links([self::link(3, 31, 2, 21, 'core2', 'Te1/0/1')]), self::S1, null)[0],
+            'U' => self::rows($c->links([self::link(1, 12, 0, null, 'newsw', 'Gi0/1')]), self::S0, self::S1, true)[0],
+            'M' => self::rows($c->links([self::link(1, 12, 4, 41, 'newsw', 'Gi0/1')]), self::S1, null)[0],
+        ];
+    }
+
+    /**
+     * Today's L2 map: acc1 on core2, newsw monitored on core1.
+     */
+    private static function today(): array
+    {
+        return (new L2Builder(self::devices(), [self::link(3, 31, 2, 21, 'core2', 'Te1/0/1'), self::link(1, 12, 4, 41, 'newsw', 'Gi0/1')], self::ports(), [], [],
+            new StpIndex))->build();
+    }
+
+    public function testChangesSinceATimeAreTheChangesPagesEvents(): void
+    {
+        Carbon::setTestNow(Carbon::createFromTimestamp(self::NOW));
+        $repo = new FakeMapHistory(array_values(self::history()), [self::S0, self::S1, self::S2], self::NAMES);
+        $since = self::S0 + 600;
+
+        $result = (new MapHistory($repo, new PluginSettings))->changes('l2', $since, self::today(), ['unmanaged' => true, 'vlan' => null]);
+
+        $this->assertFalse($repo->droppedAsked, 'a map does not count what a cut window leaves out');
+        $changes = $result['changes'];
+        $this->assertSame(date('Y-m-d H:i:s', $since + 1), $changes['from'], 'the window starts after the time, the Changes page link too');
+        $this->assertSame(['cable_moved'], array_column($changes['events'], 'type'), 'newsw monitored now is the same cable: no event');
+        $this->assertEquals(['link_new' => 1, 'link_gone' => 1], $changes['counts'], 'only the moved cable is marked');
+        $edges = array_column($result['edges'], null, 'to');
+        $this->assertSame('acc1 Gi1/0/49 now connects to core2 Te1/0/1 (was core1 Te1/0/1)', $edges['d:3']['changes'][0]['text']);
+        $this->assertSame(date('Y-m-d H:i', self::S1), $edges['d:3']['changes'][0]['when']);
+        $this->assertArrayNotHasKey('changes', $edges['d:4'], 'no mark on the cable to newsw');
+        $this->assertSame([['d:1', 'd:3']], array_map(fn ($ghost) => [$ghost['from'], $ghost['to']], $changes['ghosts']['edges']), 'the ghost of the old cable only');
+        $this->assertSame([], $changes['ghosts']['nodes'], 'no ghost of newsw as an unmanaged neighbour');
+    }
+
+    public function testFactsOfAKindsFirstSnapshotExistedBefore(): void
+    {
+        Carbon::setTestNow(Carbon::createFromTimestamp(self::NOW));
+        $c = new FactCollector(self::NAMES, self::ports());
+        // spanning tree recorded from S1 on (its first snapshot): acc1's root bridge stays, its Gi1/0/49 stopped blocking at S2
+        $rows = array_merge(
+            self::rows($c->stpRoots([['device_id' => 3, 'vlan' => 20, 'designatedRoot' => '0000000000a1', 'bridgeAddress' => '0000000000c1']]), self::S1, null, true),
+            self::rows($c->blockedPortFacts([3 => [31 => [20]]]), self::S1, self::S2, true),
+        );
+        $map = (new L2Builder(self::devices(), [self::link(3, 31, 2, 21, 'core2', 'Te1/0/1')], self::ports(), [], [], new StpIndex))->build();
+
+        $result = (new MapHistory(new FakeMapHistory($rows, [self::S0, self::S1, self::S2], self::NAMES), new PluginSettings))->changes('l2', self::S0 + 60, $map);
+
+        $this->assertEquals(['blocking_stopped' => 1], $result['changes']['counts'], 'the root bridge recorded first at S1 is no new one');
+        $this->assertSame('acc1 Gi1/0/49 stopped blocking in VLAN 20', $result['edges'][0]['changes'][0]['text']);
+    }
+
+    public function testChangesSinceTheBaseline(): void
+    {
+        Carbon::setTestNow(Carbon::createFromTimestamp(self::NOW));
+        $history = self::history();
+        $repo = new FakeMapHistory(array_values($history), [self::S0, self::S1, self::S2], self::NAMES);
+        $repo->baseline = ['saved_at' => date('Y-m-d H:i:s', self::S0 + 30), 'saved_by' => 'admin', 'facts' => 2];
+        $repo->baselineFacts = [$history['L1']['hash'] => $history['L1'], $history['M']['hash'] => $history['M']];
+
+        $result = (new MapHistory($repo, new PluginSettings))->changes('l2', MapParams::BASELINE, self::today());
+
+        $changes = $result['changes'];
+        $this->assertSame('baseline', $changes['since']);
+        $this->assertSame(['saved_at' => date('Y-m-d H:i:s', self::S0 + 30)], $changes['baseline']);
+        $this->assertEquals(['link_new' => 1, 'link_gone' => 1], $changes['counts'], 'what differs from the baseline, as its comparison lists it');
+        $this->assertSame(self::S1, $changes['ghosts']['edges'][0]['changes'][0]['time'], 'gone when its period ended');
+    }
+
+    public function testRefusals(): void
+    {
+        Carbon::setTestNow(Carbon::createFromTimestamp(self::NOW));
+        $refused = function (callable $call): string {
+            try {
+                $call();
+            } catch (TimeRefused $e) {
+                return $e->getMessage();
+            }
+
+            return 'not refused';
+        };
+        $repo = new FakeMapHistory(array_values(self::history()), [self::S0, self::S1, self::S2], self::NAMES);
+        $history = new MapHistory($repo, new PluginSettings);
+
+        $earliest = 'The history starts with its first snapshot: the earliest map is as of ' . date('Y-m-d H:i:s', self::S0) . '.';
+        $this->assertSame($earliest, $refused(fn () => $history->past(self::S0 - 1)));
+        $this->assertSame($earliest, $refused(fn () => $history->changes('l2', self::S0 - 60, self::today())));
+        $this->assertSame(self::S0, $history->past(self::S0)->snapshot['time'], 'from the earliest snapshot on');
+        $this->assertSame('No baseline is saved for the devices of this map: an admin saves one on the Changes page.',
+            $refused(fn () => $history->changes('l2', MapParams::BASELINE, self::today())));
+
+        // a role that may not view LLDP/CDP links gets an empty map: that is why there is nothing to compare
+        $repo->hidden = ['links' => 'LLDP/CDP links'];
+        $empty = ['nodes' => [], 'edges' => []];
+        $this->assertSame('Your LibreNMS role may not view LLDP/CDP links: this map has no devices to compare with the baseline.',
+            $refused(fn () => $history->changes('l2', MapParams::BASELINE, $empty)));
+        $repo->hidden = [];
+        $this->assertSame('This map has no devices to compare with the baseline.', $refused(fn () => $history->changes('l2', MapParams::BASELINE, $empty)));
+
+        $off = new MapHistory($repo, new PluginSettings(['history_enabled' => '0']));
+        $this->assertStringContainsString('switched off', $refused(fn () => $off->past(self::S1)));
+        $this->assertStringContainsString('switched off', $refused(fn () => $off->changes('l2', MapParams::BASELINE, self::today())));
+        $repo->tables = false;
+        $this->assertStringContainsString('tables do not exist yet', $refused(fn () => $history->past(self::S1)));
+        $this->assertStringContainsString('tables do not exist yet', $history->info([], self::NOW)['reason']);
+    }
+
+    public function testMinutesCoverTheSnapshotsThatStartInThem(): void
+    {
+        Carbon::setTestNow(Carbon::createFromTimestamp(self::NOW));
+        $repo = new FakeMapHistory(array_values(self::history()), [self::S0, self::S1, self::S2], self::NAMES);
+        $history = new MapHistory($repo, new PluginSettings);
+
+        // the snapshot of hh:mm:07 is the map of the minute hh:mm, typed or picked
+        $typed = MapParams::time(['at' => date('Y-m-d\TH:i', self::S1)], self::NOW)['at'];
+        $this->assertSame(self::S1, $history->past($typed)->snapshot['time']);
+        $this->assertSame(self::S0, $history->past(MapParams::time(['at' => date('Y-m-d\TH:i', self::S0)], self::NOW)['at'])->snapshot['time'],
+            'the minute of the earliest snapshot is not refused');
+        $info = $history->info([], self::NOW);
+        $this->assertSame([date('Y-m-d\TH:i:s', self::S2), date('Y-m-d\TH:i:s', self::S1), date('Y-m-d\TH:i:s', self::S0)], $info['snapshots'], 'picks carry the seconds');
+        $this->assertSame(self::S1, $history->past(MapParams::time(['at' => $info['snapshots'][1]], self::NOW)['at'])->snapshot['time']);
+        $this->assertSame(date('Y-m-d\TH:i', self::S0), $info['earliest_minute'], 'the date input starts at the minute of the earliest snapshot');
+        $this->assertSame(date('Y-m-d\TH:i:s', self::S0), $info['earliest']);
+
+        // a young history: one snapshot, 23 minutes ago
+        $young = new MapHistory(new FakeMapHistory([], [self::S0], self::NAMES), new PluginSettings);
+        $now = self::S0 + 23 * 60;
+        $info = $young->info([], $now);
+        $this->assertSame([true, true, true], array_column($info['picks'], 'early'), 'no quick pick before the history');
+        $this->assertSame(['at' => date('Y-m-d\TH:i:s', self::S0), 'since' => date('Y-m-d\TH:i:s', self::S0)], $info['defaults']);
+        foreach ($info['defaults'] as $key => $value) {
+            $time = MapParams::time([$key => $value], $now)[$key];
+            $this->assertSame(self::S0, $time, $key);
+            $this->assertSame(self::S0, $young->past($time)->snapshot['time'], "the default of $key draws the snapshot");
+        }
+        $minute = MapParams::time(['since' => date('Y-m-d\TH:i', self::S0)], $now)['since'];
+        $this->assertSame(self::S0 + 52, $minute, 'the minute of the snapshot, to its end');
+        $this->assertSame(self::S0, $young->past($minute)->snapshot['time']);
+    }
+
+    public function testAsOfSaysWhatItLeavesOut(): void
+    {
+        $repo = new FakeMapHistory([], [self::S0, self::S0 + 5 * 3600], self::NAMES);
+        $history = new MapHistory($repo, new PluginSettings);
+        $past = new PastMap($repo, ['time' => self::S0, 'started_at' => date('Y-m-d H:i:s', self::S0), 'next' => self::S0 + 5 * 3600, 'recorded' => FactCollector::KINDS,
+            'skipped' => []], [], FactCollector::KINDS);
+
+        $l2 = $history->asOf($past, self::S0 + 3 * 3600, 'l2', [], true);
+        $this->assertSame(['phones'], $l2['not_shown'], 'the history leaves phones out');
+        $this->assertSame('No snapshot was taken between ' . date('Y-m-d H:i', self::S0) . ' and ' . date('Y-m-d H:i', self::S0 + 5 * 3600)
+            . ': the map shows the earlier one.', $l2['notes'][1], 'times written as the page writes them');
+        $this->assertSame([], $history->asOf($past, self::S0 + 60, 'l2', [], false)['not_shown'], 'no phones drawn without unmanaged neighbours');
+        $l3 = $history->asOf($past, self::S0 + 60, 'l3', ['isis' => 2, 'mpls' => 0]);
+        $this->assertSame(['IS-IS adjacencies'], $l3['not_shown']);
+        $this->assertSame(date('Y-m-d H:i:s', self::S0 + 60), $l3['requested']);
+    }
+
+    public function testThePageFallbackHasEveryKey(): void
+    {
+        $info = (new MapHistory(new FakeMapHistory([], [self::S0], self::NAMES), new PluginSettings))->info([1], self::NOW);
+        $fallback = MapHistory::emptyInfo(new PluginSettings, 'The topology history cannot be read, see logs/librenms.log.', self::NOW);
+
+        $keys = array_keys($info);
+        sort($keys);
+        $fallbackKeys = array_keys($fallback);
+        sort($fallbackKeys);
+        $this->assertSame($keys, $fallbackKeys, 'the page reads the same keys either way');
+        $this->assertFalse($fallback['available']);
+        $this->assertSame(['at' => null, 'since' => null], $fallback['defaults']);
+        $this->assertSame([], $fallback['picks']);
+    }
+}
+
+/**
+ * The topology history in memory, for MapHistory: stored fact rows, snapshot runs, the devices (all visible), a role's
+ * hidden tables and the baseline.
+ */
+class FakeMapHistory extends HistoryRepository
+{
+    public bool $tables = true;
+
+    /** @var array<string, string> table => what the role notices call it, for the tables the role hides */
+    public array $hidden = [];
+
+    public ?array $baseline = null;
+
+    /** @var array<string, array> hash => baseline fact */
+    public array $baselineFacts = [];
+
+    /** Did windowFacts() count what a cut leaves out? */
+    public ?bool $droppedAsked = null;
+
+    /**
+     * @param  array<int, array>  $facts  stored rows (HistoryRepository::factRow())
+     * @param  int[]  $runs  starts of the finished snapshots
+     * @param  array<int, string>  $deviceNames
+     */
+    public function __construct(private readonly array $facts, private readonly array $runs, private readonly array $deviceNames)
+    {
+        parent::__construct(null);
+    }
+
+    public function available(): bool
+    {
+        return $this->tables;
+    }
+
+    public function names(array $ids): array
+    {
+        return array_intersect_key($this->deviceNames, array_flip($ids));
+    }
+
+    public function deviceIds(?int $groupId = null, ?int $locationId = null): array
+    {
+        return array_keys($this->deviceNames);
+    }
+
+    public function seesEveryDevice(): bool
+    {
+        return true;
+    }
+
+    public function existingDevices(): array
+    {
+        return array_fill_keys(array_keys($this->deviceNames), true);
+    }
+
+    public function allowsTable(string $table): bool
+    {
+        return ! isset($this->hidden[$table]);
+    }
+
+    public function hiddenKinds(array $tables): array
+    {
+        return array_values(array_unique(array_intersect_key($this->hidden, array_flip($tables))));
+    }
+
+    public function sibling(string $class): ScopedRepository
+    {
+        return new $class(null);
+    }
+
+    public function snapshotAt(int $time): ?array
+    {
+        $before = array_filter($this->runs, fn ($run) => $run <= $time);
+        if (! $before) {
+            return null;
+        }
+        $start = max($before);
+        $later = array_filter($this->runs, fn ($run) => $run > $start);
+
+        return ['time' => $start, 'started_at' => date('Y-m-d H:i:s', $start), 'next' => $later ? min($later) : null, 'recorded' => FactCollector::KINDS, 'skipped' => []];
+    }
+
+    public function snapshotTimes(int $recent): array
+    {
+        $runs = $this->runs;
+        rsort($runs);
+
+        return ['earliest' => $runs ? min($runs) : null, 'latest' => $runs ? max($runs) : null, 'count' => count($runs), 'recent' => array_slice($runs, 0, $recent)];
+    }
+
+    public function factsAt(string $at, array $ids, array $kinds, bool $reporting = false): \Generator
+    {
+        $time = strtotime($at);
+        foreach ($this->facts as $row) {
+            if (in_array($row['kind'], $kinds, true) && $row['first_seen'] <= $time && ($row['removed_at'] === null || $row['removed_at'] > $time)) {
+                yield $row;
+            }
+        }
+    }
+
+    public function windowFacts(CarbonInterface $from, CarbonInterface $to, array $ids, ?array $kinds = null, bool $dropped = true): array
+    {
+        $this->droppedAsked = $dropped;
+        [$start, $end] = [$from->getTimestamp(), $to->getTimestamp()];
+        $rows = array_values(array_filter($this->facts, fn ($row) => ($kinds === null || in_array($row['kind'], $kinds, true))
+            && ((! $row['initial'] && $row['first_seen'] >= $start && $row['first_seen'] <= $end) || ($row['removed_at'] !== null && $row['removed_at'] >= $start && $row['removed_at'] <= $end))));
+
+        return ['rows' => $rows, 'truncated' => false, 'since' => null, 'dropped' => null];
+    }
+
+    public function devicesAddedSince(array $ids, CarbonInterface $from): array
+    {
+        return [];
+    }
+
+    public function newToHistory(array $firstSeen): array
+    {
+        return [];
+    }
+
+    public function priorNodes(array $nodes, CarbonInterface $before): array
+    {
+        return array_fill_keys($nodes, true);
+    }
+
+    public function baselineInfo(array $ids): ?array
+    {
+        return $this->baseline;
+    }
+
+    public function baselineHashes(array $ids): array
+    {
+        return array_map(fn ($fact) => $fact['kind'], $this->baselineFacts);
+    }
+
+    public function currentHashes(array $ids, array $kinds): array
+    {
+        return array_map(fn ($row) => $row['kind'], array_filter($this->open(), fn ($row) => in_array($row['kind'], $kinds, true)));
+    }
+
+    public function baselineFactsByHash(array $hashes, int $limit): array
+    {
+        return array_values(array_intersect_key($this->baselineFacts, array_flip($hashes)));
+    }
+
+    public function currentFactsByHash(array $hashes, int $limit): array
+    {
+        return array_values(array_intersect_key($this->open(), array_flip($hashes)));
+    }
+
+    public function baselineFactsOfKind(array $ids, string $kind, bool $lock = false): array
+    {
+        return array_filter($this->baselineFacts, fn ($fact) => $fact['kind'] === $kind);
+    }
+
+    public function currentFactsOfKind(array $ids, string $kind): array
+    {
+        return array_filter($this->open(), fn ($row) => $row['kind'] === $kind);
+    }
+
+    public function goneSince(array $hashes): array
+    {
+        $gone = [];
+        foreach ($this->facts as $row) {
+            if (in_array($row['hash'], $hashes, true) && $row['removed_at'] !== null) {
+                $gone[$row['hash']] = date('Y-m-d H:i:s', $row['removed_at']);
+            }
+        }
+
+        return $gone;
+    }
+
+    /**
+     * @return array<string, array> hash => the facts present now
+     */
+    private function open(): array
+    {
+        $open = [];
+        foreach ($this->facts as $row) {
+            if ($row['removed_at'] === null) {
+                $open[$row['hash']] = $row;
+            }
+        }
+
+        return $open;
+    }
+}

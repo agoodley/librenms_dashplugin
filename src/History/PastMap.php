@@ -101,28 +101,54 @@ class PastMap
     }
 
     /**
-     * Spanning tree of the devices at the snapshot for the map's overlay (stpIndex()).
+     * Spanning tree of the devices at the snapshot for the map's overlay (stpIndex()). A blocked port is the port of
+     * its device with its name among those the snapshot's links and port-channels use: the history keeps a link of a
+     * port LibreNMS re-created under a new id with the new id, a blocked port with the id it had then.
      *
      * @param  int[]  $ids
      * @param  array<int, int>  $lag
      */
     public function stp(array $ids, ?int $vlan, array $lag): StpIndex
     {
+        $linked = $this->portNames;
+        $byName = [];
+        foreach ($linked as $portId => [$deviceId, $name]) {
+            $byName[$deviceId . '|' . InterfaceName::normalize($name)] ??= $portId;
+        }
         $roots = [];
         $blocked = [];
         foreach ($this->facts([FactCollector::STP_ROOT, FactCollector::STP_BLOCKED], $ids, true) as $fact) {
-            if (! isset($this->visible[(int) ($fact['data']['device'] ?? 0)])) {
+            $data = $fact['data'];
+            if (! isset($this->visible[(int) ($data['device'] ?? 0)])) {
                 continue;
             }
             if ($fact['kind'] === FactCollector::STP_ROOT) {
-                $roots[] = $fact['data'];
+                $roots[] = $data;
             } else {
-                $blocked[] = $fact['data'];
-                $this->notePort((int) $fact['data']['device'], (int) $fact['data']['port'], (string) ($fact['data']['port_name'] ?? ''));
+                $data['port'] = self::portOf($data, $byName, $linked);
+                $blocked[] = $data;
+                $this->notePort((int) $data['device'], (int) $data['port'], (string) ($data['port_name'] ?? ''));
             }
         }
 
         return self::stpIndex($roots, $blocked, $vlan, $lag, $this->visible);
+    }
+
+    /**
+     * The port of a blocked port fact on a map: its own id when the map knows it, else the port of its device with its
+     * name (a port LibreNMS re-created under a new id since), else its own id.
+     *
+     * @param  array<string, int>  $byName  "device|port name" (InterfaceName::normalize()) => port_id
+     * @param  array<int, mixed>  $known  port_id => anything, the ports the map knows
+     */
+    public static function portOf(array $data, array $byName, array $known): int
+    {
+        $port = (int) ($data['port'] ?? 0);
+        if (isset($known[$port])) {
+            return $port;
+        }
+
+        return $byName[(int) ($data['device'] ?? 0) . '|' . InterfaceName::normalize((string) ($data['port_name'] ?? ''))] ?? $port;
     }
 
     /**
@@ -317,22 +343,26 @@ class PastMap
     }
 
     /**
-     * An ospf_nbrs row for an OSPF adjacency fact: the history records working adjacencies (full or 2-way) only.
+     * An ospf_nbrs row for an OSPF adjacency fact: the history records working adjacencies (full or 2-way) only. The
+     * row carries the neighbour the history recorded (neighbor_device_id, null: no device then), which the L3 map
+     * takes instead of looking its address up today: a neighbour re-addressed or removed since shows as it was.
      */
     public static function ospfRow(array $data): array
     {
         return ['device_id' => (int) $data['device'], 'port_id' => 0, 'ospfNbrIpAddr' => (string) ($data['ip'] ?? ''),
-            'ospfNbrRtrId' => (string) ($data['router_id'] ?? ''), 'ospfNbrState' => 'full', 'context_name' => (string) ($data['context'] ?? '')];
+            'ospfNbrRtrId' => (string) ($data['router_id'] ?? ''), 'ospfNbrState' => 'full', 'context_name' => (string) ($data['context'] ?? ''),
+            'neighbor_device_id' => isset($data['neighbor']) ? (int) $data['neighbor'] : null];
     }
 
     /**
-     * A bgpPeers row for a BGP session fact: the history records established sessions only.
+     * A bgpPeers row for a BGP session fact: the history records established sessions only. Like ospfRow(), with the
+     * peer device the history recorded.
      */
     public static function bgpRow(array $data): array
     {
         return ['device_id' => (int) $data['device'], 'bgpPeerIdentifier' => (string) ($data['peer'] ?? ''), 'bgpPeerRemoteAs' => (int) ($data['remote_as'] ?? 0),
             'bgpPeerState' => 'established', 'bgpPeerAdminStatus' => 'start', 'bgpLocalAddr' => '', 'bgpPeerDescr' => (string) ($data['description'] ?? ''),
-            'context_name' => (string) ($data['context'] ?? '')];
+            'context_name' => (string) ($data['context'] ?? ''), 'neighbor_device_id' => isset($data['neighbor']) ? (int) $data['neighbor'] : null];
     }
 
     /**
