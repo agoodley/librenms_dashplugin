@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsTopology\Http\Controllers\Concerns;
 
 use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
+use Agoodley\LibrenmsTopology\History\TimeRefused;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use Agoodley\LibrenmsTopology\Support\RoleData;
@@ -88,7 +89,8 @@ trait BuildsTopology
     }
 
     /**
-     * JSON of $build(); a failure becomes {error} with HTTP 500. The answer for a page (RoleData::PAGES) says
+     * JSON of $build(); a failure becomes {error} with HTTP 500, a map at a time the history cannot draw (TimeRefused)
+     * {error, time_refused} with HTTP 422. The answer for a page (RoleData::PAGES) says
      * what the user's LibreNMS role may not view of the data it reads (role_hidden, empty when nothing is
      * hidden), as the page itself does, so that an empty answer is not taken for "nothing found".
      */
@@ -101,6 +103,9 @@ trait BuildsTopology
             }
 
             return response()->json($result);
+        } catch (TimeRefused $e) {
+            // a map at a time the history cannot draw: why, rather than today's map (HTTP 422)
+            return response()->json(['error' => $e->getMessage(), 'time_refused' => true] + ($page !== null ? ['role_hidden' => self::roleHidden($page)] : []), 422);
         } catch (\Throwable $e) {
             return response()->json(['error' => $this->failure($what, $e)], 500);
         }

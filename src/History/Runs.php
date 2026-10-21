@@ -35,9 +35,11 @@ class Runs
     }
 
     /**
+     * The fact kinds (snapshot) or analyses (checks) recorded up to the run of these stats.
+     *
      * @return string[]
      */
-    private static function recorded(?array $stats): array
+    public static function recorded(?array $stats): array
     {
         return is_array($stats['recorded'] ?? null) ? array_map('strval', $stats['recorded']) : [];
     }

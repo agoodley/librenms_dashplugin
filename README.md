@@ -5,7 +5,8 @@ collects (LLDP/CDP/xDP neighbors, ports, VLANs, port-channels, BRIDGE-MIB STP, I
 IS-IS, MPLS and IPsec, forwarding, ARP and 802.1X tables, syslog, transceiver sensors and the hardware inventory):
 
 * **Maps:** [Layer 2 and Layer 3](#maps) with [routing overlays](#layer-3-map-overlays), [site / WAN](#site--wan-map),
-  and [saved views and exports](#sharing--export) to draw.io / Visio, yEd, PNG, CSV and LibreNMS Custom Maps
+  [at a point in time](#maps-at-a-point-in-time) (as the history recorded them, or with the changes since), and
+  [saved views and exports](#sharing--export) to draw.io / Visio, yEd, PNG, CSV and LibreNMS Custom Maps
 * **Diagnostics:** [spanning tree](#spanning-tree-diagnostics) with loop evidence, [link & VLAN](#link--vlan-diagnostics),
   [routing & IP](#routing--ip-diagnostics), [redundancy & failure impact](#redundancy--failure-impact) and
   [monitoring coverage](#monitoring-coverage)
@@ -104,6 +105,62 @@ cloud VPN gateway) or on a tunnel subnet they join with addresses of their own (
   sites have none, the map is laid out without them).
 * Center on a site to see it with its neighbors within N hops, or filter by device group; double-click a site, or use
   the buttons in its details, to open its L2 or L3 map, redundancy page or device list.
+
+### Maps at a point in time
+
+The L2 and L3 maps can show the network as the [topology history](#topology-history-baseline-and-background-checks)
+recorded it at a time, or today's network with what changed since a time. **Time**, in the map's filters:
+
+* **Now**: the map as it is.
+* **As of…** a date and time (`at=2026-10-14T09:00` in the URL): the map as the last snapshot at or before that time
+  recorded it. From the history come the LLDP/CDP links (unmanaged neighbors included, phones left out as the history
+  leaves them out), the port-channel members (collapsed as they were then), the root bridge each switch saw and the
+  blocked ports of the STP overlay (L2), and the OSPF adjacencies and BGP sessions with the neighbor each went to then
+  (L3: a neighbor re-addressed or removed since shows as it was). From today come the ports with their names, speeds
+  and VLANs, the device details and the L3 map's subnets and addresses; a port LibreNMS no longer has keeps the name
+  the history stored, a port it re-created under a new id is matched by its name, and a device it no longer has keeps
+  its stored name ("No longer in LibreNMS") and stays on the map also without unmanaged neighbors, as it was monitored
+  then. Links and sessions are drawn without a status, in gray or the color of their speed (the history keeps none),
+  and their details show no status or traffic; devices as they were: down when an outage covered that time, gray when
+  LibreNMS did not have them yet. OSPFv3, IS-IS, IPsec, MPLS LSPs and pseudowires are not in the history: a past L3
+  map leaves them out and says so. A banner names the snapshot drawn and the next one, what came from the history and
+  what from today, and what the history leaves out (phones).
+* **Changes since…** a date and time or the baseline (`since=2026-10-14T09:00`, `since=baseline`): today's map with
+  what changed since then, read as the Changes page reads the same span: what it reports is marked, and nothing else
+  (the same moved cables, root bridge moves and lost adjacencies; a neighbor LibreNMS started or stopped monitoring is
+  the same cable, no change in itself, and what the Changes page reports of the cable before is marked on it after;
+  and its limit of 5,000 facts that started and 5,000 that ended). New links are marked **NEW**, a cable that moved is
+  a new link and a ghost of the old one, port-channel members that joined or left **+ MEMBER** / **− MEMBER**, the
+  root bridge of the VLANs whose root moved **NEW ROOT** and the old one **WAS ROOT**, ports that started or stopped
+  blocking **BLOCKS** / **UNBLOCKED**, OSPF adjacencies and BGP sessions that came up **NEW**, devices added to
+  LibreNMS **NEW**. What is gone is drawn as a dashed gray **ghost** (links, lost adjacencies and sessions), to a
+  ghost of its far end when that is no longer on the map (none for an unmanaged neighbor when the map leaves those
+  out). On a map of one VLAN, the spanning tree marks are those of the instance it shows; on a map of all VLANs each
+  names its VLANs (**NEW ROOT VLAN 20**). The banner counts the marks; the details of a marked link or device say what
+  changed and when (the change that brought about its state now: a link that went, came back and went again is gone
+  since the last time), and open the Changes page for that span. Since the baseline, the marks are what its comparison
+  on the Changes page lists (blocked ports are not part of a baseline).
+
+Quick picks (the clock button): an hour ago, yesterday and last week at this time, when the baseline was saved (*As
+of*) or the baseline itself (*Changes since*), and the latest snapshots, each to its second. Times are the server's
+(its time zone is named next to the date): a time with an offset (`at=2026-10-14T09:00+02:00`) is shown as the
+server takes it. A time without seconds counts to the end of its minute, as a snapshot starts a few seconds into one:
+*As of* 09:00 is the snapshot of 09:00:03, *Changes since* 09:00 are the changes after it. The date input stops at
+the minute of the earliest snapshot the history keeps.
+
+A map at another time is for looking at: it offers no failure simulation, located host (`host=`) or traced path
+(`path=`) of the past, and its layout cannot be saved, nor saved as a view or exported to a Custom Map, which LibreNMS
+draws live (the server refuses those too). The file exports keep the time in their file name and title (and on the
+PNG). The JSON API takes the same parameters: `api/l2?at=…` and `api/l3?since=…` answer with the map's usual shape
+plus `as_of` (the snapshot drawn, the next one, what came from where, what is left out) or `changes` (the marks in
+the `changes` of nodes and edges, `ghosts`, the counts, the events), and `role_hidden`. A time the history cannot
+answer is refused with HTTP 422 and the reason, which the page shows in place of a map: a time before the earliest
+snapshot (the history started later, or *Keep changes for* dropped it), in the future or not a date and time, `at`
+and `since` together, the history switched off or its tables missing.
+
+![A Layer 2 map as of a time](docs/images/past-map.png)
+
+![Today's Layer 2 map with the changes since a time](docs/images/changes-since.png)
 
 ### Sharing & export
 
@@ -504,7 +561,8 @@ log level (`LOG_LEVEL` in `.env`, warning by default) is info or debug.
 
 ## History
 
-*Overview → Plugins → Topology history*: Topology Changes.
+*Overview → Plugins → Topology history*: Topology Changes. The L2 and L3 maps also show the history: as of a time, or
+with the changes since one ([Maps at a point in time](#maps-at-a-point-in-time)).
 
 ### Topology history, baseline and background checks
 
@@ -635,7 +693,8 @@ pollers share, as distributed polling needs), so a run, scheduled or manual, ski
 `./validate.php` then warns that the database schema "has extra migrations
 (2026_10_20_000000_create_topology_history_tables, 2026_10_20_100000_create_topology_custom_maps_table,
 2026_10_20_100100_create_topology_views_table, 2026_10_21_000000_add_finding_subjects_to_topology_history,
-2026_10_22_000000_widen_topology_finding_devices)" (in the order they were applied) and is "between releases": those
+2026_10_22_000000_widen_topology_finding_devices, 2026_10_23_000000_index_topology_facts_by_time)" (in the order they
+were applied) and is "between releases": those
 are the plugin's migrations, and the warning stays while the plugin is installed. While it warns, validate.php skips its
 checks of LibreNMS' own schema (structure and collation). **Do not delete the plugin's rows from the `migrations` table**
 to silence it: validate.php then lists the `topology_*` tables as extra tables and offers to drop them. **Never apply
@@ -770,7 +829,11 @@ such a device as monitored without naming the device (LibreNMS shows the neighbo
 too), and compares the names of neighbors LibreNMS did not link only with the devices the user may see (also disabled
 ones), so it tells nothing else about the others. The topology history is recorded for all devices; the Changes page
 shows a user the changes of their devices, names other devices by their LLDP/CDP name or as "another device", and only
-lists background findings about their devices alone. Only LibreNMS admins can apply derived device dependencies and
+lists background findings about their devices alone. The maps at a point in time do the same: a map of the past or with
+the changes since a time draws the devices the user may see, their links to other devices as unmanaged neighbors named
+as LLDP/CDP reported them (else "another device"), ghosts of such far ends without their id, and only the kinds of
+facts their role may view; a device LibreNMS no longer has keeps its stored name only for users who may see every
+device (for the others it is any device they may not see). Only LibreNMS admins can apply derived device dependencies and
 save, clear or accept items of the baseline; other users see those pages read only. A baseline change for a device, group
 or location that no longer resolves (disabled, deleted or not permitted) is refused rather than applied to everything.
 A baseline change, a dependency apply or a Custom Map export whose device, group or location is not an id (`device=abc`,
@@ -871,6 +934,13 @@ not followed, and without `routing.view` every router is crossed by an estimate 
   `ChangeReport` (moved cables, root bridge moves, lost adjacencies), `Baseline`, `FindingHistory` (findings confirmed
   by two runs, eventlog entries); `HistoryService` runs them, `Console/` holds the scheduled `topology:snapshot` and
   `topology:checks`.
+* `src/History/PastMap.php` – a map as of a time: the facts of one snapshot (`HistoryRepository::factsAt()`: which
+  facts were present is read from an index of the facts' kind, times and devices, then their rows a chunk at a time)
+  given to the L2 and L3 builders in the shape of the LibreNMS tables they read, and the past map drawn without today's
+  statuses; `ChangeMarks` – the marks and ghosts of the changes since a time on today's map: the facts of the events
+  the Changes page reports for the span (`HistoryService::window()`, `ChangeReport`'s words, and its pairs of the facts
+  of one cable), or of the comparison with the baseline; `MapHistory` – which snapshot a time shows, the refusals and
+  the map's Time control.
 * `src/Sharing/SavedView.php` – what a saved view keeps and which of its positions a viewer gets (`Data\ViewRepository`
   stores the views and checks who may open and change them).
 * `src/Sharing/CustomMapLayout.php` – the custom map of an L2 or L3 map (nodes, icons, positions, the port of each
@@ -891,6 +961,19 @@ vendor/bin/phpunit
 **Maps**
 
 * Saved views and the Custom Map export cover the L2 and L3 maps; the site map has the file exports only.
+* A map at a point in time is as fine as the history: it shows the last snapshot at or before the time (one every
+  *History interval*, an hour by default; LibreNMS itself refreshes LLDP/CDP neighbors at discovery, every 6 hours by
+  default), from the earliest snapshot the history keeps (*Keep changes for*, 90 days by default) on. The site map has
+  no Time.
+* On a map of the past, the ports (names, speeds, VLANs, descriptions), the device details and the L3 map's subnets and
+  addresses are today's; a port LibreNMS re-created under another id since is the port of its name on its device, one
+  it no longer has keeps its stored name only. The history keeps no link or session states, no root ports, bridge
+  priorities, costs or timers, no phones and no OSPFv3, IS-IS, IPsec, MPLS or pseudowire data, so a past map shows
+  none of them.
+* Changes since a time mark as many changes as the Changes page lists (5,000 facts that started and 5,000 that ended):
+  with more, the marks start where that limit fell, and the banner says so. A change of devices that are not on the map
+  (scope, hops, device limit) is counted, not drawn, and an instance whose root bridge did not move (a switch that
+  started or stopped reporting one) is not marked.
 * Layouts saved with the save button live in the browser's local storage; save them as views to share them. A view keeps
   the positions of its nodes by their map id: a device that is renamed keeps its place, an unmanaged neighbor that gets
   a new name moves next to its links.
@@ -1078,10 +1161,17 @@ vendor/bin/phpunit
 
 * `./validate.php` warns about the plugin's migrations while the plugin is installed and then skips its checks of
   LibreNMS' own schema (see [Installation](#installation)).
-* The pages of the whole network fit in PHP's default 128 MB on 1,242 switches with 23,000 phones and 50 PVST VLANs
-  (largest: redundancy and device dependencies 96 MB, links 86 MB, spanning tree 84 MB, L2 map 66 MB); a page also
-  raises PHP's memory limit to LibreNMS' `php_memory_limit`, or 256 MB when it is not set. One VLAN of a very large
-  PVST network with STP port rows for every port can still need more.
+* At the default *Maximum devices* (400), the pages of the whole network fit in PHP's default 128 MB on 1,242 switches
+  with 23,000 phones and 50 PVST VLANs (largest: redundancy and device dependencies 96 MB, links 86 MB, spanning tree
+  84 MB, L2 map 66 MB). So do the maps at a point in time, also over a long history: with four snapshots an hour apart
+  (some 10,000 changed facts) after 600,000 facts over 90 days with a snapshot every 6 hours, the L2 map as of the
+  latest snapshot takes 66 MB and 0.25 s, as of a time 45 days back 54 MB and 0.3 s, with the changes since the first
+  of the four 74 MB and 0.6 s, since the start of the 90 days 94 MB and 0.9 s (up to the limit of 5,000 + 5,000
+  facts), since the baseline 70 MB and 0.7 s. Larger limits rely on the plugin raising PHP's memory limit for its
+  pages, to LibreNMS' `php_memory_limit`, or 256 MB when it is not set: at 5,000 devices the changes since the start of
+  the 90 days take 116 MB, 124 MB with the answer encoded as JSON. One VLAN of a very large PVST network with STP port
+  rows for every port can still need more, and so can the L3 map of a large routed network (2,000 routers with 50,000
+  addresses: 160 MB, as of a time or with the changes since as much as now).
 
 ## Roadmap
 

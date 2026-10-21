@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
+use Agoodley\LibrenmsTopology\History\PastMap;
 use Agoodley\LibrenmsTopology\Topology\L3Builder;
 use PHPUnit\Framework\TestCase;
 
@@ -79,6 +80,21 @@ class L3BuilderTest extends TestCase
         $vrf = $builder->build(['vrf' => 'CUST', 'ospf' => false, 'bgp' => false]);
         $this->assertCount(1, $vrf['edges']);
         $this->assertSame('172.16.0.0/30', $vrf['edges'][0]['network']);
+    }
+
+    public function testHistoryRowsKeepTheNeighbourTheyRecorded(): void
+    {
+        // a map of the past: rtr1's adjacency and session were with rtr2 over addresses that today are core1's, and rtr2's
+        // adjacency over 10.2.0.1 had no device then (core1 has that address today)
+        $ospf = [PastMap::ospfRow(['device' => 1, 'ip' => '10.1.0.3', 'router_id' => '10.255.0.2', 'context' => '', 'neighbor' => 2]),
+            PastMap::ospfRow(['device' => 2, 'ip' => '10.2.0.1', 'router_id' => '9.9.9.9', 'context' => '', 'neighbor' => null])];
+        $bgp = [PastMap::bgpRow(['device' => 1, 'peer' => '10.1.0.3', 'remote_as' => 65000, 'context' => '', 'neighbor' => 2])];
+        $result = (new L3Builder($this->devices(), $this->addresses(), $ospf, $bgp))->build();
+
+        $pairs = array_map(fn ($e) => $e['kind'] . ' ' . $e['from'] . '-' . $e['to'], array_values(array_filter($result['edges'], fn ($e) => in_array($e['kind'], ['ospf', 'bgp'], true))));
+        sort($pairs);
+        $this->assertSame(['bgp d:1-d:2', 'ospf d:1-d:2', 'ospf d:2-x:9.9.9.9'], $pairs, 'as recorded, not by today\'s addresses');
+        $this->assertContains(2, L3Builder::layerLookups([], $ospf, $bgp)['devices'], 'a recorded neighbour beyond the map is looked up as a device');
     }
 
     public function testRoutingOverlays(): void

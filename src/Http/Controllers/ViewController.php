@@ -98,6 +98,9 @@ class ViewController extends Controller
         if (($error = SavedView::tooMany($views->countOwn())) !== null) {
             return response()->json(['error' => $error], 422);
         }
+        if (($refused = self::refusePast($request)) !== null) {
+            return $refused;
+        }
         $params = $this->params($request);
         try {
             [$positions, $error] = $this->storable($request, $page, $params, SavedView::positions($request->input('positions')));
@@ -139,6 +142,9 @@ class ViewController extends Controller
             $changes['shared'] = $request->boolean('shared');
         }
         if ($request->has('query')) {
+            if (($refused = self::refusePast($request)) !== null) {
+                return $refused;
+            }
             $changes['params'] = $this->params($request);
         }
         if ($request->has('positions')) {
@@ -196,14 +202,34 @@ class ViewController extends Controller
     }
 
     /**
-     * The map parameters of the request's query string, as MapParams parses them.
+     * The map parameters of the request's query string, as MapParams parses them (without the map's time,
+     * which a view does not keep).
      */
     private function params(Request $request): array
+    {
+        return array_diff_key(MapParams::parse(self::query($request), $this->settings()), array_flip([...MapParams::TIME_KEYS, 'time_error']));
+    }
+
+    /**
+     * The map's query string of the request, without view.
+     */
+    private static function query(Request $request): array
     {
         $query = [];
         parse_str(is_string($request->input('query')) ? $request->input('query') : '', $query);
         unset($query['view']);
 
-        return MapParams::parse($query, $this->settings());
+        return $query;
+    }
+
+    /**
+     * HTTP 422 for a view of a map of the past or with the changes since a time (MapParams::time()): a view opens
+     * the map as it is then, and positions of a past map's nodes would not fit today's.
+     */
+    private static function refusePast(Request $request): ?JsonResponse
+    {
+        return MapParams::asksForTime(self::query($request))
+            ? response()->json(['error' => 'A view keeps the map as it is now: set the map\'s Time back to Now, then save the view.'], 422)
+            : null;
     }
 }

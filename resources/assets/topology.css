@@ -75,6 +75,32 @@
 .topo-fullscreen { position: fixed; inset: 0; z-index: 1040; background: #fff; padding: 8px; overflow: auto; }
 .topo-fullscreen .topo-body { height: calc(100vh - 150px); }
 
+/* the map at another time: Time control, banner, change marks */
+.topo-time { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.topo-time label { margin: 0; }
+.topo-toolbar .topo-time input[type="datetime-local"] { width: 190px; }
+.topo-time-baseline { font-weight: 600; color: #555; }
+.topo-time-zone { font-size: 11px; color: #6c757d; cursor: help; }
+.topo-time .btn-group .btn { height: 28px; padding: 2px 8px; }
+.topo-time-menu { max-height: 60vh; overflow-y: auto; }
+.topo-time-banner {
+    margin: 0 0 6px; padding: 6px 10px; border: 1px solid #b9d3ea; border-left: 5px solid #1f6fb2; border-radius: 4px;
+    background: #eef5fb; color: #23384d; font-size: 12px; line-height: 1.5;
+}
+.topo-time-banner.topo-time-since { border-color: #f0c9a3; border-left-color: #c25e00; background: #fdf4ea; color: #4a2d0f; }
+.topo-time-banner.topo-time-refused { border-color: #e6b3ad; border-left-color: #c0392b; background: #fbeeec; color: #5a1a13; }
+.topo-time-banner a { font-weight: 600; white-space: nowrap; }
+.topo-time-now { margin-left: 4px; }
+.topo-time-chip { display: inline-block; padding: 0 7px; border-radius: 9px; background: #e8f1fa; color: #1f6fb2; font-weight: 600; }
+.topo-time-note { margin: 4px 0; font-size: 11px; }
+.topo-time-marks { margin: 2px 0 6px; padding-left: 0; list-style: none; }
+.topo-time-marks li { margin: 3px 0; }
+.topo-mark { display: inline-block; padding: 0 5px; border-radius: 7px; color: #fff; font-size: 9px; font-weight: 700; line-height: 14px; white-space: nowrap; }
+.topo-mark-new { background: #23803a; }
+.topo-mark-gone { background: #6c757d; }
+.topo-mark-changed { background: #c25e00; }
+.topo-viewbar li.disabled > a, .topo-viewbar .btn:disabled { cursor: not-allowed; }
+
 /* landing / stp pages */
 .topo-cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0 16px; }
 .topo-card {
@@ -182,8 +208,16 @@ html.dark .topo-evidence-heading { border-color: #3a3f45; }
 html.dark .topo-evidence-note { color: #bbb; }
 html.dark .topo-custommap-notices { color: #e0b562; }
 html.dark .topo-view-badge { background: #24364a; color: #8fc1ef; }
+html.dark .topo-time-banner { background: #1c2a38; border-color: #2f4a63; border-left-color: #6ea8de; color: #d6e4f0; }
+html.dark .topo-time-banner.topo-time-since { background: #33261a; border-color: #5c4026; border-left-color: #f0a35e; color: #f3e0cc; }
+html.dark .topo-time-banner.topo-time-refused { background: #3a1f1c; border-color: #6b2f28; border-left-color: #f08a80; color: #f6d5d1; }
+html.dark .topo-time-banner a { color: #8fc1ef; }
+html.dark .topo-time-chip { background: #24364a; color: #8fc1ef; }
+html.dark .topo-time-baseline { color: #ccc; }
+html.dark .topo-time-zone { color: #aab; }
 
 @media (max-width: 991px) {
+    .topo-toolbar .topo-time input[type="datetime-local"] { width: 170px; }
     .topo-body { flex-direction: column; height: auto; }
     .topo-canvas-wrap { height: 70vh; }
     .topo-panel { flex-basis: auto; max-height: 50vh; }

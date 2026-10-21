@@ -6,6 +6,9 @@ use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\L3LayerRepository;
 use Agoodley\LibrenmsTopology\Data\LoopEvidenceRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
+use Agoodley\LibrenmsTopology\History\MapHistory;
+use Agoodley\LibrenmsTopology\History\PastMap;
+use Agoodley\LibrenmsTopology\History\TimeRefused;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
 use Agoodley\LibrenmsTopology\Redundancy\LeafNeighbors;
 use Agoodley\LibrenmsTopology\Redundancy\PortUnits;
@@ -49,9 +52,12 @@ class TopologyService
     /** Port columns the redundancy analysis needs (it loads every link port of the network). */
     private const REDUNDANCY_PORT_COLUMNS = ['port_id', 'device_id', 'ifIndex', 'ifName', 'ifDescr', 'ifOperStatus', 'ifAdminStatus'];
 
+    private ?MapHistory $mapHistory = null;
+
     /**
      * @param  HistoryRepository|null  $history  topology history: with a saved baseline, the redundancy analysis also
-     *                                          knows the baseline links that LLDP/CDP no longer reports
+     *                                          knows the baseline links that LLDP/CDP no longer reports; the maps at
+     *                                          another time read it (MapHistory)
      */
     public function __construct(
         private readonly TopologyRepository $repo,
@@ -61,19 +67,27 @@ class TopologyService
     }
 
     /**
-     * @param  array{device: ?int, depth: int, group: ?int, location: ?int, vlan: ?int, unmanaged: bool, lag: bool, isolated: bool}  $p
+     * The Layer 2 map; as of a time (at: links, port-channel members and spanning tree from the history's snapshot,
+     * History\PastMap) or with the changes since a time (since, History\ChangeMarks).
+     *
+     * @param  array{device: ?int, depth: int, group: ?int, location: ?int, vlan: ?int, unmanaged: bool, lag: bool, isolated: bool,
+     *     at?: ?int, since?: int|string|null}  $p
+     *
+     * @throws TimeRefused
      */
     public function l2(array $p): array
     {
         [$scope, $root] = $this->repo->scope($p);
+        $past = ($p['at'] ?? null) !== null ? $this->mapHistory()->past((int) $p['at']) : null;
+        $linksWhere = $past !== null ? $past->linksWhere(...) : $this->repo->linksWhere(...);
         // end devices (phones, servers, access points) are only noted at first: when the map has no room for
         // them they are drawn as one group per device and kind, else their rows are read again below
         $ends = [];
-        $links = $this->repo->linksWhere($scope, function (array $link) use (&$ends): bool {
+        $links = $linksWhere($scope, function (array $link) use (&$ends): bool {
             if (! self::endDeviceNeighbor($link)) {
                 return true;
             }
-            $group = &$ends[(int) $link['local_device_id']][DeviceRole::fromNeighbor($link['remote_platform'], $link['remote_version'], $link['remote_hostname'])];
+            $group = &$ends[(int) $link['local_device_id']][self::neighborRole($link)];
             $group['rows'] = ($group['rows'] ?? 0) + 1;
             // one neighbour per name, as the map draws them (LLDP and CDP report the same phone)
             $group['neighbors'][RedundancyAnalyzer::neighborKey($link)] ??= trim((string) $link['remote_hostname']);
@@ -110,7 +124,7 @@ class TopologyService
             }
             if ($nodes <= $this->maxNodes()) {
                 // the same devices' rows again, so that they merge back into the order of the rows (the default layout)
-                $links += $this->repo->linksWhere($scope, fn (array $link) => isset($idSet[(int) $link['local_device_id']]) && self::endDeviceNeighbor($link));
+                $links += $linksWhere($scope, fn (array $link) => isset($idSet[(int) $link['local_device_id']]) && self::endDeviceNeighbor($link));
                 ksort($links);
                 $ends = [];
             } else {
@@ -124,16 +138,21 @@ class TopologyService
             $linkPorts[] = (int) $link['local_port_id'];
             $linkPorts[] = (int) $link['remote_port_id'];
         }
-        $lag = $this->repo->lagParents($ids);
+        $lag = $past !== null ? $past->lagParents($ids) : $this->repo->lagParents($ids);
         $aggregates = array_values(array_filter(array_unique(array_map(fn ($p) => $lag[$p] ?? 0, $linkPorts))));
         $linkPorts = array_values(array_filter(array_unique(array_merge($linkPorts, $aggregates))));
         // all members of those aggregates, with or without a link: whether an aggregate is only one edge
         $members = array_keys(array_intersect($lag, $aggregates));
 
         // the overlay shows one instance per device: the one carrying the selected VLAN
-        $stp = $this->singleInstanceIndex($this->repo->stpKeys($ids), $p['vlan'], $lag);
+        $stp = $past !== null ? $past->stp($ids, $p['vlan'], $lag) : $this->singleInstanceIndex($this->repo->stpKeys($ids), $p['vlan'], $lag);
         $rootPorts = array_filter(array_map(fn ($id) => $stp->rootPortId($id, $p['vlan']), $ids));
-        $ports = $this->repo->ports(array_merge($linkPorts, $rootPorts, $members));
+        $portIds = array_merge($linkPorts, $rootPorts, $members);
+        $ports = $this->repo->ports($portIds);
+        if ($past !== null) {
+            // ports LibreNMS no longer has keep the name the history stored
+            $ports = $past->withStoredPorts($ports, $portIds);
+        }
 
         $builder = new L2Builder(
             $this->repo->devices($ids),
@@ -153,17 +172,24 @@ class TopologyService
             'root' => $root,
         ]);
         $result['scope'] = $this->scopeInfo($p, $root, $total, count($ids), $truncated);
+        $this->atTime('l2', $p, $result, $past);
 
         return $result;
     }
 
     /**
+     * The Layer 3 map; as of a time (at: OSPF adjacencies and BGP sessions from the history's snapshot, the subnets
+     * as they are now, the overlays the history does not record left out) or with the changes since a time (since).
+     *
      * @param  array{device: ?int, depth: int, group: ?int, location: ?int, vrf: ?string, stubs: bool, ospf: bool, bgp: bool, ospfv3?: bool,
-     *     isis?: bool, ipsec?: bool, mpls?: bool, pw?: bool, ipv6: bool, all_devices: bool}  $p
+     *     isis?: bool, ipsec?: bool, mpls?: bool, pw?: bool, ipv6: bool, all_devices: bool, at?: ?int, since?: int|string|null}  $p
+     *
+     * @throws TimeRefused
      */
     public function l3(array $p): array
     {
         [$scope, $root] = $this->repo->scope($p);
+        $past = ($p['at'] ?? null) !== null ? $this->mapHistory()->past((int) $p['at']) : null;
         $addresses = $this->repo->addresses($scope, $p['ipv6']);
 
         $withAddresses = array_values(array_unique(array_map(fn ($a) => (int) $a['device_id'], $addresses)));
@@ -191,13 +217,14 @@ class TopologyService
 
         $ids = array_keys($devices);
         $mapAddresses = array_values(array_filter($addresses, fn ($a) => isset($devices[(int) $a['device_id']])));
-        $ospf = $p['ospf'] ? $this->repo->ospfNeighbors($ids) : [];
-        $bgp = $p['bgp'] ? $this->repo->bgpPeers($ids) : [];
+        $ospf = $p['ospf'] ? ($past !== null ? $past->ospfNeighbors($ids) : $this->repo->ospfNeighbors($ids)) : [];
+        $bgp = $p['bgp'] ? ($past !== null ? $past->bgpPeers($ids) : $this->repo->bgpPeers($ids)) : [];
 
-        // overlay layers from modules that are often off: loaded when the scope has rows, offered when the drawn devices do
+        // overlay layers from modules that are often off: loaded when the scope has rows, offered when the drawn devices do;
+        // a map of the past has none (the history does not record them)
         $layerRepo = $this->repo->sibling(L3LayerRepository::class);
         $perDevice = $layerRepo->countsByDevice($ids);
-        $loaded = array_values(array_filter(L3Builder::LAYERS, fn ($layer) => ($p[$layer] ?? MapParams::L3_LAYERS[$layer]) && $perDevice[$layer]));
+        $loaded = $past !== null ? [] : array_values(array_filter(L3Builder::LAYERS, fn ($layer) => ($p[$layer] ?? MapParams::L3_LAYERS[$layer]) && $perDevice[$layer]));
         $layers = $layerRepo->load($ids, $loaded);
 
         // far ends among the other devices the user may see become stubs, the rest external nodes
@@ -225,8 +252,12 @@ class TopologyService
             }
         }
         $result['layers'] = [];
+        $today = [];
         foreach (L3Builder::LAYERS as $layer) {
             $available = array_sum(array_intersect_key($perDevice[$layer], $drawn));
+            $today[$layer] = $available;
+            // a map of the past offers no toggle for them
+            $available = $past !== null ? 0 : $available;
             $result['layers'][$layer] = ['available' => $available, 'shown' => $available > 0 && in_array($layer, $loaded, true), 'default' => MapParams::L3_LAYERS[$layer]];
         }
 
@@ -235,8 +266,52 @@ class TopologyService
             $truncated = true;
         }
         $result['scope'] = $this->scopeInfo($p, $root, $total, $shown, $truncated);
+        $this->atTime('l3', $p, $result, $past, $today);
 
         return $result;
+    }
+
+    /**
+     * A built map at the time its parameters ask for, changed in place: as of a time (the past map drawn without
+     * today's statuses, with the devices' state then and as_of), with the changes since a time (marks, ghosts and
+     * changes), or as it is now (unchanged).
+     *
+     * @param  array<string, int>  $layers  L3 overlays with data today (what a past map leaves out)
+     *
+     * @throws TimeRefused
+     */
+    private function atTime(string $mode, array $p, array &$result, ?PastMap $past, array $layers = []): void
+    {
+        if ($past !== null) {
+            $ids = array_values(array_filter(array_map(fn (array $node) => ($node['type'] ?? '') === 'device' ? (int) ($node['device_id'] ?? 0) : 0, $result['nodes'])));
+            $past->finish($result, $this->mapHistory()->deviceStates($ids, $past->snapshot['time']));
+            $result['as_of'] = $this->mapHistory()->asOf($past, (int) $p['at'], $mode, $layers, $mode === 'l2' && ($p['unmanaged'] ?? true));
+        } elseif (($p['since'] ?? null) !== null) {
+            $result = $this->mapHistory()->changes($mode, $p['since'], $result, $p);
+        }
+    }
+
+    /**
+     * The maps at another time (MapHistory); refused without the history.
+     *
+     * @throws TimeRefused
+     */
+    private function mapHistory(): MapHistory
+    {
+        if ($this->history === null) {
+            throw new TimeRefused('The topology history is not available here.');
+        }
+
+        return $this->mapHistory ??= new MapHistory($this->history, $this->settings);
+    }
+
+    /**
+     * Role of an LLDP/CDP neighbour: as the history recorded it for a map of the past (it keeps no system
+     * description), else from its platform, system description and name.
+     */
+    private static function neighborRole(array $link): string
+    {
+        return $link['remote_role'] ?? DeviceRole::fromNeighbor($link['remote_platform'] ?? '', $link['remote_version'] ?? '', $link['remote_hostname'] ?? '');
     }
 
     /**
@@ -790,8 +865,7 @@ class TopologyService
      */
     private static function endDeviceNeighbor(array $link): bool
     {
-        return empty($link['remote_device_id'])
-            && DeviceRole::isEndDevice(DeviceRole::fromNeighbor($link['remote_platform'] ?? '', $link['remote_version'] ?? '', $link['remote_hostname'] ?? ''));
+        return empty($link['remote_device_id']) && DeviceRole::isEndDevice(self::neighborRole($link));
     }
 
     /**
