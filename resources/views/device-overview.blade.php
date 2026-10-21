@@ -59,7 +59,7 @@
                         @if($instance['is_root'])
                             <strong><i class="fa fa-star" style="color: #f1c40f"></i> Root bridge</strong> (priority {{ $instance['priority'] }})
                         @else
-                            Root {{ $instance['root_name'] ?? $instance['root_id'] }} via {{ $instance['root_port'] ?? '?' }}, cost {{ $instance['root_cost'] }}
+                            Root {{ $instance['root_name'] ?? $instance['root_id'] }} {{ isset($instance['root_port']) ? 'via ' . $instance['root_port'] : '(no root port reported)' }}, cost {{ $instance['root_cost'] }}
                         @endif
                         @if($instance['blocked'])
                             &middot; <span style="color: #b85c00">{{ $instance['blocked'] }} blocked</span>

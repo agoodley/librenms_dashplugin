@@ -67,7 +67,7 @@
         ],
         'Topology history & background checks' => [
             ['history_enabled', 'bool', 'Record the topology history', 'every interval below, through the LibreNMS scheduler; needs the plugin tables (./lnms migrate)'],
-            ['history_interval', 'number', 'History interval (minutes)', '15, 30, 60, 120, 240, 360, 720 or 1440; LibreNMS refreshes LLDP/CDP neighbors at discovery (every 6 hours by default)'],
+            ['history_interval', 'number', 'History interval (minutes)', '5 to 1440, rounded down to 5, 10, 15, 20, 30, 60, 120, 180, 240, 360, 480, 720 or 1440; LibreNMS refreshes LLDP/CDP neighbors at discovery (every 6 hours by default)'],
             ['history_retention_days', 'number', 'Keep changes for (days)', 'facts and findings that ended earlier are deleted'],
             ['history_checks', 'checks', 'Background checks', 'run with every snapshot, one after the other; none checked switches them off',
                 ['stp' => 'Spanning tree', 'links' => 'Link & VLAN', 'redundancy' => 'Redundancy', 'routing' => 'Routing & IP']],
