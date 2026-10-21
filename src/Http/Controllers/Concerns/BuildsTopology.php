@@ -5,7 +5,6 @@ namespace Agoodley\LibrenmsTopology\Http\Controllers\Concerns;
 use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Support\MapParams;
-use Agoodley\LibrenmsTopology\Support\MemoryLimit;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use Agoodley\LibrenmsTopology\Topology\TopologyService;
 use Agoodley\LibrenmsTopology\TopologyServiceProvider;
@@ -21,12 +20,6 @@ use LibreNMS\Interfaces\Plugins\PluginManagerInterface;
  */
 trait BuildsTopology
 {
-    /**
-     * Memory of a page or API request when LibreNMS sets no php_memory_limit (MB): the pages fit in
-     * PHP's 128M default on the README's benchmark network; this is the margin for larger ones.
-     */
-    private const PAGE_MEMORY_MB = 256;
-
     /**
      * Plugin settings saved in LibreNMS, merged with the defaults.
      */
@@ -71,7 +64,6 @@ trait BuildsTopology
      */
     protected function page(Request $request, string $view, string $what, callable $build, array $data = []): View
     {
-        MemoryLimit::raise(self::PAGE_MEMORY_MB);
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
         $repo = new TopologyRepository($request->user());
@@ -99,7 +91,6 @@ trait BuildsTopology
      */
     protected function json(string $what, callable $build): JsonResponse
     {
-        MemoryLimit::raise(self::PAGE_MEMORY_MB);
         try {
             return response()->json($build());
         } catch (\Throwable $e) {
