@@ -20,18 +20,10 @@
         $rawTime = fn (string $key) => isset($query[$key]) && is_scalar($query[$key]) ? trim((string) $query[$key]) : '';
         $timeMode = $rawTime('at') !== '' ? 'at' : ($rawTime('since') !== '' ? 'since' : '');
         $sinceBaseline = strtolower($rawTime('since')) === \Agoodley\LibrenmsTopology\Support\MapParams::BASELINE;
+        // the time as the server takes it (MapParams::time(): in its time zone, a minute to its end), to the minute
         $timeValue = $params['at'] !== null ? date('Y-m-d\TH:i', $params['at'])
             : (is_int($params['since']) ? date('Y-m-d\TH:i', $params['since']) : '');
-        $nowStamp = time();
-        // quick picks: none before the earliest snapshot (the history cannot draw them)
-        $timePicks = [];
-        foreach (['1 hour ago' => 3600, 'Yesterday, this time' => 86400, 'Last week, this time' => 7 * 86400] as $pickLabel => $ago) {
-            $pick = date('Y-m-d\TH:i', $nowStamp - $ago);
-            $timePicks[] = ['label' => $pickLabel, 'value' => $pick, 'early' => $time['earliest'] !== null && $pick < $time['earliest']];
-        }
-        // what As of / Changes since start with: an hour ago and yesterday, else the latest and the earliest snapshot
-        $timeDefaults = ['at' => $timePicks[0]['early'] ? (string) $time['latest'] : $timePicks[0]['value'],
-            'since' => $timePicks[1]['early'] ? (string) $time['earliest'] : $timePicks[1]['value']];
+        $timeText = fn (?string $value) => str_replace('T', ' ', (string) $value);
     }
 @endphp
 
@@ -142,20 +134,22 @@
             {{-- the map's time (topology.js bindTime()): as now, as of a time (at) or with the changes since a time or the
                  baseline (since); the hidden inputs carry it into the URL and the API request --}}
             <span id="topo-time" class="topo-time" data-earliest="{{ $time['earliest'] }}" data-latest="{{ $time['latest'] }}"
-                data-baseline="{{ $time['baseline'] }}" data-default-at="{{ $timeDefaults['at'] }}" data-default-since="{{ $timeDefaults['since'] }}" title="{{ $time['available'] ? 'Times are the server\'s (' . $time['timezone'] . '): snapshots from ' . str_replace('T', ' ', (string) $time['earliest']) . ' on, every ' . $time['interval'] . ' minutes' : $time['reason'] }}">
+                data-baseline="{{ $time['baseline'] }}" data-default-at="{{ $time['defaults']['at'] }}" data-default-since="{{ $time['defaults']['since'] }}" title="{{ $time['available'] ? 'Times are the server\'s (' . $time['timezone'] . '); a minute counts to its end. Snapshots from ' . $timeText($time['earliest']) . ' on, every ' . $time['interval'] . ' minutes' : $time['reason'] }}">
                 <label for="topo-time-mode"><span class="topo-group-label">Time</span></label>
                 <select id="topo-time-mode" class="form-control" @disabled(! $time['available'] && $timeMode === '')>
                     <option value="" @selected($timeMode === '')>Now</option>
                     <option value="at" @selected($timeMode === 'at')>As of&hellip;</option>
                     <option value="since" @selected($timeMode === 'since')>Changes since&hellip;</option>
                 </select>
-                <input id="topo-time-value" type="datetime-local" class="form-control" step="60" aria-label="Date and time (server time)"
-                    value="{{ $timeValue }}" min="{{ $time['earliest'] }}" max="{{ date('Y-m-d\TH:i') }}" list="topo-time-snapshots"
+                {{-- minutes: a minute covers the snapshot that started in it; a pick carries its snapshot's seconds in the hidden input --}}
+                <input id="topo-time-value" type="datetime-local" class="form-control" step="60" aria-label="Date and time (server time, {{ $time['timezone'] }})"
+                    value="{{ $timeValue }}" min="{{ $time['earliest_minute'] }}" max="{{ $time['now'] }}" list="topo-time-snapshots"
                     @if($timeMode === '' || ($timeMode === 'since' && $sinceBaseline)) style="display: none" @endif>
+                <span id="topo-time-zone" class="topo-time-zone" title="The server's time zone ({{ $time['timezone'] }})" @if($timeMode === '' || ($timeMode === 'since' && $sinceBaseline)) style="display: none" @endif>{{ $time['zone'] }}</span>
                 <span id="topo-time-baseline" class="topo-time-baseline" @if(! ($timeMode === 'since' && $sinceBaseline)) style="display: none" @endif>the baseline</span>
                 <datalist id="topo-time-snapshots">
                     @foreach($time['snapshots'] as $snapshot)
-                        <option value="{{ $snapshot }}"></option>
+                        <option value="{{ substr($snapshot, 0, 16) }}">{{ $timeText($snapshot) }}</option>
                     @endforeach
                 </datalist>
                 <span class="btn-group" id="topo-time-picks" @if($timeMode === '') style="display: none" @endif>
@@ -164,19 +158,19 @@
                     </button>
                     <ul class="dropdown-menu topo-time-menu">
                         <li class="dropdown-header">Quick picks</li>
-                        @foreach($timePicks as $pick)
-                            <li class="{{ $pick['early'] ? 'disabled' : '' }}"><a href="#" data-time-pick="{{ $pick['value'] }}" @if($pick['early']) title="Before the earliest snapshot ({{ str_replace('T', ' ', (string) $time['earliest']) }})" @endif>{{ $pick['label'] }}</a></li>
+                        @foreach($time['picks'] as $pick)
+                            <li class="{{ $pick['early'] ? 'disabled' : '' }}"><a href="#" data-time-pick="{{ $pick['value'] }}" @if($pick['early']) title="Before the earliest snapshot ({{ $timeText($time['earliest']) }})" @endif>{{ $pick['label'] }}</a></li>
                         @endforeach
                         @if($time['baseline'])
-                            <li><a href="#" data-time-pick="baseline" title="As of: when the baseline was saved. Changes since: what differs from the baseline">Baseline (saved {{ str_replace('T', ' ', $time['baseline']) }})</a></li>
+                            <li><a href="#" data-time-pick="baseline" title="As of: when the baseline was saved. Changes since: what differs from the baseline">Baseline (saved {{ $timeText($time['baseline']) }})</a></li>
                         @endif
                         @if($time['snapshots'])
                             <li role="separator" class="divider"></li>
                             <li class="dropdown-header">Recorded snapshots ({{ number_format($time['count']) }})</li>
                             @foreach(array_slice($time['snapshots'], 0, 12) as $snapshot)
-                                <li><a href="#" data-time-pick="{{ $snapshot }}">{{ str_replace('T', ' ', $snapshot) }}</a></li>
+                                <li><a href="#" data-time-pick="{{ $snapshot }}">{{ $timeText($snapshot) }}</a></li>
                             @endforeach
-                            <li class="dropdown-header">Earliest: {{ str_replace('T', ' ', (string) $time['earliest']) }}</li>
+                            <li class="dropdown-header">Earliest: {{ $timeText($time['earliest']) }}</li>
                         @endif
                     </ul>
                 </span>

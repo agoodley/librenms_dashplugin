@@ -80,6 +80,7 @@
 .topo-time label { margin: 0; }
 .topo-toolbar .topo-time input[type="datetime-local"] { width: 190px; }
 .topo-time-baseline { font-weight: 600; color: #555; }
+.topo-time-zone { font-size: 11px; color: #6c757d; cursor: help; }
 .topo-time .btn-group .btn { height: 28px; padding: 2px 8px; }
 .topo-time-menu { max-height: 60vh; overflow-y: auto; }
 .topo-time-banner {
@@ -213,6 +214,7 @@ html.dark .topo-time-banner.topo-time-refused { background: #3a1f1c; border-colo
 html.dark .topo-time-banner a { color: #8fc1ef; }
 html.dark .topo-time-chip { background: #24364a; color: #8fc1ef; }
 html.dark .topo-time-baseline { color: #ccc; }
+html.dark .topo-time-zone { color: #aab; }
 
 @media (max-width: 991px) {
     .topo-toolbar .topo-time input[type="datetime-local"] { width: 170px; }

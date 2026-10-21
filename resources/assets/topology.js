@@ -525,6 +525,7 @@
             }
             self.timeRefusal = null;
             self.data = data;
+            self.showServerTime();
             self.updateTimeBar();
             self.prepareRedundancy();
             self.populateSelects(data);
@@ -1943,7 +1944,7 @@
     /**
      * Table rows describing one end of a link (interface, status, speed, VLANs, traffic, STP).
      */
-    TopologyMap.prototype.endpointRows = function (endpoint) {
+    TopologyMap.prototype.endpointRows = function (endpoint, past) {
         if (!endpoint) {
             return '';
         }
@@ -1951,11 +1952,14 @@
         if (endpoint.ips) {
             html += this.row('Address', esc(endpoint.ips.join(', ') + (endpoint.prefix ? ' /' + endpoint.prefix : '')));
         }
-        html += this.row('Status', endpoint.oper ? '<span class="topo-status-' + esc(endpoint.oper) + '">' + esc(endpoint.oper) + '</span>' + (endpoint.admin && endpoint.admin !== 'up' ? ' (admin ' + esc(endpoint.admin) + ')' : '') : '');
+        // a map of the past: the port's details are today's, its status and traffic would be of another time
+        if (!past) {
+            html += this.row('Status', endpoint.oper ? '<span class="topo-status-' + esc(endpoint.oper) + '">' + esc(endpoint.oper) + '</span>' + (endpoint.admin && endpoint.admin !== 'up' ? ' (admin ' + esc(endpoint.admin) + ')' : '') : '');
+        }
         if (endpoint.speed !== undefined) {
             html += this.row('Speed', esc(endpoint.speed ? formatSpeed(endpoint.speed) + 'bps' : '')) + this.row('Duplex', esc(endpoint.duplex)) + this.row('MTU', esc(endpoint.mtu));
             if (endpoint.managed) {
-                html += this.row('Traffic in/out', esc(formatRate(endpoint.in_bps) + ' / ' + formatRate(endpoint.out_bps)));
+                html += past ? '' : this.row('Traffic in/out', esc(formatRate(endpoint.in_bps) + ' / ' + formatRate(endpoint.out_bps)));
                 html += this.row('Native VLAN', esc(endpoint.native_vlan));
                 if (endpoint.vlans && endpoint.vlans.length > 1) {
                     html += this.row('Trunk VLANs', '<span class="topo-vlans">' + esc(endpoint.vlans.length > 40 ? endpoint.vlans.slice(0, 40).join(',') + ' (' + endpoint.vlans.length + ')' : endpoint.vlans.join(',')) + '</span>');
@@ -1964,7 +1968,9 @@
         }
         if (endpoint.stp) {
             var stp = endpoint.stp;
-            html += this.row('STP', esc(stp.state + ' / ' + stp.role + (stp.via_lag ? ' (on the port-channel)' : '') + ' cost ' + stp.cost) +
+            // the history keeps blocked ports, not roles, costs or transitions
+            html += this.row('STP', past ? esc(stp.state + (stp.via_lag ? ' (on the port-channel)' : '') + ', as recorded')
+                : esc(stp.state + ' / ' + stp.role + (stp.via_lag ? ' (on the port-channel)' : '') + ' cost ' + stp.cost) +
                 ' <small>' + esc(stp.transitions + ' fwd transitions') + '</small>');
         }
         return html;
@@ -2010,15 +2016,18 @@
         }
 
         html += '<table class="table table-condensed topo-kv">';
+        // a map of the past has no link state of its time: today's would mislead
+        var past = this.isPast();
         if (this.mode === 'l2') {
             html += this.row('Speed', esc(formatSpeed(edge.speed) ? formatSpeed(edge.speed) + 'bps' : 'unknown')) +
-                this.row('Status', '<span class="topo-status-' + esc(edge.status) + '">' + esc(edge.status) + '</span>') +
-                this.row('Utilization', edge.util === null ? '' : esc(edge.util + '%')) +
-                this.row('Errors/s', edge.errors ? esc(edge.errors) : '') +
+                (past ? '' : this.row('Status', '<span class="topo-status-' + esc(edge.status) + '">' + esc(edge.status) + '</span>') +
+                    this.row('Utilization', edge.util === null ? '' : esc(edge.util + '%')) +
+                    this.row('Errors/s', edge.errors ? esc(edge.errors) : '')) +
                 this.row('Discovered by', esc((edge.protocols || []).join(', ').toUpperCase())) +
                 this.row('Common VLANs', edge.vlans && edge.vlans.length ? '<span class="topo-vlans">' + esc(edge.vlans.length > 60 ? edge.vlans.slice(0, 60).join(',') + ' (' + edge.vlans.length + ')' : edge.vlans.join(',')) + '</span>' : '');
             if (edge.lag) {
-                html += this.row('Port-channel', esc((edge.lag.a || '-') + ' / ' + (edge.lag.b || '-') + ' (' + edge.lag.up + '/' + edge.lag.members + ' members up)'));
+                html += this.row('Port-channel', esc((edge.lag.a || '-') + ' / ' + (edge.lag.b || '-') + ' (' + (past || edge.lag.up === null
+                    ? plural(edge.lag.members, 'member') : edge.lag.up + '/' + edge.lag.members + ' members up') + ')'));
             }
             if (edge.group) {
                 html += this.row('Ports', esc(plural(edge.group.count, 'port') + (edge.group.down ? ', ' + edge.group.down + ' not up' : '')));
@@ -2026,9 +2035,9 @@
         } else {
             html += this.row('Network', esc(edge.network)) + this.row('VRF', esc(edge.vrf)) + this.row('Type', esc(edge.kind === 'p2p' ? 'point-to-point' : 'segment member'));
         }
-        html += '<tr><th colspan="2" class="topo-section">' + esc(this.nodeName(edge.from)) + '</th></tr>' + this.endpointRows(edge.a);
+        html += '<tr><th colspan="2" class="topo-section">' + esc(this.nodeName(edge.from)) + '</th></tr>' + this.endpointRows(edge.a, past);
         if (edge.b) {
-            html += '<tr><th colspan="2" class="topo-section">' + esc(this.nodeName(edge.to)) + '</th></tr>' + this.endpointRows(edge.b);
+            html += '<tr><th colspan="2" class="topo-section">' + esc(this.nodeName(edge.to)) + '</th></tr>' + this.endpointRows(edge.b, past);
         }
         html += '</table>' + this.timeRows(edge);
 
@@ -3530,6 +3539,17 @@
     }
 
     /**
+     * "VLAN 20", "VLANs 10, 20" or "VLANs 10, 20, 30 +2": the instances of a spanning tree mark (VLAN keys, 0 for
+     * VLAN 1 / CST).
+     */
+    function vlanBadge(vlans) {
+        var names = vlans.map(function (vlan) {
+            return String(vlan || 1);
+        });
+        return (names.length === 1 ? 'VLAN ' : 'VLANs ') + names.slice(0, 3).join(', ') + (names.length > 3 ? ' +' + (names.length - 3) : '');
+    }
+
+    /**
      * "a, b and c".
      */
     function joinWords(words) {
@@ -3551,18 +3571,22 @@
         }
         // the select and the input reload the map through the form's change handler, which runs after these
         mode.addEventListener('change', function () {
+            var exact = null;
             if (mode.value === 'at' && self.timeBaseline) {
-                value.value = control.getAttribute('data-baseline') || '';
+                exact = control.getAttribute('data-baseline') || '';
                 self.timeBaseline = false;
             }
             if (mode.value && !value.value && !self.timeBaseline) {
-                value.value = control.getAttribute('data-default-' + mode.value) || '';
+                exact = control.getAttribute('data-default-' + mode.value) || '';
             }
-            self.syncTimeInputs();
+            if (exact !== null) {
+                value.value = exact.slice(0, 16);
+            }
+            self.syncTimeInputs(exact);
         });
         value.addEventListener('change', function () {
             self.timeBaseline = false;
-            self.syncTimeInputs();
+            self.syncTimeInputs(null);
         });
         control.querySelectorAll('[data-time-pick]').forEach(function (link) {
             link.addEventListener('click', function (event) {
@@ -3575,10 +3599,12 @@
                     mode.value = 'at';
                 }
                 self.timeBaseline = pick === 'baseline' && mode.value === 'since';
+                // a snapshot's pick carries its seconds (that snapshot exactly); the input shows its minute
+                var exact = pick === 'baseline' ? control.getAttribute('data-baseline') || '' : pick;
                 if (!self.timeBaseline) {
-                    value.value = pick === 'baseline' ? control.getAttribute('data-baseline') || '' : pick;
+                    value.value = exact.slice(0, 16);
                 }
-                self.syncTimeInputs();
+                self.syncTimeInputs(self.timeBaseline ? null : exact);
                 self.load();
             });
         });
@@ -3586,14 +3612,15 @@
     };
 
     /**
-     * The Time control's choice into the hidden inputs at / since, and which of its parts show.
+     * The Time control's choice into the hidden inputs at / since, and which of its parts show: the input's minute
+     * (the server takes it to its end), or a pick's exact time.
      */
-    TopologyMap.prototype.syncTimeInputs = function () {
+    TopologyMap.prototype.syncTimeInputs = function (exact) {
         var form = document.getElementById('topo-filters');
         var mode = document.getElementById('topo-time-mode');
-        var value = document.getElementById('topo-time-value');
-        form.querySelector('input[name="at"]').value = mode.value === 'at' ? value.value : '';
-        form.querySelector('input[name="since"]').value = mode.value === 'since' ? (this.timeBaseline ? 'baseline' : value.value) : '';
+        var time = exact || document.getElementById('topo-time-value').value;
+        form.querySelector('input[name="at"]').value = mode.value === 'at' ? time : '';
+        form.querySelector('input[name="since"]').value = mode.value === 'since' ? (this.timeBaseline ? 'baseline' : time) : '';
         this.showTimeControls();
     };
 
@@ -3611,15 +3638,32 @@
         var since = form.querySelector('input[name="since"]').value;
         mode.value = at ? 'at' : (since ? 'since' : '');
         this.timeBaseline = !at && since.toLowerCase() === 'baseline';
-        if (at || (since && !this.timeBaseline)) {
-            value.value = (at || since).replace(' ', 'T').slice(0, 16);
+        // a time with an offset is shown as the server takes it, in its time zone (the page has it, the map's answer too)
+        var raw = at || (this.timeBaseline ? '' : since);
+        if (raw && !/(z|[+-]\d{2}:?\d{2})$/i.test(raw)) {
+            value.value = raw.replace(' ', 'T').slice(0, 16);
         }
         this.showTimeControls();
+    };
+
+    /**
+     * The Time control's input with the time as the server took it (its time zone, a minute to its end: the answer's
+     * as_of or changes), also for one the URL gave with an offset.
+     */
+    TopologyMap.prototype.showServerTime = function () {
+        var value = document.getElementById('topo-time-value');
+        var asOf = this.data && this.data.as_of;
+        var changes = this.data && this.data.changes;
+        var time = asOf ? asOf.requested : (changes && changes.since !== 'baseline' ? changes.since : null);
+        if (value && time) {
+            value.value = String(time).replace(' ', 'T').slice(0, 16);
+        }
     };
 
     TopologyMap.prototype.showTimeControls = function () {
         var mode = document.getElementById('topo-time-mode').value;
         document.getElementById('topo-time-value').style.display = mode && !(mode === 'since' && this.timeBaseline) ? '' : 'none';
+        document.getElementById('topo-time-zone').style.display = mode && !(mode === 'since' && this.timeBaseline) ? '' : 'none';
         document.getElementById('topo-time-baseline').style.display = mode === 'since' && this.timeBaseline ? '' : 'none';
         document.getElementById('topo-time-picks').style.display = mode ? '' : 'none';
     };
@@ -3700,7 +3744,8 @@
             var counts = changes.counts || {};
             var parts = Object.keys(counts).map(function (type) {
                 var label = (changes.labels || {})[type] || type;
-                return counts[type] + ' × ' + label.charAt(0).toLowerCase() + label.slice(1);
+                // "1 × new link", "2 × OSPF adjacency lost"
+                return counts[type] + ' × ' + (/^[A-Z][a-z]/.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : label);
             });
             html = '<i class="fa fa-history"></i> <b>' + esc(this.timeTitle()) + '</b>' + (changes.since === 'baseline' ? '' : ' (to ' + esc(shortTime(changes.to)) + ')') + ': ' +
                 (parts.length ? esc(parts.join(', ')) : 'no change on this map') + '.' +
@@ -3927,9 +3972,11 @@
      * A rounded badge with the marks' short names ("NEW", "BLOCKS"), in the color of the first.
      */
     TopologyMap.prototype.drawMarkBadge = function (ctx, point, marks) {
+        // a map of all VLANs draws one spanning tree instance per switch: a spanning tree mark names its VLANs
+        var allVlans = this.mode === 'l2' && this.data && this.data.changes && !this.data.changes.vlan;
         var texts = [];
         marks.forEach(function (mark) {
-            var text = (MARK_TYPES[mark.type] || ['changed', 'CHANGED'])[1];
+            var text = (MARK_TYPES[mark.type] || ['changed', 'CHANGED'])[1] + (allVlans && mark.vlans && mark.vlans.length ? ' ' + vlanBadge(mark.vlans) : '');
             if (texts.indexOf(text) === -1) {
                 texts.push(text);
             }
