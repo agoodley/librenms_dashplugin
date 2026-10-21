@@ -47,6 +47,9 @@ class ChangeReport
     /** @var array<int, array> */
     private array $events = [];
 
+    /** @var array<int, array{0: int, 1: int}> the cables whose neighbor LibreNMS started or stopped monitoring: [removed row id, added row id] */
+    private array $cablePairs = [];
+
     /**
      * @param  array<int, true>  $newDevices  device_id => true for devices added to LibreNMS in the window
      * @param  array<string, true>  $priorNodes  unmanaged neighbor node ids already seen before the window
@@ -58,8 +61,11 @@ class ChangeReport
     /**
      * @param  array<int, array>  $rows  stored facts (kind, fact_key, device_a, device_b, data as array, initial,
      *                                   first_seen and removed_at as timestamps) that started or ended in the window
-     * @return array{events: array<int, array{time: int, type: string, category: string, level: string, text: string, devices: int[]}>,
-     *     counts: array<string, int>}
+     * @return array{events: array<int, array{time: int, type: string, category: string, level: string, text: string, devices: int[],
+     *     facts: int[]}>, counts: array<string, int>, same_cables: array<int, array{0: int, 1: int}>} facts: ids of the stored rows the
+     *     event comes from (the maps' change marks find their event by them; HistoryService::changes() leaves them out). same_cables:
+     *     the ids of the removed and the added row of each cable whose neighbor LibreNMS started or stopped monitoring (no event: the
+     *     maps take the two rows as one fact)
      */
     public static function build(array $rows, int $from, int $to, FactText $text, array $newDevices = [], array $priorNodes = []): array
     {
@@ -95,7 +101,7 @@ class ChangeReport
             $counts[$event['type']]++;
         }
 
-        return ['events' => $report->events, 'counts' => $counts];
+        return ['events' => $report->events, 'counts' => $counts, 'same_cables' => $report->cablePairs];
     }
 
     /**
@@ -136,7 +142,7 @@ class ChangeReport
                 }
             }
             $this->add(min(array_column($rows, 'first_seen')), 'device_added',
-                $this->text->device($device, null) . ' was added to LibreNMS: ' . implode(', ', $parts), [$device]);
+                $this->text->device($device, null) . ' was added to LibreNMS: ' . implode(', ', $parts), [$device], $rows);
         }
 
         return $rest;
@@ -145,7 +151,8 @@ class ChangeReport
     /**
      * LibreNMS starting or stopping to monitor a neighbor turns the same cable from an unmanaged
      * neighbor into a link between two monitored devices, or back: no change of the network. Such
-     * pairs are left out; the link of a device added to LibreNMS stays for its "added" event.
+     * pairs are left out (and kept as pairs, for the maps); the link of a device added to LibreNMS
+     * stays for its "added" event.
      *
      * @return array{0: array<int, array>, 1: array<int, array>} added and removed link rows left
      */
@@ -167,6 +174,9 @@ class ChangeReport
                     [, $was] = self::splitAt($removed[$index], $port);
                     [, $now] = self::splitAt($row, $port);
                     if (FactCollector::sameNeighbor($was['end'], $now['end'])) {
+                        if (isset($removed[$index]['id'], $row['id'])) {
+                            $this->cablePairs[] = [(int) $removed[$index]['id'], (int) $row['id']];
+                        }
                         unset($removed[$index]);
                         if (! isset($this->newDevices[(int) $row['device_a']]) && ! isset($this->newDevices[(int) $row['device_b']])) {
                             unset($added[$addedIndex]);
@@ -218,10 +228,10 @@ class ChangeReport
             [, $now] = self::splitAt($row, $port);
             if ($was['key'] === $now['key']) {
                 $this->add($row['first_seen'], 'link_back', $this->text->describe($this->fact($row)) . ': back after it was gone '
-                    . self::span($row['first_seen'] - $old['removed_at']), self::devices($row));
+                    . self::span($row['first_seen'] - $old['removed_at']), self::devices($row), [$row, $old]);
             } else {
                 $this->add($row['first_seen'], 'cable_moved', $this->text->linkEnd($here['end']) . ' now connects to ' . $this->text->linkEnd($now['end'])
-                    . ' (was ' . $this->text->linkEnd($was['end']) . ')', array_values(array_unique(array_merge(self::devices($row), self::devices($old)))));
+                    . ' (was ' . $this->text->linkEnd($was['end']) . ')', array_values(array_unique(array_merge(self::devices($row), self::devices($old)))), [$row, $old]);
             }
         }
 
@@ -232,19 +242,19 @@ class ChangeReport
                 $newNodes[$node][] = $row;
                 continue;
             }
-            $this->add($row['first_seen'], 'link_added', 'New link ' . $this->text->describe($this->fact($row)), self::devices($row));
+            $this->add($row['first_seen'], 'link_added', 'New link ' . $this->text->describe($this->fact($row)), self::devices($row), [$row]);
         }
         foreach ($newNodes as $rows) {
             $b = $rows[0]['data']['b'];
             $where = array_map(fn ($row) => $this->text->linkEnd($row['data']['a']), $rows);
             $role = self::role($b['role'] ?? null);
             $this->add(min(array_column($rows, 'first_seen')), $role === 'neighbor' ? 'neighbor_new' : 'unmanaged_new', "New $role not monitored: " . ($b['name'] ?? 'neighbor')
-                . (isset($b['platform']) ? ' (' . $b['platform'] . ')' : '') . ' on ' . implode(', ', $where), array_values(array_unique(array_merge(...array_map(fn ($row) => self::devices($row), $rows)))));
+                . (isset($b['platform']) ? ' (' . $b['platform'] . ')' : '') . ' on ' . implode(', ', $where), array_values(array_unique(array_merge(...array_map(fn ($row) => self::devices($row), $rows)))), $rows);
         }
 
         foreach ($removed as $index => $row) {
             if (! isset($usedRemoved[$index])) {
-                $this->add($row['removed_at'], 'link_removed', 'Link gone: ' . $this->text->describe($this->fact($row)), self::devices($row));
+                $this->add($row['removed_at'], 'link_removed', 'Link gone: ' . $this->text->describe($this->fact($row)), self::devices($row), [$row]);
             }
         }
     }
@@ -265,7 +275,7 @@ class ChangeReport
             $this->add($type === 'lag_member_added' ? $group[0]['first_seen'] : $group[0]['removed_at'], $type,
                 $this->text->device($data['device'], $data['device_name']) . ' ' . $data['aggregate_name'] . ': ' . $members
                 . ($type === 'lag_member_added' ? ' joined' : ' left'),
-                [(int) $data['device']]);
+                [(int) $data['device']], $group);
         }
     }
 
@@ -279,9 +289,11 @@ class ChangeReport
         $sides = [];
         foreach ($removed as $row) {
             $sides[$row['data']['device'] . '|' . $row['removed_at']]['before'][] = $row['data'];
+            $sides[$row['data']['device'] . '|' . $row['removed_at']]['rows'][] = $row;
         }
         foreach ($added as $row) {
             $sides[$row['data']['device'] . '|' . $row['first_seen']]['after'][] = $row['data'];
+            $sides[$row['data']['device'] . '|' . $row['first_seen']]['rows'][] = $row;
         }
 
         $changes = [];
@@ -297,9 +309,10 @@ class ChangeReport
                 }
                 $type = $old === null ? 'root_new' : ($new === null ? 'root_gone' : 'root_changed');
                 $group = $type . '|' . $time . '|' . ($old['root'] ?? '') . '|' . ($new['root'] ?? '');
-                $changes[$group] ??= ['type' => $type, 'time' => $time, 'old' => $old, 'new' => $new, 'vlans' => [], 'devices' => []];
+                $changes[$group] ??= ['type' => $type, 'time' => $time, 'old' => $old, 'new' => $new, 'vlans' => [], 'devices' => [], 'rows' => []];
                 $changes[$group]['vlans'][$vlan] = true;
                 $changes[$group]['devices'][$device] = true;
+                $changes[$group]['rows'][$key] = $side['rows'];
             }
         }
 
@@ -312,7 +325,7 @@ class ChangeReport
                 'root_new' => "$instances: root bridge " . $this->text->root($change['new']) . " (new instance on $seen)",
                 default => "$instances: no longer reported by $seen (root bridge was " . $this->text->root($change['old']) . ')',
             };
-            $this->add($change['time'], $change['type'], $text, $devices);
+            $this->add($change['time'], $change['type'], $text, $devices, array_merge(...array_values($change['rows'])));
         }
     }
 
@@ -343,9 +356,11 @@ class ChangeReport
         $ports = [];
         foreach ($removed as $row) {
             $ports[$row['removed_at'] . '|' . $row['data']['device'] . '|' . $row['data']['port_name']]['before'][] = $row['data'];
+            $ports[$row['removed_at'] . '|' . $row['data']['device'] . '|' . $row['data']['port_name']]['rows'][] = $row;
         }
         foreach ($added as $row) {
             $ports[$row['first_seen'] . '|' . $row['data']['device'] . '|' . $row['data']['port_name']]['after'][] = $row['data'];
+            $ports[$row['first_seen'] . '|' . $row['data']['device'] . '|' . $row['data']['port_name']]['rows'][] = $row;
         }
 
         foreach ($ports as $key => $side) {
@@ -357,7 +372,7 @@ class ChangeReport
                 if ($vlans) {
                     $this->add($time, $type, $this->text->device($data['device'], $data['device_name']) . ' ' . $data['port_name']
                         . ($type === 'blocking_started' ? ' started blocking in ' : ' stopped blocking in ') . FactText::vlanList($vlans),
-                        [(int) $data['device']]);
+                        [(int) $data['device']], $side['rows']);
                 }
             }
         }
@@ -392,12 +407,15 @@ class ChangeReport
                 $describe = str_starts_with($type, 'ospf') ? $this->text->ospf($row['data']) : $this->text->bgp($row['data']);
                 $this->add(str_ends_with($type, '_up') ? $row['first_seen'] : $row['removed_at'], $type,
                     $words[$type][0] . $describe . $words[$type][1] . ($both ? ' (reported by both routers)' : ''),
-                    array_values(array_unique(array_merge(...array_map(fn ($row) => self::devices($row), $reports)))));
+                    array_values(array_unique(array_merge(...array_map(fn ($row) => self::devices($row), $reports)))), $reports);
             }
         }
     }
 
-    private function add(int $time, string $type, string $text, array $devices): void
+    /**
+     * @param  array<int, array>  $rows  the stored rows the event comes from
+     */
+    private function add(int $time, string $type, string $text, array $devices, array $rows): void
     {
         [$category, $level] = self::TYPES[$type];
         $this->events[] = [
@@ -407,6 +425,7 @@ class ChangeReport
             'level' => $level,
             'text' => $text,
             'devices' => array_values(array_filter($devices, fn ($id) => $this->text->visible($id))),
+            'facts' => array_values(array_unique(array_filter(array_map(fn (array $row) => isset($row['id']) ? (int) $row['id'] : null, $rows)))),
         ];
     }
 

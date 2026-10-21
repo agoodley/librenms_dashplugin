@@ -119,6 +119,10 @@ class ExportController extends Controller
                 // read as "no filter", the map would be the whole network
                 return response()->json(['error' => "The $invalid of the map is not a valid id."], 422);
             }
+            if (MapParams::asksForTime($query)) {
+                // LibreNMS draws a Custom Map with the live status of its devices and links
+                return response()->json(['error' => 'A Custom Map shows the network live: set the map\'s Time back to Now to export it.'], 422);
+            }
             $params = MapParams::parse($query, $settings);
             $data = $this->service($request, $settings)->$page($params);
             $layout = CustomMapLayout::build($data, self::positions($request->input('positions')), $repo->style());

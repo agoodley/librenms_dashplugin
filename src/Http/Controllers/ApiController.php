@@ -15,7 +15,8 @@ use Illuminate\Support\Facades\Log;
 /**
  * JSON API behind the map pages, also usable for automation:
  * GET plugin/topology/api/{l2,l3,stp,links,redundancy} with the same query parameters as the pages
- * (device, depth, group, location, vlan, vrf and the map toggles), and api/simulate?fail=...
+ * (device, depth, group, location, vlan, vrf and the map toggles; for the L2 and L3 maps at= or since=,
+ * History\MapHistory), and api/simulate?fail=...
  */
 class ApiController extends Controller
 {
@@ -82,6 +83,10 @@ class ApiController extends Controller
     {
         $settings = $this->settings();
         $params = MapParams::parse($request->query(), $settings);
+        if ($params['time_error'] !== null && in_array($map, ['l2', 'l3'], true)) {
+            // at / since that is no time, or both: not today's map in its place
+            return response()->json(['error' => $params['time_error'], 'time_refused' => true, 'role_hidden' => self::roleHidden($map)], 422);
+        }
 
         return $this->json("$map view", function () use ($request, $settings, $map, $params) {
             $result = FindingBadges::annotate($map, $this->service($request, $settings)->$map($params), new HistoryRepository($request->user()),

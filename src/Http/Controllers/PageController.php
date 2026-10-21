@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
 use Agoodley\LibrenmsTopology\Data\ViewRepository;
 use Agoodley\LibrenmsTopology\History\FindingBadges;
+use Agoodley\LibrenmsTopology\History\MapHistory;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
 use Agoodley\LibrenmsTopology\Sharing\SavedView;
 use Agoodley\LibrenmsTopology\Support\MapParams;
@@ -74,9 +75,9 @@ class PageController extends Controller
     }
 
     /**
-     * Map page shell with the filter choices (device groups, locations) and current parameters. With
-     * ?view=, a saved view the user may open gives the parameters (the URL's own ones win), and the map
-     * of its page is opened.
+     * Map page shell with the filter choices (device groups, locations), current parameters and what its Time
+     * control offers (MapHistory::info()). With ?view=, a saved view the user may open gives the parameters (the
+     * URL's own ones win), and the map of its page is opened.
      */
     private function map(Request $request, string $mode): View|RedirectResponse
     {
@@ -109,6 +110,13 @@ class PageController extends Controller
         unset($query['view']);
         $params = MapParams::parse($query, $settings);
         $repo = new TopologyRepository($request->user());
+        try {
+            // the Time control: the snapshots a map at another time can show, and the baseline of the map's devices
+            $time = (new MapHistory(new HistoryRepository($request->user()), $settings))->info($repo->scope($params)[0]);
+        } catch (\Throwable $e) {
+            Log::warning('topology plugin: cannot read the topology history: ' . $e->getMessage());
+            $time = MapHistory::emptyInfo($settings, 'The topology history cannot be read, see logs/librenms.log.');
+        }
 
         return view('topology::map', [
             'mode' => $mode,
@@ -121,6 +129,7 @@ class PageController extends Controller
             'deviceName' => $params['device'] ? $repo->deviceName($params['device']) : null,
             'assetVersion' => self::assetVersion(),
             'canExportCustomMap' => ExportController::allowed($request->user()),
+            'time' => $time,
         ]);
     }
 }

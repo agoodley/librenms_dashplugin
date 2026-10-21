@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\History\Baseline;
 use Agoodley\LibrenmsTopology\History\FactCollector;
 use Agoodley\LibrenmsTopology\History\FindingHistory;
 use Agoodley\LibrenmsTopology\History\HistoryService;
+use Agoodley\LibrenmsTopology\History\Runs;
 use Agoodley\LibrenmsTopology\History\Window;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
 use Carbon\Carbon;
@@ -370,21 +371,24 @@ class HistoryRepository extends ScopedRepository
      * Facts of the devices that started (not with the first snapshot of their kind) or ended in
      * [$from, $to], with their data decoded: the newest WINDOW_LIMIT of each, cut at a common
      * boundary when there were more (Window::merge()). The snapshots the cut leaves out are
-     * counted per kind of fact (`dropped`, Window::dropped()).
+     * counted per kind of fact (`dropped`, Window::dropped()) unless $dropped is false: a map
+     * shows no such counts, and over a long history they read every fact of the part cut off.
+     * Rows are decoded as they are read, not held twice.
      *
      * @param  int[]  $ids
+     * @param  string[]|null  $kinds  only these kinds of facts (a map reads its own), null: all
      * @return array{rows: array<int, array>, truncated: bool, since: ?int, dropped: ?array}
      */
-    public function windowFacts(CarbonInterface $from, CarbonInterface $to, array $ids): array
+    public function windowFacts(CarbonInterface $from, CarbonInterface $to, array $ids, ?array $kinds = null, bool $dropped = true): array
     {
-        $started = fn (CarbonInterface $until) => $this->touching(DB::table('topology_facts'), $ids)->whereBetween('first_seen', [$from, $until])
-            ->where('initial', 0);
-        $ended = fn (CarbonInterface $until) => $this->touching(DB::table('topology_facts'), $ids)->whereBetween('removed_at', [$from, $until]);
-        $read = fn (Builder $query, string $column) => $query->orderByDesc($column)->orderByDesc('id')->limit(self::WINDOW_LIMIT)->get()
+        $facts = fn () => $kinds === null ? $this->touching(DB::table('topology_facts'), $ids) : $this->touching(DB::table('topology_facts'), $ids)->whereIn('kind', $kinds);
+        $started = fn (CarbonInterface $until) => $facts()->whereBetween('first_seen', [$from, $until])->where('initial', 0);
+        $ended = fn (CarbonInterface $until) => $facts()->whereBetween('removed_at', [$from, $until]);
+        $read = fn (Builder $query, string $column) => $query->orderByDesc($column)->orderByDesc('id')->limit(self::WINDOW_LIMIT)->cursor()
             ->map(fn ($row) => self::factRow((array) $row))->all();
         $window = Window::merge($read($started($to), 'first_seen'), $read($ended($to), 'removed_at'), self::WINDOW_LIMIT);
         $window['dropped'] = null;
-        if ($window['since'] !== null) {
+        if ($window['since'] !== null && $dropped) {
             $until = Carbon::createFromTimestamp($window['since'], $from->getTimezone());
             // per snapshot and kind for the newest snapshots left out (a snapshot has a row per kind at most), per kind for all
             $perSnapshot = fn (Builder $query, string $column) => $query->groupBy($column, 'kind')->orderByDesc($column)
@@ -527,6 +531,129 @@ class HistoryRepository extends ScopedRepository
         }
 
         return $result;
+    }
+
+    // ---------------------------------------------------------------- maps at a point in time
+
+    /**
+     * The last finished snapshot at or before $time, which a map as of $time shows (every fact starts and ends at a
+     * snapshot), with the start of the next one; null before the first. started_at is the time as stored, for
+     * factsAt(); recorded the kinds of facts recorded by then.
+     *
+     * @return array{time: int, started_at: string, next: ?int, recorded: string[], skipped: string[]}|null
+     */
+    public function snapshotAt(int $time): ?array
+    {
+        $runs = fn () => DB::table('topology_runs')->where('type', 'snapshot')->whereNotNull('finished_at');
+        $row = $runs()->where('started_at', '<=', Carbon::createFromTimestamp($time, date_default_timezone_get()))
+            ->orderByDesc('started_at')->orderByDesc('id')->first(['started_at', 'stats']);
+        if ($row === null) {
+            return null;
+        }
+        $next = $runs()->where('started_at', '>', $row->started_at)->min('started_at');
+        $stats = json_decode((string) $row->stats, true) ?: [];
+
+        return [
+            'time' => (int) strtotime((string) $row->started_at),
+            'started_at' => (string) $row->started_at,
+            'next' => $next !== null ? (int) strtotime((string) $next) : null,
+            'recorded' => Runs::recorded($stats),
+            'skipped' => array_values(array_map('strval', is_array($stats['skipped'] ?? null) ? $stats['skipped'] : [])),
+        ];
+    }
+
+    /**
+     * The finished snapshots: the earliest still kept (the retention prunes older runs with their facts, so a map
+     * of an earlier time would miss facts), the latest, how many, and the starts of the $recent latest, newest first.
+     *
+     * @return array{earliest: ?int, latest: ?int, count: int, recent: int[]}
+     */
+    public function snapshotTimes(int $recent): array
+    {
+        $runs = fn () => DB::table('topology_runs')->where('type', 'snapshot')->whereNotNull('finished_at');
+        $bounds = $runs()->selectRaw('min(started_at) as earliest, max(started_at) as latest, count(*) as runs')->first();
+        $times = $runs()->orderByDesc('started_at')->limit($recent)->pluck('started_at')->all();
+
+        return [
+            'earliest' => $bounds && $bounds->earliest !== null ? (int) strtotime((string) $bounds->earliest) : null,
+            'latest' => $bounds && $bounds->latest !== null ? (int) strtotime((string) $bounds->latest) : null,
+            'count' => (int) ($bounds->runs ?? 0),
+            'recent' => array_map(fn ($time) => (int) strtotime((string) $time), $times),
+        ];
+    }
+
+    /**
+     * Facts of these kinds present at a snapshot ($at: its started_at as snapshotAt() returns it) that involve the
+     * devices (device_a or device_b; with $reporting only device_a, the device whose data the fact comes from), with
+     * their data decoded. A fact is present from its first snapshot (first_seen, included) until the snapshot that no
+     * longer saw it (removed_at, excluded). Which facts those are is read from the index on (kind, removed_at,
+     * first_seen, device_a, device_b) alone, so a long history's closed facts cost index entries, not rows; the rows
+     * of the devices' facts follow a chunk at a time in id order, so the links of a whole network are streamed rather
+     * than held.
+     *
+     * @param  int[]  $ids
+     * @param  string[]  $kinds
+     * @return \Generator<int, array>
+     */
+    public function factsAt(string $at, array $ids, array $kinds, bool $reporting = false): \Generator
+    {
+        if (! $ids || ! $kinds) {
+            return;
+        }
+        $scope = array_fill_keys(array_map('intval', $ids), true);
+        $present = [];
+        $index = DB::table('topology_facts')->whereIn('kind', $kinds)->where('first_seen', '<=', $at)
+            ->where(fn (Builder $q) => $q->whereNull('removed_at')->orWhere('removed_at', '>', $at))->select('id', 'device_a', 'device_b');
+        foreach ($index->cursor() as $row) {
+            if (isset($scope[(int) $row->device_a]) || (! $reporting && isset($scope[(int) $row->device_b]))) {
+                $present[] = (int) $row->id;
+            }
+        }
+        sort($present);
+        foreach (array_chunk($present, self::CHUNK * 4) as $chunk) {
+            foreach (DB::table('topology_facts')->whereIntegerInRaw('id', $chunk)->orderBy('id')->get() as $row) {
+                yield self::factRow((array) $row);
+            }
+        }
+    }
+
+    /**
+     * What the devices were at $time, for a map of the past: down when an outage covered that time (device_outages,
+     * when the user's role may read it), new when LibreNMS added them later, else up; unknown without the outages.
+     *
+     * @param  int[]  $ids
+     * @return array<int, string> device_id => up, down, new or unknown
+     */
+    public function deviceStatesAt(array $ids, int $time): array
+    {
+        $states = [];
+        $outages = $this->allowsTable('device_outages') && Schema::hasTable('device_outages');
+        $at = Carbon::createFromTimestamp($time, date_default_timezone_get());
+        foreach (array_chunk(array_values(array_unique($ids)), 5000) as $chunk) {
+            foreach (DB::table('devices')->whereIntegerInRaw('device_id', $chunk)->get(['device_id', 'inserted']) as $row) {
+                $states[(int) $row->device_id] = $row->inserted !== null && $row->inserted > $at->toDateTimeString() ? 'new' : ($outages ? 'up' : 'unknown');
+            }
+            if ($outages) {
+                foreach (DB::table('device_outages')->whereIntegerInRaw('device_id', $chunk)->where('going_down', '<=', $time)
+                    ->where(fn (Builder $q) => $q->whereNull('up_again')->orWhere('up_again', '>', $time))->distinct()->pluck('device_id') as $id) {
+                    if (($states[(int) $id] ?? null) === 'up') {
+                        $states[(int) $id] = 'down';
+                    }
+                }
+            }
+        }
+
+        return $states;
+    }
+
+    /**
+     * Every device LibreNMS has: a fact's device that is not one of them was deleted since.
+     *
+     * @return array<int, true>
+     */
+    public function existingDevices(): array
+    {
+        return array_fill_keys(array_map('intval', DB::table('devices')->pluck('device_id')->all()), true);
     }
 
     // ---------------------------------------------------------------- baseline

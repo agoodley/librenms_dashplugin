@@ -115,7 +115,8 @@ class L2Builder
             if ($link['b_device']) {
                 $bNode = 'd:' . $link['b_device'];
             } else {
-                if (! $showUnmanaged) {
+                // a device LibreNMS no longer has stays on a map of the past: it was monitored then
+                if (! $showUnmanaged && ! $link['b_deleted']) {
                     continue;
                 }
                 $bNode = self::unmanagedNodeId($link);
@@ -288,6 +289,9 @@ class L2Builder
     /**
      * Normalized link: side a is the reporting (local) device, side b the neighbour; b_device is
      * null for unmanaged neighbours; missing is set for baseline links LLDP/CDP no longer reports.
+     * A row from the topology history (History\PastMap) brings the neighbour's role as recorded
+     * (b_role), the name of a neighbour without one (b_label) and whether it is a device LibreNMS
+     * no longer has (b_deleted, drawn also without unmanaged neighbours).
      */
     private static function rawLink(array $link, int $ld, int $lp, int $rd, int $rp): array
     {
@@ -304,6 +308,9 @@ class L2Builder
             'protocols' => array_filter([strtolower((string) ($link['protocol'] ?? ''))]),
             // a baseline link that LLDP/CDP no longer reports: since when ('' if unknown)
             'missing' => isset($link['missing']) ? (string) $link['missing'] : null,
+            'b_role' => isset($link['remote_role']) ? (string) $link['remote_role'] : null,
+            'b_label' => isset($link['remote_label']) ? (string) $link['remote_label'] : null,
+            'b_deleted' => ! empty($link['deleted']),
         ];
     }
 
@@ -367,7 +374,7 @@ class L2Builder
      */
     private function unmanagedNode(string $id, array $link): array
     {
-        $name = $link['b_host'] !== '' ? $link['b_host'] : 'unknown neighbor';
+        $name = $link['b_host'] !== '' ? $link['b_host'] : ($link['b_label'] ?? 'unknown neighbor');
 
         return [
             'id' => $id,
@@ -376,7 +383,7 @@ class L2Builder
             'device_id' => null,
             'label' => self::shortHost($name),
             'name' => $name,
-            'role' => DeviceRole::fromNeighbor($link['b_platform'], $link['b_version'], $link['b_host']),
+            'role' => $link['b_role'] ?? DeviceRole::fromNeighbor($link['b_platform'], $link['b_version'], $link['b_host']),
             'status' => 'unknown',
             'platform' => $link['b_platform'],
             'version' => mb_substr($link['b_version'], 0, 200),
