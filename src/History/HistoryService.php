@@ -255,16 +255,17 @@ class HistoryService
      * The changes of the devices in [$from, $to] as the Changes page tells them (ChangeReport), of the kinds of
      * facts the user's role may read: the facts that started or ended in it, the newest of each up to a common
      * boundary when there are too many (HistoryRepository::windowFacts(); from then starts after it), and the
-     * report. A map's changes since a time (MapHistory) read the same.
+     * report. A map's changes since a time (MapHistory) read the same, without counting what the cut left out
+     * ($dropped false: the map does not show it).
      *
      * @param  int[]  $ids
      * @param  string[]|null  $kinds  only these kinds of facts (a map's), null: all
      * @return array{rows: array<int, array>, report: array{events: array<int, array>, counts: array<string, int>},
      *     from: CarbonInterface, since: ?CarbonInterface, truncated: bool, dropped: ?array}
      */
-    public function window(array $ids, CarbonInterface $from, CarbonInterface $to, FactText $text, ?array $kinds = null): array
+    public function window(array $ids, CarbonInterface $from, CarbonInterface $to, FactText $text, ?array $kinds = null, bool $dropped = true): array
     {
-        $window = $this->history->windowFacts($from, $to, $ids, $kinds);
+        $window = $this->history->windowFacts($from, $to, $ids, $kinds, $dropped);
         $rows = array_values(array_filter($window['rows'], fn ($row) => $this->factAllowed($row['kind'])));
         $since = null;
         if ($window['since'] !== null) {

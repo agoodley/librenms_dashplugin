@@ -371,14 +371,15 @@ class HistoryRepository extends ScopedRepository
      * Facts of the devices that started (not with the first snapshot of their kind) or ended in
      * [$from, $to], with their data decoded: the newest WINDOW_LIMIT of each, cut at a common
      * boundary when there were more (Window::merge()). The snapshots the cut leaves out are
-     * counted per kind of fact (`dropped`, Window::dropped()). Rows are decoded as they are read,
-     * not held twice.
+     * counted per kind of fact (`dropped`, Window::dropped()) unless $dropped is false: a map
+     * shows no such counts, and over a long history they read every fact of the part cut off.
+     * Rows are decoded as they are read, not held twice.
      *
      * @param  int[]  $ids
      * @param  string[]|null  $kinds  only these kinds of facts (a map reads its own), null: all
      * @return array{rows: array<int, array>, truncated: bool, since: ?int, dropped: ?array}
      */
-    public function windowFacts(CarbonInterface $from, CarbonInterface $to, array $ids, ?array $kinds = null): array
+    public function windowFacts(CarbonInterface $from, CarbonInterface $to, array $ids, ?array $kinds = null, bool $dropped = true): array
     {
         $facts = fn () => $kinds === null ? $this->touching(DB::table('topology_facts'), $ids) : $this->touching(DB::table('topology_facts'), $ids)->whereIn('kind', $kinds);
         $started = fn (CarbonInterface $until) => $facts()->whereBetween('first_seen', [$from, $until])->where('initial', 0);
@@ -387,7 +388,7 @@ class HistoryRepository extends ScopedRepository
             ->map(fn ($row) => self::factRow((array) $row))->all();
         $window = Window::merge($read($started($to), 'first_seen'), $read($ended($to), 'removed_at'), self::WINDOW_LIMIT);
         $window['dropped'] = null;
-        if ($window['since'] !== null) {
+        if ($window['since'] !== null && $dropped) {
             $until = Carbon::createFromTimestamp($window['since'], $from->getTimezone());
             // per snapshot and kind for the newest snapshots left out (a snapshot has a row per kind at most), per kind for all
             $perSnapshot = fn (Builder $query, string $column) => $query->groupBy($column, 'kind')->orderByDesc($column)
@@ -584,9 +585,11 @@ class HistoryRepository extends ScopedRepository
     /**
      * Facts of these kinds present at a snapshot ($at: its started_at as snapshotAt() returns it) that involve the
      * devices (device_a or device_b; with $reporting only device_a, the device whose data the fact comes from), with
-     * their data decoded: a chunk at a time in id order, so the links of a whole network are streamed rather than
-     * held as rows. A fact is present from its first snapshot (first_seen, included) until the snapshot that no
-     * longer saw it (removed_at, excluded).
+     * their data decoded. A fact is present from its first snapshot (first_seen, included) until the snapshot that no
+     * longer saw it (removed_at, excluded). Which facts those are is read from the index on (kind, removed_at,
+     * first_seen, device_a, device_b) alone, so a long history's closed facts cost index entries, not rows; the rows
+     * of the devices' facts follow a chunk at a time in id order, so the links of a whole network are streamed rather
+     * than held.
      *
      * @param  int[]  $ids
      * @param  string[]  $kinds
@@ -597,17 +600,21 @@ class HistoryRepository extends ScopedRepository
         if (! $ids || ! $kinds) {
             return;
         }
-        $last = 0;
-        do {
-            $query = DB::table('topology_facts')->whereIn('kind', $kinds)->where('first_seen', '<=', $at)
-                ->where(fn (Builder $q) => $q->whereNull('removed_at')->orWhere('removed_at', '>', $at))
-                ->where('id', '>', $last)->orderBy('id')->limit(self::CHUNK * 4);
-            $rows = ($reporting ? $query->whereIntegerInRaw('device_a', $ids) : $this->touching($query, $ids))->get();
-            foreach ($rows as $row) {
-                $last = (int) $row->id;
+        $scope = array_fill_keys(array_map('intval', $ids), true);
+        $present = [];
+        $index = DB::table('topology_facts')->whereIn('kind', $kinds)->where('first_seen', '<=', $at)
+            ->where(fn (Builder $q) => $q->whereNull('removed_at')->orWhere('removed_at', '>', $at))->select('id', 'device_a', 'device_b');
+        foreach ($index->cursor() as $row) {
+            if (isset($scope[(int) $row->device_a]) || (! $reporting && isset($scope[(int) $row->device_b]))) {
+                $present[] = (int) $row->id;
+            }
+        }
+        sort($present);
+        foreach (array_chunk($present, self::CHUNK * 4) as $chunk) {
+            foreach (DB::table('topology_facts')->whereIntegerInRaw('id', $chunk)->orderBy('id')->get() as $row) {
                 yield self::factRow((array) $row);
             }
-        } while (count($rows) === self::CHUNK * 4);
+        }
     }
 
     /**
