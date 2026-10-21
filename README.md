@@ -130,14 +130,15 @@ recorded it at a time, or today's network with what changed since a time. **Time
   (the same moved cables, root bridge moves and lost adjacencies; a neighbor LibreNMS started or stopped monitoring is
   the same cable, no change; and its limit of 5,000 facts that started and 5,000 that ended). New links are marked
   **NEW**, a cable that moved is a new link and a ghost of the old one, port-channel members that joined or left
-  **+ MEMBER** / **− MEMBER**, the root bridge of the VLANs whose root moved **NEW ROOT** and the old one **WAS ROOT**,
-  ports that started or stopped blocking **BLOCKS** / **UNBLOCKED**, OSPF adjacencies and BGP sessions that came up
-  **NEW**, devices added to LibreNMS **NEW**. What is gone is drawn as a dashed gray **ghost** (links, lost adjacencies
-  and sessions), to a ghost of its far end when that is no longer on the map (none for an unmanaged neighbor when the
-  map leaves those out). On a map of one VLAN, the spanning tree marks are those of the instance it shows; on a map of
-  all VLANs each names its VLANs (**NEW ROOT VLAN 20**). The banner counts the marks; the details of a marked link or
-  device say what changed and when, and open the Changes page for that span. Since the baseline, the marks are what
-  its comparison on the Changes page lists (blocked ports are not part of a baseline).
+  **+ MEMBER** / **− MEMBER**, the root bridge of the VLANs whose root moved **NEW ROOT** and the old one
+  **WAS ROOT**, ports that started or stopped blocking **BLOCKS** / **UNBLOCKED**, OSPF adjacencies and BGP sessions
+  that came up **NEW**, devices added to LibreNMS **NEW**. What is gone is drawn as a dashed gray **ghost** (links,
+  lost adjacencies and sessions), to a ghost of its far end when that is no longer on the map (none for an unmanaged
+  neighbor when the map leaves those out). On a map of one VLAN, the spanning tree marks are those of the instance it
+  shows; on a map of all VLANs each names its VLANs (**NEW ROOT VLAN 20**). The banner counts the marks; the details
+  of a marked link or device say what changed and when (the change that brought about its state now: a link that went,
+  came back and went again is gone since the last time), and open the Changes page for that span. Since the baseline,
+  the marks are what its comparison on the Changes page lists (blocked ports are not part of a baseline).
 
 Quick picks (the clock button): an hour ago, yesterday and last week at this time, when the baseline was saved (*As
 of*) or the baseline itself (*Changes since*), and the latest snapshots, each to its second. Times are the server's

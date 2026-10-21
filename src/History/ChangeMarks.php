@@ -16,9 +16,9 @@ use Agoodley\LibrenmsTopology\Topology\L2Builder;
  * a time, only the facts of the Changes page's events count, each with all its periods (a fact's data can change
  * without a change of the network, a switch renamed or a port re-created: a period no event names): what the
  * Changes page does not report (a neighbour LibreNMS started or stopped monitoring is the same cable) is not
- * marked either, and a mark says when the Changes page saw it. Root bridges compare per switch and VLAN
- * (Baseline::rootChanges()), blocked ports per port (its device and name) and VLAN; on a map of one VLAN only
- * the spanning tree instance it shows counts.
+ * marked either, and a mark tells the event that brought about the state now (a link gone: the last time it went).
+ * Root bridges compare per switch and VLAN (Baseline::rootChanges()), blocked ports per port (its device and name)
+ * and VLAN; on a map of one VLAN only the spanning tree instance it shows counts.
  *
  * Names come from FactText, so a device the user may not see is named as on the Changes page; a ghost node's id
  * is a number of this answer, which tells nothing about the device behind it.
@@ -54,11 +54,14 @@ class ChangeMarks
     /** @var array<string, int> "kind|node id|address" => index of an OSPF / BGP edge */
     private array $sessionEdges = [];
 
-    /** @var array<int, array> fact row id => the ChangeReport event it is part of */
-    private array $eventOf = [];
+    /** @var array<string, array{at: int, event: array}> fact hash => the ChangeReport event that started its latest period with one (at: that start) */
+    private array $started = [];
 
-    /** @var array<string, array> fact hash => the latest ChangeReport event about one of its periods */
-    private array $eventByHash = [];
+    /** @var array<string, array{at: int, event: array}> fact hash => the ChangeReport event that ended its latest period with one (at: that end) */
+    private array $ended = [];
+
+    /** @var array<string, array> fact hash => its row that ended last: a fact that is gone, as it last was */
+    private array $lastEnded = [];
 
     /** @var array<int, array<string, int>> switch => root bridge (MAC) => when the Changes page last saw a root move to it */
     private array $rootMoves = [];
@@ -139,9 +142,12 @@ class ChangeMarks
     }
 
     /**
-     * What the Changes page's events say about the facts: the event of each row and the latest of each fact (by its
-     * hash, a later period of it may have no event), when a switch's root bridge last moved to each root bridge, and
-     * when a port (its device and name) last started or stopped blocking each VLAN.
+     * What the Changes page's events say about the facts: per fact (its hash, with all its periods: a later one may
+     * have no event) the event that started the latest of its periods that an event started and the event that ended
+     * the latest that one ended, when a switch's root bridge last moved to each root bridge, and when a port (its
+     * device and name) last started or stopped blocking each VLAN. An event at or after the end of a period ended it
+     * (a link gone, the old end of a moved cable, the link before a link back after it was gone), else it started it.
+     * Also each fact's row that ended last.
      *
      * @param  array<int, array>  $events
      * @param  array<int, array>  $rows
@@ -153,18 +159,22 @@ class ChangeMarks
             if (isset($row['id'])) {
                 $rowsById[(int) $row['id']] = $row;
             }
+            if ($row['removed_at'] !== null && (int) $row['removed_at'] > (int) ($this->lastEnded[$row['hash']]['removed_at'] ?? PHP_INT_MIN)) {
+                $this->lastEnded[$row['hash']] = $row;
+            }
         }
         foreach ($events as $event) {
             $time = (int) $event['time'];
             $blocked = ['before' => [], 'after' => []];
             foreach ($event['facts'] ?? [] as $id) {
-                $this->eventOf[(int) $id] ??= $event;
                 $row = $rowsById[(int) $id] ?? null;
                 if ($row === null) {
                     continue;
                 }
-                if ((int) ($this->eventByHash[$row['hash']]['time'] ?? PHP_INT_MIN) <= $time) {
-                    $this->eventByHash[$row['hash']] = $event;
+                if ($row['removed_at'] !== null && $time >= (int) $row['removed_at']) {
+                    self::keepLatest($this->ended, $row['hash'], (int) $row['removed_at'], $event);
+                } else {
+                    self::keepLatest($this->started, $row['hash'], (int) $row['first_seen'], $event);
                 }
                 // the root bridge a switch moved to (its fact that started then) and a port's VLANs on either side
                 if ($event['type'] === 'root_changed' && $row['kind'] === FactCollector::STP_ROOT && (int) $row['first_seen'] === $time) {
@@ -189,13 +199,33 @@ class ChangeMarks
     }
 
     /**
-     * When the Changes page saw a fact change: its row's event, else the latest event of the fact; null without one.
+     * Keep the event of a fact's latest period ($at: when it started or ended), of two events of one period the later.
+     *
+     * @param  array<string, array{at: int, event: array}>  $index
      */
-    private function eventTime(array $row): ?int
+    private static function keepLatest(array &$index, string $hash, int $at, array $event): void
     {
-        $event = (isset($row['id']) ? ($this->eventOf[(int) $row['id']] ?? null) : null) ?? $this->eventByHash[$row['hash']] ?? null;
+        if (! isset($index[$hash]) || [$at, (int) $event['time']] > [$index[$hash]['at'], (int) $index[$hash]['event']['time']]) {
+            $index[$hash] = ['at' => $at, 'event' => $event];
+        }
+    }
 
-        return $event !== null ? (int) $event['time'] : null;
+    /**
+     * The Changes page's event a mark of a fact tells, the one that brought about its state now: for a fact that is
+     * gone, the one that ended its latest period (a link that went, came back and went again went the last time);
+     * for a new one, the one that started its latest period with one; null without one (the baseline).
+     */
+    private function event(array $row, bool $isGone): ?array
+    {
+        return ($isGone ? $this->ended : $this->started)[$row['hash']]['event'] ?? null;
+    }
+
+    /**
+     * A fact as it last was: its row that ended last (a gone link that flapped), else the row given.
+     */
+    private function lastPeriod(array $row): array
+    {
+        return $this->lastEnded[$row['hash']] ?? $row;
     }
 
     /**
@@ -236,10 +266,10 @@ class ChangeMarks
         $marks = new self($result, $text, $events ?? [], $rows, $options);
         $beforeByHash = self::byHash($before);
         $afterByHash = self::byHash($after);
-        $gone = array_diff_key($beforeByHash, $afterByHash);
+        $gone = array_map(fn (array $row) => $marks->lastPeriod($row), array_diff_key($beforeByHash, $afterByHash));
         $new = array_diff_key($afterByHash, $beforeByHash);
         // when: as the Changes page saw it, else (the baseline) when the period started or ended
-        $time = fn (array $row, bool $isGone) => $marks->eventTime($row) ?? ($isGone ? ($goneAt[$row['hash']] ?? $row['removed_at'] ?? null) : $row['first_seen']);
+        $time = fn (array $row, bool $isGone) => $marks->event($row, $isGone)['time'] ?? ($isGone ? ($goneAt[$row['hash']] ?? $row['removed_at'] ?? null) : $row['first_seen']);
 
         if ($mode === 'l2') {
             foreach ($new as $row) {
@@ -319,7 +349,7 @@ class ChangeMarks
 
             return;
         }
-        $this->markEdge($index, 'link_new', $time, $this->eventText($row) ?? 'New link ' . $this->text->describe(self::fact($row)));
+        $this->markEdge($index, 'link_new', $time, $this->eventText($row, false) ?? 'New link ' . $this->text->describe(self::fact($row)));
     }
 
     /**
@@ -357,7 +387,7 @@ class ChangeMarks
             }
             $to = $this->ghostNode($this->farEndKey($row, 1 - $here, $far), $far);
         }
-        $this->ghostEdge($from, $to, 'link', $near, $far, 'link_gone', $time, $this->eventText($row) ?? 'Link gone: ' . $this->text->describe(self::fact($row)));
+        $this->ghostEdge($from, $to, 'link', $near, $far, 'link_gone', $time, $this->eventText($row, true) ?? 'Link gone: ' . $this->text->describe(self::fact($row)));
     }
 
     /**
@@ -372,7 +402,7 @@ class ChangeMarks
 
             return;
         }
-        $this->markEdge($index, $type, $time, $this->eventText($row) ?? $this->text->device((int) $data['device'], $data['device_name'] ?? null) . ' '
+        $this->markEdge($index, $type, $time, $this->eventText($row, $type === 'member_left') ?? $this->text->device((int) $data['device'], $data['device_name'] ?? null) . ' '
             . ($data['aggregate_name'] ?? '') . ': ' . ($data['member_name'] ?? '') . ($type === 'member_added' ? ' joined' : ' left'));
     }
 
@@ -528,7 +558,7 @@ class ChangeMarks
             return;
         }
         $type = $row['kind'] === FactCollector::OSPF ? 'ospf_up' : 'bgp_up';
-        $this->markEdge($index, $type, $time, $this->eventText($row) ?? self::TYPES[$type] . ': ' . $this->sessionText($row));
+        $this->markEdge($index, $type, $time, $this->eventText($row, false) ?? self::TYPES[$type] . ': ' . $this->sessionText($row));
     }
 
     /**
@@ -561,7 +591,7 @@ class ChangeMarks
             isset($this->nodes[$external]) => $external,
             default => $this->ghostNode($row['kind'] . ':' . $external, $far),
         };
-        $this->ghostEdge('d:' . $device, $to, $row['kind'], null, null, $type, $time, $this->eventText($row) ?? self::TYPES[$type] . ': ' . $this->sessionText($row));
+        $this->ghostEdge('d:' . $device, $to, $row['kind'], null, null, $type, $time, $this->eventText($row, true) ?? self::TYPES[$type] . ': ' . $this->sessionText($row));
     }
 
     /**
@@ -746,12 +776,12 @@ class ChangeMarks
     }
 
     /**
-     * Wording of the ChangeReport event of a fact's row, else of the fact's latest event (a moved cable says where it
-     * went), null without one.
+     * Wording of the ChangeReport event a mark of a fact tells (event(): a moved cable says where it went), null
+     * without one.
      */
-    private function eventText(array $row): ?string
+    private function eventText(array $row, bool $isGone): ?string
     {
-        return (isset($row['id']) ? ($this->eventOf[(int) $row['id']]['text'] ?? null) : null) ?? $this->eventByHash[$row['hash']]['text'] ?? null;
+        return $this->event($row, $isGone)['text'] ?? null;
     }
 
     private function sessionText(array $row): string

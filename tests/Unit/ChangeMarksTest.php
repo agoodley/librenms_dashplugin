@@ -271,6 +271,27 @@ class ChangeMarksTest extends TestCase
     }
 
     /**
+     * An OSPF adjacency lost, up again and lost again: its ghost tells the last loss, as the Changes page lists it.
+     */
+    public function testAGoneSessionTellsTheLastLoss(): void
+    {
+        $adjacency = self::collector()->ospf([['device_id' => 1, 'port_id' => 11, 'ospfNbrIpAddr' => '10.0.0.2', 'ospfNbrRtrId' => '10.255.0.2',
+            'ospfNbrState' => 'full', 'context_name' => '']], ['10.255.0.2' => 2], ['10.0.0.2' => 2]);
+        [$lost, $up, $lostAgain] = [self::T0 + 600, self::T0 + 1200, self::T0 + 1800];
+        $first = self::rows($adjacency, self::T0 - 86400, $lost);
+        $rows = array_merge($first, self::rows($adjacency, $up, $lostAgain));
+        $text = new FactText(self::NAMES, self::VISIBLE);
+        $report = ChangeReport::build($rows, self::T0 + 1, self::T1, $text);
+        $map = ['nodes' => [['id' => 'd:1', 'type' => 'device', 'device_id' => 1, 'name' => 'core1'], ['id' => 'd:2', 'type' => 'device', 'device_id' => 2, 'name' => 'core2']],
+            'edges' => []];
+
+        $result = ChangeMarks::apply('l3', $map, $first, [], $text, ['events' => $report['events'], 'rows' => $rows]);
+
+        $this->assertSame(['ospf_lost', 'ospf_up', 'ospf_lost'], array_column($report['events'], 'type'));
+        $this->assertSame([['type' => 'ospf_lost', 'time' => $lostAgain, 'text' => $report['events'][0]['text']]], $result['changes']['ghosts']['edges'][0]['changes']);
+    }
+
+    /**
      * On a map of one VLAN, only the spanning tree instance it shows is marked; on a map of all VLANs every change is,
      * each mark with its VLANs.
      */

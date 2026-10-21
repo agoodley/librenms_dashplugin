@@ -221,6 +221,57 @@ class MapHistoryTest extends TestCase
         $this->assertEqualsCanonicalizing(['root_changed', 'blocking_started'], array_column($result['changes']['events'], 'type'));
     }
 
+    /**
+     * The marks and ghosts of a map's changes, one line each: "<edge or node id> <type> <when> <text>" and
+     * "<from>-><to> <type> <when> <text>".
+     *
+     * @param  array<int, string>  $times  timestamp => its name in the lines
+     * @return string[]
+     */
+    private static function marks(array $result, array $times): array
+    {
+        $when = fn (?int $time) => $times[$time] ?? (string) $time;
+        $lines = [];
+        foreach (array_merge($result['nodes'], $result['edges']) as $item) {
+            foreach ($item['changes'] ?? [] as $mark) {
+                $lines[] = "{$item['id']} {$mark['type']} {$when($mark['time'])} {$mark['text']}";
+            }
+        }
+        foreach ($result['changes']['ghosts']['edges'] as $ghost) {
+            foreach ($ghost['changes'] as $mark) {
+                $lines[] = "{$ghost['from']}->{$ghost['to']} {$mark['type']} {$when($mark['time'])} {$mark['text']}";
+            }
+        }
+        sort($lines);
+
+        return $lines;
+    }
+
+    /**
+     * A link that flapped tells the event of its state now: acc1's uplink went at T1, came back at T2 and went again at
+     * T3 (gone since T3, not "back" at T2); a link new at T1, gone at T2 and back at T3 is there since T3.
+     */
+    public function testAMarkTellsTheEventOfTheStateNow(): void
+    {
+        Carbon::setTestNow(Carbon::createFromTimestamp(self::NOW));
+        [$t1, $t2, $t3] = [self::S0 + 1800, self::S1, self::S1 + 1800];
+        $runs = [self::S0, $t1, $t2, $t3, self::S2];
+        $times = [$t1 => 'T1', $t2 => 'T2', $t3 => 'T3'];
+        $uplink = (new FactCollector(self::NAMES, self::ports()))->links([self::link(3, 31, 1, 11, 'core1', 'Te1/0/1')]);
+        $map = (new L2Builder(self::devices(), [], self::ports(), [], [], new StpIndex))->build();
+
+        $history = array_merge(self::rows($uplink, self::S0 - 86400, $t1), self::rows($uplink, $t2, $t3));
+        $result = (new MapHistory(new FakeMapHistory($history, $runs, self::NAMES), new PluginSettings))->changes('l2', self::S0 + 600, $map);
+        $this->assertSame(['link_removed', 'link_back'], array_column($result['changes']['events'], 'type'));
+        $this->assertSame(['d:1->d:3 link_gone T3 Link gone: core1 Te1/0/1 ↔ acc1 Gi1/0/49'], self::marks($result, $times));
+
+        $history = array_merge(self::rows($uplink, $t1, $t2), self::rows($uplink, $t3, null));
+        $map = (new L2Builder(self::devices(), [self::link(3, 31, 1, 11, 'core1', 'Te1/0/1')], self::ports(), [], [], new StpIndex))->build();
+        $result = (new MapHistory(new FakeMapHistory($history, $runs, self::NAMES), new PluginSettings))->changes('l2', self::S0 + 600, $map);
+        $this->assertSame(['link_back', 'link_added'], array_column($result['changes']['events'], 'type'));
+        $this->assertSame([$result['edges'][0]['id'] . ' link_new T3 core1 Te1/0/1 ↔ acc1 Gi1/0/49: back after it was gone 30m'], self::marks($result, $times));
+    }
+
     public function testRefusals(): void
     {
         Carbon::setTestNow(Carbon::createFromTimestamp(self::NOW));
