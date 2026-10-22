@@ -48,7 +48,8 @@ final class ChangeRepository implements ChangeStore
                 }
             }
 
-            return Schema::hasColumns('ansible_runs', ['change_id', 'kind', 'batch', 'context', 'commit_hash']);
+            return Schema::hasColumns('ansible_runs', ['change_id', 'kind', 'batch', 'context', 'commit_hash', 'proof'])
+                && Schema::hasColumn('ansible_change_targets', 'backup_check');
         } catch (\Throwable) {
             return false;
         }

@@ -114,6 +114,7 @@ final class ChangeLifecycle
             'plan_fingerprint' => $parts !== null ? Fingerprint::of($parts) : null]);
         $this->timeline($change, 'dry_run', 'Dry run launched (run #' . $result['run_id'] . ').', $user['username'], $now);
         $this->eventAll($change, ChangeText::dryRunLaunched($change, (int) $result['run_id'], $user['username']), 'info', $user['username']);
+        $this->checkBackups($change, $targets, $user['username'], $now);
 
         return null;
     }
@@ -1134,6 +1135,34 @@ final class ChangeLifecycle
     }
 
     // ------------------------------------------------------------------ backups
+
+    /**
+     * At the dry run: can Oxidized back up each target (BackupCheck)? Recorded per target; the devices it cannot back up
+     * are said in the timeline and in their eventlog, so the batches a missing backup would refuse are known before
+     * the apply.
+     *
+     * @param  array<int, array>  $targets
+     */
+    private function checkBackups(array $change, array $targets, string $username, int $now): void
+    {
+        if (! $this->settings->backups || ! $this->backups->enabled()) {
+            return;
+        }
+        $result = BackupCheck::of($this->backups, array_keys($targets));
+        $this->changes->updateTargets((int) $change['id'], array_map(fn ($check) => ['backup_check' => $check], $result['checks']));
+        $missing = BackupCheck::missing($result['checks'], self::displays($targets));
+        $warning = BackupCheck::warning($missing, $this->settings->refuseWithoutBackup, $result['error']);
+        if ($warning === null) {
+            return;
+        }
+        $this->timeline($change, 'backup', $warning, null, $now);
+        foreach ($result['checks'] as $deviceId => $check) {
+            if ($check === BackupCheck::NO_NODE || $check === BackupCheck::EXCLUDED) {
+                $this->events->write(ChangeText::backupCheck($change, $check, $this->settings->refuseWithoutBackup), $deviceId, 'warning',
+                    ChangeText::reference((int) $change['id']), $username);
+            }
+        }
+    }
 
     /**
      * Ask Oxidized for a backup of each device of a batch, before or after it, as LibreNMS finds the device's node.

@@ -787,12 +787,36 @@ class ChangeLifecycleTest extends TestCase
     {
         $id = $this->approved([], BatchPlan::make(array_keys(self::TARGETS), [], 3, 5, 1, true, 0));
         $this->backups->unreachable = 'Oxidized cannot be reached (unreachable)';
+        $this->backups->nodeCalls = 0;
         $this->lifecycle()->apply($id, self::ALICE, [], $this->t0 + 50);
 
         $this->assertSame(1, $this->backups->nodeCalls, 'one call: each one could wait its timeout');
         $this->assertSame(['unavailable', 'unavailable', 'unavailable'], array_column($this->changes->targets[$id], 'before_status'));
         $this->assertSame(ChangeStatus::FAILED, $this->changes->find($id)['status']);
         $this->assertStringContainsString('Oxidized cannot be reached', $this->changes->find($id)['error']);
+    }
+
+    public function testTheDryRunSaysWhichTargetsOxidizedCannotBackUp(): void
+    {
+        $this->backups->nodes = [502 => null, 503 => ['excluded' => true]];
+        $id = $this->change();
+        $this->dryRun($id);
+
+        $this->assertSame(['node', 'no_node', 'excluded'], array_column($this->changes->targets[$id], 'backup_check'));
+        $this->assertStringContainsString('Oxidized cannot back up lab-sw2 (Oxidized has no node for it), lab-sw3 (LibreNMS leaves it out of Oxidized): their batches '
+            . 'will be refused (setting Without a fresh backup: refuse)', implode("\n", array_column($this->changes->events[$id], 'message')));
+        $this->assertStringContainsString('Oxidized has no node for this device, so its batch will be refused', implode("\n", array_column($this->events->of(502), 'message')));
+        $this->assertSame([], array_filter(array_column($this->events->of(501), 'message'), fn ($m) => str_contains($m, 'Oxidized')), 'nothing for a device it backs up');
+
+        // Oxidized down: said once, not asked for each device
+        $this->backups->unreachable = 'Oxidized cannot be reached (unreachable)';
+        $this->backups->nodeCalls = 0;
+        $id = $this->change();
+        $this->dryRun($id);
+        $this->assertSame(1, $this->backups->nodeCalls);
+        $this->assertSame(['unknown', 'unknown', 'unknown'], array_column($this->changes->targets[$id], 'backup_check'));
+        $this->assertStringContainsString("Oxidized could not be asked whether it backs the targets up (Oxidized cannot be reached (unreachable)): check LibreNMS' oxidized.url setting",
+            implode("\n", array_column($this->changes->events[$id], 'message')));
     }
 
     public function testAWindowThatCannotBeOpenedStopsTheBatch(): void

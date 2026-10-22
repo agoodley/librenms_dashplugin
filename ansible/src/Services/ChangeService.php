@@ -2,9 +2,11 @@
 
 namespace Agoodley\LibrenmsAnsible\Services;
 
+use Agoodley\LibrenmsAnsible\Changes\BackupCheck;
 use Agoodley\LibrenmsAnsible\Changes\BatchPlan;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\ChangeText;
+use Agoodley\LibrenmsAnsible\Changes\ConfigBackups;
 use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
@@ -29,6 +31,7 @@ final class ChangeService
         private readonly InventoryService $inventory,
         private readonly PluginSettings $settings,
         private readonly Eventlog $eventlog = new Eventlog(),
+        private readonly ?ConfigBackups $backups = null,
     ) {
     }
 
@@ -54,6 +57,17 @@ final class ChangeService
         if ($plan->targets) {
             $ordered = array_values(array_filter(array_map('intval', $deviceIds), fn ($id) => isset($plan->targets[$id])));
             $batches = $this->settings->batchPlan($ordered, array_values(array_intersect(array_map('intval', $canary), $ordered)));
+            // the targets Oxidized cannot back up, known now rather than when their batch is refused
+            $settings = $this->settings->changeSettings();
+            $backups = $this->backups ?? new OxidizedBackups();
+            if ($settings->backups && $backups->enabled()) {
+                $check = BackupCheck::of($backups, $ordered);
+                $warning = BackupCheck::warning(BackupCheck::missing($check['checks'], array_map(fn ($t) => (string) $t['display'], $plan->targets)),
+                    $settings->refuseWithoutBackup, $check['error']);
+                if ($warning !== null) {
+                    $plan->warnings[] = $warning;
+                }
+            }
         }
 
         return ['plan' => $plan, 'batches' => $batches, 'reference' => self::reference($reference)];

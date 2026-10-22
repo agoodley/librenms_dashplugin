@@ -73,7 +73,10 @@
             <div class="ans-card-value" style="font-size: 17px" id="ans-dry-run-state">{{ ['verified' => 'Verified', 'unverified' => 'NOT PROVEN', 'failed' => 'Failed', 'running' => 'Running',
                 'launching' => 'Launching', 'void' => 'No longer counts', 'not_launched' => 'Not launched'][$dryState ?? ''] ?? 'Not yet' }}</div>
             <p>@if($dryRun)<a href="{{ route('ansible.runs.show', $dryRun['id']) }}">run #{{ $dryRun['id'] }}</a> · {{ $local($change['dry_run_at']) }}@endif
-                @if($change['dry_run_commit']) · commit <span class="ans-code" id="ans-dry-run-commit">{{ substr($change['dry_run_commit'], 0, 12) }}</span>@endif
+                @if($change['dry_run_commit']) · commit <span class="ans-code" id="ans-dry-run-commit">{{ substr($change['dry_run_commit'], 0, 12) }}</span>
+                @elseif(in_array($dryState, ['verified', 'failed', 'unverified'], true))
+                    · <span class="text-warning" id="ans-dry-run-no-commit" title="Semaphore records the commit of a repository with a Git URL only">commit not recorded (local repository): batches are not pinned to the dry run's commit</span>
+                @endif
                 @if($dryRunExpires) · counts until {{ Clock::show($dryRunExpires, 'Y-m-d H:i T') }}@endif</p>
         </div>
     </div>
@@ -112,6 +115,9 @@
                     </div>
                 @endif
             </div>
+        @endif
+        @if($backupWarning)
+            <div class="alert alert-warning" id="ans-backup-check"><i class="fa fa-archive"></i> {{ $backupWarning }}</div>
         @endif
         @if($stopped && ($stopped['held'] || $status === ChangeStatus::STOPPED))
             <div class="alert alert-warning" id="ans-change-stopped-note"><i class="fa fa-exclamation-triangle"></i>

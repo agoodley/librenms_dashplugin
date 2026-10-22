@@ -58,7 +58,7 @@ final class MemoryChangeStore implements ChangeStore
         foreach ($targets as $deviceId => $name) {
             $this->targets[$id][$deviceId] = ['change_id' => $id, 'device_id' => $deviceId, 'inventory_name' => $name, 'hostname' => $name, 'display' => strtok($name, '.'),
                 'batch' => (int) $plan->batchOf($deviceId), 'position' => $position++, 'dry_result' => null, 'dry_counts' => null, 'result' => null, 'counts' => null,
-                'backup_node' => null, 'before_status' => null, 'before_requested_at' => null, 'before_at' => null, 'before_version' => null, 'before_error' => null,
+                'backup_node' => null, 'backup_check' => null, 'before_status' => null, 'before_requested_at' => null, 'before_at' => null, 'before_version' => null, 'before_error' => null,
                 'after_status' => null, 'after_requested_at' => null, 'after_at' => null, 'after_version' => null, 'after_error' => null];
         }
         foreach ($plan->batches as $index => $devices) {

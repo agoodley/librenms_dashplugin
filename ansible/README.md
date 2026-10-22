@@ -135,9 +135,30 @@ offer to drop the `ansible_*` tables: they hold the audit log.
 pages say the tables are out of date and nothing is launched. When `contrib/librenms_inventory.py` changed (its
 `VERSION`), copy it into the playbook repository again, as in step 5 of [Semaphore UI setup](#semaphore-ui-setup), and
 commit and push it: the Inventory page says which version the runner's last fetch came from, and warns when it is older
-than the one the plugin ships. **From phase 1:** every run now belongs to a change: add `ANSIBLE_CHECK_MODE_MARKERS`
-to the variable group (step 7 below), grant the approve permission, and check the settings of changes, backups and
-windows; the runs of phase 1 stay in the audit log.
+than the one the plugin ships.
+
+**From phase 1**, every run belongs to a change, and the defaults of phase 2 stop more than phase 1 did. After
+`./lnms migrate`:
+
+1. Add `ANSIBLE_CHECK_MODE_MARKERS` = `true` to the template's variable group ([step 7](#semaphore-ui-setup)): without
+   it a template cannot be dry-run, so it cannot be used.
+2. Remove `--check` (`-C`) from the templates' CLI arguments: phase 1 accepted it, changes refuse it (the plugin adds
+   it to the dry run, and a batch with it would apply nothing).
+3. Give the playbook repository a Git URL in Semaphore: Semaphore records the commit of a task only then, and the plugin
+   pins each batch to the commit of its dry run. With a local path nothing is pinned, and the change page says
+   *commit not recorded*.
+4. Grant the approve permission (Settings, *Approve permission*): approval is on by default, so nothing is applied
+   until an admin holds it (or set *Approval* to off). Approvers find what waits for them under Changes, status
+   *Awaiting approval*.
+5. Check Oxidized: backups are on by default with *Without a fresh backup* = refuse, so the batch of a device
+   Oxidized does not back up is refused (the preview and the dry run name such devices). Add them to Oxidized, or set
+   *continue with a warning*. Oxidized's `next_adds_job` is false by default: a backup request only moves the node to
+   the head of Oxidized's queue (see [Oxidized and maintenance windows](#oxidized-and-maintenance-windows)).
+6. Check the maintenance windows: on by default, with LibreNMS' default behavior (alerts skipped) for a batch's devices
+   during the batch and the settle time after it (*Maintenance behavior* changes it).
+7. Check the settings of batches (first batch, batch size, *Stop at*, *Wait after the first batch*).
+
+The runs of phase 1 stay in the audit log as they were.
 
 **Removing:**
 
@@ -255,8 +276,10 @@ know, has no backup. Two things in Oxidized's configuration matter:
 A backup that Oxidized could not take (a failed attempt and no retry within 90 seconds, or none within *Backup
 timeout*), a node Oxidized does not know or an Oxidized that cannot be reached means *no fresh backup*: with the
 default setting the batch is refused and the change stops before it touched anything; with *continue with a warning*
-the batch goes, and the eventlog warns. The change page shows each device's backups (the Oxidized version before and
-after) with a link to LibreNMS' config page of the device, where Oxidized's versions and their diffs are.
+the batch goes, and the eventlog warns. So that this is known before the apply, the preview of a new change and its
+dry run ask Oxidized about each target and name those it cannot back up (the change page warns until the apply, and
+their eventlog says it). The change page shows each device's backups (the Oxidized version before and after) with a
+link to LibreNMS' config page of the device, where Oxidized's versions and their diffs are.
 
 **Maintenance windows** are LibreNMS' own (*Alerts → Maintenance*): before each batch the plugin adds one, named
 after the change and its batch, with the batch's devices, from now until now plus *Expected batch time*; it moves its

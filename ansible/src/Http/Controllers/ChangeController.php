@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 
 use Agoodley\LibrenmsAnsible\Changes\ApprovalRules;
+use Agoodley\LibrenmsAnsible\Changes\BackupCheck;
 use Agoodley\LibrenmsAnsible\Changes\BackupState;
 use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
@@ -455,6 +456,10 @@ class ChangeController extends Controller
             'diffs' => $diffs, 'unattributed' => $unattributed, 'secretVars' => $secretVars, 'settings' => $settings, 'canRun' => $canRun, 'canApprove' => $canApprove,
             'approvalRefusal' => $approvalRefusal, 'actions' => $actions, 'pending' => $follower->pending($id),
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
+            // before the apply: the targets Oxidized cannot back up (asked at the dry run), whose batches the setting would refuse
+            'backupWarning' => $settings->backups && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true)
+                ? BackupCheck::warning(BackupCheck::missing(array_map(fn ($t) => $t['backup_check'] ?? null, $targets), array_map(fn ($t) => NextChange::name($t), $targets)),
+                    $settings->refuseWithoutBackup, null) : null,
             'dryRunExpires' => $dryRunAt !== null && in_array($status, [ChangeStatus::AWAITING, ChangeStatus::READY], true) ? $dryRunAt + $settings->dryRunSeconds : null,
             'approvalExpires' => $approvedAt !== null && $status === ChangeStatus::READY ? $approvedAt + $settings->approvalSeconds : null,
             'next' => $run !== null ? OutputBuffer::since($run, 0)['next'] : 0,

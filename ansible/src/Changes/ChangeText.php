@@ -149,6 +149,15 @@ final class ChangeText
         };
     }
 
+    /**
+     * Eventlog entry of a target Oxidized cannot back up, at the dry run (BackupCheck).
+     */
+    public static function backupCheck(array $change, string $check, bool $refuse): string
+    {
+        return self::name($change) . ': ' . ($check === BackupCheck::EXCLUDED ? 'LibreNMS leaves this device out of Oxidized' : 'Oxidized has no node for this device')
+            . ', so its batch ' . ($refuse ? 'will be refused (setting Without a fresh backup: refuse)' : 'will go without a backup (setting Without a fresh backup: continue with a warning)');
+    }
+
     public static function windowOpened(array $change, int $batch, int $scheduleId, int $until): string
     {
         return self::name($change) . ", batch $batch: maintenance window #$scheduleId opened until " . Clock::show($until, 'Y-m-d H:i T');

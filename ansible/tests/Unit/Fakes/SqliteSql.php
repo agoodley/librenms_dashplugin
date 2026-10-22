@@ -52,7 +52,7 @@ final class SqliteSql implements Sql
             `stop_requested_by` TEXT, `stop_requested_at` TEXT, `error` TEXT, `finished_at` TEXT, `request_token` TEXT UNIQUE, `created_at` TEXT, `updated_at` TEXT)');
         $this->pdo->exec('CREATE TABLE `ansible_change_targets` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `device_id` INTEGER NOT NULL,
             `inventory_name` TEXT NOT NULL, `hostname` TEXT NOT NULL DEFAULT \'\', `display` TEXT NOT NULL DEFAULT \'\', `batch` INTEGER NOT NULL, `position` INTEGER NOT NULL DEFAULT 0,
-            `dry_result` TEXT, `dry_counts` TEXT, `result` TEXT, `counts` TEXT, `backup_node` TEXT,
+            `dry_result` TEXT, `dry_counts` TEXT, `result` TEXT, `counts` TEXT, `backup_node` TEXT, `backup_check` TEXT,
             `before_status` TEXT, `before_requested_at` TEXT, `before_at` TEXT, `before_version` TEXT, `before_error` TEXT,
             `after_status` TEXT, `after_requested_at` TEXT, `after_at` TEXT, `after_version` TEXT, `after_error` TEXT, UNIQUE (`change_id`, `device_id`))');
         $this->pdo->exec('CREATE TABLE `ansible_change_batches` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `number` INTEGER NOT NULL,
