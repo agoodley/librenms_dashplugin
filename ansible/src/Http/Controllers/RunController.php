@@ -11,6 +11,7 @@ use Agoodley\LibrenmsAnsible\Runs\RunResults;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Runs\TaskLines;
 use Agoodley\LibrenmsAnsible\Support\Access;
+use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Support\Format;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
@@ -60,7 +61,8 @@ class RunController extends Controller
         }
 
         return response()->json(['total' => $result['total'], 'per_page' => self::PER_PAGE, 'runs' => array_map(fn ($run) => [
-            'id' => (int) $run['id'], 'created_at' => $run['created_at'], 'started_at' => $run['started_at'], 'finished_at' => $run['finished_at'],
+            'id' => (int) $run['id'], 'created_at' => Clock::local($run['created_at']), 'started_at' => Clock::local($run['started_at']),
+            'finished_at' => Clock::local($run['finished_at']),
             'user' => $run['username'], 'template_id' => $run['template_id'], 'template' => $run['template_name'], 'status' => $run['status'],
             'targets' => $run['targets'], 'target_names' => $run['target_names'], 'results' => (object) ($run['summary'] ?? []), 'unexpected_hosts' => $run['unexpected_hosts'] ?? [],
             'url' => route('ansible.runs.show', $run['id']),
@@ -125,8 +127,8 @@ class RunController extends Controller
             'final' => RunStatus::isFinal($run['status']),
             'runner_status' => $run['runner_status'],
             'runner_task_id' => $run['runner_task_id'],
-            'started_at' => $run['started_at'],
-            'finished_at' => $run['finished_at'],
+            'started_at' => Clock::local($run['started_at']),
+            'finished_at' => Clock::local($run['finished_at']),
             'duration' => Format::duration(Format::runDuration($run)),
             'summary' => (object) ($run['summary'] ?? []),
             'unexpected_hosts' => $run['unexpected_hosts'] ?? [],
@@ -137,7 +139,7 @@ class RunController extends Controller
             'released_by' => $run['released_by'],
             'releasable' => RunLifecycle::releasable($run, time()),
             'held' => RunLifecycle::held($run, time()),
-            'held_until' => $run['held_until'] ?? null,
+            'held_until' => Clock::local($run['held_until'] ?? null),
             'stopped_note' => self::stoppedNote($run, $rows),
             'targets' => $targets,
             'lines' => array_map(fn ($line) => Ansi::segments($line), $log['lines']),

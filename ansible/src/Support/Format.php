@@ -35,9 +35,9 @@ final class Format
         if (! $start) {
             return null;
         }
-        $end = ($run['finished_at'] ?? null) ? strtotime((string) $run['finished_at']) : ($now ?? time());
+        $end = ($run['finished_at'] ?? null) ? (int) Clock::unix((string) $run['finished_at']) : ($now ?? time());
 
-        return max(0, $end - (int) strtotime((string) $start));
+        return max(0, $end - (int) Clock::unix((string) $start));
     }
 
     /**

@@ -27,7 +27,7 @@
                 <tr>
                     <td><a href="{{ route('ansible.runs.show', $run['id']) }}">#{{ $run['id'] }}</a></td>
                     <td class="ans-wrap">{{ $run['template_name'] }}</td>
-                    <td>@foreach(explode(' ', (string) $run['created_at']) as $part)<span class="ans-nowrap">{{ $part }}</span> @endforeach</td>
+                    <td>@foreach(explode(' ', (string) \Agoodley\LibrenmsAnsible\Support\Clock::local($run['created_at'])) as $part)<span class="ans-nowrap">{{ $part }}</span> @endforeach</td>
                     <td class="ans-wrap">{{ $run['username'] }}</td>
                     <td class="ans-device-result">
                         @if($run['result'])

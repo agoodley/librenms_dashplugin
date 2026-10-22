@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Data;
 use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Runs\RunStore;
+use Agoodley\LibrenmsAnsible\Support\Clock;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -54,7 +55,7 @@ final class RunRepository implements RunStore
         foreach ($this->sql->select('SELECT t.`device_id`, t.`run_id`, r.`status`, r.`held_until` FROM ' . $this->sql->table('ansible_run_targets') . ' t JOIN '
             . $this->sql->table('ansible_runs') . ' r ON r.`id` = t.`run_id` WHERE t.`unexpected` = 0 AND (r.`status` IN (' . self::marks(RunStatus::UNFINISHED)
             . ') OR (r.`status` = ? AND r.`held_until` > ?)) ORDER BY r.`id`',
-            array_merge(RunStatus::UNFINISHED, [RunStatus::STOPPED, date('Y-m-d H:i:s', $now ?? time())])) as $row) {
+            array_merge(RunStatus::UNFINISHED, [RunStatus::STOPPED, Clock::store($now ?? time())])) as $row) {
             $busy[(int) $row['device_id']] = ['run' => (int) $row['run_id'], 'held_until' => $row['status'] === RunStatus::STOPPED ? (string) $row['held_until'] : null];
         }
 
@@ -80,7 +81,7 @@ final class RunRepository implements RunStore
     public function create(array $run, array $targets): int
     {
         return $this->sql->transaction(function () use ($run, $targets): int {
-            $now = date('Y-m-d H:i:s');
+            $now = Clock::store(time());
             $values = self::encode($run) + ['created_at' => $now, 'updated_at' => $now];
             $id = $this->sql->insert('INSERT INTO ' . $this->sql->table('ansible_runs') . ' (' . self::columns(array_keys($values)) . ') VALUES ('
                 . self::marks($values) . ')', self::bindings($values));
@@ -165,7 +166,7 @@ final class RunRepository implements RunStore
         }
         $sets[] = '`version` = `version` + 1';
         $sets[] = '`updated_at` = ?';
-        $bindings[] = date('Y-m-d H:i:s');
+        $bindings[] = Clock::store(time());
         $table = $this->sql->table('ansible_runs');
 
         return $this->sql->transaction(function () use ($table, $sets, $bindings, $later, $id, $version): bool {
@@ -231,7 +232,7 @@ final class RunRepository implements RunStore
         $stops = [];
         foreach ($this->sql->select('SELECT t.`device_id`, r.`id`, r.`runner_task_id`, r.`finished_at` FROM ' . $this->sql->table('ansible_run_targets') . ' t JOIN '
             . $this->sql->table('ansible_runs') . ' r ON r.`id` = t.`run_id` WHERE t.`device_id` IN (' . self::marks($deviceIds) . ') AND r.`status` = ? AND r.`finished_at` >= ? ORDER BY r.`id`',
-            array_merge(array_map('intval', $deviceIds), [RunStatus::STOPPED, date('Y-m-d H:i:s', time() - $seconds)])) as $row) {
+            array_merge(array_map('intval', $deviceIds), [RunStatus::STOPPED, Clock::store(time() - $seconds)])) as $row) {
             $stops[(int) $row['device_id']] = ['run_id' => (int) $row['id'], 'runner_task_id' => $row['runner_task_id'], 'finished_at' => (string) $row['finished_at']];
         }
 
@@ -258,7 +259,7 @@ final class RunRepository implements RunStore
     {
         return array_map(fn ($row) => (int) $row['id'], $this->sql->select('SELECT `id` FROM ' . $this->sql->table('ansible_runs') . ' WHERE `status` IN ('
             . self::marks(RunStatus::WATCHED) . ') AND `watch_until` IS NOT NULL AND `watch_until` > ? ORDER BY `id`',
-            array_merge(RunStatus::WATCHED, [date('Y-m-d H:i:s', $now ?? time())])));
+            array_merge(RunStatus::WATCHED, [Clock::store($now ?? time())])));
     }
 
     /**
@@ -285,11 +286,12 @@ final class RunRepository implements RunStore
         } elseif (($filters['status'] ?? '') !== '') {
             $query->where('r.status', $filters['status']);
         }
+        // dates in LibreNMS' time zone, the times kept in UTC
         if (! empty($filters['from'])) {
-            $query->where('r.created_at', '>=', $filters['from'] . ' 00:00:00');
+            $query->where('r.created_at', '>=', Clock::store((int) strtotime($filters['from'] . ' 00:00:00')));
         }
         if (! empty($filters['to'])) {
-            $query->where('r.created_at', '<=', $filters['to'] . ' 23:59:59');
+            $query->where('r.created_at', '<=', Clock::store((int) strtotime($filters['to'] . ' 23:59:59')));
         }
         $total = (clone $query)->count();
         $rows = $query->orderByDesc('r.id')->forPage(max(1, $page), $perPage)

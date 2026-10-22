@@ -75,7 +75,7 @@
             @forelse($rows as $run)
                 <tr data-run="{{ $run['id'] }}">
                     <td><a href="{{ route('ansible.runs.show', $run['id']) }}">#{{ $run['id'] }}</a></td>
-                    <td style="white-space: nowrap">{{ $run['started_at'] ?? $run['created_at'] }}</td>
+                    <td style="white-space: nowrap">{{ \Agoodley\LibrenmsAnsible\Support\Clock::local($run['started_at'] ?? $run['created_at']) }}</td>
                     <td>{{ $run['username'] }}</td>
                     <td class="ans-wrap">{{ $run['template_name'] }}</td>
                     <td>

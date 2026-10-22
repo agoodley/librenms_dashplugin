@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsAnsible\Runs;
 
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
+use Agoodley\LibrenmsAnsible\Support\Clock;
 
 /**
  * Texts the plugin writes outside its pages: the message of the runner's task and the LibreNMS eventlog
@@ -90,7 +91,7 @@ final class RunText
     public static function holdReleased(int $runId, string $by, string $heldUntil, string $template, string $user): string
     {
         return "Ansible run #$runId: the devices held after its stop were released by " . UntrustedText::line($by, 60) . ' (held until '
-            . substr($heldUntil, 0, 16) . '; the step in progress at the stop may still run on the runner), template ' . self::quote($template)
+            . Clock::local($heldUntil, 'Y-m-d H:i T') . '; the step in progress at the stop may still run on the runner), template ' . self::quote($template)
             . ' by ' . UntrustedText::line($user, 60);
     }
 

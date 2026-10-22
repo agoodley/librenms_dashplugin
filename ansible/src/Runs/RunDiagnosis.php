@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsAnsible\Runs;
 
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
+use Agoodley\LibrenmsAnsible\Support\Clock;
 
 /**
  * Why a run the runner reported successful is incomplete, from its log. The common cause is the inventory: when the
@@ -72,7 +73,7 @@ final class RunDiagnosis
             . 'Semaphore UI stops only Ansible\'s main process: the step each target was in runs on in a process of its own on the runner, with all '
             . 'its loop items, and a pause keeps waiting until that process is killed. ';
         $held = isset($run['held_until']) ? (string) $run['held_until'] : null;
-        if ($held !== null && strtotime($held) > $now) {
+        if ($held !== null && (int) Clock::unix($held) > $now) {
             return $text . 'The devices stay held until ' . self::minute($held) . " because that step can still run on the runner: check the runner for $processes, "
                 . 'end them, and release the devices when it is done.';
         }
@@ -88,11 +89,11 @@ final class RunDiagnosis
     }
 
     /**
-     * A stored time to the minute.
+     * A kept time to the minute, in LibreNMS' time zone.
      */
     private static function minute(string $time): string
     {
-        return substr($time, 0, 16);
+        return (string) Clock::local($time, 'Y-m-d H:i');
     }
 
     /**

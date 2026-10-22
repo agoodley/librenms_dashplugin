@@ -10,6 +10,7 @@ use Agoodley\LibrenmsAnsible\Runs\RunDiagnosis;
 use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Runs\TaskLines;
+use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeRunner;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\MemoryRunStore;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\RecordingEvents;
@@ -237,7 +238,7 @@ class RunLifecycleTest extends TestCase
         $this->assertTrue(RunLifecycle::held($run, $this->t0 + 1000));
         $this->assertFalse(RunLifecycle::held($run, $this->t0 + 1830));
         $this->assertSame('Wait', TaskLines::inProgress(OutputBuffer::display($run), ['lab-sw3.netops.lab'])['task']);
-        $this->assertStringEndsWith('(stopped by bob; the step in progress may still run on the runner: the devices are held until 2026-10-22 10:30)',
+        $this->assertStringEndsWith('(stopped by bob; the step in progress may still run on the runner: the devices are held until 2026-10-22 10:30 UTC)',
             $this->events->of(503)[0]['message']);
 
         $note = RunDiagnosis::afterStop($run, 'Wait', $this->t0 + 1000);
@@ -312,7 +313,7 @@ class RunLifecycleTest extends TestCase
         $released = array_slice($this->events->entries, $events);
         $this->assertCount(3, $released);
         $this->assertSame('warning', $released[0]['severity']);
-        $this->assertStringStartsWith("Ansible run #$id: the devices held after its stop were released by carol (held until " . date('Y-m-d H:i', $this->t0 + 14 + 1800)
+        $this->assertStringStartsWith("Ansible run #$id: the devices held after its stop were released by carol (held until " . date('Y-m-d H:i T', $this->t0 + 14 + 1800)
             . '; the step in progress at the stop may still run on the runner)', $released[0]['message']);
         $this->assertSame('The devices of this run are not held any more.', $lifecycle->release($id, 'carol', $this->t0 + 310));
         $this->assertStringContainsString('Its devices were released by carol at ' . date('Y-m-d H:i', $this->t0 + 300), RunDiagnosis::afterStop($run, null, $this->t0 + 400));
@@ -355,6 +356,34 @@ class RunLifecycleTest extends TestCase
         $this->runner->neverStarted = false;
         $this->runner->logs['93'] = ['PLAY [Show version] ****'];
         $this->assertNotNull($this->lifecycle()->refresh($started, $this->t0 + 100)['held_until']);
+    }
+
+    public function testItsDeadlinesDoNotDependOnPhpsTimeZone(): void
+    {
+        // the web server and the sync command may run in different PHP time zones: the kept times are UTC
+        $zone = date_default_timezone_get();
+        try {
+            date_default_timezone_set('America/New_York'); // the sync command records the stop
+            $id = $this->running('stopped', ['stopped_by' => 'bob', 'status' => 'stopping', 'runner_final_at' => Clock::store($this->t0 + 30)]);
+            $this->runner->endedAt = $this->t0 + 30;
+            $this->runner->logs['90'] = ['TASK [Set the description] ****'];
+            $run = $this->lifecycle()->refresh($id, $this->t0 + 100);
+            $this->assertSame(Clock::store($this->t0 + 30 + 1800), $run['held_until']);
+
+            date_default_timezone_set('Europe/Berlin'); // the web server reads it
+            $this->assertTrue(RunLifecycle::held($run, $this->t0 + 1800), 'still held 29 minutes after the stop');
+            $this->assertFalse(RunLifecycle::held($run, $this->t0 + 1831));
+            $this->assertStringContainsString('The devices stay held until ' . date('Y-m-d H:i', $this->t0 + 1830), RunDiagnosis::afterStop($run, 'x', $this->t0 + 60),
+                'shown in LibreNMS\' time zone');
+
+            // a launch is given up as not launched only ten minutes after it, wherever it was recorded
+            $launch = $this->store->add(['poll_error' => 'The launch did not complete.'], self::TARGETS, Clock::store($this->t0));
+            date_default_timezone_set('Asia/Tokyo');
+            $this->assertSame('pending', $this->lifecycle()->refresh($launch, $this->t0 + RunLifecycle::LAUNCH_TIMEOUT - 10)['status']);
+            $this->assertSame('not_launched', $this->lifecycle()->refresh($launch, $this->t0 + RunLifecycle::LAUNCH_TIMEOUT + 10)['status']);
+        } finally {
+            date_default_timezone_set($zone);
+        }
     }
 
     public function testStepsInProgressAtTheEndOfALog(): void

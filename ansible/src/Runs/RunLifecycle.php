@@ -6,6 +6,7 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Runner\Runner;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTask;
+use Agoodley\LibrenmsAnsible\Support\Clock;
 
 /**
  * The life of a run, from its launch to its end, as transitions on a RunStore with a Runner and an EventSink: the
@@ -108,12 +109,12 @@ final class RunLifecycle
      */
     public static function watched(array $run, int $now): bool
     {
-        if (! in_array($run['status'], RunStatus::WATCHED, true) || $run['watch_until'] === null || strtotime((string) $run['watch_until']) <= $now) {
+        if (! in_array($run['status'], RunStatus::WATCHED, true) || $run['watch_until'] === null || self::at($run['watch_until']) <= $now) {
             return false;
         }
 
         return $run['polled_at'] === null
-            || $now - strtotime((string) $run['polled_at']) >= ($run['runner_final_at'] !== null ? self::SETTLE_POLL : self::WATCH_INTERVAL);
+            || $now - self::at($run['polled_at']) >= ($run['runner_final_at'] !== null ? self::SETTLE_POLL : self::WATCH_INTERVAL);
     }
 
     /**
@@ -123,7 +124,7 @@ final class RunLifecycle
     public static function releasable(array $run, int $now): bool
     {
         return ! RunStatus::isFinal($run['status']) && $run['poll_error'] !== null
-            && $now - strtotime((string) ($run['runner_seen_at'] ?? $run['created_at'])) >= self::RELEASE_AFTER;
+            && $now - self::at($run['runner_seen_at'] ?? $run['created_at']) >= self::RELEASE_AFTER;
     }
 
     /**
@@ -131,7 +132,7 @@ final class RunLifecycle
      */
     public static function held(array $run, int $now): bool
     {
-        return $run['status'] === RunStatus::STOPPED && ($run['held_until'] ?? null) !== null && strtotime((string) $run['held_until']) > $now;
+        return $run['status'] === RunStatus::STOPPED && ($run['held_until'] ?? null) !== null && self::at($run['held_until']) > $now;
     }
 
     // ------------------------------------------------------------------ launch
@@ -178,14 +179,14 @@ final class RunLifecycle
      */
     private function findLaunch(array $run, int $now): void
     {
-        $age = $now - strtotime((string) $run['created_at']);
+        $age = $now - self::at($run['created_at']);
         if ($run['poll_error'] === null && $age <= self::LAUNCH_GRACE) {
             return; // the launching request is still at it
         }
         try {
             $search = ($this->runner)()->findTask((string) $run['template_id'],
                 RunText::taskMessage((int) $run['id'], (string) $run['username'], $run['launch_nonce'] ?? null),
-                strtotime((string) $run['created_at']) - self::CLOCK_SKEW);
+                self::at($run['created_at']) - self::CLOCK_SKEW);
         } catch (RunnerError $e) {
             $this->note($run, $now, 'The launch got no proper answer, and the plugin cannot look for its task in the runner now: '
                 . $e->getMessage() . ' The run keeps its devices until the plugin knows.');
@@ -288,7 +289,7 @@ final class RunLifecycle
         }
         $settled = ($run['runner_final_at'] !== null && ! $output->lines)
             || ($task->ended !== null && $now - $task->ended >= self::SETTLE)
-            || ($run['runner_final_at'] !== null && $now - strtotime((string) $run['runner_final_at']) >= self::SETTLE);
+            || ($run['runner_final_at'] !== null && $now - self::at($run['runner_final_at']) >= self::SETTLE);
         if (! $settled) {
             $values['runner_final_at'] = $run['runner_final_at'] ?? self::time($now);
             $this->runs->updateAt((int) $run['id'], (int) $run['version'], $values, $buffer['append']);
@@ -307,8 +308,8 @@ final class RunLifecycle
      */
     private function stopIfDue(array $run, Runner $runner, int $now, array &$values): void
     {
-        $requested = $run['stop_requested_at'] !== null ? strtotime((string) $run['stop_requested_at']) : null;
-        $overdue = $now - strtotime((string) $run['created_at']) > $this->stopAfterSeconds;
+        $requested = $run['stop_requested_at'] !== null ? self::at($run['stop_requested_at']) : null;
+        $overdue = $now - self::at($run['created_at']) > $this->stopAfterSeconds;
         if (($requested === null && ! $overdue) || ($requested !== null && $now - $requested < self::FORCE_STOP_AFTER)) {
             return;
         }
@@ -345,7 +346,7 @@ final class RunLifecycle
             return;
         }
         $checks = (int) $run['missing_checks'] + 1;
-        $since = $run['missing_since'] !== null ? strtotime((string) $run['missing_since']) : $now;
+        $since = $run['missing_since'] !== null ? self::at($run['missing_since']) : $now;
         if ($checks >= self::MISSING_CHECKS && $now - $since >= self::MISSING_SECONDS) {
             $this->lose($run, $now, "the runner no longer has task #$taskId (not found $checks times over " . intdiv($now - $since, 60)
                 . ' minutes, while the token still saw the project)');
@@ -428,7 +429,7 @@ final class RunLifecycle
         $note = $late ? 'the runner reported this end after the plugin had given the run up as ' . strtolower(RunStatus::label((string) $run['status']))
             : ($task->status === RunStatus::STOPPED ? ($run['stop_reason'] ?? ($run['stopped_by'] ? 'stopped by ' . $run['stopped_by'] : 'stopped in the runner'))
                 . (! $runsOn ? ' before the runner started it' : '; the step in progress may still run on the runner'
-                    . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . date('Y-m-d H:i', $heldUntil) : '')) : null);
+                    . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . date('Y-m-d H:i T', $heldUntil) : '')) : null);
         foreach ($evaluation['results'] as $deviceId => $result) {
             $this->events->write(RunText::finished($id, $status, $result['result'], $result['counts'], (string) $run['template_name'], $user, $note), $deviceId,
                 RunResults::SEVERITY[$result['result']] ?? 'info', RunText::reference($id), $user);
@@ -480,7 +481,7 @@ final class RunLifecycle
             $runner = ($this->runner)();
             if ($run['runner_task_id'] === null) {
                 $task = $runner->findTask((string) $run['template_id'], RunText::taskMessage($id, (string) $run['username'], $run['launch_nonce'] ?? null),
-                    strtotime((string) $run['created_at']) - self::CLOCK_SKEW)->task;
+                    self::at($run['created_at']) - self::CLOCK_SKEW)->task;
                 if ($task === null) {
                     $this->runs->updateAt($id, (int) $run['version'], ['polled_at' => self::time($now)]);
 
@@ -514,7 +515,7 @@ final class RunLifecycle
         // Semaphore reports the end before the last lines are readable: record it once the log has its PLAY RECAP, or a
         // while after the end
         $settled = RecapParser::parse($output->lines) !== null || ($task->ended !== null && $now - $task->ended >= self::SETTLE)
-            || ($run['runner_final_at'] !== null && $now - strtotime((string) $run['runner_final_at']) >= self::SETTLE);
+            || ($run['runner_final_at'] !== null && $now - self::at($run['runner_final_at']) >= self::SETTLE);
         if (! $settled) {
             $this->runs->updateAt($id, (int) $run['version'], $found + ['polled_at' => self::time($now), 'runner_final_at' => $run['runner_final_at'] ?? self::time($now)]);
 
@@ -580,7 +581,7 @@ final class RunLifecycle
             return 'The plugin still gets answers about this run from the runner: wait for its end, or stop it.';
         }
         $evaluation = RunResults::evaluate($this->targetNames($id), OutputBuffer::display($run), false);
-        $since = (string) ($run['runner_seen_at'] ?? $run['created_at']);
+        $since = (string) Clock::local((string) ($run['runner_seen_at'] ?? $run['created_at']), 'Y-m-d H:i:s T');
         $reason = 'the devices were released by ' . UntrustedText::line($username, 60) . ": the runner could not be asked about the run since $since ("
             . $run['poll_error'] . ')';
         if (! $this->runs->updateAt($id, (int) $run['version'], ['status' => RunStatus::RELEASED, 'released_by' => mb_substr($username, 0, 255),
@@ -645,11 +646,19 @@ final class RunLifecycle
     }
 
     /**
-     * A time as the database keeps it.
+     * A time as the plugin keeps it (UTC, whatever PHP's time zone: Support\Clock).
      */
     private static function time(int $time): string
     {
-        return date('Y-m-d H:i:s', $time);
+        return Clock::store($time);
+    }
+
+    /**
+     * A kept time as a Unix time.
+     */
+    private static function at(mixed $stored): int
+    {
+        return (int) Clock::unix($stored === null ? null : (string) $stored);
     }
 
     /**

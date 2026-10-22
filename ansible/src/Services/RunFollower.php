@@ -7,6 +7,7 @@ use Agoodley\LibrenmsAnsible\Runner\Runner;
 use Agoodley\LibrenmsAnsible\Runner\Semaphore\SemaphoreRunner;
 use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
+use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Support\ErrorText;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
 use Illuminate\Support\Facades\Cache;
@@ -61,7 +62,7 @@ final class RunFollower
         if ($run === null || (RunStatus::isFinal($run['status']) && ! RunLifecycle::watched($run, time()))) {
             return $run;
         }
-        if ($throttle && $run['polled_at'] !== null && time() - strtotime((string) $run['polled_at']) < self::INTERVAL) {
+        if ($throttle && $run['polled_at'] !== null && time() - (int) Clock::unix((string) $run['polled_at']) < self::INTERVAL) {
             return $run;
         }
         $lock = Cache::lock("ansible-plugin-run-$runId", $this->lockSeconds());

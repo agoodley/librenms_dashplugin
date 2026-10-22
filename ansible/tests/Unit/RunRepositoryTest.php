@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsAnsible\Tests\Unit;
 
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
+use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\SqliteSql;
 use PHPUnit\Framework\TestCase;
 
@@ -144,6 +145,22 @@ class RunRepositoryTest extends TestCase
             504 => ['run' => $held, 'held_until' => '2026-10-22 10:20:00']], $this->runs->busy($now),
             'not a host the runner ran on that was no target (503), nor a hold that ended, nor ended runs; the newest run of a device');
         $this->assertArrayNotHasKey(504, $this->runs->busy(strtotime('2026-10-22 10:20:00')), 'the hold ends at held_until');
+    }
+
+    public function testAHoldMeansTheSameInEveryPhpTimeZone(): void
+    {
+        $zone = date_default_timezone_get();
+        try {
+            date_default_timezone_set('America/New_York');
+            $now = time();
+            $held = $this->record([504 => 'lab-sw4.netops.lab'], ['status' => 'stopped', 'held_until' => Clock::store($now + 600)]);
+            date_default_timezone_set('Europe/Berlin');
+            $this->assertSame($held, $this->runs->busy($now)[504]['run'] ?? null, 'written in one time zone, read in another');
+            $this->assertArrayNotHasKey(504, $this->runs->busy($now + 601));
+            $this->assertSame(Clock::store($now), $this->runs->find($held)['created_at'], 'kept in UTC');
+        } finally {
+            date_default_timezone_set($zone);
+        }
     }
 
     public function testResultsAndHostsThatWereNotTargets(): void

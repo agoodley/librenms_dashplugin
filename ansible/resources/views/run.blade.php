@@ -10,6 +10,8 @@
 @endpush
 
 @php
+    // the plugin keeps times in UTC: shown in LibreNMS' time zone
+    $local = fn (?string $time) => \Agoodley\LibrenmsAnsible\Support\Clock::local($time);
     $status = $run['status'];
     $final = \Agoodley\LibrenmsAnsible\Runs\RunStatus::isFinal($status);
     $counters = ['ok', 'changed', 'unreachable', 'failed', 'skipped'];
@@ -35,12 +37,12 @@
         <div class="ans-card ans-info">
             <h4>Launched by</h4>
             <div class="ans-card-value" style="font-size: 17px">{{ $run['username'] }}</div>
-            <p>{{ $run['created_at'] }}{{ $run['runner_task_id'] ? ' · runner task #' . $run['runner_task_id'] : '' }}</p>
+            <p>{{ $local($run['created_at']) }}{{ $run['runner_task_id'] ? ' · runner task #' . $run['runner_task_id'] : '' }}</p>
         </div>
         <div class="ans-card ans-info">
             <h4>Time</h4>
             <div class="ans-card-value" style="font-size: 17px" id="ans-run-duration">{{ \Agoodley\LibrenmsAnsible\Support\Format::duration(\Agoodley\LibrenmsAnsible\Support\Format::runDuration($run)) }}</div>
-            <p>started <span id="ans-run-started">{{ $run['started_at'] ?? '-' }}</span> · ended <span id="ans-run-finished">{{ $run['finished_at'] ?? '-' }}</span></p>
+            <p>started <span id="ans-run-started">{{ $local($run['started_at']) ?? '-' }}</span> · ended <span id="ans-run-finished">{{ $local($run['finished_at']) ?? '-' }}</span></p>
         </div>
     </div>
 
@@ -54,7 +56,7 @@
             <div class="alert alert-{{ in_array($status, ['not_launched', 'failed'], true) ? 'danger' : 'warning' }}" id="ans-run-error"><i class="fa fa-exclamation-triangle"></i>
                 <strong>{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::label($status) }}:</strong> {{ $run['error'] }}
                 @if(in_array($status, \Agoodley\LibrenmsAnsible\Runs\RunStatus::WATCHED, true) && $run['watch_until'])
-                    <br><span class="ans-muted">The plugin still asks the runner about this run until {{ $run['watch_until'] }}: a later end is recorded here.</span>
+                    <br><span class="ans-muted">The plugin still asks the runner about this run until {{ $local($run['watch_until']) }}: a later end is recorded here.</span>
                 @endif
             </div>
         @endif

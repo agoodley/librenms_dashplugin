@@ -2,11 +2,33 @@
 
 namespace Agoodley\LibrenmsAnsible\Tests\Unit;
 
+use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Support\Format;
 use PHPUnit\Framework\TestCase;
 
 class FormatTest extends TestCase
 {
+    public function testTimesAreKeptInUtcAndShownInLibreNmsTimeZone(): void
+    {
+        $zone = date_default_timezone_get();
+        try {
+            date_default_timezone_set('Europe/Berlin');
+            $time = gmmktime(10, 0, 0, 10, 22, 2026);
+            $this->assertSame('2026-10-22 10:00:00', Clock::store($time));
+            $this->assertSame($time, Clock::unix('2026-10-22 10:00:00'));
+            $this->assertSame('2026-10-22 12:00:00', Clock::local('2026-10-22 10:00:00'), 'Berlin is two hours ahead in October');
+            $this->assertSame('2026-10-22 12:00 CEST', Clock::local('2026-10-22 10:00:00', 'Y-m-d H:i T'));
+            date_default_timezone_set('America/New_York');
+            $this->assertSame($time, Clock::unix(Clock::store($time)));
+            $this->assertSame('2026-10-22 06:00:00', Clock::local('2026-10-22 10:00:00'));
+            $this->assertNull(Clock::unix(null));
+            $this->assertNull(Clock::local(''));
+            $this->assertSame(3600, Format::runDuration(['started_at' => '2026-10-22 10:00:00', 'finished_at' => '2026-10-22 11:00:00']));
+        } finally {
+            date_default_timezone_set($zone);
+        }
+    }
+
     public function testDuration(): void
     {
         $this->assertSame('-', Format::duration(null));
