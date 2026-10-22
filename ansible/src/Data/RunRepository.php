@@ -45,16 +45,20 @@ final class RunRepository implements RunStore
      * at the stop may still run on the runner). A host the runner ran on that was not a target does not count.
      *
      * @param  int|null  $now  the time to compare holds with (now)
-     * @return array<int, array{run: int, held_until: ?string}> device_id => the run (the newest when several), and until when a stopped one holds it
+     * @return array<int, array{run: int, held_until: ?string, kind: ?string, change_id: ?int, batch: ?int, template: string}> device_id => the run (the newest when
+     *                                                                                                                   several), until when a stopped one holds it, what it is
      */
     public function busy(?int $now = null): array
     {
         $busy = [];
-        foreach ($this->sql->select('SELECT t.`device_id`, t.`run_id`, r.`status`, r.`held_until` FROM ' . $this->sql->table('ansible_run_targets') . ' t JOIN '
+        foreach ($this->sql->select('SELECT t.`device_id`, t.`run_id`, r.`status`, r.`held_until`, r.`kind`, r.`change_id`, r.`batch`, r.`template_name` FROM '
+            . $this->sql->table('ansible_run_targets') . ' t JOIN '
             . $this->sql->table('ansible_runs') . ' r ON r.`id` = t.`run_id` WHERE t.`unexpected` = 0 AND (r.`status` IN (' . self::marks(RunStatus::UNFINISHED)
             . ') OR (r.`status` = ? AND r.`held_until` > ?)) ORDER BY r.`id`',
             array_merge(RunStatus::UNFINISHED, [RunStatus::STOPPED, Clock::store($now ?? time())])) as $row) {
-            $busy[(int) $row['device_id']] = ['run' => (int) $row['run_id'], 'held_until' => $row['status'] === RunStatus::STOPPED ? (string) $row['held_until'] : null];
+            $busy[(int) $row['device_id']] = ['run' => (int) $row['run_id'], 'held_until' => $row['status'] === RunStatus::STOPPED ? (string) $row['held_until'] : null,
+                'kind' => $row['kind'] !== null ? (string) $row['kind'] : null, 'change_id' => $row['change_id'] !== null ? (int) $row['change_id'] : null,
+                'batch' => $row['batch'] !== null ? (int) $row['batch'] : null, 'template' => (string) $row['template_name']];
         }
 
         return $busy;

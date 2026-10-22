@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsAnsible\Tests\Unit;
 
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
+use Agoodley\LibrenmsAnsible\Runs\TargetSelection;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\SqliteSql;
 use PHPUnit\Framework\TestCase;
@@ -154,11 +155,24 @@ class RunRepositoryTest extends TestCase
         $this->record([506 => 'lab-sw6.netops.lab'], ['status' => 'stopped']);
         $this->record([507 => 'lab-sw7.netops.lab'], ['status' => 'success']);
         $later = $this->record([502 => 'lab-sw2.netops.lab'], ['status' => 'stopping']);
+        $dryRun = $this->record([508 => 'lab-sw8.netops.lab'], ['status' => 'running', 'change_id' => 61, 'kind' => 'dry_run', 'context' => 'change #61, dry run']);
+        $batch = $this->record([509 => 'lab-sw9.netops.lab'], ['status' => 'queued', 'change_id' => 62, 'kind' => 'batch', 'batch' => 2, 'context' => 'change #62, batch 2 of 3']);
 
-        $this->assertSame([501 => ['run' => $running, 'held_until' => null], 502 => ['run' => $later, 'held_until' => null],
-            504 => ['run' => $held, 'held_until' => '2026-10-22 10:20:00']], $this->runs->busy($now),
-            'not a host the runner ran on that was no target (503), nor a hold that ended, nor ended runs; the newest run of a device');
+        $plain = ['kind' => null, 'change_id' => null, 'batch' => null, 'template' => 'Show version'];
+        $this->assertSame([501 => ['run' => $running, 'held_until' => null] + $plain, 502 => ['run' => $later, 'held_until' => null] + $plain,
+            504 => ['run' => $held, 'held_until' => '2026-10-22 10:20:00'] + $plain,
+            508 => ['run' => $dryRun, 'held_until' => null, 'kind' => 'dry_run', 'change_id' => 61, 'batch' => null, 'template' => 'Show version'],
+            509 => ['run' => $batch, 'held_until' => null, 'kind' => 'batch', 'change_id' => 62, 'batch' => 2, 'template' => 'Show version']], $this->runs->busy($now),
+            'not a host the runner ran on that was no target (503), nor a hold that ended, nor ended runs; the newest run of a device; what each run is');
         $this->assertArrayNotHasKey(504, $this->runs->busy(strtotime('2026-10-22 10:20:00')), 'the hold ends at held_until');
+
+        // the refusals say what the run is
+        $busy = $this->runs->busy($now);
+        $this->assertSame(["busy in run #$running (template Show version), which has not finished", "busy in run #$dryRun (the dry run of change #61), which has not "
+            . 'finished', "busy in run #$batch (batch 2 of change #62), which has not finished"],
+            [TargetSelection::busyRefusal($busy[501])['text'], TargetSelection::busyRefusal($busy[508])['text'], TargetSelection::busyRefusal($busy[509])['text']]);
+        $this->assertStringStartsWith("held by run #$held (template Show version) until ", TargetSelection::busyRefusal($busy[504])['text']);
+        $this->assertSame('busy in run #12, which has not finished', TargetSelection::busyRefusal(['run' => 12, 'held_until' => null])['text'], 'nothing known: no words');
     }
 
     public function testAHoldMeansTheSameInEveryPhpTimeZone(): void

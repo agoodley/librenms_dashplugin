@@ -102,16 +102,37 @@ final class TargetSelection
     }
 
     /**
-     * Why a device busy in a run (RunRepository::busy()) cannot be a target.
+     * Why a device busy in a run (RunRepository::busy()) cannot be a target, with what the run is ("busy in run #12 (the
+     * dry run of change #61), which has not finished").
      *
-     * @param  array{run: int, held_until: ?string}  $busy
+     * @param  array{run: int, held_until: ?string, kind?: ?string, change_id?: ?int, batch?: ?int, template?: string}  $busy
      * @return array{reason: string, text: string}
      */
     public static function busyRefusal(array $busy): array
     {
+        $run = "run #{$busy['run']}" . self::runWhat($busy);
+
         return ['reason' => 'busy', 'text' => $busy['held_until'] !== null
-            ? "held by run #{$busy['run']} until " . Clock::local($busy['held_until'], 'Y-m-d H:i T') . ': it was stopped, and the step in progress may still run on the runner '
+            ? "held by $run until " . Clock::local($busy['held_until'], 'Y-m-d H:i T') . ': it was stopped, and the step in progress may still run on the runner '
                 . '(an admin can release the devices on the run page)'
-            : "busy in run #{$busy['run']}, which has not finished"];
+            : "busy in $run, which has not finished"];
+    }
+
+    /**
+     * What a run is, in words after its number: " (the dry run of change #61)", " (batch 2 of change #61)", " (template
+     * Show version)"; nothing when it is not known.
+     */
+    private static function runWhat(array $busy): string
+    {
+        $change = isset($busy['change_id']) ? (int) $busy['change_id'] : null;
+        if ($change !== null && ($busy['kind'] ?? null) === 'dry_run') {
+            return " (the dry run of change #$change)";
+        }
+        if ($change !== null && ($busy['kind'] ?? null) === 'batch') {
+            return ' (batch ' . (int) ($busy['batch'] ?? 0) . " of change #$change)";
+        }
+        $template = UntrustedText::line((string) ($busy['template'] ?? ''), 80);
+
+        return $template !== '' ? " (template $template)" : '';
     }
 }
