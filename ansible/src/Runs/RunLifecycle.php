@@ -439,9 +439,11 @@ final class RunLifecycle
             : ($task->status === RunStatus::STOPPED ? ($run['stop_reason'] ?? ($run['stopped_by'] ? 'stopped by ' . $run['stopped_by'] : 'stopped in the runner'))
                 . (! $runsOn ? ' before the runner started it' : '; the step in progress may still run on the runner'
                     . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . date('Y-m-d H:i T', $heldUntil) : '')) : null);
+        // the eventlog's User: who stopped the run, for a stopped one; else who launched it
+        $actor = (string) (($task->status === RunStatus::STOPPED ? ($run['stopped_by'] ?? null) : null) ?: $user);
         foreach ($evaluation['results'] as $deviceId => $result) {
             $this->events->write(RunText::finished($id, $status, $result['result'], $result['counts'], (string) $run['template_name'], $user, $note, $run['context'] ?? null,
-                $dryRun, $proven), $deviceId, $proven === false ? 'error' : (RunResults::SEVERITY[$result['result']] ?? 'info'), RunText::reference($id), $user);
+                $dryRun, $proven), $deviceId, $proven === false ? 'error' : (RunResults::SEVERITY[$result['result']] ?? 'info'), RunText::reference($id), $actor);
         }
         foreach ($unexpected as $deviceId => $row) {
             $this->events->write(RunText::unexpectedDevice($id, $row['inventory_name'], $row['result'], (string) $run['template_name'], $user, $run['context'] ?? null), $deviceId, 'error',
@@ -601,7 +603,7 @@ final class RunLifecycle
         $this->runs->setResults($id, $evaluation['results']);
         foreach ($evaluation['results'] as $deviceId => $result) {
             $this->events->write(RunText::finished($id, RunStatus::RELEASED, $result['result'], null, (string) $run['template_name'], (string) $run['username'],
-                'devices released by ' . $username . ' while the runner could not be asked', $run['context'] ?? null), $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
+                'devices released by ' . $username . ' while the runner could not be asked', $run['context'] ?? null), $deviceId, 'warning', RunText::reference($id), $username);
         }
 
         return null;
@@ -621,7 +623,7 @@ final class RunLifecycle
         }
         foreach (array_keys($this->targetNames($id)) as $deviceId) {
             $this->events->write(RunText::holdReleased($id, $username, (string) $run['held_until'], (string) $run['template_name'], (string) $run['username'], $run['context'] ?? null),
-                $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
+                $deviceId, 'warning', RunText::reference($id), $username);
         }
 
         return null;

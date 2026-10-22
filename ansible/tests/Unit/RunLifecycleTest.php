@@ -690,7 +690,7 @@ class RunLifecycleTest extends TestCase
         $this->assertSame('carol', $run['released_by']);
         $this->assertSame(['unknown' => 3], $run['summary']);
         $this->assertStringContainsString('devices released by carol while the runner could not be asked', $this->events->of(501)[0]['message']);
-        $this->assertSame('alice', $this->events->of(501)[0]['user']);
+        $this->assertSame('carol', $this->events->of(501)[0]['user'], 'the entry carries who released the devices');
     }
 
     // ------------------------------------------------------------------ the log

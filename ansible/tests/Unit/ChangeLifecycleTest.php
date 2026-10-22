@@ -276,6 +276,42 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame('void', $this->changes->find($id)['dry_run_state']);
     }
 
+    // ------------------------------------------------------------------ the eventlog
+
+    public function testEachEntryCarriesTheAdminWhoDidTheStep(): void
+    {
+        $carol = ['user_id' => 3, 'username' => 'carol'];
+        $id = $this->approved(); // alice asked for it and dry-ran it, bob approved it
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $this->assertNull($lifecycle->apply($id, $carol, [], $this->t0 + 50));
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        $lifecycle->advance($id, $this->t0 + 101);
+        $this->assertNull($lifecycle->stop($id, 'dave', $this->t0 + 110));
+
+        $users = [];
+        foreach ($this->events->of(501) as $entry) {
+            $users[preg_replace('/^Ansible change #1 \(CHG-1\)[,:]? ?/', '', $entry['message'])] = $entry['user'];
+        }
+        $user = function (string $start) use ($users): ?string {
+            foreach ($users as $message => $who) {
+                if (str_starts_with($message, $start)) {
+                    return $who;
+                }
+            }
+
+            return null;
+        };
+        $this->assertSame('alice', $user('dry run (run #'), 'the dry run, launched by alice');
+        $this->assertSame('alice', $user('dry run #'), 'what it found');
+        $this->assertSame('bob', $user('approved by bob'), 'the approval: bob, not the requester');
+        $this->assertSame('carol', $user('apply started by carol'));
+        $this->assertSame('carol', $user('batch 1: maintenance window'), 'the window of the batch carol started');
+        $this->assertSame('carol', $user('batch 2 waits for an admin'));
+        $this->assertSame('dave', $user('stop requested by dave'));
+        $this->assertSame('dave', $user('was stopped'), 'and how it ended');
+    }
+
     // ------------------------------------------------------------------ how the runner reaches the devices
 
     /** lab-sw1 (501) pointed at the address of lab-sw2 (502), as an admin who may edit devices could do. */

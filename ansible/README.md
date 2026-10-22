@@ -408,7 +408,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   asked for and given, the apply, its maintenance window, its backups, its batch launched and ended, and how the change
   ended; and, as in phase 1, the start and end of each run with its result and counters. The severity follows the
   result. The reference is the change's address (`plugin/ansible/changes/12`) or the run's, and the entries carry the
-  user who did the step (in LibreNMS' *User* column).
+  user who did the step (in LibreNMS' *User* column): who launched the dry run, approved, rejected, applied, continued,
+  stopped, cancelled or released; for a step the plugin takes on its own (a window, a backup, a batch's end), the admin
+  who started that batch.
 
 ## How a change works
 

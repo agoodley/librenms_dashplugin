@@ -112,7 +112,7 @@ final class ChangeLifecycle
         $this->update($change, ['dry_run_id' => $result['run_id'], 'dry_run_state' => 'running', 'fingerprint_parts' => $parts,
             'plan_fingerprint' => $parts !== null ? Fingerprint::of($parts) : null]);
         $this->timeline($change, 'dry_run', 'Dry run launched (run #' . $result['run_id'] . ').', $user['username'], $now);
-        $this->eventAll($change, ChangeText::dryRunLaunched($change, (int) $result['run_id'], $user['username']), 'info');
+        $this->eventAll($change, ChangeText::dryRunLaunched($change, (int) $result['run_id'], $user['username']), 'info', $user['username']);
 
         return null;
     }
@@ -136,7 +136,7 @@ final class ChangeLifecycle
         }
         $problem = $this->dryRunProblem($change, $now) ?? $this->templateProblem($change);
         if ($problem !== null) {
-            $this->voidDryRun($change, $problem, $now);
+            $this->voidDryRun($change, $problem, $now, $user['username']);
 
             return 'The dry run no longer counts (' . $problem . '): launch it again.';
         }
@@ -150,7 +150,7 @@ final class ChangeLifecycle
         $this->changes->addApproval(['change_id' => $id, 'user_id' => (int) $user['user_id'], 'username' => $user['username'], 'decision' => 'approved',
             'comment' => $comment, 'fingerprint' => $fingerprint, 'dry_run_id' => (int) $change['dry_run_id'], 'created_at' => $now]);
         $this->timeline($change, 'approval', 'Approved' . ($comment !== '' ? ": \"$comment\"" : '.'), $user['username'], $now);
-        $this->eventAll($change, ChangeText::approved($change, $user['username'], $comment), 'notice');
+        $this->eventAll($change, ChangeText::approved($change, $user['username'], $comment), 'notice', $user['username']);
 
         return null;
     }
@@ -178,7 +178,7 @@ final class ChangeLifecycle
         $this->changes->addApproval(['change_id' => $id, 'user_id' => (int) $user['user_id'], 'username' => $user['username'], 'decision' => 'rejected',
             'comment' => $comment, 'fingerprint' => null, 'dry_run_id' => $change['dry_run_id'] !== null ? (int) $change['dry_run_id'] : null, 'created_at' => $now]);
         $this->timeline($change, 'approval', 'Rejected' . ($comment !== '' ? ": \"$comment\"" : '.'), $user['username'], $now);
-        $this->eventAll($change, ChangeText::rejected($change, $user['username'], $comment), 'warning');
+        $this->eventAll($change, ChangeText::rejected($change, $user['username'], $comment), 'warning', $user['username']);
 
         return null;
     }
@@ -209,13 +209,13 @@ final class ChangeLifecycle
         }
         $dryRun = $this->dryRunProblem($change, $now) ?? $this->templateProblem($change);
         if ($dryRun !== null) {
-            $this->voidDryRun($change, $dryRun, $now);
+            $this->voidDryRun($change, $dryRun, $now, $user['username']);
 
             return 'The dry run no longer counts (' . $dryRun . '): launch it again.';
         }
         $approval = $this->approvalProblem($change, $now);
         if ($approval !== null) {
-            $this->voidApproval($change, $approval, $now);
+            $this->voidApproval($change, $approval, $now, $user['username']);
 
             return 'The approval no longer counts (' . $approval . '): the change needs a new approval.';
         }
@@ -226,7 +226,7 @@ final class ChangeLifecycle
             return 'The change changed meanwhile: reload the page.';
         }
         $this->timeline($started, 'apply', 'Apply started (' . self::planText($started, array_keys($this->changes->targets($id))) . ').', $user['username'], $now);
-        $this->eventAll($started, ChangeText::applyStarted($started, $user['username'], (int) $started['batch_count']), 'notice');
+        $this->eventAll($started, ChangeText::applyStarted($started, $user['username'], (int) $started['batch_count']), 'notice', $user['username']);
         $this->startBatch($started, 1, $user, $secrets, $now);
 
         return null;
@@ -308,10 +308,10 @@ final class ChangeLifecycle
             return 'The change changed meanwhile: reload the page.';
         }
         $this->timeline($stopping, 'stop', 'Stop requested.', $username, $now);
-        $this->eventAll($stopping, ChangeText::stopRequested($stopping, $username), 'warning');
+        $this->eventAll($stopping, ChangeText::stopRequested($stopping, $username), 'warning', $username);
         if (! $running) {
             $this->finish($stopping, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line($username, 60)
-                . ($change['status'] === ChangeStatus::PAUSED && $change['waiting'] !== 'secrets' ? " after batch $batch" : " before batch $batch was launched"), $now);
+                . ($change['status'] === ChangeStatus::PAUSED && $change['waiting'] !== 'secrets' ? " after batch $batch" : " before batch $batch was launched"), $now, $username);
 
             return null;
         }
@@ -346,7 +346,7 @@ final class ChangeLifecycle
         }
         $this->changes->voidApprovals($id, 'the change was cancelled', $now);
         $this->timeline($cancelled, 'cancel', 'Cancelled.', $username, $now);
-        $this->eventAll($cancelled, ChangeText::cancelled($cancelled, $username), 'info');
+        $this->eventAll($cancelled, ChangeText::cancelled($cancelled, $username), 'info', $username);
 
         return null;
     }
@@ -493,11 +493,11 @@ final class ChangeLifecycle
             $this->events->write($state === 'unverified' ? ChangeText::dryRunUnverified($ended, (int) $run['id'], $proof['findings'])
                 : ChangeText::dryRunResult($ended, (int) $run['id'], $value['dry_result']), $deviceId,
                 $state === 'unverified' ? 'error' : (in_array($value['dry_result'], ['failed', 'unreachable', 'not_run', 'unknown'], true) ? 'warning' : 'info'),
-                ChangeText::reference($id), (string) $change['username']);
+                ChangeText::reference($id), (string) $run['username']);
         }
         if ($next === ChangeStatus::AWAITING) {
             $this->timeline($ended, 'approval', 'Approval requested (' . ApprovalRules::LABELS[$this->settings->approval] . ').', null, $now);
-            $this->eventAll($ended, ChangeText::approvalRequested($ended), 'info');
+            $this->eventAll($ended, ChangeText::approvalRequested($ended), 'info', (string) $run['username']);
         }
     }
 
@@ -787,7 +787,7 @@ final class ChangeLifecycle
         } elseif ($number === 1 && ! empty($plan['wait_after_first'])) {
             if ($this->update($change, ['status' => ChangeStatus::PAUSED, 'waiting' => 'canary']) !== null) {
                 $this->timeline($change, 'apply', ChangeText::waiting($change, 2, 'canary'), null, $now);
-                $this->eventAll($change, ChangeText::waiting($change, 2, 'canary'), 'info');
+                $this->eventAll($change, ChangeText::waiting($change, 2, 'canary'), 'info', $this->batchUser($change, $number));
             }
         } elseif ((int) ($plan['pause_minutes'] ?? 0) > 0) {
             $until = $now + 60 * (int) $plan['pause_minutes'];
@@ -834,7 +834,7 @@ final class ChangeLifecycle
      * End a change: its remaining batches are cancelled, the windows of batches that never ran close now, the eventlog
      * of every target says how it ended.
      */
-    private function finish(array $change, string $status, ?string $reason, int $now): void
+    private function finish(array $change, string $status, ?string $reason, int $now, ?string $user = null): void
     {
         $id = (int) $change['id'];
         $current = $this->changes->find($id) ?? $change;
@@ -862,7 +862,7 @@ final class ChangeLifecycle
             ChangeStatus::APPLIED => 'ok',
             ChangeStatus::FAILED => 'error',
             default => 'warning',
-        });
+        }, $user);
     }
 
     // ------------------------------------------------------------------ checks
@@ -979,7 +979,7 @@ final class ChangeLifecycle
     /**
      * The dry run no longer counts: back to draft, approvals voided, said in the timeline and the eventlog.
      */
-    private function voidDryRun(array $change, string $reason, int $now): void
+    private function voidDryRun(array $change, string $reason, int $now, ?string $user = null): void
     {
         $void = $this->update($change, ['status' => ChangeStatus::DRAFT, 'dry_run_state' => 'void', 'approved_by' => null, 'approved_user_id' => null,
             'approved_at' => null, 'approval_fingerprint' => null, 'error' => 'The dry run no longer counts: ' . UntrustedText::line($reason, 500) . '.']);
@@ -988,13 +988,13 @@ final class ChangeLifecycle
         }
         $this->changes->voidApprovals((int) $change['id'], $reason, $now);
         $this->timeline($void, 'dry_run', 'The dry run no longer counts: ' . UntrustedText::line($reason, 500) . '.', null, $now);
-        $this->eventAll($void, ChangeText::dryRunVoid($void, $reason), 'warning');
+        $this->eventAll($void, ChangeText::dryRunVoid($void, $reason), 'warning', $user);
     }
 
     /**
      * The approval no longer counts: the change awaits a new one.
      */
-    private function voidApproval(array $change, string $reason, int $now): void
+    private function voidApproval(array $change, string $reason, int $now, ?string $user = null): void
     {
         $void = $this->update($change, ['status' => ChangeStatus::AWAITING, 'approved_by' => null, 'approved_user_id' => null, 'approved_at' => null,
             'approval_fingerprint' => null]);
@@ -1003,7 +1003,7 @@ final class ChangeLifecycle
         }
         $this->changes->voidApprovals((int) $change['id'], $reason, $now);
         $this->timeline($void, 'approval', 'The approval no longer counts: ' . UntrustedText::line($reason, 500) . '. The change needs a new approval.', null, $now);
-        $this->eventAll($void, ChangeText::approvalVoid($void, $reason), 'warning');
+        $this->eventAll($void, ChangeText::approvalVoid($void, $reason), 'warning', $user);
     }
 
     // ------------------------------------------------------------------ maintenance windows
@@ -1033,7 +1033,7 @@ final class ChangeLifecycle
         $this->changes->addWindow(['change_id' => $id, 'batch' => $number, 'schedule_id' => $scheduleId, 'status' => 'open', 'opened_at' => $now, 'ends_at' => $end]);
         $this->timeline($change, 'window', "Maintenance window #$scheduleId opened for batch $number until " . Clock::show($end, 'Y-m-d H:i T') . '.', null, $now);
         foreach ($devices as $deviceId) {
-            $this->events->write(ChangeText::windowOpened($change, $number, $scheduleId, $end), $deviceId, 'info', ChangeText::reference($id), (string) $change['username']);
+            $this->events->write(ChangeText::windowOpened($change, $number, $scheduleId, $end), $deviceId, 'info', ChangeText::reference($id), $this->batchUser($change, $number));
         }
 
         return null;
@@ -1080,7 +1080,7 @@ final class ChangeLifecycle
                 $this->timeline($change, 'window', "Maintenance window #{$window['schedule_id']} of batch {$window['batch']} closed.", null, $now);
                 foreach ($this->batchDevices($change, (int) $window['batch']) as $deviceId) {
                     $this->events->write(ChangeText::windowClosed($change, (int) $window['batch'], (int) $window['schedule_id'], $end), $deviceId, 'info',
-                        ChangeText::reference($changeId), (string) $change['username']);
+                        ChangeText::reference($changeId), $this->batchUser($change, (int) $window['batch']));
                 }
             }
         }
@@ -1231,7 +1231,7 @@ final class ChangeLifecycle
             if ($state !== null && $state !== BackupState::REQUESTED && $state !== BackupState::FRESH) {
                 $failed[] = $deviceId;
                 $this->events->write(ChangeText::backupFailed($change, $number, $phase, $state, $value["{$phase}_error"] ?? null), $deviceId, 'warning',
-                    ChangeText::reference((int) $change['id']), (string) $change['username']);
+                    ChangeText::reference((int) $change['id']), $this->batchUser($change, $number));
             }
         }
         if ($failed) {
@@ -1369,11 +1369,36 @@ final class ChangeLifecycle
     /**
      * An eventlog entry on every target, attributed to the change's requester.
      */
-    private function eventAll(array $change, string $message, string $severity): void
+    /**
+     * An entry in the eventlog of every target, with the user who did the step (LibreNMS' User column): the admin who
+     * acted, else, for a step the plugin took on its own, the admin it took it for (who applied the change, or asked
+     * for it).
+     */
+    private function eventAll(array $change, string $message, string $severity, ?string $user = null): void
     {
+        $user ??= self::actor($change);
         foreach (array_keys($this->changes->targets((int) $change['id'])) as $deviceId) {
-            $this->events->write($message, (int) $deviceId, $severity, ChangeText::reference((int) $change['id']), (string) $change['username']);
+            $this->events->write($message, (int) $deviceId, $severity, ChangeText::reference((int) $change['id']), $user);
         }
+    }
+
+    /**
+     * Who a step the plugin takes on its own is taken for: the admin who applied the change once it is applied (or
+     * stopped it, for its end), else the requester.
+     */
+    private static function actor(array $change): string
+    {
+        return (string) (($change['stop_requested_by'] ?? null) ?: (($change['applied_by'] ?? null) ?: $change['username']));
+    }
+
+    /**
+     * The admin who started a batch (applied the change, or continued it to that batch), else actor().
+     */
+    private function batchUser(array $change, int $number): string
+    {
+        $batch = $this->changes->batches((int) $change['id'])[$number] ?? null;
+
+        return (string) (($batch['username'] ?? null) ?: self::actor($change));
     }
 
     /**
