@@ -33,7 +33,8 @@ final class ChangeActions implements ChangeRunner
     ) {
     }
 
-    public function launch(array $change, string $kind, int $number, array $deviceIds, array $user, #[\SensitiveParameter] array $secrets, \Closure $verify): array
+    public function launch(array $change, string $kind, int $number, array $deviceIds, array $user, #[\SensitiveParameter] array $secrets, \Closure $verify,
+        ?\Closure $halt = null): array
     {
         $parts = null;
         $connections = null;
@@ -43,7 +44,7 @@ final class ChangeActions implements ChangeRunner
             $connections = $this->connections($deviceIds);
 
             return $verify($snapshot, $connections);
-        });
+        }, $halt);
         $launcher = new RunLauncher($this->plugin, $this->runs, $this->inventory, $this->settings, $this->eventlog, $this->changes);
         $result = $launcher->launch((object) ['user_id' => (int) $user['user_id'], 'username' => (string) $user['username']], (string) $change['template_id'],
             $deviceIds, ChangeLifecycle::answers($change) + $secrets, '', $spec);
@@ -66,13 +67,14 @@ final class ChangeActions implements ChangeRunner
      * pinned to the commit its dry run ran; with the text of its eventlog entries and the check right before the launch.
      *
      * @param  \Closure(array): ?string  $check
+     * @param  (\Closure(): ?string)|null  $halt  why the launch must not go on now (RunSpec)
      */
-    public static function spec(array $change, string $kind, int $number, \Closure $check): RunSpec
+    public static function spec(array $change, string $kind, int $number, \Closure $check, ?\Closure $halt = null): RunSpec
     {
         $context = $kind === RunSpec::DRY_RUN ? 'change #' . (int) $change['id'] . ', dry run'
             : 'change #' . (int) $change['id'] . ", batch $number of " . (int) $change['batch_count'];
 
-        return new RunSpec((int) $change['id'], $kind, $number, $context, $kind === RunSpec::BATCH ? ($change['dry_run_commit'] ?? null) : null, $check);
+        return new RunSpec((int) $change['id'], $kind, $number, $context, $kind === RunSpec::BATCH ? ($change['dry_run_commit'] ?? null) : null, $check, $halt);
     }
 
     public function preflight(array $change, string $kind, int $number, array $deviceIds, \Closure $verify): ?string

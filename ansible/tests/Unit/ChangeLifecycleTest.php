@@ -799,6 +799,37 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'), 'its launch checks for the stop right before it');
     }
 
+    public function testAStopRecordedWhileTheLaunchIsCheckedKeepsTheBatchFromTheRunner(): void
+    {
+        // Stop takes no lock: it can land after launchBatch() looked for a stop, while the launch reads the template; and later still,
+        // after the run is recorded, right before the runner is asked
+        foreach (['while the launch is checked' => 'beforeVerify', 'after the run is recorded' => 'beforeStart'] as $when => $hook) {
+            $this->setUp();
+            $id = $this->approved();
+            $lifecycle = $this->lifecycle();
+            $this->backups->enabled = false;
+            $this->runner->{$hook} = function (string $kind) use ($id, $lifecycle): void {
+                if ($kind === 'batch') {
+                    $this->assertNull($lifecycle->stop($id, 'bob', $this->t0 + 51));
+                }
+            };
+            $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 50), $when);
+            $this->runner->{$hook} = null;
+            $this->assertSame([], preg_grep('/^Batch 1 of 2 launched/', $this->changes->messages($id)), "$when: no launch is said");
+            $lifecycle->advance($id, $this->t0 + 60);
+
+            $change = $this->changes->find($id);
+            $this->assertSame([ChangeStatus::STOPPED, 'stopped by bob before batch 1 was launched'], [$change['status'], $change['error']], $when);
+            $this->assertSame(['cancelled', 'not launched: the change was stopped'], [$this->changes->batches[$id][1]['status'], $this->changes->batches[$id][1]['note']], $when);
+            $runs = array_values(array_filter($this->runs->runs, fn ($run) => ($run['kind'] ?? null) === 'batch'));
+            $this->assertSame($hook === 'beforeVerify' ? [] : ['not_launched'], array_column($runs, 'status'), "$when: the runner never got a task");
+            $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'), "$when: the runner was never asked to start the batch");
+            $window = current($this->changes->windows($id));
+            $this->assertTrue((bool) $window['closing'], "$when: its window ends");
+            $this->assertSame($this->t0 + 60, Clock::unix($window['ends_at']), "$when: at once, nothing ran");
+        }
+    }
+
     public function testAnApprovalOrAPermissionLostDuringTheBackupsStopsTheBatchBeforeItsLaunch(): void
     {
         foreach (['the approver' => fn () => $this->runner->userProblems[2] = 'no longer holds the approve permission',

@@ -17,6 +17,8 @@ final class RunSpec
     /**
      * @param  int  $number  the dry run's attempt, or the batch's number
      * @param  \Closure(array): ?string|null  $verify  why the run may not be launched with this template snapshot (TemplateSnapshot::parts()), null when it may
+     * @param  (\Closure(): ?string)|null  $halt  why the launch must not go on now (the change's stop was asked for), null when it may: asked right
+     *                                            before the run is recorded (under the launch lock) and right before the runner is asked to start it
      */
     public function __construct(
         public readonly int $changeId,
@@ -25,7 +27,16 @@ final class RunSpec
         public readonly string $context,
         public readonly ?string $commit = null,
         public readonly ?\Closure $verify = null,
+        public readonly ?\Closure $halt = null,
     ) {
+    }
+
+    /**
+     * Why the launch must not go on now; null when it may (or nothing can stop it).
+     */
+    public function halted(): ?string
+    {
+        return $this->halt !== null ? ($this->halt)() : null;
     }
 
     /**

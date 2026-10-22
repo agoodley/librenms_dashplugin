@@ -70,7 +70,11 @@ final class FakeChangeRunner implements ChangeRunner
             new RunnerInventory('12', 'LibreNMS', 'file', 'inventory/librenms_inventory.py'), new RunnerRepository('9', 'r', 'file:///repos/r.git', 'main'));
     }
 
-    public function launch(array $change, string $kind, int $number, array $deviceIds, array $user, #[\SensitiveParameter] array $secrets, \Closure $verify): array
+    /** @var \Closure|null called after a run is recorded, right before the runner would be asked (a stop landing at the last moment) */
+    public ?\Closure $beforeStart = null;
+
+    public function launch(array $change, string $kind, int $number, array $deviceIds, array $user, #[\SensitiveParameter] array $secrets, \Closure $verify,
+        ?\Closure $halt = null): array
     {
         $token = "{$change['id']}:$kind:$number";
         if (isset($this->tokens[$token])) {
@@ -87,11 +91,27 @@ final class FakeChangeRunner implements ChangeRunner
         if ($refusal !== null) {
             return ['run_id' => null, 'errors' => ["The launch was refused: $refusal."], 'parts' => null, 'connections' => $connections];
         }
+        // as the launcher: asked under the launch lock, right before the run is recorded
+        $halted = $halt !== null ? $halt() : null;
+        if ($halted !== null) {
+            return ['run_id' => null, 'errors' => [$halted], 'parts' => null, 'connections' => $connections];
+        }
         $pin = $kind === 'batch' ? $change['dry_run_commit'] : null;
         $runId = $this->runs->add(['status' => 'queued', 'runner_task_id' => (string) (900 + count($this->runs->runs)), 'username' => $user['username'],
             'commit_hash' => $pin ?? $this->commit, 'change_id' => (int) $change['id'], 'kind' => $kind, 'batch' => $number],
             array_intersect_key($this->inventoryNames, array_flip($deviceIds)));
         $this->tokens[$token] = $runId;
+        if ($this->beforeStart !== null) {
+            ($this->beforeStart)($kind, $number);
+        }
+        // and again right before the runner is asked: the run is recorded as not launched, the runner never sees it
+        $halted = $halt !== null ? $halt() : null;
+        if ($halted !== null) {
+            $this->runs->runs[$runId] = array_merge($this->runs->runs[$runId], ['status' => 'not_launched', 'runner_task_id' => null, 'error' => $halted,
+                'finished_at' => $this->runs->runs[$runId]['created_at'] ?? null, 'version' => $this->runs->runs[$runId]['version'] + 1]);
+
+            return ['run_id' => $runId, 'errors' => [], 'parts' => $this->snapshot, 'connections' => $connections];
+        }
         $this->launches[] = ['kind' => $kind, 'number' => $number, 'devices' => $deviceIds, 'user' => $user['username'], 'secrets' => $secrets, 'commit' => $pin];
 
         return ['run_id' => $runId, 'errors' => [], 'parts' => $this->snapshot, 'connections' => $connections];

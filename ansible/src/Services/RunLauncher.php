@@ -246,6 +246,11 @@ final class RunLauncher
                 return self::refused($plan, array_map(fn ($deviceId, $changeId) => $plan->targets[$deviceId]['display'] . " became reserved by change #$changeId, which is being applied.",
                     array_keys($reserved), $reserved));
             }
+            // a change's stop asked for while this launch was checked: nothing is recorded, nothing reaches the runner
+            $halted = $spec?->halted();
+            if ($halted !== null) {
+                return self::refused($plan, [$halted]);
+            }
             $nonce = bin2hex(random_bytes(6));
             $runId = $this->record($user, $plan, $requestToken, $nonce, $spec);
         } finally {
@@ -297,6 +302,13 @@ final class RunLauncher
     {
         $template = $plan->template;
         $lifecycle = (new RunFollower($this->plugin, $this->runs, $this->settings, $this->eventlog, $plan->runner, $this->inventory))->lifecycle();
+        // the last moment a change's stop can keep the task from the runner: the run is recorded as not launched
+        $halted = $spec?->halted();
+        if ($halted !== null) {
+            $lifecycle->launchRefused($runId, $halted, time());
+
+            return;
+        }
         try {
             $task = $plan->runner->launch(self::request($plan, RunText::taskMessage($runId, $username, $nonce), $spec));
             $lifecycle->launched($runId, $task, time());

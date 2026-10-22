@@ -417,8 +417,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   own until the last, or until one fails. **Stop** stops the running batch (as a run's stop: the step in progress runs
   on) and launches nothing more. It never waits, even while another request is busy with the change (or died while
   at it): the stop is recorded at once, the runner is asked at once to stop the batch's task, no batch launches
-  afterwards, and the change ends at its next step; a batch whose run had already ended is recorded with its results,
-  and the change ends after it. After a stop the page says, as the run page does, how long the batch's devices stay
+  afterwards (a launch under way looks for the stop again right before it records its run and right before it asks
+  the runner, and then launches nothing), and the change ends at its next step; a batch whose run had already ended is
+  recorded with its results, and the change ends after it. After a stop the page says, as the run page does, how long the batch's devices stay
   held and how to find the step that may still run on the runner. **Cancel** drops a change that has not been applied.
   A change that failed or was stopped offers **a new change with the remaining devices** (the devices that failed or
   were never reached; held ones are left out and named, with until when), and a dry run that failed on some devices

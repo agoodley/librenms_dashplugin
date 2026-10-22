@@ -909,10 +909,23 @@ final class ChangeLifecycle
 
             return;
         }
-        $this->changes->updateBatch($id, $number, ['status' => 'launching', 'started_at' => Clock::store($now), 'note' => null]);
         $this->beat();
-        $result = $this->runner->launch($change, 'batch', $number, $this->batchDevices($change, $number), $user, $secrets ?? [], $this->batchVerify($change));
+        $this->changes->updateBatch($id, $number, ['status' => 'launching', 'started_at' => Clock::store($now), 'note' => null]);
+        // a Stop takes no lock: one recorded while this launch is checked keeps it from the runner (asked again right before the
+        // run is recorded, under the launch lock, and right before the runner is asked)
+        $halt = function () use ($id): ?string {
+            $current = $this->changes->find($id);
+
+            return $current === null || self::stopAsked($current) ? 'the change was stopped before the batch was launched' : null;
+        };
+        $result = $this->runner->launch($change, 'batch', $number, $this->batchDevices($change, $number), $user, $secrets ?? [], $this->batchVerify($change), $halt);
         if ($result['run_id'] === null) {
+            if (self::stopAsked($this->changes->find($id) ?? $change)) {
+                // the stop came while the launch was checked: nothing was recorded or launched; the stop ends the change
+                $this->changes->updateBatch($id, $number, ['status' => 'cancelled', 'ended_at' => Clock::store($now), 'note' => 'not launched: the change was stopped']);
+
+                return;
+            }
             $error = UntrustedText::line(implode(' ', $result['errors']) ?: 'the launch was refused', 1000);
             $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($error, 500)]);
             $this->finish($this->changes->find($id) ?? $change, ChangeStatus::FAILED, "batch $number was not launched: $error", $now);
@@ -920,6 +933,10 @@ final class ChangeLifecycle
             return;
         }
         $this->changes->updateBatch($id, $number, ['status' => 'running', 'run_id' => (int) $result['run_id']]);
+        $run = $this->runs->find((int) $result['run_id']);
+        if ($run !== null && $run['status'] === RunStatus::NOT_LAUNCHED) {
+            return; // recorded, then kept from the runner (a stop came at the last moment): its end is taken in at the next step
+        }
         $this->timeline($change, 'batch', ChangeText::batchLaunched($change, $number, (int) $change['batch_count'], (int) $result['run_id'], $user['username']),
             $user['username'], $now);
     }
@@ -1025,6 +1042,14 @@ final class ChangeLifecycle
     private function batchEnd(array $change, int $number, array $run, int $now, ?string $stoppedBy = null): void
     {
         $id = (int) $change['id'];
+        if ($stoppedBy !== null && $run['status'] === RunStatus::NOT_LAUNCHED) {
+            // the stop kept the batch's run from the runner: nothing ran on its devices, its window ends now (finish())
+            $this->changes->updateTargets($id, array_fill_keys($this->batchDevices($change, $number), ['result' => 'not_run', 'counts' => null]));
+            $this->changes->updateBatch($id, $number, ['status' => 'cancelled', 'ended_at' => Clock::store($now), 'note' => 'not launched: the change was stopped']);
+            $this->finish($change, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line($stoppedBy, 60) . " before batch $number was launched", $now, $stoppedBy);
+
+            return;
+        }
         $results = [];
         foreach ($this->runs->targets((int) $run['id']) as $deviceId => $target) {
             if (empty($target['unexpected'])) {

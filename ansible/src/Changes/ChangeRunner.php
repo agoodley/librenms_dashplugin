@@ -21,9 +21,13 @@ interface ChangeRunner
      * @param  array{user_id: int, username: string}  $user  who launches it
      * @param  array<string, string>  $secrets  the secret answers given now (never stored)
      * @param  \Closure(array, array): ?string  $verify  why the run may not be launched with this snapshot and these connections, null when it may
+     * @param  (\Closure(): ?string)|null  $halt  why the launch must not go on now (the change's stop was asked for), asked right before the run is
+     *                                            recorded (nothing is recorded then) and right before the runner is asked to start it (the run is
+     *                                            then recorded as not launched)
      * @return array{run_id: ?int, errors: string[], parts: ?array, connections: ?array}
      */
-    public function launch(array $change, string $kind, int $number, array $deviceIds, array $user, #[\SensitiveParameter] array $secrets, \Closure $verify): array;
+    public function launch(array $change, string $kind, int $number, array $deviceIds, array $user, #[\SensitiveParameter] array $secrets, \Closure $verify,
+        ?\Closure $halt = null): array;
 
     /**
      * Would a launch of the change's batch be refused now, and why: every check of a launch (the runner's token, the
