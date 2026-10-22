@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Hooks;
 use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Inventory\InventoryBuilder;
+use Agoodley\LibrenmsAnsible\Runs\TargetSelection;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Agoodley\LibrenmsAnsible\Support\Access;
 use Illuminate\Contracts\View\View;
@@ -41,11 +42,16 @@ class DeviceOverview implements DeviceOverviewHook
             $data['canRun'] = Access::canRun(auth()->user());
             $data['runs'] = $runs->available() ? $runs->deviceRuns((int) $device->device_id) : [];
             if ($data['canRun']) {
-                // offer a run only to a device that can be a target, else say why not
+                // offer a run only to a device that can be a target, else say why not (also when another run has it, or a
+                // stopped run still holds it)
                 $settings = Plugin::settings();
                 $data['refusal'] = (new InventoryBuilder($settings->platformMap(), $settings->allowedGroup()))->refusal(
                     ['hostname' => (string) $device->hostname, 'overwrite_ip' => $device->overwrite_ip, 'os' => (string) $device->os, 'disabled' => (int) $device->disabled],
                     $device->groups()->pluck('device_groups.id')->map(fn ($id) => (int) $id)->all(), (new DeviceRepository())->deviceGroups());
+                $busy = $data['refusal'] === null && $runs->available() ? ($runs->busy()[(int) $device->device_id] ?? null) : null;
+                if ($busy !== null) {
+                    $data['refusal'] = TargetSelection::busyRefusal($busy);
+                }
             }
             $view = view("$pluginName::device-overview", $data);
             $view->render();

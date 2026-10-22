@@ -78,12 +78,23 @@ final class TargetSelection
         }
         $busy = $this->busy[$deviceId] ?? null;
         if ($busy !== null && $busy['run'] !== $ignoreRun) {
-            return ['reason' => 'busy', 'text' => $busy['held_until'] !== null
-                ? "held by run #{$busy['run']} until " . Clock::local($busy['held_until'], 'Y-m-d H:i') . ': it was stopped, and the step in progress may still run on the runner '
-                    . '(an admin can release the devices on the run page)'
-                : "busy in run #{$busy['run']}, which has not finished"];
+            return self::busyRefusal($busy);
         }
 
         return null;
+    }
+
+    /**
+     * Why a device busy in a run (RunRepository::busy()) cannot be a target.
+     *
+     * @param  array{run: int, held_until: ?string}  $busy
+     * @return array{reason: string, text: string}
+     */
+    public static function busyRefusal(array $busy): array
+    {
+        return ['reason' => 'busy', 'text' => $busy['held_until'] !== null
+            ? "held by run #{$busy['run']} until " . Clock::local($busy['held_until'], 'Y-m-d H:i') . ': it was stopped, and the step in progress may still run on the runner '
+                . '(an admin can release the devices on the run page)'
+            : "busy in run #{$busy['run']}, which has not finished"];
     }
 }
