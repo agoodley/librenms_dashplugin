@@ -42,6 +42,12 @@ final class LaunchPlan
 
     public int $maxTargets = 0;
 
+    /** The runner's project the run is launched in (the plugin's connection). */
+    public int $project = 0;
+
+    /** @var array<string, mixed>|null the template's snapshot (Changes\TemplateSnapshot), for the runs of changes */
+    public ?array $snapshot = null;
+
     /**
      * Can its targets be launched as they are? Refused devices are left out of the run (the preview lists them);
      * a launch request that names one is refused (RunLauncher::launch()).
@@ -62,9 +68,9 @@ final class LaunchPlan
     }
 
     /**
-     * The answers as the audit log keeps them: secret ones without their value.
+     * The answers as the audit log keeps them: secret ones without their value; with whether the survey requires each.
      *
-     * @return array<int, array{name: string, label: string, type: string, value: string|int|null, secret: bool}>
+     * @return array<int, array{name: string, label: string, type: string, value: string|int|null, secret: bool, required: bool}>
      */
     public function variables(): array
     {
@@ -72,7 +78,8 @@ final class LaunchPlan
         foreach ($this->template?->surveyVars ?? [] as $var) {
             $given = array_key_exists($var->name, $this->values) || array_key_exists($var->name, $this->secrets);
             $variables[] = ['name' => $var->name, 'label' => $var->label(), 'type' => $var->type,
-                'value' => $var->isSecret() ? ($given ? '********' : null) : ($this->values[$var->name] ?? null), 'secret' => $var->isSecret()];
+                'value' => $var->isSecret() ? ($given ? '********' : null) : ($this->values[$var->name] ?? null), 'secret' => $var->isSecret(),
+                'required' => $var->required];
         }
 
         return $variables;

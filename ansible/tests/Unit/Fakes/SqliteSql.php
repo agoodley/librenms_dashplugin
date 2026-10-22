@@ -38,10 +38,36 @@ final class SqliteSql implements Sql
             `poll_error` TEXT, `stopped_by` TEXT, `started_at` TEXT, `finished_at` TEXT, `polled_at` TEXT, `runner_final_at` TEXT, `created_at` TEXT, `updated_at` TEXT,
             `version` INTEGER NOT NULL DEFAULT 0, `launch_nonce` TEXT, `missing_since` TEXT, `missing_checks` INTEGER NOT NULL DEFAULT 0, `stop_requested_at` TEXT,
             `stop_reason` TEXT, `released_by` TEXT, `runner_seen_at` TEXT, `watch_until` TEXT, `output_tail` TEXT, `output_omitted` INTEGER NOT NULL DEFAULT 0,
-            `held_until` TEXT)');
+            `held_until` TEXT, `change_id` INTEGER, `kind` TEXT, `batch` INTEGER, `context` TEXT, `commit_hash` TEXT, `proof` TEXT)');
         $this->pdo->exec('CREATE TABLE `ansible_run_targets` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `run_id` INTEGER NOT NULL, `device_id` INTEGER NOT NULL,
             `inventory_name` TEXT NOT NULL, `hostname` TEXT NOT NULL DEFAULT \'\', `display` TEXT NOT NULL DEFAULT \'\', `result` TEXT, `counts` TEXT,
             `unexpected` INTEGER NOT NULL DEFAULT 0)');
+        // phase 2: changes (2026_11_01_000000_ansible_changes)
+        $this->pdo->exec('CREATE TABLE `ansible_changes` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `user_id` INTEGER, `username` TEXT NOT NULL, `template_id` TEXT NOT NULL,
+            `template_name` TEXT NOT NULL, `playbook` TEXT NOT NULL DEFAULT \'\', `reference` TEXT NOT NULL DEFAULT \'\', `status` TEXT NOT NULL, `version` INTEGER NOT NULL DEFAULT 0,
+            `variables` TEXT, `has_secrets` INTEGER NOT NULL DEFAULT 0, `plan` TEXT NOT NULL, `target_count` INTEGER NOT NULL DEFAULT 0, `batch_count` INTEGER NOT NULL DEFAULT 0,
+            `current_batch` INTEGER NOT NULL DEFAULT 0, `dry_run_id` INTEGER, `dry_runs` INTEGER NOT NULL DEFAULT 0, `dry_run_state` TEXT, `dry_run_at` TEXT, `dry_run_ended_at` TEXT,
+            `dry_run_commit` TEXT, `dry_run_findings` TEXT, `plan_fingerprint` TEXT, `fingerprint_parts` TEXT, `approval_fingerprint` TEXT, `approved_by` TEXT,
+            `approved_user_id` INTEGER, `approved_at` TEXT, `applied_by` TEXT, `applied_user_id` INTEGER, `apply_started_at` TEXT, `waiting` TEXT, `resume_at` TEXT,
+            `stop_requested_by` TEXT, `stop_requested_at` TEXT, `error` TEXT, `finished_at` TEXT, `request_token` TEXT UNIQUE, `created_at` TEXT, `updated_at` TEXT)');
+        $this->pdo->exec('CREATE TABLE `ansible_change_targets` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `device_id` INTEGER NOT NULL,
+            `inventory_name` TEXT NOT NULL, `hostname` TEXT NOT NULL DEFAULT \'\', `display` TEXT NOT NULL DEFAULT \'\', `batch` INTEGER NOT NULL, `position` INTEGER NOT NULL DEFAULT 0,
+            `dry_result` TEXT, `dry_counts` TEXT, `result` TEXT, `counts` TEXT, `backup_node` TEXT, `backup_check` TEXT,
+            `before_status` TEXT, `before_requested_at` TEXT, `before_at` TEXT, `before_version` TEXT, `before_error` TEXT,
+            `after_status` TEXT, `after_requested_at` TEXT, `after_at` TEXT, `after_version` TEXT, `after_error` TEXT, `served_hash` TEXT, `served_at` TEXT, `served_note` TEXT,
+            UNIQUE (`change_id`, `device_id`))');
+        $this->pdo->exec('CREATE TABLE `ansible_change_batches` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `number` INTEGER NOT NULL,
+            `status` TEXT NOT NULL, `run_id` INTEGER, `failures` INTEGER NOT NULL DEFAULT 0, `user_id` INTEGER, `username` TEXT, `started_at` TEXT, `ended_at` TEXT, `note` TEXT,
+            UNIQUE (`change_id`, `number`))');
+        $this->pdo->exec('CREATE TABLE `ansible_change_approvals` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `user_id` INTEGER NOT NULL,
+            `username` TEXT NOT NULL, `decision` TEXT NOT NULL, `comment` TEXT, `fingerprint` TEXT, `dry_run_id` INTEGER, `created_at` TEXT, `voided_at` TEXT, `void_reason` TEXT)');
+        $this->pdo->exec('CREATE TABLE `ansible_change_windows` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `batch` INTEGER NOT NULL,
+            `schedule_id` INTEGER NOT NULL, `status` TEXT NOT NULL, `closing` INTEGER NOT NULL DEFAULT 0, `opened_at` TEXT, `ends_at` TEXT, `closed_at` TEXT, `error` TEXT)');
+        $this->pdo->exec('CREATE TABLE `ansible_change_diffs` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `run_id` INTEGER NOT NULL, `device_id` INTEGER,
+            `position` INTEGER NOT NULL, `task` TEXT NOT NULL DEFAULT \'\', `item` TEXT, `kind` TEXT NOT NULL, `lines` TEXT NOT NULL, `cut` INTEGER NOT NULL DEFAULT 0, `host` TEXT,
+            `reason` TEXT)');
+        $this->pdo->exec('CREATE TABLE `ansible_change_events` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `at` TEXT NOT NULL, `username` TEXT,
+            `kind` TEXT NOT NULL, `message` TEXT NOT NULL)');
     }
 
     public function select(string $query, array $bindings = []): array

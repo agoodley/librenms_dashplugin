@@ -1,0 +1,112 @@
+Task X counts added to queue
+Started task #509 of template 'X counts'
+Preparing: 509
+No /repos/netops-playbooks/collections/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/collections/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/roles/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/roles/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+
+DRY RUN ************************************************************************
+
+PLAY [Counting results] [CHECK MODE] *******************************************
+
+TASK [Once for all] [CHECK MODE] ***********************************************
+[1;35m[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.[0m
+[0;35m[DEPRECATION WARNING]: Importing 'to_bytes' from 'ansible.module_utils._text' is deprecated. This feature will be removed from ansible-core version 2.24. Use ansible.module_utils.common.text.converters instead.[0m
+[0;35m[DEPRECATION WARNING]: Importing 'to_text' from 'ansible.module_utils._text' is deprecated. This feature will be removed from ansible-core version 2.24. Use ansible.module_utils.common.text.converters instead.[0m
+[0;35m[DEPRECATION WARNING]: The `ansible.module_utils.common._collections_compat` module is deprecated. This feature will be removed from ansible-core version 2.24. Use `collections.abc` from the Python standard library instead.[0m
+[0;35m[DEPRECATION WARNING]: The paramiko connection plugin is deprecated. This feature will be removed from ansible-core version 2.21.[0m
+[0;32mok: [lab-sw1.netops.lab] => [0m
+[0;32m    msg: once[0m
+
+TASK [Changed, notifies] [CHECK MODE] ******************************************
+[0;33mchanged: [lab-sw2.netops.lab] => [0m
+[0;33m    msg: changed[0m
+[0;33mchanged: [lab-sw1.netops.lab] => [0m
+[0;33m    msg: changed[0m
+
+TASK [Fails, ignored] [CHECK MODE] *********************************************
+[0;31m[ERROR]: Task failed: Action failed: ignored failure[0m
+[0;31mOrigin: /repos/netops-playbooks/lnms2_counts.yml:17:7[0m
+[0;31m[0m
+[0;31m15       changed_when: true[0m
+[0;31m16       notify: A handler[0m
+[0;31m17     - name: Fails, ignored[0m
+[0;31m         ^ column 7[0m
+[0;31m[0m
+[0;31mfatal: [lab-sw1.netops.lab]: FAILED! => [0m
+[0;31m    changed: false[0m
+[0;31m    msg: ignored failure[0m
+[0;36m...ignoring[0m
+[0;31mfatal: [lab-sw2.netops.lab]: FAILED! => [0m
+[0;31m    changed: false[0m
+[0;31m    msg: ignored failure[0m
+[0;36m...ignoring[0m
+
+TASK [Fails, rescued] [CHECK MODE] *********************************************
+[0;31m[ERROR]: Task failed: Action failed: rescued failure[0m
+[0;31mOrigin: /repos/netops-playbooks/lnms2_counts.yml:23:11[0m
+[0;31m[0m
+[0;31m21     - name: A block[0m
+[0;31m22       block:[0m
+[0;31m23         - name: Fails, rescued[0m
+[0;31m             ^ column 11[0m
+[0;31m[0m
+[0;31mfatal: [lab-sw1.netops.lab]: FAILED! => [0m
+[0;31m    changed: false[0m
+[0;31m    msg: rescued failure[0m
+[0;31mfatal: [lab-sw2.netops.lab]: FAILED! => [0m
+[0;31m    changed: false[0m
+[0;31m    msg: rescued failure[0m
+
+TASK [The rescue] [CHECK MODE] *************************************************
+[0;32mok: [lab-sw1.netops.lab] => [0m
+[0;32m    msg: rescued[0m
+[0;32mok: [lab-sw2.netops.lab] => [0m
+[0;32m    msg: rescued[0m
+
+TASK [A loop] [CHECK MODE] *****************************************************
+[0;32mok: [lab-sw2.netops.lab] => (item=a) => [0m
+[0;32m    msg: a[0m
+[0;32mok: [lab-sw1.netops.lab] => (item=a) => [0m
+[0;32m    msg: a[0m
+[0;32mok: [lab-sw2.netops.lab] => (item=b) => [0m
+[0;32m    msg: b[0m
+[0;32mok: [lab-sw1.netops.lab] => (item=b) => [0m
+[0;32m    msg: b[0m
+
+TASK [Skipped] [CHECK MODE] ****************************************************
+[0;36mskipping: [lab-sw1.netops.lab][0m
+[0;36mskipping: [lab-sw2.netops.lab][0m
+
+TASK [Include] [CHECK MODE] ****************************************************
+[0;36mincluded: /repos/netops-playbooks/lnms2_counts_inc.yml for lab-sw1.netops.lab, lab-sw2.netops.lab[0m
+
+TASK [Included task] [CHECK MODE] **********************************************
+[0;32mok: [lab-sw1.netops.lab] => [0m
+[0;32m    msg: included[0m
+[0;32mok: [lab-sw2.netops.lab] => [0m
+[0;32m    msg: included[0m
+
+TASK [Delegated] [CHECK MODE] **************************************************
+[0;32mok: [lab-sw1.netops.lab -> localhost] => [0m
+[0;32m    msg: delegated[0m
+[0;32mok: [lab-sw2.netops.lab -> localhost] => [0m
+[0;32m    msg: delegated[0m
+
+RUNNING HANDLER [A handler] [CHECK MODE] ***************************************
+[0;32mok: [lab-sw1.netops.lab] => [0m
+[0;32m    msg: handled[0m
+[0;32mok: [lab-sw2.netops.lab] => [0m
+[0;32m    msg: handled[0m
+
+PLAY RECAP *********************************************************************
+[0;33mlab-sw1.netops.lab[0m         : [0;32mok=9   [0m [0;33mchanged=1   [0m unreachable=0    failed=0    [0;36mskipped=1   [0m [0;32mrescued=1   [0m [1;35mignored=1   [0m
+[0;33mlab-sw2.netops.lab[0m         : [0;32mok=8   [0m [0;33mchanged=1   [0m unreachable=0    failed=0    [0;36mskipped=1   [0m [0;32mrescued=1   [0m [1;35mignored=1   [0m
+
+
+DRY RUN ************************************************************************

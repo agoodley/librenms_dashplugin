@@ -9,6 +9,7 @@ use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runner\RunnerHealth;
 use Agoodley\LibrenmsAnsible\Runner\RunnerInventory;
 use Agoodley\LibrenmsAnsible\Runner\RunnerOutput;
+use Agoodley\LibrenmsAnsible\Runner\RunnerRepository;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTask;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTaskSearch;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
@@ -83,6 +84,11 @@ final class FakeRunner implements Runner
         return new RunnerEnvironment($id, 'LibreNMS', ['LIBRENMS_URL'], ['LIBRENMS_TOKEN']);
     }
 
+    public function repository(string $id): RunnerRepository
+    {
+        return new RunnerRepository($id, 'playbooks', 'file:///repos/playbooks.git', 'main');
+    }
+
     public function role(): string
     {
         $this->calls[] = 'role';
@@ -93,9 +99,20 @@ final class FakeRunner implements Runner
         return $this->role;
     }
 
+    /** @var LaunchRequest[] the launches asked */
+    public array $launched = [];
+
+    /** The task a launch starts (null: the launch is refused, as in the tests that do not launch). */
+    public ?RunnerTask $launchTask = null;
+
     public function launch(LaunchRequest $request): RunnerTask
     {
-        throw new RunnerError(RunnerError::REFUSED, 'not in these tests');
+        $this->launched[] = $request;
+        if ($this->launchTask === null) {
+            throw new RunnerError(RunnerError::REFUSED, 'not in these tests');
+        }
+
+        return $this->launchTask;
     }
 
     public function findTask(string $templateId, string $message, int $notBefore): RunnerTaskSearch

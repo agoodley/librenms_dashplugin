@@ -2,7 +2,11 @@
 
 namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 
+use Agoodley\LibrenmsAnsible\Changes\InventoryGuard;
+use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\FetchRepository;
+use Agoodley\LibrenmsAnsible\Inventory\Inventory;
+use Agoodley\LibrenmsAnsible\Services\Eventlog;
 use Agoodley\LibrenmsAnsible\Support\InventoryScript;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Illuminate\Contracts\View\View;
@@ -32,7 +36,7 @@ class InventoryController extends Controller
             $inventoryUser = $service->inventoryUser();
             $data['inventoryUserProblem'] = $service->inventoryUserProblem();
             $data['inventoryUser'] = $inventoryUser === null ? null : ['username' => (string) $inventoryUser['user']->username, 'fetch' => $inventoryUser['fetch']];
-            $inventory = $service->build($inventoryUser['visible'] ?? null);
+            $inventory = self::guarded($service->build($inventoryUser['visible'] ?? null));
             $leftOut = $inventory->leftOut();
             if ($inventoryUser !== null) {
                 // devices the inventory user may not see are not in its inventory at all
@@ -60,7 +64,7 @@ class InventoryController extends Controller
     {
         try {
             $service = $this->inventoryService();
-            $inventory = $service->build($service->inventoryUser()['visible'] ?? null);
+            $inventory = self::guarded($service->build($service->inventoryUser()['visible'] ?? null));
         } catch (\Throwable $e) {
             return response()->json(['error' => $this->failure('inventory', $e)], 500);
         }
@@ -71,7 +75,10 @@ class InventoryController extends Controller
     /**
      * plugin/ansible/api/inventory[?host=NAME]: the dynamic inventory JSON for the token's user (only the devices
      * that user may see), or one host's variables. Once an admin chose the inventory user, only that user's tokens
-     * get an answer. A --list fetch is recorded (when, as whom, how many hosts, the inventory script's version).
+     * get an answer. A --list fetch is recorded (when, as whom, how many hosts, the inventory script's version). The
+     * hosts of a change's dry run or batch in progress are served only as that change's dry run recorded how the runner
+     * reaches them, and what was served them is recorded (Changes\InventoryGuard); when that cannot be checked, nothing
+     * is served.
      */
     public function runner(Request $request): JsonResponse
     {
@@ -84,19 +91,35 @@ class InventoryController extends Controller
             return response()->json(['error' => 'This API token\'s user is not the inventory user chosen in the Ansible plugin settings: '
                 . 'the runner must fetch the inventory with that user\'s token (an admin can change the inventory user there).'], 403, ['Cache-Control' => 'no-store']);
         }
+        $host = $request->query('host');
+        $host = is_string($host) && $host !== '' ? $host : null;
         try {
             $inventory = $this->inventoryService()->forUser($user);
+            $changes = new ChangeRepository();
+            if ($changes->available()) {
+                $inventory = (new InventoryGuard($changes, new Eventlog()))->serve($inventory, time(), $host);
+            }
         } catch (\Throwable $e) {
-            return response()->json(['error' => $this->failure('inventory', $e)], 500);
+            return response()->json(['error' => $this->failure('inventory', $e)], 500, ['Cache-Control' => 'no-store']);
         }
-        $host = $request->query('host');
-        if (is_string($host) && $host !== '') {
+        if ($host !== null) {
             return response()->json($inventory->hostVars($host), 200, ['Cache-Control' => 'no-store'], self::JSON);
         }
         (new FetchRepository())->record((int) $user->user_id, (string) $user->username, count($inventory->hosts()), $request->ip(),
             InventoryScript::versionFrom($request->userAgent()));
 
         return response()->json($inventory->toAnsible(), 200, ['Cache-Control' => 'no-store'], self::JSON);
+    }
+
+    /**
+     * The inventory as the runner would get it now: without the hosts a change's dry run or batch in progress no longer
+     * reaches as its dry run recorded (Changes\InventoryGuard; nothing is recorded).
+     */
+    private static function guarded(Inventory $inventory): Inventory
+    {
+        $changes = new ChangeRepository();
+
+        return $changes->available() ? (new InventoryGuard($changes))->filter($inventory) : $inventory;
     }
 
     /**

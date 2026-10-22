@@ -155,6 +155,17 @@ class SemaphoreRunnerTest extends TestCase
         $this->assertSame(['limit' => ['a'], 'dry_run' => true, 'diff' => true], $body['params'], 'the flags of the later dry runs');
     }
 
+    public function testABatchIsLaunchedWithTheCommitOfItsDryRun(): void
+    {
+        $this->runner()->launch(new LaunchRequest('5', ['a'], [], [], 'm', false, false, str_repeat('0f', 20)));
+        $body = $this->http->lastBody();
+        $this->assertSame(str_repeat('0f', 20), $body['commit_hash'], 'Semaphore checks this commit out instead of the branch\'s latest');
+        $this->assertSame(['limit' => ['a']], $body['params'], 'for real');
+
+        $this->expectException(RunnerError::class);
+        $this->runner()->launch(new LaunchRequest('5', ['a'], [], [], 'm', false, false, 'main; rm -rf /'));
+    }
+
     public function testTaskStatusesAndTimes(): void
     {
         $success = $this->runner()->task('18');

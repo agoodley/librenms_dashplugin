@@ -12,8 +12,8 @@ final class TaskLines
 {
     private const LINE = '/^(ok|changed|skipping|failed|fatal): \[([^\]\s]+)(?: -> [^\]]*)?\](?:: (FAILED|UNREACHABLE)!)?/';
 
-    /** A task banner (a task or a handler), as Ansible's default and YAML callbacks print it. */
-    private const BANNER = '/^(?:TASK|RUNNING HANDLER) \[(.*)\] \**$/D';
+    /** A task banner (a task or a handler), as Ansible's default and YAML callbacks print it, with the marker of a dry run. */
+    private const BANNER = '/^(?:TASK|RUNNING HANDLER) \[(.*?)\](?: \[CHECK MODE\])? \**$/D';
 
     /**
      * The number of result lines of each kind per host.

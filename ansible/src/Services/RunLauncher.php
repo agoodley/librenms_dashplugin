@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsAnsible\Services;
 
+use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runner\LaunchRequest;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
@@ -23,18 +24,32 @@ use Illuminate\Support\Facades\Log;
  * (TargetSelection, at most the max per run). A launch that fails a check is refused before the runner is asked.
  * The busy check and the recording of the run happen under one lock, so two launches cannot take the same
  * device and a submitted form starts one run at most (its one-time token).
+ *
+ * The runs of a change (a RunSpec: its dry run or a batch) are checked the same way, and more: the template must
+ * allow a provable dry run (DryRunCheck), its snapshot must pass the spec's check (the change's fingerprint), and
+ * devices reserved by another change being applied are refused. A dry run is launched with --check --diff, a batch
+ * pinned to the dry run's commit; each has a one-time token of its own.
  */
 final class RunLauncher
 {
-    /** Lock around the busy check and the insert of a run. */
-    private const LOCK = 'ansible-plugin-launch';
+    /** Lock around the busy check and the insert of a run (and around the switch of a change to applying, which reserves its devices). */
+    public const LOCK = 'ansible-plugin-launch';
 
+    /**
+     * @param  (\Closure(string, int[], array, ?RunSpec): LaunchPlan)|null  $planner  the tests' plan() (null: plan())
+     * @param  (\Closure(): object)|null  $lock  the tests' lock of the launches (null: LibreNMS' cache lock)
+     * @param  (\Closure(LaunchPlan): \Agoodley\LibrenmsAnsible\Runs\RunLifecycle)|null  $lifecycle  the tests' run lifecycle (null: RunFollower's)
+     */
     public function __construct(
         private readonly Plugin $plugin,
         private readonly RunRepository $runs,
         private readonly InventoryService $inventory,
         private readonly PluginSettings $settings,
         private readonly Eventlog $eventlog = new Eventlog(),
+        private readonly ?ChangeRepository $changes = null,
+        private readonly ?\Closure $planner = null,
+        private readonly ?\Closure $lock = null,
+        private readonly ?\Closure $lifecycle = null,
     ) {
     }
 
@@ -44,7 +59,7 @@ final class RunLauncher
      * @param  int[]  $deviceIds
      * @param  array<string, mixed>  $answers
      */
-    public function plan(string $templateId, array $deviceIds, #[\SensitiveParameter] array $answers): LaunchPlan
+    public function plan(string $templateId, array $deviceIds, #[\SensitiveParameter] array $answers, ?RunSpec $spec = null): LaunchPlan
     {
         $plan = new LaunchPlan();
         $plan->maxTargets = $this->settings->maxTargets();
@@ -55,6 +70,7 @@ final class RunLauncher
             return $plan;
         }
         $connection = $this->plugin->connection();
+        $plan->project = (int) $connection->project;
         try {
             $plan->runner = $this->plugin->runner($connection);
             // a token that could change templates, or may not run them, launches nothing (asked each time, like the template)
@@ -80,6 +96,9 @@ final class RunLauncher
         if ($reasons) {
             $plan->errors[] = 'The template "' . $plan->template->name . '" cannot be launched safely: ' . implode('; ', $reasons) . '.';
         }
+        if ($spec !== null) {
+            $this->changeChecks($plan, $inventory, $connection->project, $spec);
+        }
         $checked = VariableValidator::validate($plan->template->surveyVars, $answers);
         [$plan->values, $plan->secrets, $plan->variableErrors] = [$checked['values'], $checked['secrets'], $checked['errors']];
         foreach (array_keys($plan->variableErrors) as $name) {
@@ -88,9 +107,35 @@ final class RunLauncher
                 $plan->rejected[$name] = mb_substr((string) $answers[$name], 0, 2000);
             }
         }
-        $this->targets($plan, $deviceIds);
+        $this->targets($plan, $deviceIds, $spec);
 
         return $plan;
+    }
+
+    /**
+     * The checks of a change's run: a dry run of the template must be provable, and its snapshot must pass the change's
+     * check (the fingerprint of what was dry-run and approved).
+     */
+    private function changeChecks(LaunchPlan $plan, \Agoodley\LibrenmsAnsible\Runner\RunnerInventory $inventory, int $project, RunSpec $spec): void
+    {
+        $reader = new TemplateReader($plan->runner, $project);
+        $dryRun = $reader->dryRunReasons($plan->template);
+        if ($dryRun) {
+            $plan->errors[] = 'The template "' . $plan->template->name . '" cannot be used for changes: ' . implode('; ', $dryRun) . '.';
+
+            return;
+        }
+        $snapshot = $reader->snapshot($plan->template, $inventory);
+        if ($snapshot['parts'] === null) {
+            $plan->errors[] = 'The template "' . $plan->template->name . '" cannot be read completely from the runner: ' . $snapshot['error'] . '.';
+
+            return;
+        }
+        $plan->snapshot = $snapshot['parts'];
+        $refusal = $spec->verify !== null ? ($spec->verify)($snapshot['parts']) : null;
+        if ($refusal !== null) {
+            $plan->errors[] = 'The launch was refused: ' . $refusal . '.';
+        }
     }
 
     /**
@@ -98,7 +143,7 @@ final class RunLauncher
      *
      * @param  int[]  $deviceIds
      */
-    private function targets(LaunchPlan $plan, array $deviceIds): void
+    private function targets(LaunchPlan $plan, array $deviceIds, ?RunSpec $spec = null): void
     {
         $devices = $this->inventory->devices();
         $inventoryUser = $this->inventory->inventoryUser();
@@ -109,7 +154,7 @@ final class RunLauncher
                 . 'the first run makes it fetch it (see the setup steps on the Inventory page).';
         }
         $selection = new TargetSelection($this->inventory->build(), $devices->exists(), $this->runs->busy(), $inventoryUser['visible'] ?? null,
-            (string) ($inventoryUser['user']->username ?? ''));
+            (string) ($inventoryUser['user']->username ?? ''), $this->reserved($spec));
         $chosen = $selection->select($deviceIds);
         $rows = $devices->devices();
         $names = $devices->names(array_keys($chosen['targets'] + $chosen['refused']));
@@ -131,8 +176,21 @@ final class RunLauncher
         if (! $plan->targets) {
             $plan->errors[] = 'Choose at least one device that can be a target.';
         } elseif (count($plan->targets) > $plan->maxTargets) {
-            $plan->errors[] = 'A run may have at most ' . $plan->maxTargets . ' targets (Max targets per run setting); ' . count($plan->targets) . ' are chosen.';
+            $plan->errors[] = 'A run may have at most ' . $plan->maxTargets . ' targets (Max targets per change setting, which limits each run too); ' . count($plan->targets)
+                . ' are chosen.';
         }
+    }
+
+    /**
+     * The devices reserved by changes being applied (not by the spec's own change).
+     *
+     * @return array<int, int> device_id => change id
+     */
+    private function reserved(?RunSpec $spec): array
+    {
+        $changes = $this->changes ?? new ChangeRepository();
+
+        return $changes->available() ? $changes->reserved($spec?->changeId) : [];
     }
 
     /**
@@ -144,22 +202,25 @@ final class RunLauncher
      * @param  array<string, mixed>  $answers
      * @return array{run_id: int|null, plan: LaunchPlan, errors: string[], existing: bool}
      */
-    public function launch($user, string $templateId, array $deviceIds, #[\SensitiveParameter] array $answers, string $requestToken): array
+    public function launch($user, string $templateId, array $deviceIds, #[\SensitiveParameter] array $answers, string $requestToken, ?RunSpec $spec = null): array
     {
         $plan = new LaunchPlan();
-        if (! preg_match('/^[a-f0-9]{32}$/D', $requestToken)) {
+        if ($spec !== null) {
+            $requestToken = $spec->token();
+        }
+        if (! preg_match('/^(?:[a-f0-9]{32}|[a-f0-9]{64})$/D', $requestToken)) {
             return self::refused($plan, ['The launch form is out of date: reload the page.']);
         }
         $existing = $this->runs->byRequestToken($requestToken);
         if ($existing !== null) {
-            return ['run_id' => $existing, 'plan' => $plan, 'errors' => [], 'existing' => true];
+            return $this->existing($existing, $plan, $spec);
         }
-        $plan = $this->plan($templateId, $deviceIds, $answers);
+        $plan = $this->planner !== null ? ($this->planner)($templateId, $deviceIds, $answers, $spec) : $this->plan($templateId, $deviceIds, $answers, $spec);
         if (! $plan->ok() || $plan->refused) {
             // a second submit of the same form sees the targets busy in the run the first one just recorded
             $existing = $this->runs->byRequestToken($requestToken);
             if ($existing !== null) {
-                return ['run_id' => $existing, 'plan' => $plan, 'errors' => [], 'existing' => true];
+                return $this->existing($existing, $plan, $spec);
             }
             $errors = $plan->errors;
             if ($plan->variableErrors) {
@@ -173,7 +234,7 @@ final class RunLauncher
             return self::refused($plan, $errors);
         }
 
-        $lock = Cache::lock(self::LOCK, 30);
+        $lock = $this->lock !== null ? ($this->lock)() : Cache::lock(self::LOCK, 30);
         try {
             $lock->block(10);
         } catch (LockTimeoutException) {
@@ -182,21 +243,47 @@ final class RunLauncher
         try {
             $existing = $this->runs->byRequestToken($requestToken);
             if ($existing !== null) {
-                return ['run_id' => $existing, 'plan' => $plan, 'errors' => [], 'existing' => true];
+                return $this->existing($existing, $plan, $spec);
             }
             $busy = array_intersect_key($this->runs->busy(), $plan->targets);
             if ($busy) {
                 return self::refused($plan, array_map(fn ($deviceId, $entry) => $plan->targets[$deviceId]['display'] . " became busy in run #{$entry['run']}: preview again.",
                     array_keys($busy), $busy));
             }
+            $reserved = array_intersect_key($this->reserved($spec), $plan->targets);
+            if ($reserved) {
+                return self::refused($plan, array_map(fn ($deviceId, $changeId) => $plan->targets[$deviceId]['display'] . " became reserved by change #$changeId, which is being applied.",
+                    array_keys($reserved), $reserved));
+            }
+            // a change's stop asked for while this launch was checked: nothing is recorded, nothing reaches the runner
+            $halted = $spec?->halted();
+            if ($halted !== null) {
+                return self::refused($plan, [$halted]);
+            }
             $nonce = bin2hex(random_bytes(6));
-            $runId = $this->record($user, $plan, $requestToken, $nonce);
+            $runId = $this->record($user, $plan, $requestToken, $nonce, $spec);
         } finally {
             $lock->release();
         }
-        $this->start($runId, $plan, (string) $user->username, $nonce);
+        $this->start($runId, $plan, (string) $user->username, $nonce, $spec);
 
         return ['run_id' => $runId, 'plan' => $plan, 'errors' => [], 'existing' => false];
+    }
+
+    /**
+     * The run an earlier launch with the same one-time token recorded: this launch's, as it is; but a change's run only
+     * when it is a run of the same change, kind and batch (RunSpec::belongs()): a run of something else that holds the
+     * token (a change of an earlier installation with the same id) is never taken for it, and nothing is launched.
+     *
+     * @return array{run_id: int|null, plan: LaunchPlan, errors: string[], existing: bool}
+     */
+    private function existing(int $runId, LaunchPlan $plan, ?RunSpec $spec): array
+    {
+        if ($spec !== null && ! $spec->belongs($this->runs->find($runId))) {
+            return self::refused($plan, ["Run #$runId, which is not a run of this change, holds this launch's one-time token: nothing was launched."]);
+        }
+
+        return ['run_id' => $runId, 'plan' => $plan, 'errors' => [], 'existing' => true];
     }
 
     /**
@@ -204,9 +291,8 @@ final class RunLauncher
      *
      * @param  \App\Models\User  $user
      */
-    private function record($user, LaunchPlan $plan, string $requestToken, string $nonce): int
+    private function record($user, LaunchPlan $plan, string $requestToken, string $nonce, ?RunSpec $spec = null): int
     {
-        $connection = $this->plugin->connection();
         $targets = [];
         foreach ($plan->targets as $deviceId => $target) {
             $targets[$deviceId] = ['inventory_name' => $target['name'], 'hostname' => $target['hostname'], 'display' => $target['display']];
@@ -216,7 +302,7 @@ final class RunLauncher
             'user_id' => (int) $user->user_id,
             'username' => (string) $user->username,
             'runner' => 'semaphore',
-            'runner_project' => $connection->project,
+            'runner_project' => $plan->project,
             'template_id' => $plan->template->id,
             'template_name' => mb_substr($plan->template->name, 0, 255),
             'playbook' => mb_substr($plan->template->playbook, 0, 255),
@@ -225,7 +311,8 @@ final class RunLauncher
             'request_token' => $requestToken,
             'launch_nonce' => $nonce,
             'status' => RunStatus::PENDING,
-        ], $targets);
+        ] + ($spec === null ? [] : ['change_id' => $spec->changeId, 'kind' => $spec->kind, 'batch' => $spec->kind === RunSpec::BATCH ? $spec->number : null,
+            'context' => mb_substr($spec->context, 0, 120)]), $targets);
     }
 
     /**
@@ -235,12 +322,20 @@ final class RunLauncher
      * its nonce), so the audit log never says "not launched" for a task that runs. Only a launch the runner refused
      * (it answered, with an error) is not launched at once.
      */
-    private function start(int $runId, LaunchPlan $plan, string $username, string $nonce): void
+    private function start(int $runId, LaunchPlan $plan, string $username, string $nonce, ?RunSpec $spec = null): void
     {
         $template = $plan->template;
-        $lifecycle = (new RunFollower($this->plugin, $this->runs, $this->settings, $this->eventlog, $plan->runner, $this->inventory))->lifecycle();
+        $lifecycle = $this->lifecycle !== null ? ($this->lifecycle)($plan)
+            : (new RunFollower($this->plugin, $this->runs, $this->settings, $this->eventlog, $plan->runner, $this->inventory))->lifecycle();
+        // the last moment a change's stop can keep the task from the runner: the run is recorded as not launched
+        $halted = $spec?->halted();
+        if ($halted !== null) {
+            $lifecycle->launchRefused($runId, $halted, time());
+
+            return;
+        }
         try {
-            $task = $plan->runner->launch(new LaunchRequest($template->id, $plan->limit(), $plan->values, $plan->secrets, RunText::taskMessage($runId, $username, $nonce)));
+            $task = $plan->runner->launch(self::request($plan, RunText::taskMessage($runId, $username, $nonce), $spec));
             $lifecycle->launched($runId, $task, time());
         } catch (RunnerError $e) {
             if ($e->uncertain) {
@@ -253,6 +348,19 @@ final class RunLauncher
             Log::error("ansible plugin: launching run #$runId failed: " . ErrorText::forLog($e));
             $lifecycle->launchUncertain($runId, 'the launch failed in LibreNMS (see logs/librenms.log)', time());
         }
+    }
+
+    /**
+     * What the runner is asked to start: the template on the targets' inventory names with the answers; a change's dry
+     * run in check mode with diffs (--check --diff), a batch pinned to the commit its dry run ran; a run of phase 1 as
+     * it is.
+     */
+    public static function request(LaunchPlan $plan, string $message, ?RunSpec $spec = null): LaunchRequest
+    {
+        $dryRun = $spec !== null && $spec->isDryRun();
+
+        return new LaunchRequest((string) $plan->template?->id, $plan->limit(), $plan->values, $plan->secrets, $message, $dryRun, $dryRun,
+            $spec !== null && $spec->kind === RunSpec::BATCH ? $spec->commit : null);
     }
 
     /**

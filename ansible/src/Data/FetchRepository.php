@@ -5,7 +5,6 @@ namespace Agoodley\LibrenmsAnsible\Data;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 
 /**
  * When the inventory was last fetched with each LibreNMS user's API token, how many hosts it got and which version
@@ -24,7 +23,7 @@ final class FetchRepository
         try {
             // in UTC, like the times of the runs (Support\Clock)
             $values = ['username' => $username, 'hosts' => $hosts, 'address' => $address !== null ? substr($address, 0, 45) : null, 'fetched_at' => Clock::store(time())];
-            if (Schema::hasColumn('ansible_inventory_fetches', 'script_version')) {
+            if (SchemaCheck::hasColumns('ansible_inventory_fetches', ['script_version'])) {
                 $values['script_version'] = $scriptVersion;
             }
             DB::table('ansible_inventory_fetches')->updateOrInsert(['user_id' => $userId], $values);

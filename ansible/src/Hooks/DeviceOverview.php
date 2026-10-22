@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsAnsible\Hooks;
 
+use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Inventory\InventoryBuilder;
@@ -13,8 +14,8 @@ use Illuminate\Support\Facades\Log;
 use LibreNMS\Interfaces\Plugins\Hooks\DeviceOverviewHook;
 
 /**
- * Ansible panel on the device overview page: the device's latest runs (template, when, who, result) and a link to
- * run a template on it. Only for LibreNMS admins.
+ * Ansible panel on the device overview page: the device's latest changes (template, status, its dry run and result
+ * on the device) and runs (template, when, who, result), and a link to a new change on it. Only for LibreNMS admins.
  */
 class DeviceOverview implements DeviceOverviewHook
 {
@@ -36,11 +37,13 @@ class DeviceOverview implements DeviceOverviewHook
     {
         // LibreNMS disables a plugin whose hook throws, and the view is rendered later inside the device page:
         // render it here so no error can escape
-        $data = ['device' => $device, 'runs' => [], 'canRun' => false, 'refusal' => null, 'error' => null];
+        $data = ['device' => $device, 'runs' => [], 'changes' => [], 'canRun' => false, 'refusal' => null, 'error' => null];
         try {
             $runs = new RunRepository();
+            $changes = new ChangeRepository();
             $data['canRun'] = Access::canRun(auth()->user());
             $data['runs'] = $runs->available() ? $runs->deviceRuns((int) $device->device_id) : [];
+            $data['changes'] = $changes->available() ? $changes->deviceChanges((int) $device->device_id) : [];
             if ($data['canRun']) {
                 // offer a run only to a device that can be a target, else say why not (also when another run has it, or a
                 // stopped run still holds it)
@@ -52,6 +55,10 @@ class DeviceOverview implements DeviceOverviewHook
                 if ($busy !== null) {
                     $data['refusal'] = TargetSelection::busyRefusal($busy);
                 }
+                $reserved = $data['refusal'] === null && $changes->available() ? ($changes->reserved()[(int) $device->device_id] ?? null) : null;
+                if ($reserved !== null) {
+                    $data['refusal'] = TargetSelection::reservedRefusal($reserved);
+                }
             }
             $view = view("$pluginName::device-overview", $data);
             $view->render();
@@ -60,7 +67,8 @@ class DeviceOverview implements DeviceOverviewHook
         } catch (\Throwable $e) {
             Log::error('ansible plugin: device overview failed: ' . \Agoodley\LibrenmsAnsible\Support\ErrorText::forLog($e));
 
-            return view("$pluginName::device-overview", ['device' => $device, 'runs' => [], 'canRun' => false, 'refusal' => null, 'error' => 'The Ansible runs cannot be shown: see logs/librenms.log.']);
+            return view("$pluginName::device-overview", ['device' => $device, 'runs' => [], 'changes' => [], 'canRun' => false, 'refusal' => null,
+                'error' => 'The Ansible changes and runs cannot be shown: see logs/librenms.log.']);
         }
     }
 }

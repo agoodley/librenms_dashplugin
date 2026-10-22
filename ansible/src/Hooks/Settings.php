@@ -37,7 +37,8 @@ class Settings implements SettingsHook
     {
         // LibreNMS disables a plugin whose hook throws: nothing may escape
         $data = ['admin' => false, 'connection' => null, 'connectionError' => null, 'settings' => PluginSettings::DEFAULTS, 'settingsError' => null,
-            'mapErrors' => [], 'holders' => [], 'candidates' => [], 'groups' => [], 'users' => [], 'fetches' => [], 'lastCheck' => null, 'mapRows' => []];
+            'mapErrors' => [], 'holders' => [], 'candidates' => [], 'approveHolders' => [], 'approveCandidates' => [], 'groups' => [], 'users' => [], 'fetches' => [],
+            'lastCheck' => null, 'mapRows' => [], 'oxidized' => false];
         try {
             $data['admin'] = Access::canView(auth()->user());
             if ($data['admin']) {
@@ -53,6 +54,9 @@ class Settings implements SettingsHook
                 $permissions = new PermissionRepository();
                 $data['holders'] = $permissions->holders();
                 $data['candidates'] = $permissions->candidates();
+                $data['approveHolders'] = $permissions->holders(Access::APPROVE);
+                $data['approveCandidates'] = $permissions->candidates(Access::APPROVE);
+                $data['oxidized'] = (new \Agoodley\LibrenmsAnsible\Services\OxidizedBackups())->enabled();
                 $data['groups'] = (new DeviceRepository())->deviceGroups();
                 $data['users'] = (new UserRepository())->all();
                 $data['fetches'] = (new FetchRepository())->all();

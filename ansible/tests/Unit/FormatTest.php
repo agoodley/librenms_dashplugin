@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsAnsible\Tests\Unit;
 
+use Agoodley\LibrenmsAnsible\Changes\ChangeText;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Support\Format;
 use PHPUnit\Framework\TestCase;
@@ -45,6 +46,31 @@ class FormatTest extends TestCase
             $this->assertNull(Clock::local(''));
             $this->assertSame(3600, Format::runDuration(['started_at' => '2026-10-22 10:00:00', 'finished_at' => '2026-10-22 11:00:00']));
         } finally {
+            date_default_timezone_set($zone);
+        }
+    }
+
+    public function testStoredTextsCarryUtcAndPagesShowTheReadersZone(): void
+    {
+        $zone = date_default_timezone_get();
+        try {
+            // the sync command in a PHP time zone of its own, no user: a stored text says UTC
+            date_default_timezone_set('America/New_York');
+            Clock::useUserZone(fn () => throw new \RuntimeException('no session'));
+            $time = gmmktime(10, 0, 0, 10, 22, 2026);
+            $this->assertSame('2026-10-22 10:00 UTC', Clock::text($time));
+            $this->assertSame('2026-10-22 10:00:30 UTC', Clock::text($time + 30, 'Y-m-d H:i:s'));
+            $waiting = ChangeText::waiting(['id' => 3, 'reference' => ''], 2, 'secrets', $time);
+            $this->assertStringContainsString('until 2026-10-22 10:00 UTC, then the change ends', $waiting, 'not EDT');
+            $this->assertStringEndsWith('opened until 2026-10-22 10:00 UTC', ChangeText::windowOpened(['id' => 3, 'reference' => ''], 1, 7, $time));
+
+            // a page shows those times in its reader's zone, with its zone; other text stays as it is
+            Clock::useUserZone(fn () => 'Europe/Berlin');
+            $this->assertSame('Batch 2 waits until 2026-10-22 12:00 CEST, then 2026-10-22 12:00:30 CEST; not 2026-10-22 10:00 EDT, nor 10:00 UTC',
+                Clock::localize('Batch 2 waits until 2026-10-22 10:00 UTC, then 2026-10-22 10:00:30 UTC; not 2026-10-22 10:00 EDT, nor 10:00 UTC'));
+            $this->assertSame('', Clock::localize(null));
+        } finally {
+            Clock::useUserZone(null);
             date_default_timezone_set($zone);
         }
     }

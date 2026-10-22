@@ -41,11 +41,14 @@ class RunLifecycleTest extends TestCase
         $this->runner->startedAt = $this->t0 + 1; // a task that left the queue has a start time
     }
 
+    /** The inventory guard's record for a dry run (RunFollower::allLeftOut()): did it leave every target out? */
+    private bool $allLeftOut = false;
+
     private function lifecycle(int $outputMax = 1048576, int $stopAfter = 86400): RunLifecycle
     {
         return new RunLifecycle($this->store, fn () => $this->runner, $this->events, $outputMax, $stopAfter,
             fn (array $names) => array_intersect_key(['lab-sw9.netops.lab' => ['device_id' => 509, 'hostname' => 'lab-sw9.netops.lab', 'display' => 'lab-sw9']],
-                array_flip($names)));
+                array_flip($names)), 1800, fn (array $run) => $this->allLeftOut);
     }
 
     /** A run of the three switches whose task the runner has. */
@@ -201,6 +204,73 @@ class RunLifecycleTest extends TestCase
 
         $lifecycle->refresh($id, $this->t0 + 30);
         $this->assertCount(3, $this->events->entries, 'an ended run is not ended again');
+    }
+
+    public function testTheEndOfADryRunSaysWhatWouldChangeOrThatItIsNotProven(): void
+    {
+        $hosts = ['lab-sw1.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0', 'lab-sw2.netops.lab' => 'ok=1 changed=1 unreachable=0 failed=0',
+            'lab-sw3.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0'];
+        $marked = array_map(fn ($line) => preg_match('/^(PLAY|TASK) \[/', $line) ? str_replace('] ***', '] [CHECK MODE] ***', $line) : $line, self::recapLog($hosts));
+
+        // proven: the DRY RUN banner and the marker on every banner
+        $id = $this->running('success', ['kind' => 'dry_run', 'context' => 'change #4, dry run']);
+        $this->runner->logs['90'] = array_merge(['DRY RUN ****', ''], $marked);
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertSame(['success', 'verified'], [$run['status'], $run['proof']]);
+        $this->assertStringContainsString('(change #4, dry run) finished: would change (ok=1 changed=1', $this->events->of(502)[0]['message']);
+        $this->assertStringContainsString('finished: no change (ok=1 changed=0', $this->events->of(501)[0]['message']);
+        $this->assertSame('notice', $this->events->of(502)[0]['severity']);
+
+        // not proven: a task ran outside check mode (no marker on its banner)
+        $this->events->entries = [];
+        $id = $this->running('success', ['kind' => 'dry_run', 'context' => 'change #5, dry run']);
+        $this->runner->logs['90'] = array_merge(['DRY RUN ****', ''], self::recapLog($hosts));
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertSame(['success', 'unverified'], [$run['status'], $run['proof']]);
+        foreach ([501, 502, 503] as $deviceId) {
+            $this->assertStringContainsString('(change #5, dry run) finished: NOT PROVEN to be a dry run, it may have changed this device (ok=1', $this->events->of($deviceId)[0]['message']);
+            $this->assertSame('error', $this->events->of($deviceId)[0]['severity']);
+        }
+
+        // one Ansible stopped before the playbook (the limit left it no host), whose every target the inventory guard left out
+        // (its record), ran on no device: it is not judged, and its end is not said as a dry run that may have changed its devices
+        $noHosts = ["\e[1;35m[WARNING]: Could not match supplied host pattern, ignoring: lab-sw1.netops.lab\e[0m",
+            "\e[0;31m[ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to target.\e[0m"];
+        $this->events->entries = [];
+        $this->allLeftOut = true;
+        $id = $this->running('error', ['kind' => 'dry_run', 'context' => 'change #6, dry run']);
+        $this->runner->logs['90'] = $noHosts;
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertNull($run['proof'] ?? null);
+        foreach ([501, 502, 503] as $deviceId) {
+            $this->assertStringNotContainsString('NOT PROVEN', $this->events->of($deviceId)[0]['message']);
+            $this->assertNotSame('error', $this->events->of($deviceId)[0]['severity'], 'not run: a warning');
+        }
+
+        // the same log without that record: the log's word is not enough, the dry run is not proven to be one
+        $this->events->entries = [];
+        $this->allLeftOut = false;
+        $id = $this->running('error', ['kind' => 'dry_run', 'context' => 'change #7, dry run']);
+        $this->runner->logs['90'] = $noHosts;
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertSame('unverified', $run['proof'] ?? null);
+        foreach ([501, 502, 503] as $deviceId) {
+            $this->assertStringContainsString('NOT PROVEN to be a dry run', $this->events->of($deviceId)[0]['message']);
+            $this->assertSame('error', $this->events->of($deviceId)[0]['severity']);
+        }
+
+        // a run that is not a dry run keeps its words, and gets no proof
+        $this->events->entries = [];
+        $id = $this->running('success', ['kind' => 'batch', 'context' => 'change #5, batch 1 of 1']);
+        $this->runner->logs['90'] = self::recapLog($hosts);
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertNull($run['proof'] ?? null);
+        $this->assertStringContainsString('finished: changed (ok=1 changed=1', $this->events->of(502)[0]['message']);
     }
 
     public function testASuccessfulTaskWithTargetsThatDidNotRunIsIncompleteWithTheCause(): void
@@ -638,6 +708,50 @@ class RunLifecycleTest extends TestCase
         $this->assertSame('The run has already ended.', $this->lifecycle()->stop($this->running('success', ['status' => 'success']), 'bob', $this->t0));
     }
 
+    public function testAStopLooksForTheTaskOfALaunchWithoutOne(): void
+    {
+        // the launching request died after asking the runner: the stop finds its task by the launch's message at once
+        $id = $this->store->add([], self::TARGETS);
+        $this->runner->search = new RunnerTaskSearch(new RunnerTask('90', 'running', 'running', $this->t0 + 1), true);
+        $this->runner->tasks['90'] = 'running';
+        $this->assertNull($this->lifecycle()->stop($id, 'bob', $this->t0 + 10));
+        $run = $this->store->find($id);
+        $this->assertSame(['90', 'stopping', 'bob'], [$run['runner_task_id'], $run['status'], $run['stopped_by']]);
+        $this->assertContains('stop 90', $this->runner->calls);
+
+        // no task yet (the launching request is still at it): asked again later
+        $id = $this->store->add([], self::TARGETS);
+        $this->runner->search = new RunnerTaskSearch(null, true);
+        $this->assertSame('The run is still being launched: try again in a moment.', $this->lifecycle()->stop($id, 'bob', $this->t0 + 10));
+        $this->assertNull($this->store->find($id)['runner_task_id']);
+        $searches = count(array_filter($this->runner->calls, fn ($call) => str_starts_with($call, 'find ')));
+        $this->lifecycle()->stop($id, 'bob', $this->t0 + 12);
+        $this->assertCount($searches, array_filter($this->runner->calls, fn ($call) => str_starts_with($call, 'find ')), 'not looked for again at once');
+        $this->lifecycle()->stop($id, 'bob', $this->t0 + 10 + RunLifecycle::STOP_SEARCH_INTERVAL);
+        $this->assertCount($searches + 1, array_filter($this->runner->calls, fn ($call) => str_starts_with($call, 'find ')));
+    }
+
+    public function testAStopNeverReachesATaskThatEndedOnTheRunner(): void
+    {
+        // the task ended on the runner, the plugin has not recorded it yet: Semaphore UI would turn its success into stopped
+        $id = $this->running('success');
+        $this->runner->logs['90'] = self::recapLog(['lab-sw1.netops.lab' => 'ok=1 changed=1 unreachable=0 failed=0']);
+        $this->assertNull($this->lifecycle()->stop($id, 'bob', $this->t0 + 10));
+        $this->assertNotContains('stop 90', $this->runner->calls, 'no stop sent');
+        $this->assertSame('running', $this->store->find($id)['status']);
+
+        // an end the plugin saw stays when the runner reports the task stopped afterwards
+        $id = $this->running('success');
+        $this->runner->logs['90'] = self::recapLog(['lab-sw1.netops.lab' => 'ok=1 changed=1 unreachable=0 failed=0',
+            'lab-sw2.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0', 'lab-sw3.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0']);
+        $this->lifecycle()->refresh($id, $this->t0 + 20); // seen ended, the log settling
+        $this->assertSame('success', $this->store->find($id)['runner_status']);
+        $this->runner->tasks['90'] = 'stopped';
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertSame('success', $run['status'], 'not stopped');
+        $this->assertSame('changed', $this->store->targets[$id][501]['result']);
+    }
+
     public function testDevicesAreReleasedOnlyWhenTheRunnerCouldNotBeAskedForLong(): void
     {
         $id = $this->running('running', ['runner_seen_at' => '2026-10-22 10:00:10']);
@@ -652,7 +766,7 @@ class RunLifecycleTest extends TestCase
         $this->assertSame('carol', $run['released_by']);
         $this->assertSame(['unknown' => 3], $run['summary']);
         $this->assertStringContainsString('devices released by carol while the runner could not be asked', $this->events->of(501)[0]['message']);
-        $this->assertSame('alice', $this->events->of(501)[0]['user']);
+        $this->assertSame('carol', $this->events->of(501)[0]['user'], 'the entry carries who released the devices');
     }
 
     // ------------------------------------------------------------------ the log

@@ -7,7 +7,9 @@ namespace Agoodley\LibrenmsAnsible\Support;
  * process that writes or reads them, so the deadlines of the run lifecycle (Stop after, the hold after a stop, the
  * watch of a lost run...) mean the same to the web server and to the sync command even when their time zones differ.
  * The pages show them as LibreNMS shows its own times: in the logged-in user's time zone (LibreNMS' session
- * preference, which its pages set from the browser), else in LibreNMS' (PHP's).
+ * preference, which its pages set from the browser), else in LibreNMS' (PHP's). A time in a text the plugin stores (a
+ * timeline or eventlog entry, an error) is in UTC with its zone, whoever writes it (a user's request or the sync
+ * command), and the pages show such a time in the reader's zone (localize()).
  */
 final class Clock
 {
@@ -61,6 +63,26 @@ final class Clock
     public static function show(int $time, string $format = 'Y-m-d H:i:s'): string
     {
         return (new \DateTimeImmutable('@' . $time))->setTimezone(self::zone())->format($format);
+    }
+
+    /**
+     * A time in a text the plugin stores: UTC, with its zone ("2026-10-22 10:00 UTC").
+     */
+    public static function text(int $time, string $format = 'Y-m-d H:i'): string
+    {
+        return gmdate($format, $time) . ' UTC';
+    }
+
+    /**
+     * A stored text as a page shows it: each time in UTC with its zone (text()) in the user's time zone instead.
+     */
+    public static function localize(?string $text): string
+    {
+        return (string) preg_replace_callback('/\b(\d{4}-\d\d-\d\d \d\d:\d\d)(:\d\d)? UTC\b/', function (array $m): string {
+            $time = strtotime($m[1] . ($m[2] ?? '') . ' UTC');
+
+            return $time === false ? $m[0] : self::show($time, 'Y-m-d H:i' . (($m[2] ?? '') !== '' ? ':s' : '') . ' T');
+        }, (string) $text);
     }
 
     /**

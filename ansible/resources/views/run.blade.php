@@ -16,6 +16,9 @@
     $final = \Agoodley\LibrenmsAnsible\Runs\RunStatus::isFinal($status);
     $counters = ['ok', 'changed', 'unreachable', 'failed', 'skipped'];
     $variables = $run['variables'] ?? [];
+    // a change's dry run says what would change; one its log does not prove to be a dry run may have changed its devices
+    $dryRun = ($run['kind'] ?? null) === 'dry_run';
+    $unproven = \Agoodley\LibrenmsAnsible\Runs\RunResults::unproven($run);
 @endphp
 
 @section('content')
@@ -27,7 +30,7 @@
             <h4>Status</h4>
             <div class="ans-card-value"><span id="ans-run-status" class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::css($status) }}">{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::label($status) }}</span></div>
             <p>runner: <span id="ans-run-runner-status">{{ $run['runner_status'] ?? '-' }}</span>@if($run['stopped_by']) · stop asked by {{ $run['stopped_by'] }}@endif
-                @if($run['stop_reason']) · {{ $run['stop_reason'] }}@endif @if($run['released_by']) · devices released by {{ $run['released_by'] }}@endif</p>
+                @if($run['stop_reason']) · {{ \Agoodley\LibrenmsAnsible\Support\Clock::localize($run['stop_reason']) }}@endif @if($run['released_by']) · devices released by {{ $run['released_by'] }}@endif</p>
         </div>
         <div class="ans-card ans-info">
             <h4>Template</h4>
@@ -46,6 +49,18 @@
         </div>
     </div>
 
+    @if($dryRun)
+        <div class="ans-warning-loud" id="ans-run-not-proven" @if(! $unproven) style="display: none" @endif><i class="fa fa-exclamation-triangle"></i>
+            This dry run is NOT PROVEN to be one: its log shows a task outside check mode (or no sign of --check). It may have changed its devices: check them.
+            Its change can be neither approved nor applied.</div>
+    @endif
+    @if(! empty($run['change_id']))
+        <div class="alert alert-info" id="ans-run-change" style="padding: 6px 10px"><i class="fa fa-random"></i>
+            This run is {{ $run['kind'] === 'dry_run' ? 'the dry run (--check --diff)' : 'batch ' . $run['batch'] }} of
+            <a href="{{ route('ansible.changes.show', $run['change_id']) }}">change #{{ $run['change_id'] }}</a>: its page shows the {{ $run['kind'] === 'dry_run' ? 'diffs per device, the approval' : 'other batches, the backups and the maintenance windows' }}, and stops it.
+            @if($run['commit_hash'])<span class="ans-muted">Commit <span class="ans-code">{{ substr($run['commit_hash'], 0, 12) }}</span>.</span>@endif</div>
+    @endif
+
     <div id="ans-run-alerts">
         @if($run['unexpected_hosts'])
             <div class="alert alert-danger" id="ans-run-unexpected"><i class="fa fa-exclamation-triangle"></i>
@@ -54,7 +69,7 @@
         @endif
         @if($run['error'])
             <div class="alert alert-{{ in_array($status, ['not_launched', 'failed'], true) ? 'danger' : 'warning' }}" id="ans-run-error"><i class="fa fa-exclamation-triangle"></i>
-                <strong>{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::label($status) }}:</strong> {{ $run['error'] }}
+                <strong>{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::label($status) }}:</strong> {{ \Agoodley\LibrenmsAnsible\Support\Clock::localize($run['error']) }}
                 @if(in_array($status, \Agoodley\LibrenmsAnsible\Runs\RunStatus::WATCHED, true) && $run['watch_until'])
                     <br><span class="ans-muted">The plugin still asks the runner about this run until {{ \Agoodley\LibrenmsAnsible\Support\Clock::local($run['watch_until'], 'Y-m-d H:i T') }}: a later end is recorded here.</span>
                 @endif
@@ -94,7 +109,7 @@
         <div class="col-md-7">
             <div class="panel panel-default">
                 <div class="panel-heading"><strong>Targets</strong> <span class="text-muted">({{ count($targets) }})</span>
-                    <span id="ans-run-summary">@include('ansible::partials.results', ['summary' => $run['summary'] ?? []])</span></div>
+                    <span id="ans-run-summary">@include('ansible::partials.results', ['resultSummary' => $run['summary'] ?? [], 'resultDryRun' => (bool) $dryRun, 'resultUnproven' => (bool) $unproven])</span></div>
                 <div class="table-responsive">
                 <table class="table table-condensed ans-table" id="ans-run-targets">
                     <thead><tr><th>Device</th><th>Inventory name</th><th>Result</th>@foreach($counters as $c)<th class="ans-num">{{ $c }}</th>@endforeach</tr></thead>
@@ -105,8 +120,10 @@
                                 @if($target['unexpected'])<span class="label label-danger" title="The runner ran on this device although it was not a target">not a target</span>@endif</td>
                             <td class="ans-code">{{ $target['inventory_name'] }}</td>
                             <td class="ans-target-result">
-                                @if($target['result'])
-                                    <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($target['result']) }} ans-result">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::LABELS[$target['result']] ?? $target['result'] }}</span>
+                                @if($target['result'] && $unproven && empty($target['unexpected']))
+                                    <span class="label label-danger ans-result">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::NOT_PROVEN }}</span>
+                                @elseif($target['result'])
+                                    <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($target['result']) }} ans-result">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::label($target['result'], $dryRun) }}</span>
                                 @else
                                     <span class="text-muted">{{ $final ? '-' : 'pending' }}</span>
                                 @endif

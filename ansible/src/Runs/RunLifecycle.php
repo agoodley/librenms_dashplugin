@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsAnsible\Runs;
 
+use Agoodley\LibrenmsAnsible\Changes\DryRunProof;
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Runner\Runner;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
@@ -36,6 +37,9 @@ final class RunLifecycle
     /** Seconds after which the task of a launch that did not complete is looked for (at once when the answer was unclear). */
     public const LAUNCH_GRACE = 300;
 
+    /** Least seconds between two searches for the task of a launch that a stop makes. */
+    public const STOP_SEARCH_INTERVAL = 10;
+
     /** Seconds after which a launch whose task a complete search did not find was not launched. */
     public const LAUNCH_TIMEOUT = 600;
 
@@ -67,6 +71,8 @@ final class RunLifecycle
      * @param  \Closure(string[]): array<string, array{device_id: int, hostname: string, display: string}>|null  $devices
      *                                                                                                          the devices of inventory names (for hosts the runner ran on that were not targets)
      * @param  int  $holdSeconds  how long a stopped run keeps its devices after the runner's stop (Hold after a stop)
+     * @param  (\Closure(array): bool)|null  $allLeftOut  did the inventory guard leave every target of this change's dry run
+     *                                                 out of what it served during it (its record)? Null: never known
      */
     public function __construct(
         private readonly RunStore $runs,
@@ -76,6 +82,7 @@ final class RunLifecycle
         private readonly int $stopAfterSeconds,
         private readonly ?\Closure $devices = null,
         private readonly int $holdSeconds = 1800,
+        private readonly ?\Closure $allLeftOut = null,
     ) {
     }
 
@@ -208,6 +215,30 @@ final class RunLifecycle
     }
 
     /**
+     * The run as it is after looking for the task of its launch in the runner (by the launch's message, with its nonce),
+     * whatever its age: recorded when found; as it was when not (or the runner cannot be asked now).
+     */
+    private function findForStop(array $run, int $now): array
+    {
+        if ($run['polled_at'] !== null && $now - self::at($run['polled_at']) < self::STOP_SEARCH_INTERVAL) {
+            return $run; // looked for a moment ago (a change's stop asks at each of its steps)
+        }
+        try {
+            $search = ($this->runner)()->findTask((string) $run['template_id'],
+                RunText::taskMessage((int) $run['id'], (string) $run['username'], $run['launch_nonce'] ?? null), self::at($run['created_at']) - self::CLOCK_SKEW);
+        } catch (RunnerError) {
+            return $run;
+        }
+        if ($search->task !== null) {
+            $this->adopt($run, $search->task, $now);
+        } else {
+            $this->runs->updateAt((int) $run['id'], (int) $run['version'], ['polled_at' => self::time($now)]);
+        }
+
+        return $this->runs->find((int) $run['id']) ?? $run;
+    }
+
+    /**
      * Record the runner's task of a launch, once, with the "started" eventlog entry of each target.
      */
     private function adopt(array $run, RunnerTask $task, int $now): bool
@@ -218,11 +249,11 @@ final class RunLifecycle
         $id = (int) $run['id'];
         if (! $this->runs->updateAt($id, (int) $run['version'], ['runner_task_id' => $task->id, 'runner_status' => $task->rawStatus,
             'status' => RunStatus::isFinal($task->status) ? RunStatus::RUNNING : $task->status, 'poll_error' => null, 'runner_seen_at' => self::time($now),
-            'started_at' => $task->started !== null ? self::time($task->started) : null])) {
+            'started_at' => $task->started !== null ? self::time($task->started) : null] + self::commit($task))) {
             return false;
         }
         foreach (array_keys($this->targetNames($id)) as $deviceId) {
-            $this->events->write(RunText::started($id, (string) $run['template_name'], (string) $run['username']), $deviceId, 'info', RunText::reference($id),
+            $this->events->write(RunText::started($id, (string) $run['template_name'], (string) $run['username'], $run['context'] ?? null), $deviceId, 'info', RunText::reference($id),
                 (string) $run['username']);
         }
 
@@ -242,7 +273,7 @@ final class RunLifecycle
         }
         $this->runs->setResults($id, array_fill_keys(array_keys($targets), ['result' => RunResults::NOT_RUN, 'counts' => null]));
         foreach (array_keys($targets) as $deviceId) {
-            $this->events->write(RunText::notLaunched($id, (string) $run['template_name'], (string) $run['username'], $reason), $deviceId, 'warning',
+            $this->events->write(RunText::notLaunched($id, (string) $run['template_name'], (string) $run['username'], $reason, $run['context'] ?? null), $deviceId, 'warning',
                 RunText::reference($id), (string) $run['username']);
         }
     }
@@ -275,10 +306,11 @@ final class RunLifecycle
 
             return;
         }
+        $task = self::keptEnd($run, $task);
         $buffer = OutputBuffer::add($run, $output->lines, $this->outputMaxBytes);
         $values = $buffer['values'] + ['output_lines' => $output->next, 'runner_status' => $task->rawStatus, 'poll_error' => null,
             'polled_at' => self::time($now), 'runner_seen_at' => self::time($now), 'missing_checks' => 0, 'missing_since' => null,
-            'started_at' => $task->started !== null ? self::time($task->started) : $run['started_at']];
+            'started_at' => $task->started !== null ? self::time($task->started) : $run['started_at']] + self::commit($task);
         if (! RunStatus::isFinal($task->status)) {
             // a requested stop stays "stopping" until the runner says how the task ended
             $values['status'] = $run['status'] === RunStatus::STOPPING ? RunStatus::STOPPING : $task->status;
@@ -372,9 +404,23 @@ final class RunLifecycle
         }
         $this->runs->setResults($id, $evaluation['results']);
         foreach ($evaluation['results'] as $deviceId => $result) {
-            $this->events->write(RunText::finished($id, RunStatus::LOST, $result['result'], null, (string) $run['template_name'], (string) $run['username'], $reason),
+            $this->events->write(RunText::finished($id, RunStatus::LOST, $result['result'], null, (string) $run['template_name'], (string) $run['username'], $reason, $run['context'] ?? null),
                 $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
         }
+    }
+
+    /**
+     * The task as the plugin takes it: an end the plugin already saw (success or error) stays, when the runner reports it
+     * stopped afterwards (Semaphore UI does when a stop comes after the end).
+     */
+    private static function keptEnd(array $run, RunnerTask $task): RunnerTask
+    {
+        $seen = (string) ($run['runner_status'] ?? '');
+        if ($run['runner_final_at'] !== null && $task->status === RunStatus::STOPPED && in_array($seen, ['success', 'error'], true)) {
+            return new RunnerTask($task->id, $seen === 'success' ? RunStatus::SUCCESS : RunStatus::FAILED, $seen, $task->started, $task->ended, $task->created, $task->commit);
+        }
+
+        return $task;
     }
 
     /**
@@ -413,6 +459,19 @@ final class RunLifecycle
             $heldUntil = $runsOn ? ($task->ended ?? $now) + $this->holdSeconds : null;
         }
         $status = RunResults::status($task->status, $evaluation['results']);
+        // the dry run of a change: does its log prove it was one (Changes\DryRunProof)? Not judged without the whole log
+        // (the change asks the runner for it again), nor for a run stopped before the runner started it, nor for one Ansible
+        // stopped before the playbook, as the limit left it no host, when the inventory guard's record shows that it left
+        // every target out ($allLeftOut: nothing ran on a device, there is nothing to prove)
+        $dryRun = ($run['kind'] ?? null) === 'dry_run';
+        $proven = null;
+        if ($dryRun && $complete && ($task->status !== RunStatus::STOPPED || $runsOn)) {
+            $proof = DryRunProof::check($lines, RecapParser::parse($lines), $this->allLeftOut !== null && ($this->allLeftOut)($run));
+            if (! $proof['nothing_ran']) {
+                $proven = $proof['verified'];
+                $values['proof'] = $proven ? 'verified' : 'unverified';
+            }
+        }
         $unexpected = $this->unexpectedDevices($evaluation['unexpected']);
         $values += ['status' => $status, 'summary' => $evaluation['summary'], 'unexpected_hosts' => array_keys($evaluation['unexpected']) ?: null,
             'finished_at' => $task->ended !== null ? self::time($task->ended) : self::time($now), 'watch_until' => null, 'polled_at' => self::time($now),
@@ -429,17 +488,19 @@ final class RunLifecycle
         $note = $late ? 'the runner reported this end after the plugin had given the run up as ' . strtolower(RunStatus::label((string) $run['status']))
             : ($task->status === RunStatus::STOPPED ? ($run['stop_reason'] ?? ($run['stopped_by'] ? 'stopped by ' . $run['stopped_by'] : 'stopped in the runner'))
                 . (! $runsOn ? ' before the runner started it' : '; the step in progress may still run on the runner'
-                    . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . date('Y-m-d H:i T', $heldUntil) : '')) : null);
+                    . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . Clock::text($heldUntil) : '')) : null);
+        // the eventlog's User: who stopped the run, for a stopped one; else who launched it
+        $actor = (string) (($task->status === RunStatus::STOPPED ? ($run['stopped_by'] ?? null) : null) ?: $user);
         foreach ($evaluation['results'] as $deviceId => $result) {
-            $this->events->write(RunText::finished($id, $status, $result['result'], $result['counts'], (string) $run['template_name'], $user, $note), $deviceId,
-                RunResults::SEVERITY[$result['result']] ?? 'info', RunText::reference($id), $user);
+            $this->events->write(RunText::finished($id, $status, $result['result'], $result['counts'], (string) $run['template_name'], $user, $note, $run['context'] ?? null,
+                $dryRun, $proven), $deviceId, $proven === false ? 'error' : (RunResults::SEVERITY[$result['result']] ?? 'info'), RunText::reference($id), $actor);
         }
         foreach ($unexpected as $deviceId => $row) {
-            $this->events->write(RunText::unexpectedDevice($id, $row['inventory_name'], $row['result'], (string) $run['template_name'], $user), $deviceId, 'error',
+            $this->events->write(RunText::unexpectedDevice($id, $row['inventory_name'], $row['result'], (string) $run['template_name'], $user, $run['context'] ?? null), $deviceId, 'error',
                 RunText::reference($id), $user);
         }
         if ($evaluation['unexpected']) {
-            $this->events->write(RunText::unexpectedHosts($id, array_keys($evaluation['unexpected']), (string) $run['template_name']), null, 'error',
+            $this->events->write(RunText::unexpectedHosts($id, array_keys($evaluation['unexpected']), (string) $run['template_name'], $run['context'] ?? null), null, 'error',
                 RunText::reference($id), $user);
         }
     }
@@ -505,7 +566,7 @@ final class RunLifecycle
                     . strtolower(RunStatus::label((string) $run['status'])) . ').'])) {
                 $this->runs->setResults($id, array_fill_keys(array_keys($this->targetNames($id)), ['result' => null, 'counts' => null]));
                 foreach (array_keys($this->targetNames($id)) as $deviceId) {
-                    $this->events->write(RunText::followedAgain($id, $task->id, (string) $run['status'], (string) $run['template_name'], (string) $run['username'], $found !== []),
+                    $this->events->write(RunText::followedAgain($id, $task->id, (string) $run['status'], (string) $run['template_name'], (string) $run['username'], $found !== [], $run['context'] ?? null),
                         $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
                 }
             }
@@ -541,10 +602,21 @@ final class RunLifecycle
             return 'The run has already ended.';
         }
         if ($run['runner_task_id'] === null) {
-            return 'The run is still being launched: try again in a moment.';
+            // a launch without a recorded task (its request is at it, or died after asking the runner): the task is looked for
+            // now, not only after LAUNCH_GRACE, so a stop reaches a task whose launch request died at once
+            $run = $this->findForStop($run, $now);
+            if ($run['runner_task_id'] === null) {
+                return 'The run is still being launched: try again in a moment.';
+            }
         }
         try {
-            ($this->runner)()->stop((string) $run['runner_task_id']);
+            $runner = ($this->runner)();
+            // Semaphore UI turns a task that ended (success, error) into "stopped" when a stop comes after its end: never
+            // send one for a task already over on the runner (the plugin records its end at its next refresh)
+            if (RunStatus::isFinal($runner->task((string) $run['runner_task_id'])->status)) {
+                return null;
+            }
+            $runner->stop((string) $run['runner_task_id']);
         } catch (RunnerError $e) {
             return $e->getMessage();
         }
@@ -581,7 +653,7 @@ final class RunLifecycle
             return 'The plugin still gets answers about this run from the runner: wait for its end, or stop it.';
         }
         $evaluation = RunResults::evaluate($this->targetNames($id), OutputBuffer::display($run), false);
-        $since = (string) Clock::local((string) ($run['runner_seen_at'] ?? $run['created_at']), 'Y-m-d H:i:s T');
+        $since = Clock::text((int) Clock::unix((string) ($run['runner_seen_at'] ?? $run['created_at'])), 'Y-m-d H:i:s');
         $reason = 'the devices were released by ' . UntrustedText::line($username, 60) . ": the runner could not be asked about the run since $since ("
             . $run['poll_error'] . ')';
         if (! $this->runs->updateAt($id, (int) $run['version'], ['status' => RunStatus::RELEASED, 'released_by' => mb_substr($username, 0, 255),
@@ -592,7 +664,7 @@ final class RunLifecycle
         $this->runs->setResults($id, $evaluation['results']);
         foreach ($evaluation['results'] as $deviceId => $result) {
             $this->events->write(RunText::finished($id, RunStatus::RELEASED, $result['result'], null, (string) $run['template_name'], (string) $run['username'],
-                'devices released by ' . $username . ' while the runner could not be asked'), $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
+                'devices released by ' . $username . ' while the runner could not be asked', $run['context'] ?? null), $deviceId, 'warning', RunText::reference($id), $username);
         }
 
         return null;
@@ -611,8 +683,8 @@ final class RunLifecycle
             return 'The run changed meanwhile: reload the page.';
         }
         foreach (array_keys($this->targetNames($id)) as $deviceId) {
-            $this->events->write(RunText::holdReleased($id, $username, (string) $run['held_until'], (string) $run['template_name'], (string) $run['username']),
-                $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
+            $this->events->write(RunText::holdReleased($id, $username, (string) $run['held_until'], (string) $run['template_name'], (string) $run['username'], $run['context'] ?? null),
+                $deviceId, 'warning', RunText::reference($id), $username);
         }
 
         return null;
@@ -643,6 +715,16 @@ final class RunLifecycle
         }
 
         return $names;
+    }
+
+    /**
+     * The commit of the repository the runner says the task runs, as a column to write (none when it does not say).
+     *
+     * @return array<string, string>
+     */
+    private static function commit(RunnerTask $task): array
+    {
+        return $task->commit !== null ? ['commit_hash' => $task->commit] : [];
     }
 
     /**

@@ -14,6 +14,8 @@ use Agoodley\LibrenmsAnsible\Runs\TemplateCheck;
 use Agoodley\LibrenmsAnsible\Runs\TemplateReview;
 use Agoodley\LibrenmsAnsible\Services\Eventlog;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
+use Agoodley\LibrenmsAnsible\Services\TemplateReader;
+use Agoodley\LibrenmsAnsible\Support\Access;
 use Agoodley\LibrenmsAnsible\Support\AuditText;
 use Agoodley\LibrenmsAnsible\Support\Connection;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
@@ -46,7 +48,8 @@ class SettingsController extends Controller
             }
         }
         $result = PluginSettings::fromInput($input, $before, $groups, $users);
-        $anchor = array_key_exists('inventory_user', $input) && count($input) === 1 ? 'ans-inventory-user' : 'ans-settings-form';
+        $anchor = array_key_exists('inventory_user', $input) && count($input) === 1 ? 'ans-inventory-user'
+            : (in_array($request->input('section'), ['ans-changes-form', 'ans-backups-form'], true) ? (string) $request->input('section') : 'ans-settings-form');
         if ($result['settings'] === null) {
             return $this->back($anchor)->with('ansible_errors', $result['errors'])->with('ansible_old_settings', $input);
         }
@@ -146,8 +149,10 @@ class SettingsController extends Controller
         }
         $list = [];
         $review = new TemplateReview($runner, $chosen, $health);
+        $reader = new TemplateReader($runner, $connection->project);
         foreach ($templates as $template) {
-            $reasons = $review->reasons($template);
+            // a change needs a dry run the plugin can prove: the template's environment must mark check mode in the log
+            $reasons = array_merge($review->reasons($template), $reader->dryRunReasons($template));
             $list[] = ['id' => $template->id, 'name' => $template->name, 'playbook' => $template->playbook, 'usable' => ! $reasons,
                 'reasons' => $reasons, 'notes' => TemplateCheck::notes($template)];
         }
@@ -172,38 +177,44 @@ class SettingsController extends Controller
     }
 
     /**
-     * POST plugin/ansible/settings/permission {user_id, action: grant|revoke}: give or take the run permission. Any
-     * admin may grant it, also to themselves: it is an explicit opt-in, written to the eventlog.
+     * POST plugin/ansible/settings/permission {user_id, action: grant|revoke, permission: ansible.run|ansible.approve}:
+     * give or take the run or the approve permission. Any admin may grant them, also to themselves: an explicit opt-in,
+     * written to the eventlog. (With "an approval from a second admin" the plugin never lets the requester of a change
+     * approve it, whoever holds the approve permission.)
      */
     public function permission(Request $request): RedirectResponse
     {
         $userId = (int) $request->input('user_id');
         $action = $request->input('action');
+        $permission = $request->input('permission', Access::PERMISSION) === Access::APPROVE ? Access::APPROVE : Access::PERMISSION;
+        $section = $permission === Access::APPROVE ? 'ans-approve-permission' : 'ans-permission';
+        $what = Access::PERMISSIONS[$permission];
         $repository = new PermissionRepository();
         if (! in_array($action, ['grant', 'revoke'], true) || $userId < 1) {
-            return $this->back('ans-permission')->with('ansible_errors', ['permission' => 'Choose a user to grant the permission to or revoke it from.']);
+            return $this->back($section)->with('ansible_errors', ['permission' => 'Choose a user to grant the permission to or revoke it from.']);
         }
-        $user = $repository->user($userId);
+        $user = $repository->user($userId, $permission);
         if ($user === null) {
-            return $this->back('ans-permission')->with('ansible_errors', ['permission' => 'There is no such user.']);
+            return $this->back($section)->with('ansible_errors', ['permission' => 'There is no such user.']);
         }
         if ($action === 'grant' && ! $user['admin']) {
-            return $this->back('ans-permission')->with('ansible_errors', ['permission' => "{$user['username']} is not a LibreNMS admin: only admins can use the run permission."]);
+            return $this->back($section)->with('ansible_errors', ['permission' => "{$user['username']} is not a LibreNMS admin: only admins can use the $what permission."]);
         }
         if ($user['holds'] === ($action === 'grant')) {
-            return $this->back('ans-permission')->with('ansible_status', $action === 'grant' ? "{$user['username']} already holds the run permission." : "{$user['username']} does not hold the run permission.");
+            return $this->back($section)->with('ansible_status', $action === 'grant' ? "{$user['username']} already holds the $what permission." : "{$user['username']} does not hold the $what permission.");
         }
         $by = (string) $request->user()->username;
+        $can = $permission === Access::APPROVE ? 'approve and reject changes' : 'create, dry-run, apply and stop changes, and stop runs';
         if ($action === 'grant') {
-            $name = (string) $repository->grant($userId);
-            $this->audit(AuditText::permissionGranted($by, $name));
+            $name = (string) $repository->grant($userId, $permission);
+            $this->audit(AuditText::permissionGranted($by, $name, $permission));
 
-            return $this->back('ans-permission')->with('ansible_status', "$name may now launch and stop runs.");
+            return $this->back($section)->with('ansible_status', "$name may now $can.");
         }
-        $name = (string) $repository->revoke($userId);
-        $this->audit(AuditText::permissionRevoked($by, $name));
+        $name = (string) $repository->revoke($userId, $permission);
+        $this->audit(AuditText::permissionRevoked($by, $name, $permission));
 
-        return $this->back('ans-permission')->with('ansible_status', "$name may no longer launch or stop runs.");
+        return $this->back($section)->with('ansible_status', "$name may no longer $can.");
     }
 
     /**

@@ -6,7 +6,7 @@ use Agoodley\LibrenmsAnsible\Support\Access;
 use LibreNMS\Interfaces\Plugins\Hooks\MenuEntryHook;
 
 /**
- * "Ansible" in the LibreNMS Plugins menu: the runs (the audit log). Only for LibreNMS admins.
+ * "Ansible" in the LibreNMS Plugins menu: the changes, the plugin's main page. Only for LibreNMS admins.
  */
 class MenuEntry implements MenuEntryHook
 {

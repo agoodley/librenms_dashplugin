@@ -50,6 +50,11 @@ interface Runner
     public function environment(string $id): RunnerEnvironment;
 
     /**
+     * A repository of the project (its address and branch).
+     */
+    public function repository(string $id): RunnerRepository;
+
+    /**
      * The token's role in the project ("" when it has none); RunnerError when the runner cannot tell, e.g. when
      * the token's user is not in the project.
      */

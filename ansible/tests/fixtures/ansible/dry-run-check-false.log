@@ -1,0 +1,35 @@
+Task X check false added to queue
+Started task #502 of template 'X check false'
+Preparing: 502
+No /repos/netops-playbooks/collections/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/collections/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/roles/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/roles/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+
+DRY RUN ************************************************************************
+
+PLAY [A task that ignores check mode] [CHECK MODE] *****************************
+
+TASK [Show version, also in a dry run] *****************************************
+[1;35m[WARNING]: ansible-pylibssh not installed, falling back to paramiko[0m
+[1;35m[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.[0m
+[0;35m[DEPRECATION WARNING]: Importing 'to_bytes' from 'ansible.module_utils._text' is deprecated. This feature will be removed from ansible-core version 2.24. Use ansible.module_utils.common.text.converters instead.[0m
+[0;35m[DEPRECATION WARNING]: Importing 'to_text' from 'ansible.module_utils._text' is deprecated. This feature will be removed from ansible-core version 2.24. Use ansible.module_utils.common.text.converters instead.[0m
+[0;35m[DEPRECATION WARNING]: The `ansible.module_utils.common._collections_compat` module is deprecated. This feature will be removed from ansible-core version 2.24. Use `collections.abc` from the Python standard library instead.[0m
+[0;35m[DEPRECATION WARNING]: The paramiko connection plugin is deprecated. This feature will be removed from ansible-core version 2.21.[0m
+[0;32mok: [lab-sw1.netops.lab][0m
+[0;35m[DEPRECATION WARNING]: Passing `warnings` to `exit_json` or `fail_json` is deprecated. This feature will be removed from ansible-core version 2.23. Use `AnsibleModule.warn` instead.[0m
+
+TASK [Report] [CHECK MODE] *****************************************************
+[0;32mok: [lab-sw1.netops.lab] => [0m
+[0;32m    msg: done[0m
+
+PLAY RECAP *********************************************************************
+[0;32mlab-sw1.netops.lab[0m         : [0;32mok=2   [0m changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+
+DRY RUN ************************************************************************
