@@ -56,6 +56,9 @@ final class ChangeLifecycle
      */
     public const SECRETS_ANNOUNCE = 30;
 
+    /** A target's record of what the inventory endpoint served the runner (InventoryGuard), cleared when its dry run or batch begins. */
+    private const UNSERVED = ['served_hash' => null, 'served_at' => null, 'served_note' => null];
+
     /** @var (\Closure(): void)|null called during long work (calls to the runner and to Oxidized): the follower renews its lock */
     private ?\Closure $heartbeat = null;
 
@@ -125,6 +128,8 @@ final class ChangeLifecycle
             $this->changes->voidApprovals($id, 'a new dry run was launched', $now);
         }
         $targets = $this->changes->targets($id);
+        // what the inventory endpoint serves the runner during this dry run is recorded anew
+        $this->changes->updateTargets($id, array_fill_keys(array_keys($targets), self::UNSERVED));
         $answers = self::answers($change);
         $this->beat();
         $result = $this->runner->launch($change, 'dry_run', (int) $change['dry_runs'], array_keys($targets), $user, $secrets,
@@ -588,11 +593,19 @@ final class ChangeLifecycle
                 $targets[(int) $deviceId] = $target;
             }
         }
-        $clean = $run['status'] === RunStatus::SUCCESS && empty($run['unexpected_hosts']);
-        $state = ! $proof['verified'] ? 'unverified' : ($clean ? 'verified' : 'failed');
+        // what the runner got for the targets from the inventory endpoint during the dry run: one left out did not run, one served
+        // another connection than the one recorded at its launch may have been another device
+        $served = $this->servedTo($change, array_keys($this->changes->targets($id)));
+        $ranClean = $run['status'] === RunStatus::SUCCESS && empty($run['unexpected_hosts']);
+        $state = ! $proof['verified'] ? 'unverified' : ($ranClean && ! $served['left'] && ! $served['other'] ? 'verified' : 'failed');
         $next = $state === 'verified' ? (ApprovalRules::needed($this->settings->approval) ? ChangeStatus::AWAITING : ChangeStatus::READY) : ChangeStatus::DRAFT;
         $findings = $proof['findings'];
-        if ($state === 'failed') {
+        if ($served['left'] || $served['other']) {
+            $findings[] = 'The runner did not get every target as recorded when the dry run was launched (' . implode('; ', [...$served['left'], ...$served['other']])
+                . ($served['left'] ? '): the plugin left ' . (count($served['left']) === 1 ? 'a host' : 'hosts') . ' out of the inventory the runner fetched, so the dry run '
+                    . 'did not run there.' : ').');
+        }
+        if ($state === 'failed' && ! $ranClean) {
             // the devices it did not succeed on, by name
             $bad = [];
             foreach ($this->changes->targets($id) as $deviceId => $row) {
@@ -608,7 +621,8 @@ final class ChangeLifecycle
         }
         $ended = $this->update($change, ['status' => $next, 'dry_run_state' => $state, 'dry_run_ended_at' => Clock::store($now),
             'dry_run_commit' => $run['commit_hash'] ?? null, 'dry_run_findings' => $findings,
-            'error' => $state === 'verified' ? null : ($state === 'unverified' ? 'The dry run is not proven to be one.' : 'The dry run did not succeed on every target.')]);
+            'error' => $state === 'verified' ? null : ($state === 'unverified' ? 'The dry run is not proven to be one.' : ($ranClean
+                ? 'The runner did not get every target as recorded when the dry run was launched.' : 'The dry run did not succeed on every target.'))]);
         if ($ended === null) {
             return;
         }
@@ -910,6 +924,8 @@ final class ChangeLifecycle
             return;
         }
         $this->beat();
+        // what the inventory endpoint serves the runner during this batch is recorded anew, before the batch counts as in progress
+        $this->changes->updateTargets($id, array_fill_keys($this->batchDevices($change, $number), self::UNSERVED));
         $this->changes->updateBatch($id, $number, ['status' => 'launching', 'started_at' => Clock::store($now), 'note' => null]);
         // a Stop takes no lock: one recorded while this launch is checked keeps it from the runner (asked again right before the
         // run is recorded, under the launch lock, and right before the runner is asked)
@@ -1060,8 +1076,17 @@ final class ChangeLifecycle
         $results = array_replace(array_fill_keys($devices, null), array_intersect_key($results, array_flip($devices)));
         $plan = (array) $change['plan'];
         $stop = BatchOutcome::stopReason($number, $run, $results, max(1, (int) ($plan['stop_at'] ?? 1)), $change['dry_run_commit']);
-        if ($stop === null) {
-            $moved = Connections::differences(self::recorded($change), $this->runner->connections($devices), self::displays($this->changes->targets($id)));
+        // what the runner got for the devices from the inventory endpoint while the batch was in progress, not LibreNMS as it is now
+        $served = $this->servedTo($change, $devices);
+        if ($served['other']) {
+            $stop = self::movedText([...$served['left'], ...$served['other']], "during batch $number") . ': the batch may have run on other devices than the ones dry-run';
+        } elseif ($served['left']) {
+            $one = count($served['left']) === 1;
+            $stop = self::movedText($served['left'], "during batch $number") . ': the plugin left ' . ($one ? 'it' : 'them') . ' out of the inventory the runner fetched, '
+                . 'so the batch did not run on ' . ($one ? 'it' : 'them');
+        } elseif ($stop === null && $served['unserved']) {
+            // no fetch was recorded for them while the batch was in progress: as the inventory reaches them now
+            $moved = Connections::differences(self::recorded($change), $this->runner->connections($served['unserved']), self::displays($this->changes->targets($id)));
             if ($moved) {
                 $stop = self::movedText($moved, "by the end of batch $number") . ': the batch may have run on other devices than the ones dry-run';
             }
@@ -1199,10 +1224,37 @@ final class ChangeLifecycle
      */
     private static function recorded(array $change): array
     {
-        $parts = (array) ($change['fingerprint_parts'] ?? []);
-        $connections = $parts['connections'] ?? [];
+        return Connections::recordedIn($change);
+    }
 
-        return is_array($connections) || is_object($connections) ? (array) $connections : [];
+    /**
+     * What the inventory endpoint served the runner for the devices while their dry run or batch was in progress
+     * (InventoryGuard): the devices it left out (why), those it served another connection than the one the dry run
+     * recorded, and those no fetch served (by device id).
+     *
+     * @param  int[]  $devices
+     * @return array{left: string[], other: string[], unserved: int[]}
+     */
+    private function servedTo(array $change, array $devices): array
+    {
+        $recorded = self::recorded($change);
+        $targets = $this->changes->targets((int) $change['id']);
+        $names = self::displays($targets);
+        $found = ['left' => [], 'other' => [], 'unserved' => []];
+        foreach ($devices as $deviceId) {
+            $hash = $targets[$deviceId]['served_hash'] ?? null;
+            $name = UntrustedText::line((string) ($names[$deviceId] ?? "device #$deviceId"), 80);
+            $was = $recorded[$deviceId] ?? null;
+            if ($hash === null) {
+                $found['unserved'][] = (int) $deviceId;
+            } elseif ($hash === InventoryGuard::LEFT_OUT) {
+                $found['left'][] = UntrustedText::line((string) (($targets[$deviceId]['served_note'] ?? '') ?: "$name was left out"), 400);
+            } elseif ($hash === InventoryGuard::MIXED || ! (is_array($was) || is_object($was)) || $hash !== Connections::hash($was)) {
+                $found['other'][] = "$name: the runner got another connection than the one recorded at the dry run";
+            }
+        }
+
+        return $found;
     }
 
     /**

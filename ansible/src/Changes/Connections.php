@@ -10,9 +10,11 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
  * host (ansible_host, the address Ansible connects to: the device's overwrite IP, else its hostname; then
  * ansible_network_os, ansible_connection and privileged mode from the Platform mapping setting), or why the device is
  * not a host. They are recorded when the dry run is launched and are part of the fingerprint, then compared with the
- * inventory as it is before the approval, before every batch (and right before its launch) and after it: a device that
- * would be reached at another address or as another platform is not the device that was dry-run and approved (an
- * admin who may edit devices could point it at another one), so the dry run no longer counts. The librenms_* facts
+ * inventory as it is before the approval and before every batch (and right before its launch); while a dry run or batch
+ * is in progress the inventory endpoint serves its devices only that way, and its end checks what was served
+ * (InventoryGuard): a device that would be reached at another address or as another platform is not the device that
+ * was dry-run and approved (an admin who may edit devices could point it at another one), so the dry run no longer
+ * counts. The librenms_* facts
  * (sysName, location, version, ...) are not part of it: they change nothing about where the playbook runs.
  */
 final class Connections
@@ -83,6 +85,30 @@ final class Connections
         }
 
         return count($found) > $max ? [...array_slice($found, 0, $max), (count($found) - $max) . ' more'] : $found;
+    }
+
+    /**
+     * How the runner reached the change's devices at its dry run, as its fingerprint parts recorded them when the dry
+     * run was launched.
+     *
+     * @return array<int|string, mixed> device_id => variables
+     */
+    public static function recordedIn(array $change): array
+    {
+        $parts = (array) ($change['fingerprint_parts'] ?? []);
+        $connections = $parts['connections'] ?? [];
+
+        return is_array($connections) || is_object($connections) ? (array) $connections : [];
+    }
+
+    /**
+     * The hash of one device's connection (what the inventory endpoint records it served: InventoryGuard).
+     *
+     * @param  array<string, mixed>|object  $vars
+     */
+    public static function hash(array|object $vars): string
+    {
+        return Fingerprint::of((array) $vars);
     }
 
     /**

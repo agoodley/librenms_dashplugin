@@ -20,7 +20,8 @@
     }
     $kinds = ['os' => 'LibreNMS os', 'platform' => 'Ansible platform', 'group' => 'device group', 'location' => 'location', 'type' => 'device type'];
     $reasonLabels = ['disabled' => 'disabled', 'outside_group' => 'outside the allowed group', 'no_mapping' => 'no platform mapping',
-        'no_address' => 'no usable address', 'not_visible' => 'not visible to the inventory\'s user'];
+        'no_address' => 'no usable address', 'not_visible' => 'not visible to the inventory\'s user',
+        'withheld' => 'reached elsewhere than its change\'s dry run recorded'];
     $script = 'inventory/librenms_inventory.py';
     $fetch = $inventoryUser['fetch'] ?? null;
 @endphp

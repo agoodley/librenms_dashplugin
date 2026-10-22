@@ -54,7 +54,8 @@ final class SqliteSql implements Sql
             `inventory_name` TEXT NOT NULL, `hostname` TEXT NOT NULL DEFAULT \'\', `display` TEXT NOT NULL DEFAULT \'\', `batch` INTEGER NOT NULL, `position` INTEGER NOT NULL DEFAULT 0,
             `dry_result` TEXT, `dry_counts` TEXT, `result` TEXT, `counts` TEXT, `backup_node` TEXT, `backup_check` TEXT,
             `before_status` TEXT, `before_requested_at` TEXT, `before_at` TEXT, `before_version` TEXT, `before_error` TEXT,
-            `after_status` TEXT, `after_requested_at` TEXT, `after_at` TEXT, `after_version` TEXT, `after_error` TEXT, UNIQUE (`change_id`, `device_id`))');
+            `after_status` TEXT, `after_requested_at` TEXT, `after_at` TEXT, `after_version` TEXT, `after_error` TEXT, `served_hash` TEXT, `served_at` TEXT, `served_note` TEXT,
+            UNIQUE (`change_id`, `device_id`))');
         $this->pdo->exec('CREATE TABLE `ansible_change_batches` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `number` INTEGER NOT NULL,
             `status` TEXT NOT NULL, `run_id` INTEGER, `failures` INTEGER NOT NULL DEFAULT 0, `user_id` INTEGER, `username` TEXT, `started_at` TEXT, `ended_at` TEXT, `note` TEXT,
             UNIQUE (`change_id`, `number`))');

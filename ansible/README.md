@@ -563,8 +563,20 @@ Approve or an Apply (unreachable, a server error, a timeout) says nothing about 
 ("try again in a moment") and the dry run and approval stand. During the apply, the change stops: no further batch
 is launched. The batch itself
 is launched with the commit of the dry run (Semaphore's commit option), and a batch whose run reports another commit
-stops the change, as does a batch at the end of which a device of it is no longer reached as at the dry run (the
-batch may have run elsewhere: the change says so).
+stops the change.
+
+The runner fetches the inventory from the plugin only when the task starts, which can be well after the checks right
+before the launch: Semaphore UI runs a template's tasks one after another, so a batch may wait behind another task,
+then for its checkout. So while a change's dry run or batch is in progress, the inventory endpoint serves its devices
+only as the dry run recorded how the runner reaches them. A device edited meanwhile (another address, platform, or no
+longer a host) is **left out** of what the runner gets: neither its new address (it may be another device's) nor the
+old one. The change's timeline, the batch and the device's eventlog say so at the fetch, the batch does not run there,
+and the change stops when the batch ends (a dry run with a device left out does not count). Each fetch records what
+it served each device of a dry run or batch in progress (a hash of its connection, or that it was left out), and the
+end of the batch or dry run checks that record, not LibreNMS as it is by then: an edit set back before the batch ended
+is still caught, and one made after the runner had the inventory does not blame the batch (the next batch's checks
+see it; without any fetch recorded, the devices are compared as LibreNMS has them at the end). The Inventory page
+shows such a device as left out meanwhile.
 
 ### Batches
 
@@ -577,9 +589,10 @@ of the list, *First batch* of them), then batches of *Batch size*. Each batch:
    one-time token as any launch: a page clicked twice, two pages and the sync command can never launch a batch twice;
 3. when its run ends, records each device's result, sets the end of its window, asks for the backups after it;
 4. stops the change when the batch reached *Stop at* failed devices (failed, unreachable, unknown and not run count), when the
-   plugin lost track of its run or it was stopped or released, when it ran on a host that was not a target, or when it
-   ran another commit than the dry run; else waits after the first batch for *Continue* (when set), or for *Pause
-   between batches*, and starts the next.
+   plugin lost track of its run or it was stopped or released, when it ran on a host that was not a target, when it
+   ran another commit than the dry run, or when the plugin left one of its devices out of the inventory the runner
+   fetched (see above); else waits after the first batch for *Continue* (when set), or for *Pause between batches*,
+   and starts the next.
 
 The change page moves the change on while it is open, and the `ansible:sync` command does every minute for every
 change that is not over (and for the windows and backups of ended changes), so a change goes on when nobody watches,
@@ -609,6 +622,9 @@ and the window closes.
   `librenms_location`, `librenms_hardware`, `librenms_version`, `librenms_type`. Groups: `os_<os>`,
   `platform_<ansible_network_os>`, `group_<device group>`, `location_<location>` and `type_<device type>`, in
   `[a-z0-9_]`, numbered when two names collide. The answer is Ansible's dynamic inventory JSON with `_meta.hostvars`.
+  While a change's dry run or batch is in progress, its devices are served only as its dry run recorded how the
+  runner reaches them, else left out (see [What is approved](#what-is-approved-and-what-stays-true-until-the-last-batch)), and each fetch records what it served
+  them.
 * **Templates:** before every preview and launch the plugin asks the runner for the template again (no cache) and
   launches it only when its inventory is the LibreNMS one (a file inventory), a launch may set its limit (*Ansible
   prompts → Limit*), it has no limit of its own, its variable group has `LIBRENMS_URL`, the secret `LIBRENMS_TOKEN` and
@@ -682,7 +698,8 @@ released has stopped by then.
 * **What is applied is exactly what was dry-run and approved:** the same template as the runner has it (read again
   and compared before the approval, the apply and every batch), the same commit, the same devices reached the same
   way (address and platform, compared with the inventory before the approval, the apply, every batch and right before
-  its launch), the same answers, the same batch plan; each batch runs on its own devices only.
+  its launch, and served to the runner only that way while the batch is in progress), the same answers, the same batch
+  plan; each batch runs on its own devices only.
 * **No batch after** a stop, a batch that reached the failure threshold, a batch the plugin lost track of (or whose result is
   unknown, stopped, released, or ran another commit or on another host), an approval that no longer counts, a dry run
   that no longer counts, a refused backup. A batch is launched once at most; a stopped change launches nothing more.
@@ -730,7 +747,8 @@ released has stopped by then.
   HTML. The change page fetches only its own address to refresh itself.
 * **Inventory endpoint:** read only (GET; other methods get 405), a LibreNMS API token (a session cookie is not
   enough), only the inventory user's once it is chosen, scoped to the token user's devices, cleaned values, no
-  credentials (no SNMP data), JSON.
+  credentials (no SNMP data), JSON; the devices of a dry run or batch in progress only as its dry run recorded how the
+  runner reaches them, else not at all, with what each fetch served them recorded.
 * **CSRF** on every POST; errors are JSON that says what to fix.
 
 ## Semaphore UI behaviour the plugin relies on
@@ -785,10 +803,11 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   dry run (so it shows nothing for them), and modules whose check mode guesses (`command` and `shell` are skipped,
   many network modules compute what they would send from the running configuration) can apply differently. The proof
   shows that nothing ran outside check mode, not that the dry run predicts the apply.
-* **The runner fetches the inventory when its run starts**, seconds after the plugin last compared how it reaches the
-  devices: an address changed in that moment is not seen before the run (the plugin sees it at the end of the batch
-  and stops the change, unless it was changed back by then). A repository's own `group_vars` or `host_vars` that
-  set connection variables are not part of the comparison (the plugin's inventory is).
+* **The runner fetches the inventory when its run starts**, after the plugin last compared how it reaches the devices
+  (a batch may wait behind another task of its template): the plugin then serves the batch's devices only as the dry
+  run recorded them and leaves out one edited meanwhile, so the run cannot reach another device through it, but the
+  batch does not run there and the change stops. A repository's own `group_vars` or `host_vars` that set connection
+  variables are not part of the comparison (the plugin's inventory is).
 * **A `check_mode` set by a Jinja expression** gets its banner's marker from the expression as written, not from its
   value: Ansible prints the banner before it evaluates the expression for each host. A task with `check_mode: "{{
   ... }}"` that evaluates to false runs for real under a `[CHECK MODE]` banner, which the plugin cannot see. Keep

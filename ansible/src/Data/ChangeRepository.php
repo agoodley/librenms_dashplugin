@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Data;
 use Agoodley\LibrenmsAnsible\Changes\BackupState;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStore;
+use Agoodley\LibrenmsAnsible\Changes\InventoryGuard;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Illuminate\Support\Facades\DB;
 
@@ -26,6 +27,9 @@ final class ChangeRepository implements ChangeStore
 
     /** Boolean columns per table. */
     private const BOOLEANS = ['ansible_changes' => ['has_secrets'], 'ansible_change_windows' => ['closing'], 'ansible_change_diffs' => ['cut']];
+
+    /** Statuses of a batch whose run may fetch the inventory now (InventoryGuard). */
+    private const IN_PROGRESS = ['launching', 'running'];
 
     /** The phase 2 tables, and the columns of ansible_runs it added. */
     public const TABLES = ['ansible_changes', 'ansible_change_targets', 'ansible_change_batches', 'ansible_change_approvals', 'ansible_change_windows',
@@ -49,7 +53,7 @@ final class ChangeRepository implements ChangeStore
 
             // a table's columns tell that it exists too
             return SchemaCheck::hasColumns('ansible_runs', ['change_id', 'kind', 'batch', 'context', 'commit_hash', 'proof'])
-                && SchemaCheck::hasColumns('ansible_change_targets', ['backup_check']);
+                && SchemaCheck::hasColumns('ansible_change_targets', ['backup_check', 'served_hash', 'served_at', 'served_note']);
         } catch (\Throwable) {
             return false;
         }
@@ -263,6 +267,59 @@ final class ChangeRepository implements ChangeStore
         }
 
         return $reserved;
+    }
+
+    /**
+     * {@inheritdoc}
+     *
+     * The changes in their dry run, and those of the unended changes with a batch launching or running.
+     */
+    public function inProgress(): array
+    {
+        $found = [];
+        $rows = $this->sql->select('SELECT * FROM ' . $this->sql->table('ansible_changes') . ' WHERE `status` = ? OR (`status` NOT IN (' . self::marks(ChangeStatus::FINAL)
+            . ') AND `id` IN (SELECT `change_id` FROM ' . $this->sql->table('ansible_change_batches') . ' WHERE `status` IN (?, ?))) ORDER BY `id`',
+            array_merge([ChangeStatus::DRY_RUN], ChangeStatus::FINAL, self::IN_PROGRESS));
+        foreach ($rows as $row) {
+            $change = self::decode('ansible_changes', $row);
+            $targets = $this->targets((int) $change['id']);
+            if ($change['status'] === ChangeStatus::DRY_RUN) {
+                $found[] = ['change' => $change, 'phase' => 'dry_run', 'batch' => null, 'targets' => $targets];
+
+                continue;
+            }
+            foreach ($this->batches((int) $change['id']) as $number => $batch) {
+                if (in_array($batch['status'], self::IN_PROGRESS, true)) {
+                    $found[] = ['change' => $change, 'phase' => 'batch', 'batch' => $batch,
+                        'targets' => array_filter($targets, fn (array $target) => (int) $target['batch'] === $number)];
+                }
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * {@inheritdoc}
+     *
+     * One UPDATE each: a target left out is marked so only when it was not yet (that answers whether this fetch was the
+     * first); a served one keeps a mark it has and becomes "mixed" when another connection was served before. served_at is
+     * set first: MySQL evaluates the assignments of an UPDATE in order, with the values assigned before.
+     */
+    public function served(int $changeId, int $deviceId, ?string $hash, ?string $note, int $at): bool
+    {
+        $table = $this->sql->table('ansible_change_targets');
+        if ($hash === null) {
+            return $this->sql->change('UPDATE ' . $table . ' SET `served_hash` = ?, `served_note` = ?, `served_at` = ? WHERE `change_id` = ? AND `device_id` = ? '
+                . 'AND (`served_hash` IS NULL OR `served_hash` <> ?)', [InventoryGuard::LEFT_OUT, mb_substr((string) $note, 0, 500), Clock::store($at), $changeId, $deviceId,
+                    InventoryGuard::LEFT_OUT]) > 0;
+        }
+        $this->sql->change('UPDATE ' . $table . ' SET `served_at` = CASE WHEN `served_hash` IN (?, ?) THEN `served_at` ELSE ? END, '
+            . '`served_hash` = CASE WHEN `served_hash` IN (?, ?) THEN `served_hash` WHEN `served_hash` IS NULL OR `served_hash` = ? THEN ? ELSE ? END '
+            . 'WHERE `change_id` = ? AND `device_id` = ?', [InventoryGuard::LEFT_OUT, InventoryGuard::MIXED, Clock::store($at), InventoryGuard::LEFT_OUT,
+                InventoryGuard::MIXED, $hash, $hash, InventoryGuard::MIXED, $changeId, $deviceId]);
+
+        return false;
     }
 
     /**

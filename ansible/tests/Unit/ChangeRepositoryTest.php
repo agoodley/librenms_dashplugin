@@ -126,6 +126,41 @@ class ChangeRepositoryTest extends TestCase
         $this->assertSame([$ready], $this->changes->pendingIds());
     }
 
+    public function testTheDryRunsAndBatchesInProgressAndWhatTheInventoryServedThem(): void
+    {
+        $dryRun = $this->create(['status' => ChangeStatus::DRY_RUN]);
+        $applying = $this->create(['status' => ChangeStatus::APPLYING]);
+        $this->changes->updateBatch($applying, 2, ['status' => 'running', 'run_id' => 9]);
+        $queued = $this->create(['status' => ChangeStatus::STOPPING]);
+        $this->changes->updateBatch($queued, 1, ['status' => 'launching']);
+        $ended = $this->create(['status' => ChangeStatus::FAILED]);
+        $this->changes->updateBatch($ended, 1, ['status' => 'running']);
+        $this->create(['status' => ChangeStatus::READY]);
+
+        $found = array_map(fn ($entry) => [(int) $entry['change']['id'], $entry['phase'], $entry['batch']['number'] ?? null, array_keys($entry['targets'])],
+            $this->changes->inProgress());
+        $this->assertSame([[$dryRun, 'dry_run', null, [501, 502, 503]], [$applying, 'batch', 2, [502, 503]], [$queued, 'batch', 1, [501]]], $found,
+            'a dry run with all its targets, a batch launching or running with its devices; nothing of a change that ended');
+
+        $at = strtotime('2026-10-22 10:00:00 UTC');
+        $this->assertFalse($this->changes->served($applying, 502, 'h1', null, $at));
+        $this->assertFalse($this->changes->served($applying, 502, 'h1', null, $at + 5));
+        $this->assertSame(['h1', '2026-10-22 10:00:05'], [$this->changes->targets($applying)[502]['served_hash'], $this->changes->targets($applying)[502]['served_at']]);
+        $this->changes->served($applying, 502, 'h2', null, $at + 6);
+        $this->assertSame('mixed', $this->changes->targets($applying)[502]['served_hash'], 'two fetches served different connections');
+        $this->changes->served($applying, 502, 'h1', null, $at + 7);
+        $this->assertSame(['mixed', '2026-10-22 10:00:06'], [$this->changes->targets($applying)[502]['served_hash'], $this->changes->targets($applying)[502]['served_at']],
+            'and stays so');
+        $this->assertTrue($this->changes->served($applying, 503, null, 'lab-sw3: ansible_host 10.0.0.3 → 10.0.0.4', $at + 8), 'left out: the first time');
+        $this->assertFalse($this->changes->served($applying, 503, null, 'lab-sw3: another reason', $at + 9));
+        $this->assertFalse($this->changes->served($applying, 503, 'h3', null, $at + 10));
+        $target = $this->changes->targets($applying)[503];
+        $this->assertSame(['left_out', 'lab-sw3: ansible_host 10.0.0.3 → 10.0.0.4', '2026-10-22 10:00:08'], [$target['served_hash'], $target['served_note'], $target['served_at']],
+            'a target left out stays so, with its first reason and time');
+        $this->assertTrue($this->changes->served($applying, 502, null, 'gone', $at + 11), 'a mixed one can still be left out');
+        $this->assertSame([null, null], [$this->changes->targets($dryRun)[502]['served_hash'], $this->changes->targets($applying)[501]['served_hash']], 'per change and device');
+    }
+
     public function testTheSyncCommandFollowsUnfinishedChangesAndOpenWindowsAndBackups(): void
     {
         $done = $this->create(['status' => ChangeStatus::APPLIED]);

@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Tests\Unit\Fakes;
 use Agoodley\LibrenmsAnsible\Changes\BatchPlan;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStore;
+use Agoodley\LibrenmsAnsible\Changes\InventoryGuard;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 
 /**
@@ -60,7 +61,8 @@ final class MemoryChangeStore implements ChangeStore
             $this->targets[$id][$deviceId] = ['change_id' => $id, 'device_id' => $deviceId, 'inventory_name' => $name, 'hostname' => $name, 'display' => strtok($name, '.'),
                 'batch' => (int) $plan->batchOf($deviceId), 'position' => $position++, 'dry_result' => null, 'dry_counts' => null, 'result' => null, 'counts' => null,
                 'backup_node' => null, 'backup_check' => null, 'before_status' => null, 'before_requested_at' => null, 'before_at' => null, 'before_version' => null, 'before_error' => null,
-                'after_status' => null, 'after_requested_at' => null, 'after_at' => null, 'after_version' => null, 'after_error' => null];
+                'after_status' => null, 'after_requested_at' => null, 'after_at' => null, 'after_version' => null, 'after_error' => null,
+                'served_hash' => null, 'served_at' => null, 'served_note' => null];
         }
         foreach ($plan->batches as $index => $devices) {
             $this->batches[$id][$index + 1] = ['change_id' => $id, 'number' => $index + 1, 'status' => 'pending', 'run_id' => null, 'failures' => 0,
@@ -164,6 +166,48 @@ final class MemoryChangeStore implements ChangeStore
         }
 
         return $reserved;
+    }
+
+    public function inProgress(): array
+    {
+        $found = [];
+        foreach ($this->changes as $id => $change) {
+            if ($change['status'] === ChangeStatus::DRY_RUN) {
+                $found[] = ['change' => $change, 'phase' => 'dry_run', 'batch' => null, 'targets' => $this->targets[$id] ?? []];
+
+                continue;
+            }
+            if (ChangeStatus::isFinal($change['status'])) {
+                continue;
+            }
+            foreach ($this->batches[$id] ?? [] as $number => $batch) {
+                if (in_array($batch['status'], ['launching', 'running'], true)) {
+                    $found[] = ['change' => $change, 'phase' => 'batch', 'batch' => $batch,
+                        'targets' => array_filter($this->targets[$id] ?? [], fn (array $target) => (int) $target['batch'] === $number)];
+                }
+            }
+        }
+
+        return $found;
+    }
+
+    public function served(int $changeId, int $deviceId, ?string $hash, ?string $note, int $at): bool
+    {
+        $target = &$this->targets[$changeId][$deviceId];
+        if ($hash === null) {
+            if ($target['served_hash'] === InventoryGuard::LEFT_OUT) {
+                return false;
+            }
+            [$target['served_hash'], $target['served_note'], $target['served_at']] = [InventoryGuard::LEFT_OUT, mb_substr((string) $note, 0, 500), Clock::store($at)];
+
+            return true;
+        }
+        if (! in_array($target['served_hash'], [InventoryGuard::LEFT_OUT, InventoryGuard::MIXED], true)) {
+            $target['served_at'] = Clock::store($at);
+            $target['served_hash'] = $target['served_hash'] === null || $target['served_hash'] === $hash ? $hash : InventoryGuard::MIXED;
+        }
+
+        return false;
     }
 
     public function replaceDiffs(int $changeId, int $runId, array $rows): void

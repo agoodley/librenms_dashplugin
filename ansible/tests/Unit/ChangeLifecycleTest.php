@@ -8,7 +8,9 @@ use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeSettings;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\Connections;
+use Agoodley\LibrenmsAnsible\Changes\InventoryGuard;
 use Agoodley\LibrenmsAnsible\Changes\NextChange;
+use Agoodley\LibrenmsAnsible\Inventory\Inventory;
 use Agoodley\LibrenmsAnsible\Runner\SurveyVar;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeBackups;
@@ -492,6 +494,205 @@ class ChangeLifecycleTest extends TestCase
             . 'devices than the ones dry-run', $change['error']);
         $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'), 'no further batch');
         $this->assertSame('failed', $this->changes->batches[$id][1]['status']);
+    }
+
+    // ------------------------------------------------------------------ what the inventory endpoint serves the runner meanwhile
+
+    /**
+     * The inventory as LibreNMS has it now (the fake runner's connections: a device NOT_A_HOST is left out), as the
+     * endpoint serves it at $at: through the guard, which records what it served.
+     */
+    private function fetched(int $at, ?string $host = null): Inventory
+    {
+        return (new InventoryGuard($this->changes, $this->events))->serve($this->inventoryNow(), $at, $host);
+    }
+
+    /** The inventory as LibreNMS has it now (the fake runner's connections: a device NOT_A_HOST is left out). */
+    private function inventoryNow(): Inventory
+    {
+        $hosts = [];
+        $names = [];
+        $leftOut = [];
+        foreach ($this->runner->connections(array_keys(self::TARGETS)) as $deviceId => $vars) {
+            if (isset($vars[Connections::NOT_A_HOST])) {
+                $leftOut[$deviceId] = ['reason' => 'disabled', 'text' => (string) $vars[Connections::NOT_A_HOST]];
+
+                continue;
+            }
+            $hosts[self::TARGETS[$deviceId]] = $vars + ['librenms_sysname' => strtok(self::TARGETS[$deviceId], '.')];
+            $names[$deviceId] = self::TARGETS[$deviceId];
+        }
+        return new Inventory($hosts, $names, ['os_ios' => array_values($names)], ['os_ios' => ['kind' => 'os', 'label' => 'ios']], $leftOut);
+    }
+
+    public function testAHostReachedElsewhereWhenTheRunnerFetchesTheInventoryIsLeftOut(): void
+    {
+        // the launch checked lab-sw1 at its dry run's address; it then waits in the runner's queue, and lab-sw1 is pointed at lab-sw2's address
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->runner->connections[501] = self::ELSEWHERE;
+
+        $served = $this->fetched($this->t0 + 55);
+        $this->assertNull($served->nameOf(501), 'lab-sw1 is not served: neither its new address (it may be another device) nor the old one');
+        $this->assertArrayNotHasKey('lab-sw1.netops.lab', $served->toAnsible()['_meta']['hostvars']);
+        $this->assertSame(['lab-sw2.netops.lab', 'lab-sw3.netops.lab'], $served->toAnsible()['os_ios']['hosts']);
+        $this->assertSame('10.0.0.246', $served->hosts()['lab-sw2.netops.lab']['ansible_host'], 'lab-sw2, of a batch not in progress, is served as it is');
+        $this->assertEquals(new \stdClass(), $this->fetched($this->t0 + 56, 'lab-sw1.netops.lab')->hostVars('lab-sw1.netops.lab'), 'nor to --host');
+        $target = $this->changes->targets[$id][501];
+        $this->assertSame([InventoryGuard::LEFT_OUT, 'lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246', '2026-10-22 10:00:55'],
+            [$target['served_hash'], $target['served_note'], $target['served_at']], 'recorded: left out, why, when');
+        $this->assertNull($this->changes->targets[$id][502]['served_hash'], 'nothing is recorded for a device whose batch is not in progress');
+        $said = preg_grep('/^The runner fetched the inventory during batch 1 without lab-sw1/', $this->changes->messages($id));
+        $this->assertSame(['The runner fetched the inventory during batch 1 without lab-sw1: the runner no longer reaches it as at the dry run (lab-sw1: ansible_host '
+            . '10.0.0.245 → 10.0.0.246). The batch cannot run on it, and the change stops when the batch ends.'], array_values($said), 'once in the timeline');
+        $warning = array_values(array_filter($this->events->of(501), fn ($e) => $e['severity'] === 'warning'));
+        $this->assertSame('Ansible change #1 (CHG-1), batch 1: left out of the inventory the runner fetched, as the runner no longer reaches it as at the dry run '
+            . '(lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246)', $warning[0]['message'] ?? null, 'and in its eventlog');
+        $this->assertSame('lab-sw1 left out of the inventory the runner fetched (lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246)', $this->changes->batches[$id][1]['note']);
+
+        // set back before the batch ends: served again, but the batch already went without it; the end of the batch says so,
+        // though LibreNMS reaches it as at the dry run by then
+        unset($this->runner->connections[501]);
+        $this->assertNotNull($this->fetched($this->t0 + 60)->nameOf(501));
+        $this->assertSame(InventoryGuard::LEFT_OUT, $this->changes->targets[$id][501]['served_hash'], 'it stays left out for this batch');
+        $this->assertCount(1, preg_grep('/without lab-sw1/', $this->changes->messages($id)), 'said once');
+        $this->endRun($this->batchRun($id, 1), 'incomplete', [501 => 'not_run'], [], $this->t0 + 100);
+        $lifecycle->advance($id, $this->t0 + 101);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::FAILED, 'how the runner reaches a device changed during batch 1 (lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246): the plugin left it '
+            . 'out of the inventory the runner fetched, so the batch did not run on it'], [$change['status'], $change['error']]);
+        $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'), 'no further batch');
+    }
+
+    public function testTheEndOfABatchChecksWhatTheRunnerGotNotLibreNmsAfterwards(): void
+    {
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $served = $this->fetched($this->t0 + 55);
+        $this->assertSame('10.0.0.245', $served->hosts()['lab-sw1.netops.lab']['ansible_host']);
+        $this->assertSame(Connections::hash(((array) $this->changes->find($id)['fingerprint_parts']['connections'])[501]), $this->changes->targets[$id][501]['served_hash'],
+            'what it served is recorded: the hash of the connection, the one the dry run recorded');
+
+        // lab-sw1 is edited once the runner has it: batch 1 ran where it was dry-run (done); the dry run no longer counts for the
+        // next batch, which is checked before it starts
+        $this->runner->connections[501] = self::ELSEWHERE;
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        $lifecycle->advance($id, $this->t0 + 101);
+        $this->assertSame(['done', null], [$this->changes->batches[$id][1]['status'], $this->changes->batches[$id][1]['note']]);
+        $this->assertSame([ChangeStatus::FAILED, 'batch 2 was not started: how the runner reaches a device changed since the dry run (lab-sw1: ansible_host 10.0.0.245 → '
+            . '10.0.0.246)'], [$this->changes->find($id)['status'], $this->changes->find($id)['error']]);
+
+        // a batch is launched with its record cleared; one that served another connection than the dry run's (not possible
+        // through the guard: a check of the record itself) stops the change
+        unset($this->runner->connections[501]);
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $this->changes->targets[$id][501]['served_hash'] = InventoryGuard::LEFT_OUT;
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->assertNull($this->changes->targets[$id][501]['served_hash'], 'recorded anew for the batch');
+        $this->changes->targets[$id][501]['served_hash'] = Connections::hash(['ansible_host' => '10.0.0.99'] + self::ELSEWHERE);
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        $lifecycle->advance($id, $this->t0 + 101);
+        $this->assertSame([ChangeStatus::FAILED, 'how the runner reaches a device changed during batch 1 (lab-sw1: the runner got another connection than the one recorded '
+            . 'at the dry run): the batch may have run on other devices than the ones dry-run'], [$this->changes->find($id)['status'], $this->changes->find($id)['error']]);
+    }
+
+    public function testADryRunHostReachedElsewhereWhenTheRunnerFetchesIsLeftOutAndTheDryRunDoesNotCount(): void
+    {
+        $id = $this->change();
+        $lifecycle = $this->lifecycle();
+        $this->assertNull($lifecycle->startDryRun($id, self::ALICE, [], $this->t0));
+        $this->runner->connections[502] = ['ansible_host' => '10.0.0.247'] + self::ELSEWHERE;
+
+        $served = $this->fetched($this->t0 + 5);
+        $this->assertSame(['lab-sw1.netops.lab', 'lab-sw3.netops.lab'], array_keys($served->hosts()));
+        $this->assertContains('The runner fetched the inventory during the dry run without lab-sw2: the runner no longer reaches it as when the dry run was launched '
+            . '(lab-sw2: ansible_host 10.0.0.246 → 10.0.0.247). The dry run cannot run on it, so it will not count.', $this->changes->messages($id));
+        $runId = (int) $this->changes->find($id)['dry_run_id'];
+        $this->endRun($runId, 'incomplete', [501 => 'changed', 502 => 'not_run', 503 => 'changed'],
+            self::dryRunLog(['lab-sw1.netops.lab' => 'changed', 'lab-sw3.netops.lab' => 'changed']), $this->t0 + 30);
+        $lifecycle->advance($id, $this->t0 + 35);
+
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::DRAFT, 'failed'], [$change['status'], $change['dry_run_state']]);
+        $this->assertContains('The runner did not get every target as recorded when the dry run was launched (lab-sw2: ansible_host 10.0.0.246 → 10.0.0.247): the plugin '
+            . 'left a host out of the inventory the runner fetched, so the dry run did not run there.', $change['dry_run_findings']);
+        $this->assertSame('not_run', $this->changes->targets[$id][502]['dry_result']);
+
+        // a new dry run records anew
+        $this->assertNull($this->lifecycle()->startDryRun($id, self::ALICE, [], $this->t0 + 100));
+        $this->assertNull($this->changes->targets[$id][502]['served_hash']);
+    }
+
+    public function testAFetchBeforeTheDryRunRecordedItsConnectionsIsCheckedWhenTheDryRunEnds(): void
+    {
+        // the runner fetches before the launch returned: nothing to compare with yet, so what it served is recorded; it was
+        // not what the launch recorded (lab-sw1 was edited in between), so the dry run, clean as it ran, does not count
+        $id = $this->change();
+        $lifecycle = $this->lifecycle();
+        $this->runner->beforeStart = function (string $kind) {
+            $this->runner->connections[501] = self::ELSEWHERE;
+            $this->assertNotNull($this->fetched($this->t0 + 1)->nameOf(501), 'served: there is nothing to compare it with yet');
+        };
+        $this->assertNull($lifecycle->startDryRun($id, self::ALICE, [], $this->t0));
+        $this->runner->beforeStart = null;
+        $this->assertSame(Connections::hash(self::ELSEWHERE), $this->changes->targets[$id][501]['served_hash']);
+        $runId = (int) $this->changes->find($id)['dry_run_id'];
+        $this->endRun($runId, 'success', array_fill_keys(array_keys(self::TARGETS), 'changed'), self::dryRunLog(array_fill_keys(self::TARGETS, 'changed')), $this->t0 + 30);
+        $lifecycle->advance($id, $this->t0 + 35);
+
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::DRAFT, 'failed', 'The runner did not get every target as recorded when the dry run was launched.'],
+            [$change['status'], $change['dry_run_state'], $change['error']]);
+        $this->assertSame(['The runner did not get every target as recorded when the dry run was launched (lab-sw1: the runner got another connection than the one '
+            . 'recorded at the dry run).'], array_values(array_filter($change['dry_run_findings'], fn ($f) => str_starts_with($f, 'The runner did not get'))));
+
+        // two fetches serving different connections before anything was recorded: mixed
+        $this->changes->targets[$id][501]['served_hash'] = null;
+        $this->changes->served($id, 501, 'a', null, $this->t0);
+        $this->changes->served($id, 501, 'b', null, $this->t0);
+        $this->assertSame(InventoryGuard::MIXED, $this->changes->targets[$id][501]['served_hash']);
+        $this->assertTrue($this->changes->served($id, 501, null, 'why', $this->t0), 'left out after it was mixed: the first time');
+        $this->assertFalse($this->changes->served($id, 501, null, 'why again', $this->t0));
+        $this->assertSame('why', $this->changes->targets[$id][501]['served_note']);
+    }
+
+    public function testTheInventoryPageShowsAHostLeftOutWithoutRecordingAFetch(): void
+    {
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $this->backups->enabled = false;
+        $this->lifecycle()->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->runner->connections[501] = self::ELSEWHERE;
+
+        $page = (new InventoryGuard($this->changes))->filter($this->inventoryNow());
+        $this->assertNull($page->nameOf(501));
+        $this->assertSame(['reason' => InventoryGuard::REASON, 'text' => 'change #1\'s batch 1 is in progress on it, and the runner no longer reaches it as at the dry run '
+            . '(lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246): the runner does not get it meanwhile'], $page->leftOut()[501]);
+        $this->assertNull($this->changes->targets[$id][501]['served_hash'], 'the page records nothing');
+        $this->assertSame([], preg_grep('/without lab-sw1/', $this->changes->messages($id)));
+
+        // a fetch of another host's variables records nothing for lab-sw1; its own does
+        $this->assertNotEquals(new \stdClass(), $this->fetched($this->t0 + 55, 'lab-sw2.netops.lab')->hostVars('lab-sw2.netops.lab'));
+        $this->assertNull($this->changes->targets[$id][501]['served_hash']);
+        $this->fetched($this->t0 + 56, 'lab-sw1.netops.lab');
+        $this->assertSame(InventoryGuard::LEFT_OUT, $this->changes->targets[$id][501]['served_hash']);
+    }
+
+    public function testAHostThatIsNoLongerOneIsRecordedLeftOut(): void
+    {
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->runner->connections[501] = [Connections::NOT_A_HOST => 'disabled in LibreNMS'];
+
+        $this->fetched($this->t0 + 55);
+        $this->assertSame([InventoryGuard::LEFT_OUT, 'lab-sw1 is no longer a host of the inventory (disabled in LibreNMS)'],
+            [$this->changes->targets[$id][501]['served_hash'], $this->changes->targets[$id][501]['served_note']]);
+        $this->assertSame([], array_filter($this->changes->targets[$id], fn ($t) => $t['device_id'] !== 501 && $t['served_hash'] !== null));
     }
 
     public function testDryRunsAndApprovalsExpire(): void

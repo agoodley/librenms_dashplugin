@@ -74,6 +74,28 @@ final class Inventory
     }
 
     /**
+     * The inventory without some of its hosts (they are left out with why): what the runner gets while their
+     * connection is not the one a change's dry run or batch in progress recorded (Changes\InventoryGuard).
+     *
+     * @param  array<int, array{reason: string, text: string}>  $leave  device_id => why
+     */
+    public function without(array $leave): self
+    {
+        $names = array_diff_key($this->names, $leave);
+        $gone = array_flip(array_values(array_intersect_key($this->names, $leave)));
+        $groups = array_map(fn (array $members) => array_values(array_filter($members, fn ($member) => ! isset($gone[$member]))), $this->groups);
+        $leftOut = $this->leftOut;
+        foreach ($leave as $deviceId => $why) {
+            if (isset($this->names[$deviceId])) {
+                $leftOut[$deviceId] = $why;
+            }
+        }
+        ksort($leftOut);
+
+        return new self(array_diff_key($this->hosts, $gone), $names, $groups, $this->groupInfo, $leftOut);
+    }
+
+    /**
      * The inventory as Ansible's dynamic inventory JSON (the script inventory's --list): every group with its
      * hosts, "all" with the groups as children, and every host's variables in _meta.hostvars, so Ansible never
      * needs to ask per host.

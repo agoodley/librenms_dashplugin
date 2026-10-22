@@ -97,6 +97,22 @@ interface ChangeStore
     public function reserved(?int $exceptChange = null): array;
 
     /**
+     * The dry runs and batches in progress, whose runner task may fetch the inventory now (InventoryGuard): a change in its
+     * dry run, with all its targets; a batch launching or running of a change that has not ended, with its devices.
+     *
+     * @return array<int, array{change: array, phase: string, batch: ?array, targets: array<int, array>}>  phase: dry_run or batch
+     */
+    public function inProgress(): array;
+
+    /**
+     * Record what a fetch of the inventory served the runner for a target in progress: the hash of its connection, or null
+     * when the host was left out (with why). A target left out stays so (and keeps its first reason) until its next dry run or
+     * batch resets it; one served another connection than before is marked InventoryGuard::MIXED. True when this fetch left
+     * it out for the first time.
+     */
+    public function served(int $changeId, int $deviceId, ?string $hash, ?string $note, int $at): bool;
+
+    /**
      * Replace the diffs of the change's dry run.
      *
      * @param  array<int, array{device_id: ?int, task: string, item: ?string, kind: string, lines: string[], cut: bool, host: ?string, reason: ?string}>  $rows
