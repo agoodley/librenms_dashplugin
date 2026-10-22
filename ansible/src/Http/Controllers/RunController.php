@@ -140,7 +140,7 @@ class RunController extends Controller
             'dry_run' => $dryRun,
             'proof' => $run['proof'] ?? null,
             'unexpected_hosts' => $run['unexpected_hosts'] ?? [],
-            'error' => $run['error'],
+            'error' => $run['error'] !== null ? Clock::localize($run['error']) : null,
             'poll_error' => $run['poll_error'],
             'stopped_by' => $run['stopped_by'],
             'stop_reason' => $run['stop_reason'],

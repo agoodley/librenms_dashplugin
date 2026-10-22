@@ -30,7 +30,7 @@
             <h4>Status</h4>
             <div class="ans-card-value"><span id="ans-run-status" class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::css($status) }}">{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::label($status) }}</span></div>
             <p>runner: <span id="ans-run-runner-status">{{ $run['runner_status'] ?? '-' }}</span>@if($run['stopped_by']) · stop asked by {{ $run['stopped_by'] }}@endif
-                @if($run['stop_reason']) · {{ $run['stop_reason'] }}@endif @if($run['released_by']) · devices released by {{ $run['released_by'] }}@endif</p>
+                @if($run['stop_reason']) · {{ \Agoodley\LibrenmsAnsible\Support\Clock::localize($run['stop_reason']) }}@endif @if($run['released_by']) · devices released by {{ $run['released_by'] }}@endif</p>
         </div>
         <div class="ans-card ans-info">
             <h4>Template</h4>
@@ -69,7 +69,7 @@
         @endif
         @if($run['error'])
             <div class="alert alert-{{ in_array($status, ['not_launched', 'failed'], true) ? 'danger' : 'warning' }}" id="ans-run-error"><i class="fa fa-exclamation-triangle"></i>
-                <strong>{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::label($status) }}:</strong> {{ $run['error'] }}
+                <strong>{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::label($status) }}:</strong> {{ \Agoodley\LibrenmsAnsible\Support\Clock::localize($run['error']) }}
                 @if(in_array($status, \Agoodley\LibrenmsAnsible\Runs\RunStatus::WATCHED, true) && $run['watch_until'])
                     <br><span class="ans-muted">The plugin still asks the runner about this run until {{ \Agoodley\LibrenmsAnsible\Support\Clock::local($run['watch_until'], 'Y-m-d H:i T') }}: a later end is recorded here.</span>
                 @endif

@@ -453,7 +453,7 @@ final class RunLifecycle
         $note = $late ? 'the runner reported this end after the plugin had given the run up as ' . strtolower(RunStatus::label((string) $run['status']))
             : ($task->status === RunStatus::STOPPED ? ($run['stop_reason'] ?? ($run['stopped_by'] ? 'stopped by ' . $run['stopped_by'] : 'stopped in the runner'))
                 . (! $runsOn ? ' before the runner started it' : '; the step in progress may still run on the runner'
-                    . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . date('Y-m-d H:i T', $heldUntil) : '')) : null);
+                    . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . Clock::text($heldUntil) : '')) : null);
         // the eventlog's User: who stopped the run, for a stopped one; else who launched it
         $actor = (string) (($task->status === RunStatus::STOPPED ? ($run['stopped_by'] ?? null) : null) ?: $user);
         foreach ($evaluation['results'] as $deviceId => $result) {
@@ -613,7 +613,7 @@ final class RunLifecycle
             return 'The plugin still gets answers about this run from the runner: wait for its end, or stop it.';
         }
         $evaluation = RunResults::evaluate($this->targetNames($id), OutputBuffer::display($run), false);
-        $since = (string) Clock::local((string) ($run['runner_seen_at'] ?? $run['created_at']), 'Y-m-d H:i:s T');
+        $since = Clock::text((int) Clock::unix((string) ($run['runner_seen_at'] ?? $run['created_at'])), 'Y-m-d H:i:s');
         $reason = 'the devices were released by ' . UntrustedText::line($username, 60) . ": the runner could not be asked about the run since $since ("
             . $run['poll_error'] . ')';
         if (! $this->runs->updateAt($id, (int) $run['version'], ['status' => RunStatus::RELEASED, 'released_by' => mb_substr($username, 0, 255),

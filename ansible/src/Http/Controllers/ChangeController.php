@@ -269,7 +269,7 @@ class ChangeController extends Controller
         return response()->json([
             'id' => $id, 'status' => $change['status'], 'label' => ChangeStatus::label($change['status']), 'css' => ChangeStatus::css($change['status']),
             'final' => ChangeStatus::isFinal($change['status']), 'version' => (int) $change['version'], 'pending' => $state['pending'],
-            'waiting' => $change['waiting'], 'current_batch' => (int) $change['current_batch'], 'error' => $change['error'],
+            'waiting' => $change['waiting'], 'current_batch' => (int) $change['current_batch'], 'error' => $change['error'] !== null ? Clock::localize($change['error']) : null,
             'actions' => $state['actions'], 'signature' => $state['signature'], 'log' => $log,
         ]);
     }

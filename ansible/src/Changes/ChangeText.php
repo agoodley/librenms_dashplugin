@@ -144,8 +144,8 @@ final class ChangeText
         return self::name($change) . ": batch $next waits " . match ($why) {
             'canary' => 'for an admin to continue after the first batch',
             'secrets' => 'for an admin to enter the secret answers again (the plugin never keeps them)'
-                . ($until !== null ? ' until ' . Clock::show($until, 'Y-m-d H:i T') . ', then the change ends' : ''),
-            default => 'until ' . ($until !== null ? Clock::show($until, 'Y-m-d H:i T') : 'the pause ends') . ' (pause between batches)',
+                . ($until !== null ? ' until ' . Clock::text($until) . ', then the change ends' : ''),
+            default => 'until ' . ($until !== null ? Clock::text($until) : 'the pause ends') . ' (pause between batches)',
         };
     }
 
@@ -160,12 +160,12 @@ final class ChangeText
 
     public static function windowOpened(array $change, int $batch, int $scheduleId, int $until): string
     {
-        return self::name($change) . ", batch $batch: maintenance window #$scheduleId opened until " . Clock::show($until, 'Y-m-d H:i T');
+        return self::name($change) . ", batch $batch: maintenance window #$scheduleId opened until " . Clock::text($until);
     }
 
     public static function windowClosed(array $change, int $batch, int $scheduleId, int $at): string
     {
-        return self::name($change) . ", batch $batch: maintenance window #$scheduleId closed at " . Clock::show($at, 'Y-m-d H:i T');
+        return self::name($change) . ", batch $batch: maintenance window #$scheduleId closed at " . Clock::text($at);
     }
 
     public static function windowGone(array $change, int $batch, int $scheduleId): string

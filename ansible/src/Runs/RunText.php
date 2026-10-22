@@ -104,7 +104,7 @@ final class RunText
     public static function holdReleased(int $runId, string $by, string $heldUntil, string $template, string $user, ?string $context = null): string
     {
         return self::label($runId, $context) . ': the devices held after its stop were released by ' . UntrustedText::line($by, 60) . ' (held until '
-            . Clock::local($heldUntil, 'Y-m-d H:i T') . '; the step in progress at the stop may still run on the runner), template ' . self::quote($template)
+            . Clock::text((int) Clock::unix($heldUntil)) . '; the step in progress at the stop may still run on the runner), template ' . self::quote($template)
             . ' by ' . UntrustedText::line($user, 60);
     }
 

@@ -115,7 +115,7 @@
         @endif
         @if($change['error'] && ! in_array($dryState, ['unverified', 'failed'], true) && $status !== ChangeStatus::APPLIED)
             <div class="alert alert-{{ in_array($status, [ChangeStatus::FAILED, ChangeStatus::REJECTED], true) ? 'danger' : 'warning' }}" id="ans-change-error">
-                <strong>{{ ChangeStatus::label($status) }}:</strong> {{ $change['error'] }}
+                <strong>{{ ChangeStatus::label($status) }}:</strong> {{ Clock::localize($change['error']) }}
                 @if($remaining && $canRun && ($remaining['devices'] || $remaining['left_out']))
                     <div style="margin-top: 6px">
                         @if($remaining['devices'])
@@ -223,7 +223,7 @@
                             <td>{{ $number }}{{ $number === 1 && count($batches) > 1 ? ' (canary)' : '' }}</td>
                             <td class="ans-wrap">{{ implode(', ', array_map(fn ($d) => $targets[$d]['display'] ?: $targets[$d]['hostname'], $byBatch[$number] ?? [])) }}</td>
                             <td><span class="label label-{{ $batchCss[$batch['status']] ?? 'default' }} ans-batch-state">{{ $batchLabels[$batch['status']] ?? $batch['status'] }}</span>
-                                @if($batch['note'])<div class="ans-help ans-wrap">{{ $batch['note'] }}</div>@endif</td>
+                                @if($batch['note'])<div class="ans-help ans-wrap">{{ Clock::localize($batch['note']) }}</div>@endif</td>
                             <td>@if($batchRun)<a href="{{ route('ansible.runs.show', $batchRun['id']) }}">#{{ $batchRun['id'] }}</a> <span class="label label-{{ RunStatus::css($batchRun['status']) }}">{{ RunStatus::label($batchRun['status']) }}</span>@endif</td>
                             <td>@if($batchRun)@include('ansible::partials.results', ['summary' => $batchRun['summary'] ?? []])@endif</td>
                             <td class="ans-muted" style="white-space: nowrap">{{ $local($batch['started_at']) }}{{ $batch['ended_at'] ? ' – ' . Clock::local($batch['ended_at'], 'H:i:s') : '' }}{{ $batch['username'] ? ' · ' . $batch['username'] : '' }}</td>
@@ -394,7 +394,7 @@
         <table class="table table-condensed ans-table" id="ans-timeline-table">
             @foreach(array_reverse($events) as $event)
                 <tr data-kind="{{ $event['kind'] }}"><td style="white-space: nowrap; width: 160px" class="ans-muted">{{ $local($event['at']) }}</td><td style="width: 110px">{{ $event['username'] ?? 'the plugin' }}</td>
-                    <td class="ans-wrap">{{ $event['message'] }}</td></tr>
+                    <td class="ans-wrap">{{ Clock::localize($event['message']) }}</td></tr>
             @endforeach
         </table>
     </div>

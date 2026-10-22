@@ -711,7 +711,7 @@ final class ChangeLifecycle
         }
         if ($change['waiting'] === 'secrets' && $change['resume_at'] !== null && self::at($change['resume_at']) <= $now) {
             $this->finish($change, ChangeStatus::FAILED, 'stopped while it waited before batch ' . (int) $change['current_batch']
-                . ': nobody entered the secret answers by ' . Clock::show(self::at($change['resume_at']), 'Y-m-d H:i T'), $now);
+                . ': nobody entered the secret answers by ' . Clock::text(self::at($change['resume_at'])), $now);
 
             return;
         }
@@ -721,7 +721,7 @@ final class ChangeLifecycle
             $deadline = self::at($change['resume_at']);
             $batch = $this->changes->batches((int) $change['id'])[$number] ?? null;
             if ($batch !== null && ($batch['note'] ?? null) === null && $now >= $deadline - $this->secretsWait() + self::SECRETS_ANNOUNCE) {
-                $this->changes->updateBatch((int) $change['id'], $number, ['note' => 'until ' . Clock::show($deadline, 'Y-m-d H:i T') . ', then the change ends']);
+                $this->changes->updateBatch((int) $change['id'], $number, ['note' => 'until ' . Clock::text($deadline) . ', then the change ends']);
                 $this->timeline($change, 'apply', ChangeText::waiting($change, $number, 'secrets', $deadline), null, $now);
             }
 
@@ -1312,7 +1312,7 @@ final class ChangeLifecycle
             return UntrustedText::line($e->getMessage(), 300);
         }
         $this->changes->addWindow(['change_id' => $id, 'batch' => $number, 'schedule_id' => $scheduleId, 'status' => 'open', 'opened_at' => $now, 'ends_at' => $end]);
-        $this->timeline($change, 'window', "Maintenance window #$scheduleId opened for batch $number until " . Clock::show($end, 'Y-m-d H:i T') . '.', null, $now);
+        $this->timeline($change, 'window', "Maintenance window #$scheduleId opened for batch $number until " . Clock::text($end) . '.', null, $now);
         foreach ($devices as $deviceId) {
             $this->events->write(ChangeText::windowOpened($change, $number, $scheduleId, $end), $deviceId, 'info', ChangeText::reference($id), $this->batchUser($change, $number));
         }
