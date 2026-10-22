@@ -155,7 +155,14 @@ final class ChangeLifecycle
         if ($refusal !== null) {
             return $refusal;
         }
-        $problem = $this->dryRunProblem($change, $now) ?? $this->templateProblem($change);
+        $problem = $this->dryRunProblem($change, $now);
+        if ($problem === null) {
+            $template = $this->templateCheck($change);
+            if (isset($template['unreadable'])) {
+                return self::unreadableText($template['unreadable'], false);
+            }
+            $problem = $template['changed'] ?? null;
+        }
         if ($problem !== null) {
             $this->voidDryRun($change, $problem, $now, $user['username']);
 
@@ -228,7 +235,14 @@ final class ChangeLifecycle
         if ($problem !== null) {
             return 'You may not apply the change: ' . $problem . '.';
         }
-        $dryRun = $this->dryRunProblem($change, $now) ?? $this->templateProblem($change);
+        $dryRun = $this->dryRunProblem($change, $now);
+        if ($dryRun === null) {
+            $template = $this->templateCheck($change);
+            if (isset($template['unreadable'])) {
+                return self::unreadableText($template['unreadable'], ApprovalRules::needed($this->settings->approval));
+            }
+            $dryRun = $template['changed'] ?? null;
+        }
         if ($dryRun !== null) {
             $this->voidDryRun($change, $dryRun, $now, $user['username']);
 
@@ -1076,13 +1090,18 @@ final class ChangeLifecycle
     }
 
     /**
-     * Why the template, as the runner has it now, is not the one the dry run ran; null when it is.
+     * Is the template, as the runner has it now, the one the dry run ran? Null when it is; ['changed' => why] when it is
+     * not; ['unreadable' => why] when the runner cannot give it now (unreachable, an error, a timeout), which says
+     * nothing about the template: the action is refused and the dry run and approval stand.
+     *
+     * @return array{changed?: string, unreadable?: string}|null
      */
-    private function templateProblem(array $change): ?string
+    private function templateCheck(array $change): ?array
     {
+        $this->beat();
         $snapshot = $this->runner->snapshot($change);
         if ($snapshot['parts'] === null) {
-            return 'the template cannot be read from the runner: ' . $snapshot['error'];
+            return ['unreadable' => UntrustedText::line((string) ($snapshot['error'] ?? 'no answer'), 300)];
         }
         $parts = Fingerprint::parts($snapshot['parts'], self::names($this->changes->targets((int) $change['id'])), self::recorded($change), self::answers($change),
             (array) $change['plan']);
@@ -1091,7 +1110,16 @@ final class ChangeLifecycle
         }
         $what = Fingerprint::differences((array) ($change['fingerprint_parts'] ?? []), $parts);
 
-        return 'the template changed in the runner since the dry run' . ($what ? ' (' . implode(', ', $what) . ')' : '');
+        return ['changed' => 'the template changed in the runner since the dry run' . ($what ? ' (' . implode(', ', $what) . ')' : '')];
+    }
+
+    /**
+     * Why an approval or an apply is refused while the runner cannot give the template.
+     */
+    private static function unreadableText(string $error, bool $approved): string
+    {
+        return 'The template cannot be read from the runner now (' . $error . '): try again in a moment. The dry run'
+            . ($approved ? ' and its approval still count' : ' still counts') . '; once the template can be read, it is compared with the one dry-run.';
     }
 
     /**

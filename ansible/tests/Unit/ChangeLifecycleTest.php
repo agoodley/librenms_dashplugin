@@ -279,6 +279,35 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame('void', $this->changes->find($id)['dry_run_state']);
     }
 
+    public function testARunnerThatCannotGiveTheTemplateRefusesTheActionAndVoidsNothing(): void
+    {
+        // a server error (or a timeout) of the runner at Approve, then at Apply: nothing says the template changed
+        $id = $this->change();
+        $this->dryRun($id);
+        $lifecycle = $this->lifecycle();
+        $this->runner->snapshotError = 'Semaphore UI answered HTTP 500';
+        $this->assertSame('The template cannot be read from the runner now (Semaphore UI answered HTTP 500): try again in a moment. The dry run still counts; '
+            . 'once the template can be read, it is compared with the one dry-run.', $lifecycle->approve($id, self::BOB, true, '', $this->t0 + 40));
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::AWAITING, 'verified', null], [$change['status'], $change['dry_run_state'], $change['approved_by']]);
+
+        $this->runner->snapshotError = null;
+        $this->assertNull($lifecycle->approve($id, self::BOB, true, '', $this->t0 + 41));
+        $this->runner->snapshotError = 'the runner did not answer within 15 s';
+        $this->assertStringStartsWith('The template cannot be read from the runner now (the runner did not answer within 15 s): try again in a moment. '
+            . 'The dry run and its approval still count', (string) $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::READY, 'verified', 'bob'], [$change['status'], $change['dry_run_state'], $change['approved_by']]);
+        $this->assertSame([], array_filter(array_column($this->changes->approvals, 'voided_at')), 'the approval was not voided');
+        $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'));
+        $this->assertSame([], array_filter($this->changes->messages($id), fn ($m) => str_contains($m, 'no longer counts')), 'nothing voided in the timeline');
+
+        $this->runner->snapshotError = null;
+        $this->backups->enabled = false;
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 60), 'once the runner answers again');
+        $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status']);
+    }
+
     // ------------------------------------------------------------------ the eventlog
 
     public function testEachEntryCarriesTheAdminWhoDidTheStep(): void

@@ -551,8 +551,11 @@ plugin reads the template from the runner and the devices from LibreNMS again an
 A batch is checked when it starts, before its window opens and its backups are taken (with the template and its
 targets as a launch checks them, so a batch that would be refused opens nothing), and again right before its launch,
 after the backups, a wait for the secret answers or a pause: an approval that expired or a permission withdrawn
-meanwhile stops the change there. When one of these fails before the apply, the dry run or the approval no longer counts and the change goes back to
-a draft or awaits a new approval. During the apply, the change stops: no further batch is launched. The batch itself
+meanwhile stops the change there. When one of these fails before the apply, the dry run or the approval no longer
+counts and the change goes back to a draft or awaits a new approval. A runner that cannot give the template at an
+Approve or an Apply (unreachable, a server error, a timeout) says nothing about the template: the action is refused
+("try again in a moment") and the dry run and approval stand. During the apply, the change stops: no further batch
+is launched. The batch itself
 is launched with the commit of the dry run (Semaphore's commit option), and a batch whose run reports another commit
 stops the change, as does a batch at the end of which a device of it is no longer reached as at the dry run (the
 batch may have run elsewhere: the change says so).
