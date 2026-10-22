@@ -121,9 +121,14 @@ class ChangeController extends Controller
                 $source = $changes->available() ? $changes->find((int) $request->query('from')) : null;
                 if ($source !== null) {
                     $sourceTargets = $changes->targets((int) $source['id']);
-                    $service = $this->inventoryService();
                     // how the runner would reach them now, against the earlier dry run: an edit since is said, not taken silently
-                    $connections = Connections::of($service->build($service->inventoryUser()['visible'] ?? null), array_keys($sourceTargets));
+                    try {
+                        $service = $this->inventoryService();
+                        $connections = Connections::of($service->build($service->inventoryUser()['visible'] ?? null), array_keys($sourceTargets));
+                    } catch (\Throwable $e) {
+                        $this->failure('new change from a change: how the runner reaches its devices', $e);
+                        $connections = [];
+                    }
                     $prefill = NextChange::prefill($source, $sourceTargets, $kind, (new RunRepository())->busy(), $connections);
                     $templateId = $templateId !== '' ? $templateId : (string) $source['template_id'];
                 }
