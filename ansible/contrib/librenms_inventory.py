@@ -14,11 +14,13 @@ Environment (in Semaphore UI: an environment with the variable and the secret, u
 Usage: librenms_inventory.py --list | --host NAME
 
 Python standard library only. TLS certificates are always verified; redirects are not followed (the token would
-go with them). Errors go to stderr with a non-zero exit code, so Ansible reports them.
+go with them). Errors go to stderr with a non-zero exit code, so Ansible reports them; when LibreNMS refuses the
+request (HTTP 4xx), they quote the reason it gives (cleaned, cut, never the token).
 """
 import argparse
 import json
 import os
+import re
 import ssl
 import sys
 import urllib.error
@@ -27,6 +29,8 @@ import urllib.request
 
 ENDPOINT = '/plugin/ansible/api/inventory'
 VERSION = '1'
+# most characters of LibreNMS' error text printed
+DETAIL_MAX = 240
 
 
 class InventoryError(Exception):
@@ -73,7 +77,7 @@ def fetch(url, token, ca_bundle=None, timeout=30.0, host=None):
             content_type = response.headers.get('Content-Type', '')
             body = response.read()
     except urllib.error.HTTPError as e:
-        raise InventoryError(http_error(e.code, url)) from None
+        raise InventoryError(http_error(e.code, url, answer_error(e, token))) from None
     except urllib.error.URLError as e:
         reason = e.reason
         if isinstance(reason, ssl.SSLError):
@@ -93,15 +97,43 @@ def fetch(url, token, ca_bundle=None, timeout=30.0, host=None):
     return data
 
 
-def http_error(code, url):
-    """What an HTTP error means here."""
+def answer_error(e, token):
+    """The "error" text of a JSON 4xx answer (the plugin says there why it refused), cleaned; None without one."""
+    if not 400 <= e.code < 500 or 'json' not in (e.headers.get('Content-Type', '') if e.headers else ''):
+        return None
+    try:
+        data = json.loads(e.read(65536).decode('utf-8'))
+    except (AttributeError, OSError, ValueError):
+        return None
+    error = data.get('error') if isinstance(data, dict) else None
+    if not isinstance(error, str):
+        return None
+    return clean(error, token) or None
+
+
+def clean(text, token):
+    """One line of printable text without the token (nor its secret part), at most DETAIL_MAX characters."""
+    for secret in (token, token.partition('|')[2]):  # the whole token first
+        if len(secret) >= 8:
+            text = text.replace(secret, '[the token]')
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+    text = ' '.join(''.join(ch if ch.isprintable() else ' ' for ch in text).split())
+    return text if len(text) <= DETAIL_MAX else text[:DETAIL_MAX - 3].rstrip() + '...'
+
+
+def http_error(code, url, detail=None):
+    """What an HTTP error means here; detail: what LibreNMS said (answer_error)."""
+    said = f'; LibreNMS said: "{detail}"' if detail else ''
     if code == 401:
-        return 'LibreNMS refused the API token (HTTP 401): check LIBRENMS_TOKEN (it may have been deleted or have expired)'
+        return 'LibreNMS refused the API token (HTTP 401): check LIBRENMS_TOKEN (it may have been deleted or have expired)' + said
     if code == 403:
-        return 'LibreNMS refused the request (HTTP 403): the token\'s user may not use this'
+        return f'LibreNMS refused the request (HTTP 403): {detail}' if detail else \
+            'LibreNMS refused the request (HTTP 403): the token\'s user may not use this'
     if code == 404:
         return (f'no inventory at {url}{ENDPOINT} (HTTP 404): is the Ansible plugin installed and enabled in LibreNMS, '
-                'and is LIBRENMS_URL right?')
+                'and is LIBRENMS_URL right?') + said
+    if 400 <= code < 500 and detail:
+        return f'LibreNMS refused the request (HTTP {code}): {detail}'
     return f'LibreNMS answered HTTP {code}: see its logs/librenms.log'
 
 
