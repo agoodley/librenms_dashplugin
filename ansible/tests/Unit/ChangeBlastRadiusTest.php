@@ -183,6 +183,23 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertFalse($lifecycle->pending($id));
     }
 
+    public function testWhatEachBatchCutsOffIsPartOfWhatIsDryRunAndApproved(): void
+    {
+        $id = $this->approved();
+        // the stored blast radius of batch 3 altered after the approval (nothing but a change of its row does that)
+        $plan = $this->changes->changes[$id]['plan'];
+        $this->assertSame([512], $plan['topology']['batches'][2]['lost']);
+        $plan['topology']['batches'][2]['lost'] = [];
+        $this->changes->changes[$id]['plan'] = $plan;
+
+        $error = $this->lifecycle()->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->assertSame('The dry run no longer counts (the change is no longer what was dry-run (the batch plan)): launch it again.', $error);
+        $this->assertSame(ChangeStatus::DRAFT, $this->changes->find($id)['status']);
+        $this->assertSame('void', $this->changes->find($id)['dry_run_state']);
+        $this->assertSame([], $this->launched(), 'nothing launched');
+        $this->assertSame([], $this->topology->calls);
+    }
+
     public function testAChangePlannedByThePluginsSettingsHasNoBlastCheck(): void
     {
         $id = $this->approved(BatchPlan::make([501, 502, 503], [], 1, 5, 1, false, 0));

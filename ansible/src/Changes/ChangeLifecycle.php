@@ -1164,7 +1164,7 @@ final class ChangeLifecycle
             if (Fingerprint::of($parts) !== $expected) {
                 $what = Fingerprint::differences((array) ($change['fingerprint_parts'] ?? []), $parts);
 
-                return 'the template changed in the runner since the dry run' . ($what ? ' (' . implode(', ', $what) . ')' : '') . ': its approval no longer counts';
+                return self::differsText($what) . ': its approval no longer counts';
             }
             $moved = Connections::differences($recorded, $connections, self::displays($targets));
 
@@ -1536,7 +1536,21 @@ final class ChangeLifecycle
         }
         $what = Fingerprint::differences((array) ($change['fingerprint_parts'] ?? []), $parts);
 
-        return ['changed' => 'the template changed in the runner since the dry run' . ($what ? ' (' . implode(', ', $what) . ')' : '')];
+        return ['changed' => self::differsText($what)];
+    }
+
+    /**
+     * What differs from the dry run, in words: the template in the runner, or only what the change itself keeps (its
+     * targets, answers, batch plan with what each batch cuts off, how the runner reached the targets), which the plugin
+     * never alters after the dry run.
+     *
+     * @param  string[]  $what  Fingerprint::differences()
+     */
+    private static function differsText(array $what): string
+    {
+        $own = $what && ! array_diff($what, ['the targets', 'the answers', 'the batch plan', 'how the runner reaches the targets']);
+
+        return ($own ? 'the change is no longer what was dry-run' : 'the template changed in the runner since the dry run') . ($what ? ' (' . implode(', ', $what) . ')' : '');
     }
 
     /**

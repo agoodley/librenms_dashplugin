@@ -365,7 +365,7 @@
                                 @if($batch['note'])<div class="ans-help ans-wrap">{{ Clock::localize($batch['note']) }}</div>@endif</td>
                             <td data-label="Run">@if($batchRun)<a href="{{ route('ansible.runs.show', $batchRun['id']) }}">#{{ $batchRun['id'] }}</a> <span class="label label-{{ RunStatus::css($batchRun['status']) }}">{{ RunStatus::label($batchRun['status']) }}</span>@endif</td>
                             <td data-label="Results">@if($batchRun)@include('ansible::partials.results', ['resultSummary' => $batchRun['summary'] ?? [], 'resultDryRun' => false, 'resultUnproven' => false])@endif</td>
-                            <td class="ans-muted" style="white-space: nowrap" data-label="When">{{ $local($batch['started_at']) }}{{ $batch['ended_at'] ? ' – ' . Clock::local($batch['ended_at'], 'H:i:s') : '' }}{{ $batch['username'] ? ' · ' . $batch['username'] : '' }}</td>
+                            <td class="ans-muted" style="white-space: nowrap" data-label="When">{{ $local($batch['started_at']) }}{{ $batch['ended_at'] ? ' – ' . Clock::local($batch['ended_at'], 'H:i:s') : '' }}{{ $batch['username'] && $batch['started_at'] ? ' · ' . $batch['username'] : '' }}</td>
                         </tr>
                     @endforeach
                     </tbody>
