@@ -31,7 +31,10 @@
                     <td class="ans-wrap">{{ $change['template_name'] }}@if($change['reference'] !== '') <span class="ans-code ans-muted">{{ $change['reference'] }}</span>@endif
                         <div class="ans-muted">{{ $change['username'] }}, batch {{ $change['batch'] }} · @foreach(explode(' ', (string) \Agoodley\LibrenmsAnsible\Support\Clock::local($change['created_at'])) as $part)<span class="ans-nowrap">{{ $part }}</span> @endforeach</div></td>
                     <td class="ans-device-result">
-                        @if($change['dry_result'])
+                        @if(($change['dry_run_state'] ?? null) === 'unverified')
+                            {{-- not proven to be a dry run: whatever its result says, it may have changed the device --}}
+                            <span class="label label-danger ans-not-proven" title="Its log does not prove it was a dry run: a task may have run outside check mode">dry run NOT PROVEN: may have changed this device</span>
+                        @elseif($change['dry_result'])
                             <span class="label label-{{ in_array($change['dry_result'], ['failed', 'unreachable'], true) ? 'danger' : ($change['dry_result'] === 'changed' ? 'warning' : 'default') }}">dry run: {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::DRY_RESULTS[$change['dry_result']] ?? $change['dry_result'] }}</span>
                         @endif
                         @if($change['result'])
@@ -60,8 +63,10 @@
                     <td>@foreach(explode(' ', (string) \Agoodley\LibrenmsAnsible\Support\Clock::local($run['created_at'])) as $part)<span class="ans-nowrap">{{ $part }}</span> @endforeach</td>
                     <td class="ans-wrap">{{ $run['username'] }}</td>
                     <td class="ans-device-result">
-                        @if($run['result'])
-                            <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($run['result']) }}">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::LABELS[$run['result']] ?? $run['result'] }}</span>
+                        @if($run['result'] && \Agoodley\LibrenmsAnsible\Runs\RunResults::unproven($run) && empty($run['unexpected']))
+                            <span class="label label-danger ans-not-proven">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::NOT_PROVEN }}</span>
+                        @elseif($run['result'])
+                            <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($run['result']) }}">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::label($run['result'], ($run['kind'] ?? null) === 'dry_run') }}</span>
                         @endif
                         @if(! $run['result'] || ! in_array($run['status'], ['success', 'failed'], true))
                             {{-- how the run ended, when that says more than the device's result (incomplete, stopped, lost, released) --}}

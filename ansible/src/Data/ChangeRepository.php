@@ -364,7 +364,7 @@ final class ChangeRepository implements ChangeStore
     {
         return DB::table('ansible_change_targets as t')->join('ansible_changes as c', 'c.id', '=', 't.change_id')->where('t.device_id', $deviceId)
             ->orderByDesc('c.id')->limit($limit)
-            ->get(['c.id', 'c.username', 'c.template_name', 'c.reference', 'c.status', 'c.created_at', 't.batch', 't.dry_result', 't.result'])
+            ->get(['c.id', 'c.username', 'c.template_name', 'c.reference', 'c.status', 'c.created_at', 'c.dry_run_state', 't.batch', 't.dry_result', 't.result'])
             ->map(fn ($r) => (array) $r)->all();
     }
 

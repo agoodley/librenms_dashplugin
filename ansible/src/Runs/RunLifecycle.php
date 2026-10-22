@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsAnsible\Runs;
 
+use Agoodley\LibrenmsAnsible\Changes\DryRunProof;
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Runner\Runner;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
@@ -413,6 +414,14 @@ final class RunLifecycle
             $heldUntil = $runsOn ? ($task->ended ?? $now) + $this->holdSeconds : null;
         }
         $status = RunResults::status($task->status, $evaluation['results']);
+        // the dry run of a change: does its log prove it was one (Changes\DryRunProof)? Not judged without the whole log
+        // (the change asks the runner for it again), nor for a run stopped before the runner started it (nothing ran)
+        $dryRun = ($run['kind'] ?? null) === 'dry_run';
+        $proven = null;
+        if ($dryRun && $complete && ($task->status !== RunStatus::STOPPED || $runsOn)) {
+            $proven = DryRunProof::check($lines, RecapParser::parse($lines))['verified'];
+            $values['proof'] = $proven ? 'verified' : 'unverified';
+        }
         $unexpected = $this->unexpectedDevices($evaluation['unexpected']);
         $values += ['status' => $status, 'summary' => $evaluation['summary'], 'unexpected_hosts' => array_keys($evaluation['unexpected']) ?: null,
             'finished_at' => $task->ended !== null ? self::time($task->ended) : self::time($now), 'watch_until' => null, 'polled_at' => self::time($now),
@@ -431,8 +440,8 @@ final class RunLifecycle
                 . (! $runsOn ? ' before the runner started it' : '; the step in progress may still run on the runner'
                     . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . date('Y-m-d H:i T', $heldUntil) : '')) : null);
         foreach ($evaluation['results'] as $deviceId => $result) {
-            $this->events->write(RunText::finished($id, $status, $result['result'], $result['counts'], (string) $run['template_name'], $user, $note, $run['context'] ?? null), $deviceId,
-                RunResults::SEVERITY[$result['result']] ?? 'info', RunText::reference($id), $user);
+            $this->events->write(RunText::finished($id, $status, $result['result'], $result['counts'], (string) $run['template_name'], $user, $note, $run['context'] ?? null,
+                $dryRun, $proven), $deviceId, $proven === false ? 'error' : (RunResults::SEVERITY[$result['result']] ?? 'info'), RunText::reference($id), $user);
         }
         foreach ($unexpected as $deviceId => $row) {
             $this->events->write(RunText::unexpectedDevice($id, $row['inventory_name'], $row['result'], (string) $run['template_name'], $user, $run['context'] ?? null), $deviceId, 'error',

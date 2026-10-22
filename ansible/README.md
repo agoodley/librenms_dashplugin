@@ -448,7 +448,10 @@ when:
 
 Anything it cannot read (no PLAY RECAP, as after a stop; a log the runner cannot give) leaves the dry run **not
 proven**: the change page says so in red with the findings, each target's eventlog gets an error ("may have changed
-this device"), and the change can be neither approved nor applied. A dry run that never ran (the runner refused it,
+this device"), and the change can be neither approved nor applied. Wherever the dry run's result would show (the
+change page per device, the run page, the runs list, the device panel, the end entry of its run in the eventlog), a
+red *NOT PROVEN: may have changed this device* shows instead. A proven dry run's results read *would change* and *no
+change* there. A dry run that never ran (the runner refused it,
 or it was stopped in the runner's queue) proves nothing and claims nothing: the change is back to a draft.
 
 A verified dry run with a failed, unreachable or unknown target, or a run on a host that was not a target, cannot be

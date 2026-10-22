@@ -115,11 +115,14 @@ class RunController extends Controller
         }
         $log = OutputBuffer::since($run, max(0, (int) $request->query('after', '0')));
         $rows = (new RunRepository())->targets($id);
+        $dryRun = ($run['kind'] ?? null) === 'dry_run';
+        $unproven = RunResults::unproven($run);
         $targets = [];
         foreach ($rows as $deviceId => $target) {
+            $notProven = $unproven && $target['result'] !== null && empty($target['unexpected']);
             $targets[] = ['device_id' => $deviceId, 'name' => $target['inventory_name'], 'display' => $target['display'], 'result' => $target['result'],
-                'label' => $target['result'] !== null ? RunResults::LABELS[$target['result']] ?? $target['result'] : null,
-                'css' => RunResults::css($target['result']), 'counts' => $target['counts'], 'unexpected' => $target['unexpected']];
+                'label' => $target['result'] !== null ? ($notProven ? RunResults::NOT_PROVEN : RunResults::label($target['result'], $dryRun)) : null,
+                'css' => $notProven ? 'danger' : RunResults::css($target['result']), 'counts' => $target['counts'], 'unexpected' => $target['unexpected']];
         }
 
         return response()->json([
@@ -134,6 +137,8 @@ class RunController extends Controller
             'finished_at' => Clock::local($run['finished_at']),
             'duration' => Format::duration(Format::runDuration($run)),
             'summary' => (object) ($run['summary'] ?? []),
+            'dry_run' => $dryRun,
+            'proof' => $run['proof'] ?? null,
             'unexpected_hosts' => $run['unexpected_hosts'] ?? [],
             'error' => $run['error'],
             'poll_error' => $run['poll_error'],

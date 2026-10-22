@@ -238,7 +238,7 @@
                     <td class="ans-wrap"><a href="{{ url('device/' . $deviceId) }}">{{ $target['display'] ?: $target['hostname'] }}</a><div class="ans-code ans-muted">{{ $target['inventory_name'] }}</div>
                         @if($address !== null)<div class="ans-muted ans-dry-address" title="The address the runner reached this device at in the dry run (its overwrite IP, else its hostname). A batch runs on it only while the inventory still gives this address and platform.">dry-run at <span class="ans-code">{{ $address }}</span></div>@endif</td>
                     <td>{{ $target['batch'] }}</td>
-                    <td>@if($target['dry_result'])<span class="label label-{{ $dryCss[$target['dry_result']] ?? 'default' }} ans-dry-result">{{ ChangeText::DRY_RESULTS[$target['dry_result']] ?? $target['dry_result'] }}</span>@else<span class="text-muted">-</span>@endif</td>
+                    <td>@if($dryState === 'unverified' && $target['dry_result'])<span class="label label-danger ans-dry-result ans-not-proven" title="The log does not prove this was a dry run: whatever the PLAY RECAP says, it may have changed this device">NOT PROVEN: may have changed this device</span>@elseif($target['dry_result'])<span class="label label-{{ $dryCss[$target['dry_result']] ?? 'default' }} ans-dry-result">{{ ChangeText::DRY_RESULTS[$target['dry_result']] ?? $target['dry_result'] }}</span>@else<span class="text-muted">-</span>@endif</td>
                     @foreach($counters as $c)<td class="ans-num">{{ $target['dry_counts'][$c] ?? '' }}</td>@endforeach
                     <td class="ans-diff-cell">
                         @forelse($blocks as $block)

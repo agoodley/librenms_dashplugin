@@ -16,6 +16,9 @@
     $final = \Agoodley\LibrenmsAnsible\Runs\RunStatus::isFinal($status);
     $counters = ['ok', 'changed', 'unreachable', 'failed', 'skipped'];
     $variables = $run['variables'] ?? [];
+    // a change's dry run says what would change; one its log does not prove to be a dry run may have changed its devices
+    $dryRun = ($run['kind'] ?? null) === 'dry_run';
+    $unproven = \Agoodley\LibrenmsAnsible\Runs\RunResults::unproven($run);
 @endphp
 
 @section('content')
@@ -46,6 +49,11 @@
         </div>
     </div>
 
+    @if($dryRun)
+        <div class="ans-warning-loud" id="ans-run-not-proven" @if(! $unproven) style="display: none" @endif><i class="fa fa-exclamation-triangle"></i>
+            This dry run is NOT PROVEN to be one: its log shows a task outside check mode (or no sign of --check). It may have changed its devices: check them.
+            Its change can be neither approved nor applied.</div>
+    @endif
     @if(! empty($run['change_id']))
         <div class="alert alert-info" id="ans-run-change" style="padding: 6px 10px"><i class="fa fa-random"></i>
             This run is {{ $run['kind'] === 'dry_run' ? 'the dry run (--check --diff)' : 'batch ' . $run['batch'] }} of
@@ -101,7 +109,7 @@
         <div class="col-md-7">
             <div class="panel panel-default">
                 <div class="panel-heading"><strong>Targets</strong> <span class="text-muted">({{ count($targets) }})</span>
-                    <span id="ans-run-summary">@include('ansible::partials.results', ['summary' => $run['summary'] ?? []])</span></div>
+                    <span id="ans-run-summary">@include('ansible::partials.results', ['summary' => $run['summary'] ?? [], 'dryRun' => $dryRun, 'unproven' => $unproven])</span></div>
                 <div class="table-responsive">
                 <table class="table table-condensed ans-table" id="ans-run-targets">
                     <thead><tr><th>Device</th><th>Inventory name</th><th>Result</th>@foreach($counters as $c)<th class="ans-num">{{ $c }}</th>@endforeach</tr></thead>
@@ -112,8 +120,10 @@
                                 @if($target['unexpected'])<span class="label label-danger" title="The runner ran on this device although it was not a target">not a target</span>@endif</td>
                             <td class="ans-code">{{ $target['inventory_name'] }}</td>
                             <td class="ans-target-result">
-                                @if($target['result'])
-                                    <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($target['result']) }} ans-result">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::LABELS[$target['result']] ?? $target['result'] }}</span>
+                                @if($target['result'] && $unproven && empty($target['unexpected']))
+                                    <span class="label label-danger ans-result">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::NOT_PROVEN }}</span>
+                                @elseif($target['result'])
+                                    <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($target['result']) }} ans-result">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::label($target['result'], $dryRun) }}</span>
                                 @else
                                     <span class="text-muted">{{ $final ? '-' : 'pending' }}</span>
                                 @endif

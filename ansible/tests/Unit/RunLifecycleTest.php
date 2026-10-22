@@ -203,6 +203,44 @@ class RunLifecycleTest extends TestCase
         $this->assertCount(3, $this->events->entries, 'an ended run is not ended again');
     }
 
+    public function testTheEndOfADryRunSaysWhatWouldChangeOrThatItIsNotProven(): void
+    {
+        $hosts = ['lab-sw1.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0', 'lab-sw2.netops.lab' => 'ok=1 changed=1 unreachable=0 failed=0',
+            'lab-sw3.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0'];
+        $marked = array_map(fn ($line) => preg_match('/^(PLAY|TASK) \[/', $line) ? str_replace('] ***', '] [CHECK MODE] ***', $line) : $line, self::recapLog($hosts));
+
+        // proven: the DRY RUN banner and the marker on every banner
+        $id = $this->running('success', ['kind' => 'dry_run', 'context' => 'change #4, dry run']);
+        $this->runner->logs['90'] = array_merge(['DRY RUN ****', ''], $marked);
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertSame(['success', 'verified'], [$run['status'], $run['proof']]);
+        $this->assertStringContainsString('(change #4, dry run) finished: would change (ok=1 changed=1', $this->events->of(502)[0]['message']);
+        $this->assertStringContainsString('finished: no change (ok=1 changed=0', $this->events->of(501)[0]['message']);
+        $this->assertSame('notice', $this->events->of(502)[0]['severity']);
+
+        // not proven: a task ran outside check mode (no marker on its banner)
+        $this->events->entries = [];
+        $id = $this->running('success', ['kind' => 'dry_run', 'context' => 'change #5, dry run']);
+        $this->runner->logs['90'] = array_merge(['DRY RUN ****', ''], self::recapLog($hosts));
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertSame(['success', 'unverified'], [$run['status'], $run['proof']]);
+        foreach ([501, 502, 503] as $deviceId) {
+            $this->assertStringContainsString('(change #5, dry run) finished: NOT PROVEN to be a dry run, it may have changed this device (ok=1', $this->events->of($deviceId)[0]['message']);
+            $this->assertSame('error', $this->events->of($deviceId)[0]['severity']);
+        }
+
+        // a run that is not a dry run keeps its words, and gets no proof
+        $this->events->entries = [];
+        $id = $this->running('success', ['kind' => 'batch', 'context' => 'change #5, batch 1 of 1']);
+        $this->runner->logs['90'] = self::recapLog($hosts);
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertNull($run['proof'] ?? null);
+        $this->assertStringContainsString('finished: changed (ok=1 changed=1', $this->events->of(502)[0]['message']);
+    }
+
     public function testASuccessfulTaskWithTargetsThatDidNotRunIsIncompleteWithTheCause(): void
     {
         // the inventory script failed: Ansible found no host and still ended with success

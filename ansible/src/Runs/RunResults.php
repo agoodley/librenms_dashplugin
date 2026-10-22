@@ -22,6 +22,29 @@ final class RunResults
     public const LABELS = ['unreachable' => 'Unreachable', 'failed' => 'Failed', self::UNKNOWN => 'Unknown', self::NOT_RUN => 'Not run',
         'changed' => 'Changed', 'ok' => 'OK', 'skipped' => 'Skipped'];
 
+    /** The results of a dry run, in its own words: nothing changed, it says what would. */
+    public const DRY_LABELS = ['unreachable' => 'Unreachable', 'failed' => 'Failed', self::UNKNOWN => 'Unknown', self::NOT_RUN => 'Not run',
+        'changed' => 'Would change', 'ok' => 'No change', 'skipped' => 'No change (skipped)'];
+
+    /** What a dry run not proven to be one shows instead of its results (Changes\DryRunProof): it may have changed its devices. */
+    public const NOT_PROVEN = 'NOT PROVEN: may have changed this device';
+
+    /**
+     * The label of a result, in a dry run's words for a dry run.
+     */
+    public static function label(?string $result, bool $dryRun = false): string
+    {
+        return $result === null ? '' : (($dryRun ? self::DRY_LABELS : self::LABELS)[$result] ?? $result);
+    }
+
+    /**
+     * Is the run the dry run of a change that its log does not prove to be one (its proof, recorded at its end)?
+     */
+    public static function unproven(array $run): bool
+    {
+        return ($run['kind'] ?? null) === 'dry_run' && ($run['proof'] ?? null) === 'unverified';
+    }
+
     /** Eventlog severity of each result. */
     public const SEVERITY = ['unreachable' => 'error', 'failed' => 'error', self::UNKNOWN => 'warning', self::NOT_RUN => 'warning',
         'changed' => 'notice', 'ok' => 'ok', 'skipped' => 'info'];

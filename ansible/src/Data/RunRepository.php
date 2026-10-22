@@ -332,7 +332,7 @@ final class RunRepository implements RunStore
         $total = (clone $query)->count();
         $rows = $query->orderByDesc('r.id')->forPage(max(1, $page), $perPage)
             ->get(['r.id', 'r.username', 'r.template_id', 'r.template_name', 'r.status', 'r.runner_status', 'r.summary', 'r.unexpected_hosts',
-                'r.created_at', 'r.started_at', 'r.finished_at', 'r.change_id', 'r.kind', 'r.batch'])
+                'r.created_at', 'r.started_at', 'r.finished_at', 'r.change_id', 'r.kind', 'r.batch', 'r.proof'])
             ->map(fn ($r) => self::decode((array) $r))->all();
         $names = [];
         if ($rows) {
@@ -383,7 +383,8 @@ final class RunRepository implements RunStore
     {
         return DB::table('ansible_run_targets as t')->join('ansible_runs as r', 'r.id', '=', 't.run_id')->where('t.device_id', $deviceId)
             ->orderByDesc('r.id')->limit($limit)
-            ->get(['r.id', 'r.username', 'r.template_name', 'r.status', 'r.created_at', 'r.finished_at', 't.result', 't.unexpected', 'r.change_id', 'r.kind', 'r.batch'])
+            ->get(['r.id', 'r.username', 'r.template_name', 'r.status', 'r.created_at', 'r.finished_at', 't.result', 't.unexpected', 'r.change_id', 'r.kind', 'r.batch',
+                'r.proof'])
             ->map(fn ($r) => (array) $r)->all();
     }
 

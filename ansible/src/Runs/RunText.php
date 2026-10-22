@@ -62,9 +62,12 @@ final class RunText
      *
      * @param  array<string, int>|null  $counts
      */
-    public static function finished(int $runId, string $status, string $result, ?array $counts, string $template, string $user, ?string $note = null, ?string $context = null): string
+    public static function finished(int $runId, string $status, string $result, ?array $counts, string $template, string $user, ?string $note = null, ?string $context = null,
+        bool $dryRun = false, ?bool $proven = null): string
     {
-        $text = self::label($runId, $context) . ' ' . self::ending($status) . ': ' . strtolower(RunResults::LABELS[$result] ?? $result);
+        // a dry run says what would change; one its log does not prove to be a dry run may have changed the device
+        $text = self::label($runId, $context) . ' ' . self::ending($status) . ': ' . ($dryRun && $proven === false
+            ? 'NOT PROVEN to be a dry run, it may have changed this device' : strtolower(RunResults::label($result, $dryRun)));
         if ($counts !== null) {
             $text .= ' (' . implode(' ', array_map(fn ($c) => $c . '=' . ($counts[$c] ?? 0), ['ok', 'changed', 'unreachable', 'failed', 'skipped'])) . ')';
         }

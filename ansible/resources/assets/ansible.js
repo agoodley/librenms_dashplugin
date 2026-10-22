@@ -10,6 +10,8 @@
     /** Bootstrap label classes the server may name. */
     var LABELS = ['default', 'primary', 'success', 'info', 'warning', 'danger'];
     var RESULTS = {unreachable: 'Unreachable', failed: 'Failed', unknown: 'Unknown', not_run: 'Not run', changed: 'Changed', ok: 'OK', skipped: 'Skipped'};
+    /** A dry run's results: what would change. */
+    var DRY_RESULTS = {unreachable: 'Unreachable', failed: 'Failed', unknown: 'Unknown', not_run: 'Not run', changed: 'Would change', ok: 'No change', skipped: 'No change (skipped)'};
     var RESULT_CSS = {ok: 'success', changed: 'warning', unknown: 'warning', failed: 'danger', unreachable: 'danger'};
     var ORDER = ['unreachable', 'failed', 'unknown', 'not_run', 'changed', 'ok', 'skipped'];
     var STATUS_LABELS = {not_launched: 'Not launched', incomplete: 'Incomplete', lost: 'Lost', released: 'Released', failed: 'Failed', stopped: 'Stopped'};
@@ -107,13 +109,19 @@
     }
 
     /**
-     * Badges of the targets per result (summary: result => count).
+     * Badges of the targets per result (summary: result => count), in a dry run's words for a dry run; for a dry run its
+     * log does not prove to be one, that it may have changed its devices.
      */
-    function resultBadges(summary) {
+    function resultBadges(summary, dryRun, unproven) {
         var span = el('span', 'ans-results');
+        if (unproven) {
+            span.appendChild(el('span', 'label label-danger ans-not-proven', 'NOT PROVEN: may have changed its devices'));
+            return span;
+        }
+        var words = dryRun ? DRY_RESULTS : RESULTS;
         ORDER.forEach(function (result) {
             if (summary && summary[result]) {
-                append(span, [el('span', label(RESULT_CSS[result] || 'default'), summary[result] + ' ' + RESULTS[result].toLowerCase()), ' ']);
+                append(span, [el('span', label(RESULT_CSS[result] || 'default'), summary[result] + ' ' + words[result].toLowerCase()), ' ']);
             }
         });
         return span;
@@ -220,7 +228,11 @@
             setText('ans-run-duration', data.duration);
             setText('ans-run-started', data.started_at);
             setText('ans-run-finished', data.finished_at);
-            clear(byId('ans-run-summary')).appendChild(resultBadges(data.summary));
+            clear(byId('ans-run-summary')).appendChild(resultBadges(data.summary, data.dry_run, data.proof === 'unverified'));
+            var notProven = byId('ans-run-not-proven');
+            if (notProven) {
+                notProven.style.display = data.proof === 'unverified' ? '' : 'none';
+            }
             data.targets.forEach(function (target) {
                 var row = document.querySelector('#ans-run-targets tr[data-device="' + Number(target.device_id) + '"]');
                 if (!row) {
