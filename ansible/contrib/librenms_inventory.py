@@ -25,14 +25,18 @@ import ssl
 import sys
 import urllib.error
 import urllib.parse
+import unicodedata
 import urllib.request
 
 ENDPOINT = '/plugin/ansible/api/inventory'
-VERSION = '2'
+VERSION = '3'
 # most characters of LibreNMS' error text printed
 DETAIL_MAX = 240
-# terminal escape sequences: CSI (also as one 8-bit character), OSC (up to BEL or ST) and the two-character ones
-ESCAPES = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-Z\\-_]')
+# terminal escape sequences: CSI (also as one 8-bit character), OSC (up to BEL or ST), then any other ECMA-48 escape
+# (ESC, intermediate bytes, a final byte: ESC ( B, ESC 7, ...)
+ESCAPES = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[ -/]*[0-~]')
+# double quotes, also typographic ones: replaced in LibreNMS' text, which the script prints between double quotes
+QUOTES = str.maketrans({q: "'" for q in '"\u201c\u201d\u201e\u00ab\u00bb\u2033'})
 
 
 class InventoryError(Exception):
@@ -114,26 +118,48 @@ def answer_error(e, token):
 
 
 def clean(text, token):
-    """One line of printable text, at most DETAIL_MAX characters, without the token nor its secret part: also when
-    escape sequences, control, zero-width or blank characters split them (cleaned first, then looked for without the
-    blanks)."""
+    """One line of printable text, at most DETAIL_MAX characters, without double quotes, and without the token nor
+    its secret part: also when escape sequences, control, zero-width, combining or blank characters split them. The
+    token is looked for in the text as LibreNMS sent it and once cleaned; a server that holds the token and reshapes
+    it otherwise (other characters inside, another encoding) is not caught."""
+    secrets = [secret for secret in (token, token.partition('|')[2]) if len(secret) >= 8]  # the whole token first
+    for secret in secrets:
+        text = redact(text, secret)
     text = ESCAPES.sub('', text)
-    text = ' '.join(''.join(ch if ch.isprintable() else ' ' for ch in text).split())
-    for secret in (token, token.partition('|')[2]):  # the whole token first
-        if len(secret) >= 8:
-            text = redact(text, secret)
+    text = ''.join(ch for ch in text if not unicodedata.category(ch).startswith('M'))  # combining marks
+    text = ' '.join(''.join(ch if ch.isprintable() else ' ' for ch in text).split()).translate(QUOTES)
+    for secret in secrets:
+        text = redact(text, secret)
     return text if len(text) <= DETAIL_MAX else text[:DETAIL_MAX - 3].rstrip() + '...'
 
 
 def redact(text, secret):
-    """The text without any run of characters that holds the secret once its blanks are left out."""
+    """The text without any run of characters that holds the secret once escape sequences (whole, or only their ESC
+    character: a terminal would take the next one as part of the sequence), blank, control, invisible and combining
+    characters are left out."""
     for _ in range(100):
-        kept = [i for i, ch in enumerate(text) if not ch.isspace()]
-        at = ''.join(text[i] for i in kept).find(secret)
-        if at < 0:
+        span = find(text, secret, True) or find(text, secret, False)
+        if span is None:
             return text
-        text = text[:kept[at]] + '[the token]' + text[kept[at + len(secret) - 1] + 1:]
+        text = text[:span[0]] + '[the token]' + text[span[1]:]
     return '[the token]'
+
+
+def find(text, secret, whole_escapes):
+    """Where the secret is in the text, the characters that do not count left out: (start, end), or None."""
+    kept = []
+    i = 0
+    while i < len(text):
+        match = ESCAPES.match(text, i) if whole_escapes else None
+        if match:
+            i = match.end()
+            continue
+        ch = text[i]
+        if not (ch.isspace() or not ch.isprintable() or unicodedata.category(ch).startswith('M')):
+            kept.append(i)
+        i += 1
+    at = ''.join(text[k] for k in kept).find(secret)
+    return None if at < 0 else (kept[at], kept[at + len(secret) - 1] + 1)
 
 
 def http_error(code, url, detail=None):

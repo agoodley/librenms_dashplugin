@@ -10,7 +10,7 @@ namespace Agoodley\LibrenmsAnsible\Support;
 final class InventoryScript
 {
     /** The VERSION of contrib/librenms_inventory.py (a test keeps them equal). */
-    public const VERSION = '2';
+    public const VERSION = '3';
 
     /**
      * The script version a User-Agent names; null when it is not the plugin's script.

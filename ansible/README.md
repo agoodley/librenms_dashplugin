@@ -150,7 +150,10 @@ that could change Semaphore. Step by step (the names are suggestions):
    variables. It reads `LIBRENMS_URL`, `LIBRENMS_TOKEN`, and optionally `LIBRENMS_CA_BUNDLE` (a PEM file to verify
    LibreNMS' certificate with) and `LIBRENMS_TIMEOUT` (seconds, default 30); it always verifies TLS certificates,
    never follows redirects, and on an error prints what to check to stderr and exits with code 1; when LibreNMS
-   refuses the request (HTTP 4xx) it quotes the reason LibreNMS gives, e.g. that the token is not the inventory user's.
+   refuses the request (HTTP 4xx) it quotes the reason LibreNMS gives, e.g. that the token is not the inventory user's
+   (cleaned, cut, its double quotes replaced). The token is left out of that text when LibreNMS echoes it verbatim or
+   split by escape sequences, control, invisible, combining or blank characters; a server that already holds the
+   token and reshapes it otherwise is not caught.
 6. **A LibreNMS user for the inventory** and its API token: a user whose LibreNMS role sees the devices the runner may
    change (e.g. *global-read*, or a user limited to some devices). In LibreNMS 26.10 API tokens need the `api.access`
    permission (a *global-read* user has no *API* menu) and an admin cannot create one for another user in the web UI,

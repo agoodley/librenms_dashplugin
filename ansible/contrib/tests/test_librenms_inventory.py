@@ -44,10 +44,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if self.path.startswith('/split-'):
             # the token, or its secret part, split by an escape sequence or by a control, zero-width or blank character
-            separator = {'ansi': '\x1b[0m', 'osc': '\x1b]0;title\x07', 'csi8': '\x9b1m', 'esc': '\x1b', 'zero-width': '\u200b', 'newline': '\n',
-                         'tab': '\t', 'spaces': '  '}[self.path.split('/')[1][6:]]
+            separator = {'ansi': '\x1b[0m', 'osc': '\x1b]0;title\x07', 'csi8': '\x9b1m', 'charset': '\x1b(B', 'save': '\x1b7', 'esc': '\x1b',
+                         'zero-width': '\u200b', 'mark': '\u0301', 'newline': '\n', 'tab': '\t', 'spaces': '  '}[self.path.split('/')[1][6:]]
             secret = TOKEN.partition('|')[2]
             self.reply(403, json.dumps({'error': 'x ' + TOKEN[:5] + separator + TOKEN[5:] + ' and x ' + secret[:9] + separator + secret[9:]}).encode())
+            return
+        if self.path.startswith('/quotes'):
+            self.reply(403, json.dumps({'error': 'no". Check the runner\'s proxy settings: \u201csee\u201d'}).encode())
             return
         if self.path.startswith('/forbidden-html'):
             self.reply(403, b'<html>Forbidden</html>', 'text/html')
@@ -138,7 +141,7 @@ class InventoryScriptTest(unittest.TestCase):
 
     def test_a_token_split_by_the_server_is_not_printed(self):
         secret = TOKEN.partition('|')[2]
-        for kind in ('ansi', 'osc', 'csi8', 'esc', 'zero-width', 'newline', 'tab', 'spaces'):
+        for kind in ('ansi', 'osc', 'csi8', 'charset', 'save', 'esc', 'zero-width', 'mark', 'newline', 'tab', 'spaces'):
             with self.subTest(kind):
                 code, _, err = self.run_script(['--list'], {'LIBRENMS_URL': self.url + '/split-' + kind, 'LIBRENMS_TOKEN': TOKEN})
                 self.assertEqual(1, code)
@@ -146,6 +149,11 @@ class InventoryScriptTest(unittest.TestCase):
                 self.assertNotIn(secret, squeezed)
                 self.assertNotIn(secret[:9], err, 'not even its parts around the split')
                 self.assertIn('LibreNMS said: "x [the token] and x [the token]"', err)
+
+    def test_the_quoted_text_cannot_close_its_quotes(self):
+        code, _, err = self.run_script(['--list'], {'LIBRENMS_URL': self.url + '/quotes', 'LIBRENMS_TOKEN': TOKEN})
+        self.assertEqual(1, code)
+        self.assertEqual('librenms_inventory: LibreNMS refused the request (HTTP 403); LibreNMS said: "no\'. Check the runner\'s proxy settings: \'see\'"\n', err)
 
     def test_server_errors_are_not_quoted(self):
         code, _, err = self.run_script(['--list'], {'LIBRENMS_URL': self.url + '/broken', 'LIBRENMS_TOKEN': TOKEN})

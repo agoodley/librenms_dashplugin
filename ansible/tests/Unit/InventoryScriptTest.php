@@ -17,14 +17,15 @@ class InventoryScriptTest extends TestCase
 
     public function testTheVersionOfAFetch(): void
     {
-        $this->assertSame('2', InventoryScript::versionFrom('librenms-ansible-inventory/2'));
+        $this->assertSame('3', InventoryScript::versionFrom('librenms-ansible-inventory/3'));
         $this->assertSame('1', InventoryScript::versionFrom('librenms-ansible-inventory/1 Python-urllib/3.12'));
         $this->assertNull(InventoryScript::versionFrom('curl/8.5.0'));
         $this->assertNull(InventoryScript::versionFrom('librenms-ansible-inventory/x'));
         $this->assertNull(InventoryScript::versionFrom(null));
         $this->assertTrue(InventoryScript::outdated('1'));
         $this->assertFalse(InventoryScript::outdated(InventoryScript::VERSION));
-        $this->assertFalse(InventoryScript::outdated('3'));
+        $this->assertTrue(InventoryScript::outdated('2'));
+        $this->assertFalse(InventoryScript::outdated('4'));
         $this->assertFalse(InventoryScript::outdated(null), 'another client: nothing to compare');
     }
 }
