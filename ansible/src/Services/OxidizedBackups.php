@@ -45,11 +45,11 @@ final class OxidizedBackups implements ConfigBackups
         try {
             $node = $client->findNode($device);
         } catch (\Throwable $e) {
-            throw new BackupError('Oxidized cannot be asked: ' . UntrustedText::line($e->getMessage(), 160));
+            throw new BackupError('Oxidized cannot be asked: ' . UntrustedText::line($e->getMessage(), 160) . ' (check LibreNMS\' oxidized.url setting)');
         }
         if ($node === null) {
             if ($client->lastError() !== null) {
-                throw new BackupError('Oxidized cannot be reached (' . UntrustedText::line($client->lastError(), 40) . ')');
+                throw new BackupError('Oxidized cannot be reached at LibreNMS\' oxidized.url (' . UntrustedText::line($client->lastError(), 40) . '): check that setting');
             }
 
             return null;

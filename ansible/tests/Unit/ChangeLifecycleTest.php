@@ -268,6 +268,35 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame($change['approval_fingerprint'], $this->changes->approvals[0]['fingerprint']);
     }
 
+    public function testAnApprovalSwitchedOnIsRequestedNotVoided(): void
+    {
+        $id = $this->change();
+        $off = $this->lifecycle(['approval' => ApprovalRules::OFF]);
+        $this->assertNull($off->startDryRun($id, self::ALICE, [], $this->t0));
+        $runId = (int) $this->changes->find($id)['dry_run_id'];
+        $this->endRun($runId, 'success', array_fill_keys(array_keys(self::TARGETS), 'changed'), self::dryRunLog(array_fill_keys(array_values(self::TARGETS), 'changed')),
+            $this->t0 + 30);
+        $off->advance($id, $this->t0 + 35);
+        $this->assertSame(ChangeStatus::READY, $this->changes->find($id)['status'], 'no approval needed');
+
+        // an admin switches approval on: the change awaits one, said as a request
+        $on = $this->lifecycle(['approval' => ApprovalRules::REQUIRED]);
+        $on->advance($id, $this->t0 + 40);
+        $this->assertSame(ChangeStatus::AWAITING, $this->changes->find($id)['status']);
+        $this->assertSame('The settings ask for an approval now: approval requested.', end($this->changes->events[$id])['message']);
+        $this->assertSame([], array_values(array_filter($this->changes->messages($id), fn ($m) => str_contains($m, 'no longer counts'))), 'nothing voided');
+        $this->assertSame('info', end($this->events->entries)['severity']);
+
+        // the same at an Apply that comes first
+        $id = $this->change();
+        $this->assertNull($off->startDryRun($id, self::ALICE, [], $this->t0 + 50));
+        $this->endRun((int) $this->changes->find($id)['dry_run_id'], 'success', array_fill_keys(array_keys(self::TARGETS), 'changed'),
+            self::dryRunLog(array_fill_keys(array_values(self::TARGETS), 'changed')), $this->t0 + 60);
+        $off->advance($id, $this->t0 + 61);
+        $this->assertSame('The settings ask for an approval now: the change awaits one.', $on->apply($id, self::ALICE, [], $this->t0 + 62));
+        $this->assertSame(ChangeStatus::AWAITING, $this->changes->find($id)['status']);
+    }
+
     public function testATemplateChangedSinceTheDryRunVoidsIt(): void
     {
         $id = $this->change();
@@ -440,7 +469,7 @@ class ChangeLifecycleTest extends TestCase
         $lifecycle->advance($id, $this->t0 + 150);
         $change = $this->changes->find($id);
         $this->assertSame(ChangeStatus::FAILED, $change['status']);
-        $this->assertSame('stopped while it waited before batch 2: how the runner reaches a device changed since the dry run (lab-sw2: ansible_host 10.0.0.246 → 10.0.0.99)',
+        $this->assertSame('while it waited before batch 2, how the runner reaches a device changed since the dry run (lab-sw2: ansible_host 10.0.0.246 → 10.0.0.99)',
             $change['error']);
         $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'), 'batch 2 was never launched');
         $this->assertSame('cancelled', $this->changes->batches[$id][2]['status']);
@@ -598,7 +627,7 @@ class ChangeLifecycleTest extends TestCase
         $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 200));
         $change = $this->changes->find($id);
         $this->assertSame(ChangeStatus::FAILED, $change['status']);
-        $this->assertStringContainsString("stopped before batch 2: The launch was refused: the template changed in the runner since the dry run (the template's CLI arguments)",
+        $this->assertStringContainsString("batch 2 was not started: The launch was refused: the template changed in the runner since the dry run (the template's CLI arguments)",
             $change['error']);
         $this->assertCount(2, $this->runner->launches);
         $this->assertSame('failed', $this->changes->batches[$id][2]['status']);
@@ -656,6 +685,8 @@ class ChangeLifecycleTest extends TestCase
         $change = $this->changes->find($id);
         $this->assertSame(ChangeStatus::STOPPED, $change['status']);
         $this->assertSame('stopped by carol during batch 1', $change['error']);
+        $this->assertContains('Stopped by carol during batch 1.', $this->changes->messages($id), 'the timeline says it once, not "Stopped: stopped by"');
+        $this->assertStringStartsWith("Ansible change #$id (CHG-1) was stopped by carol during batch 1, template 'Port description'", end($this->events->entries)['message']);
         $this->assertSame('cancelled', $this->changes->batches[$id][2]['status']);
         $this->assertSame($held + 600, $this->windows->windows[100]['end'], 'the window lasts the hold of the stopped batch and the settle time');
         $this->assertCount(2, $this->runner->launches, 'no batch after a stop');
@@ -782,7 +813,7 @@ class ChangeLifecycleTest extends TestCase
             $change = $this->changes->find($id);
             $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'), "$what: batch 1 never launched");
             $this->assertSame(ChangeStatus::FAILED, $change['status'], $what);
-            $this->assertStringStartsWith('stopped before batch 1 was launched: ', $change['error'], $what);
+            $this->assertStringStartsWith('batch 1 was not launched: ', $change['error'], $what);
         }
     }
 
@@ -802,8 +833,7 @@ class ChangeLifecycleTest extends TestCase
         $lifecycle->advance($a, $this->t0 + 101);
         $this->assertSame([ChangeStatus::PAUSED, 'canary'], [$this->changes->find($a)['status'], $this->changes->find($a)['waiting']]);
 
-        $refused = 'Another change being applied reserves a device of this one: lab-sw2 (change #' . $a . '). Its later batches will change it: '
-            . 'apply this change once that change has ended.';
+        $refused = 'Another change being applied reserves a device of this one until it ends: lab-sw2 (change #' . $a . '). Apply this change once that change has ended.';
         $this->assertSame($refused, $lifecycle->apply($b, self::ALICE, [], $this->t0 + 110), 'A, paused after its canary, reserves lab-sw2');
         $this->assertSame(ChangeStatus::READY, $this->changes->find($b)['status'], 'B stays ready: its dry run and approval still count');
         $this->assertNull($this->changes->find($b)['applied_by']);
@@ -855,7 +885,7 @@ class ChangeLifecycleTest extends TestCase
         $lifecycle->advance($id, $this->t0 + 40 + 3601);
         $change = $this->changes->find($id);
         $this->assertSame(ChangeStatus::FAILED, $change['status']);
-        $this->assertStringContainsString('stopped while it waited before batch 2: its approval expired', $change['error']);
+        $this->assertStringContainsString('while it waited before batch 2, its approval expired', $change['error']);
     }
 
     public function testSecretAnswersAreAskedForEachBatchAndNeverKept(): void
@@ -968,7 +998,7 @@ class ChangeLifecycleTest extends TestCase
         $lifecycle->advance($id, $deadline);
         $change = $this->changes->find($id);
         $this->assertSame(ChangeStatus::FAILED, $change['status']);
-        $this->assertStringStartsWith('stopped while it waited before batch 1: nobody entered the secret answers by ', $change['error']);
+        $this->assertStringStartsWith('while it waited before batch 1, nobody entered the secret answers by ', $change['error']);
         $this->assertSame('cancelled', $this->changes->batches[$id][1]['status']);
         $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'), 'no batch was launched');
         $window = current($this->changes->windows($id));
@@ -1079,6 +1109,6 @@ class ChangeLifecycleTest extends TestCase
         $lifecycle->advance($id, $this->t0 + 101);
 
         $this->assertSame(ChangeStatus::FAILED, $this->changes->find($id)['status']);
-        $this->assertStringContainsString('stopped before batch 2: alice, who launches it, no longer holds the run permission', $this->changes->find($id)['error']);
+        $this->assertStringContainsString('batch 2 was not started: alice, who launches it, no longer holds the run permission', $this->changes->find($id)['error']);
     }
 }

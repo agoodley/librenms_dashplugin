@@ -148,7 +148,8 @@ final class TemplateCheck
         if ($arguments === null) {
             return 'its CLI arguments are not a JSON list of strings, so the plugin cannot check them: fix them in the template';
         }
-        $allowed = 'only verbosity (-v), --diff, --check, --forks, --timeout, --tags, --skip-tags, --force-handlers and --flush-cache are accepted';
+        $allowed = 'only verbosity (-v), --diff, --check (for runs; a change refuses it: its dry run adds it itself), --forks, --timeout, --tags, --skip-tags, '
+            . '--force-handlers and --flush-cache are accepted';
         for ($i = 0; $i < count($arguments); $i++) {
             $argument = trim($arguments[$i]);
             if (in_array($argument, self::FLAGS, true)) {

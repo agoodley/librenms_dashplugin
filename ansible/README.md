@@ -455,7 +455,7 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 | Applying | a batch is being prepared (window, backups) or runs |
 | Paused | it waits: for an admin after the first batch, for the end of a pause between batches, or for the secret answers of the next batch |
 | Stopping | an admin stopped it; the runner is stopping its batch |
-| Applied, Failed, Stopped, Rejected, Cancelled | it ended; failed: a batch went over *Stop at*, or the plugin stopped it because what was approved no longer holds (see below) |
+| Applied, Failed, Stopped, Rejected, Cancelled | it ended; failed: a batch reached *Stop at* (that many failed devices), or the plugin stopped it because what was approved no longer holds (see below) |
 
 The devices of a change that is being applied, paused or stopping are **reserved** for it: another change cannot take
 them, as the change's later batches will change them. A run cannot target them, nor can another change's dry run, and
@@ -571,7 +571,7 @@ of the list, *First batch* of them), then batches of *Batch size*. Each batch:
 2. checks again everything above, then launches its run, limited to the batch's devices, under the same lock and
    one-time token as any launch: a page clicked twice, two pages and the sync command can never launch a batch twice;
 3. when its run ends, records each device's result, sets the end of its window, asks for the backups after it;
-4. stops the change when the batch went over *Stop at* (failed, unreachable, unknown and not run count), when the
+4. stops the change when the batch reached *Stop at* failed devices (failed, unreachable, unknown and not run count), when the
    plugin lost track of its run or it was stopped or released, when it ran on a host that was not a target, or when it
    ran another commit than the dry run; else waits after the first batch for *Continue* (when set), or for *Pause
    between batches*, and starts the next.
@@ -678,7 +678,7 @@ released has stopped by then.
   and compared before the approval, the apply and every batch), the same commit, the same devices reached the same
   way (address and platform, compared with the inventory before the approval, the apply, every batch and right before
   its launch), the same answers, the same batch plan; each batch runs on its own devices only.
-* **No batch after** a stop, a batch over the failure threshold, a batch the plugin lost track of (or whose result is
+* **No batch after** a stop, a batch that reached the failure threshold, a batch the plugin lost track of (or whose result is
   unknown, stopped, released, or ran another commit or on another host), an approval that no longer counts, a dry run
   that no longer counts, a refused backup. A batch is launched once at most; a stopped change launches nothing more.
 * **Approvals** only from admins with the approve permission, never from the requester with a second admin, never for

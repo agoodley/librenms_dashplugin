@@ -167,7 +167,8 @@ final class RunLauncher
         if (! $plan->targets) {
             $plan->errors[] = 'Choose at least one device that can be a target.';
         } elseif (count($plan->targets) > $plan->maxTargets) {
-            $plan->errors[] = 'A run may have at most ' . $plan->maxTargets . ' targets (Max targets per run setting); ' . count($plan->targets) . ' are chosen.';
+            $plan->errors[] = 'A run may have at most ' . $plan->maxTargets . ' targets (Max targets per change setting, which limits each run too); ' . count($plan->targets)
+                . ' are chosen.';
         }
     }
 

@@ -87,6 +87,7 @@ final class BackupCheck
                     : ': their batches will go without a backup, with a warning in the eventlog (setting Without a fresh backup: continue with a warning).');
         }
 
-        return $error !== null ? 'Oxidized could not be asked whether it backs the targets up (' . $error . '): check LibreNMS\' oxidized.url setting.' : null;
+        return $error !== null ? 'Oxidized could not be asked whether it backs the targets up (' . $error . ')'
+            . (str_contains($error, 'oxidized.url') ? '.' : ': check LibreNMS\' oxidized.url setting.') : null;
     }
 }

@@ -262,6 +262,9 @@ final class ChangeLifecycle
 
             return 'The dry run no longer counts (' . $dryRun . '): launch it again.';
         }
+        if ($this->approvalSwitchedOn($change, $now, $user['username'])) {
+            return 'The settings ask for ' . ApprovalRules::LABELS[$this->settings->approval] . ' now: the change awaits one.';
+        }
         $approval = $this->approvalProblem($change, $now);
         if ($approval !== null) {
             $this->voidApproval($change, $approval, $now, $user['username']);
@@ -311,8 +314,8 @@ final class ChangeLifecycle
                 . " (change #$changeId)";
         }
 
-        return 'Another change being applied reserves ' . (count($reserved) === 1 ? 'a device' : 'devices') . ' of this one: ' . implode('; ', $parts)
-            . '. Its later batches will change ' . (count($reserved) === 1 ? 'it' : 'them') . ': apply this change once that change has ended.';
+        return 'Another change being applied reserves ' . (count($reserved) === 1 ? 'a device' : 'devices') . ' of this one until it ends: ' . implode('; ', $parts)
+            . '. Apply this change once that change has ended.';
     }
 
     /**
@@ -646,6 +649,9 @@ final class ChangeLifecycle
             return;
         }
         if ($change['status'] === ChangeStatus::READY) {
+            if ($this->approvalSwitchedOn($change, $now)) {
+                return;
+            }
             $approval = $this->approvalProblem($change, $now);
             if ($approval !== null) {
                 $this->voidApproval($change, $approval, $now);
@@ -704,14 +710,14 @@ final class ChangeLifecycle
     {
         $problem = $this->dryRunProblem($change, $now) ?? $this->approvalProblem($change, $now);
         if ($problem !== null) {
-            $this->finish($change, ChangeStatus::FAILED, 'stopped while it waited before batch ' . ((int) $change['current_batch'] + ($change['waiting'] === 'secrets' ? 0 : 1))
-                . ": $problem", $now);
+            $this->finish($change, ChangeStatus::FAILED, 'while it waited before batch ' . ((int) $change['current_batch'] + ($change['waiting'] === 'secrets' ? 0 : 1))
+                . ", $problem", $now);
 
             return;
         }
         if ($change['waiting'] === 'secrets' && $change['resume_at'] !== null && self::at($change['resume_at']) <= $now) {
-            $this->finish($change, ChangeStatus::FAILED, 'stopped while it waited before batch ' . (int) $change['current_batch']
-                . ': nobody entered the secret answers by ' . Clock::text(self::at($change['resume_at'])), $now);
+            $this->finish($change, ChangeStatus::FAILED, 'while it waited before batch ' . (int) $change['current_batch']
+                . ', nobody entered the secret answers by ' . Clock::text(self::at($change['resume_at'])), $now);
 
             return;
         }
@@ -792,7 +798,7 @@ final class ChangeLifecycle
             $this->batchVerify($change));
         if ($problem !== null) {
             $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($problem, 500)]);
-            $this->finish($change, ChangeStatus::FAILED, "stopped before batch $number: $problem", $now);
+            $this->finish($change, ChangeStatus::FAILED, "batch $number was not started: $problem", $now);
 
             return;
         }
@@ -889,7 +895,7 @@ final class ChangeLifecycle
         $problem = $this->batchProblem($change, $user, $now);
         if ($problem !== null) {
             $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($problem, 500)]);
-            $this->finish($change, ChangeStatus::FAILED, "stopped before batch $number was launched: $problem", $now);
+            $this->finish($change, ChangeStatus::FAILED, "batch $number was not launched: $problem", $now);
 
             return;
         }
@@ -1124,7 +1130,7 @@ final class ChangeLifecycle
                 $this->moveWindow($done, (int) $windowId, $window, $now, $now, true);
             }
         }
-        $this->timeline($done, $status, ucfirst(ChangeStatus::label($status)) . ($reason !== null ? ': ' . UntrustedText::line($reason, 1000) : '.'), null, $now);
+        $this->timeline($done, $status, ChangeText::outcome($status, $reason !== null ? UntrustedText::line($reason, 1000) : null), null, $now);
         $this->eventAll($done, ChangeText::finished($done, $status, $reason), match ($status) {
             ChangeStatus::APPLIED => 'ok',
             ChangeStatus::FAILED => 'error',
@@ -1255,6 +1261,24 @@ final class ChangeLifecycle
         }
 
         return $this->dryRunProblem($change, $now) ?? $this->approvalProblem($change, $now);
+    }
+
+    /**
+     * A change ready without an approval (none was needed) whose settings now ask for one: it awaits one. Nothing was
+     * voided, so it is said as a request, not as a warning. True when the change moved.
+     */
+    private function approvalSwitchedOn(array $change, int $now, ?string $user = null): bool
+    {
+        if ($change['approved_at'] !== null || ! ApprovalRules::needed($this->settings->approval)) {
+            return false;
+        }
+        $awaiting = $this->update($change, ['status' => ChangeStatus::AWAITING]);
+        if ($awaiting !== null) {
+            $this->timeline($awaiting, 'approval', 'The settings ask for ' . ApprovalRules::LABELS[$this->settings->approval] . ' now: approval requested.', null, $now);
+            $this->eventAll($awaiting, ChangeText::approvalRequested($awaiting), 'info', $user);
+        }
+
+        return true;
     }
 
     /**
@@ -1457,7 +1481,7 @@ final class ChangeLifecycle
                 } elseif (! empty($node['excluded'])) {
                     $state['status'] = BackupState::EXCLUDED;
                 } elseif (! $this->backups->request((string) $node['name'], ChangeText::backupMessage($change, $number, $phase), (string) $change['username'])) {
-                    [$state['status'], $state['error']] = [BackupState::UNAVAILABLE, 'Oxidized refused the request or cannot be reached'];
+                    [$state['status'], $state['error']] = [BackupState::UNAVAILABLE, 'Oxidized refused the request or cannot be reached (check LibreNMS\' oxidized.url setting)'];
                 }
             } catch (BackupError $e) {
                 [$state['status'], $state['error']] = [BackupState::UNAVAILABLE, UntrustedText::line($e->getMessage(), 200)];

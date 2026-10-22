@@ -194,16 +194,40 @@ final class ChangeText
      */
     public static function finished(array $change, string $status, ?string $reason): string
     {
-        $text = self::name($change) . ' ' . match ($status) {
+        $verb = match ($status) {
             ChangeStatus::APPLIED => 'applied',
             ChangeStatus::FAILED => 'failed',
             ChangeStatus::STOPPED => 'was stopped',
             ChangeStatus::REJECTED => 'was rejected',
             ChangeStatus::CANCELLED => 'was cancelled',
             default => 'ended',
-        } . ', template ' . self::quote($change['template_name']);
+        };
+        $reason = $reason !== null && $reason !== '' ? UntrustedText::line($reason, 400) : null;
+        // "was stopped by alice after batch 1", not "was stopped: stopped by alice after batch 1"
+        $word = substr($verb, strrpos($verb, ' ') !== false ? strrpos($verb, ' ') + 1 : 0);
+        if ($reason !== null && str_starts_with($reason, "$word ")) {
+            return self::name($change) . ' ' . $verb . substr($reason, strlen($word)) . ', template ' . self::quote($change['template_name']);
+        }
+        $text = self::name($change) . " $verb, template " . self::quote($change['template_name']);
 
-        return $reason !== null && $reason !== '' ? $text . ': ' . UntrustedText::line($reason, 400) : $text;
+        return $reason !== null ? $text . ': ' . $reason : $text;
+    }
+
+    /**
+     * How a change ended, as its page and timeline say it: "Stopped by alice after batch 1", "Failed: batch 2 was
+     * refused: ...", "Applied." (a reason that starts with the status's own word is not said twice).
+     */
+    public static function outcome(string $status, ?string $reason): string
+    {
+        $label = ChangeStatus::label($status);
+        if ($reason === null || $reason === '') {
+            return ucfirst($label) . '.';
+        }
+        if (str_starts_with(strtolower($reason), strtolower($label) . ' ')) {
+            return ucfirst($reason) . (preg_match('/[.!?]$/', $reason) ? '' : '.');
+        }
+
+        return ucfirst($label) . ': ' . $reason . (preg_match('/[.!?)"]$/', $reason) ? '' : '.');
     }
 
     public static function cancelled(array $change, string $by): string

@@ -40,6 +40,8 @@ class ChangeRulesTest extends TestCase
         $this->assertSame([503], $chosen->devices(3));
         $this->assertSame([], $chosen->devices(4));
         $this->assertStringContainsString('15 min between batches', $chosen->describe());
+        $this->assertStringStartsWith('2 batches: 1, then 1 device;', BatchPlan::make([1, 2], [], 1, 1, 1, false, 0)->describe(), 'the word goes with the last number');
+        $this->assertStringStartsWith('1 batch: 1 device;', BatchPlan::make([1], [], 1, 5, 1, true, 0)->describe());
     }
 
     public function testTheRuleOfTheSettingsInWords(): void

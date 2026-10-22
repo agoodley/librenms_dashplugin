@@ -555,7 +555,7 @@
         function toggle(device, on) {
             if (on && !device.refusal) {
                 if (selectedIds().length >= config.maxTargets) {
-                    window.alert('A change may have at most ' + config.maxTargets + ' targets (Max targets per run setting).');
+                    window.alert('A change may have at most ' + config.maxTargets + ' targets (Max targets per change setting).');
                 } else {
                     selected[device.id] = true;
                 }
@@ -839,14 +839,15 @@
         function question(action) {
             var now = current();
             var batches = now.batches + (now.batches === 1 ? ' batch' : ' batches');
+            var devices = now.targets === 1 ? 'its device' : 'its ' + now.targets + ' devices';
             return {
-                'dry-run': 'Run the dry run of this change on its ' + now.targets + ' devices? Ansible runs the playbook in check mode (--check --diff): '
+                'dry-run': 'Run the dry run of this change on ' + devices + '? Ansible runs the playbook in check mode (--check --diff): '
                     + 'it reports what would change and changes nothing, as far as the playbook\'s modules support check mode.'
                     + (now.dryRuns ? ' It replaces the dry run before, and an approval of it no longer counts.' : ''),
                 approve: 'Approve this change as it was dry-run? The approval covers exactly this dry run, the template as it is and the batch plan: '
                     + 'a change of any of them voids it.',
                 reject: 'Reject this change? It ends it: nothing is applied.',
-                apply: 'Apply this change to its ' + now.targets + ' devices in ' + batches + '? Batch 1 starts now, after its maintenance window and backups.',
+                apply: 'Apply this change to ' + devices + ' in ' + batches + '? Batch 1 starts now' + (now.prepare ? ', after its ' + now.prepare : '') + '.',
                 'continue': now.waiting === 'secrets' ? 'Launch batch ' + now.currentBatch + ' with the secret answers given here?'
                     : 'Continue with batch ' + (now.currentBatch + 1) + '? Check the devices of the batches so far first.',
                 stop: 'Stop this change? A running batch is stopped as a run\'s stop (the step in progress on each device runs on), no further batch starts, '

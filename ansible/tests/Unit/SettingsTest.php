@@ -42,7 +42,7 @@ class SettingsTest extends TestCase
             array_keys($result['errors']));
         $this->assertSame('Hold after a stop (minutes) is a whole number from 1 to 1440.', $result['errors']['stop_hold_minutes']);
         $this->assertStringContainsString('line 1 (ios cisco.ios.ios bogus)', $result['errors']['platform_map']);
-        $this->assertSame('Max targets per run is a whole number from 1 to 500.', $result['errors']['max_targets']);
+        $this->assertSame('Max targets per change is a whole number from 1 to 500.', $result['errors']['max_targets']);
     }
 
     public function testSettingsLeftOutKeepTheirValueAndEmptyOnesTheirDefault(): void
@@ -70,7 +70,7 @@ class SettingsTest extends TestCase
         $this->assertSame([
             'platform mapping: added linux (community.general.linux ssh); changed ios (cisco.ios.ios network_cli)',
             'allowed device group Ansible lab (#3) → every device',
-            'max targets per run 25 → 2',
+            'max targets per change 25 → 2',
             'inventory user not chosen → ansinv (#950)',
         ], $after->changes($before, self::GROUPS, self::USERS));
         $this->assertSame([], $after->changes($after, self::GROUPS, self::USERS));
@@ -94,7 +94,7 @@ class SettingsTest extends TestCase
         $this->assertSame(['second', 7200, 720 * 3600, false, false, 60, false, 2, 1800, 0], [$changes->approval, $changes->approvalSeconds, $changes->dryRunSeconds,
             $changes->backups, $changes->refuseWithoutBackup, $changes->backupTimeoutSeconds, $changes->maintenance, $changes->maintenanceBehavior, $changes->expectedSeconds,
             $changes->settleSeconds], 'stored values out of range are clamped');
-        $this->assertSame('3 batches: 1, then 3, then 1 devices; stops at 2 failed devices in a batch; 5 min between batches', $settings->batchPlan([1, 2, 3, 4, 5])->describe());
+        $this->assertSame('3 batches: 1, then 3, then 1 device; stops at 2 failed devices in a batch; 5 min between batches', $settings->batchPlan([1, 2, 3, 4, 5])->describe());
         $this->assertSame('required', (new PluginSettings(['approval' => 'whatever']))->changeSettings()->approval, 'an unknown approval mode asks for an approval');
 
         $result = PluginSettings::fromInput(['approval' => 'nobody', 'canary_size' => '0', 'batch_size' => '501', 'stop_at' => 'x', 'wait_after_canary' => 'maybe',
@@ -121,8 +121,8 @@ class SettingsTest extends TestCase
 
     public function testAuditTexts(): void
     {
-        $this->assertSame('Ansible plugin settings changed by admin: max targets per run 25 → 2; inventory user not chosen → ansinv (#950)',
-            AuditText::settingsChanged('admin', ['max targets per run 25 → 2', 'inventory user not chosen → ansinv (#950)']));
+        $this->assertSame('Ansible plugin settings changed by admin: max targets per change 25 → 2; inventory user not chosen → ansinv (#950)',
+            AuditText::settingsChanged('admin', ['max targets per change 25 → 2', 'inventory user not chosen → ansinv (#950)']));
         $this->assertSame('Ansible plugin run permission (ansible.run) granted to ansadmin2 by admin', AuditText::permissionGranted('admin', 'ansadmin2'));
         $this->assertSame('Ansible plugin run permission (ansible.run) revoked from bob x by admin', AuditText::permissionRevoked("admin", "bob\nx"));
     }

@@ -97,7 +97,8 @@ final class TargetSelection
      */
     public static function reservedRefusal(int $changeId): array
     {
-        return ['reason' => 'reserved', 'text' => "reserved by change #$changeId, which is being applied: its later batches will change it"];
+        return ['reason' => 'reserved', 'text' => "reserved by change #$changeId until it ends: that change is being applied (another run on its devices meanwhile "
+            . 'would void its dry run)'];
     }
 
     /**

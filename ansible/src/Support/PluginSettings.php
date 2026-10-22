@@ -6,7 +6,7 @@ use Agoodley\LibrenmsAnsible\Inventory\PlatformMap;
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 
 /**
- * What runs may reach and how: the platform mapping, the allowed device group, the max targets per run, the
+ * What runs may reach and how: the platform mapping, the allowed device group, the max targets per change (and run), the
  * output kept, when an unfinished run is stopped, how long a stopped run keeps its devices, and the inventory user
  * (the LibreNMS user whose API token the runner fetches the inventory with); and how changes go (phase 2): approvals,
  * how long a dry run and an approval count, the batches, the Oxidized backups and the maintenance windows. The plugin
@@ -72,7 +72,7 @@ final class PluginSettings
     public const LABELS = [
         'platform_map' => 'platform mapping',
         'allowed_group' => 'allowed device group',
-        'max_targets' => 'max targets per run',
+        'max_targets' => 'max targets per change',
         'output_max_kb' => 'output size (KB)',
         'stop_after_hours' => 'stop after (hours)',
         'stop_hold_minutes' => 'hold after a stop (minutes)',
@@ -176,7 +176,7 @@ final class PluginSettings
     }
 
     /**
-     * What differs from $before, for the eventlog: "max targets per run 25 → 2".
+     * What differs from $before, for the eventlog: "max targets per change 25 → 2".
      *
      * @param  array<int, string>  $groups  the device groups (id => name)
      * @param  array<int, string>  $users  the LibreNMS users (id => username)

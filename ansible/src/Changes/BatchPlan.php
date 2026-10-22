@@ -193,7 +193,8 @@ final class BatchPlan
     public function describe(): string
     {
         $sizes = array_map('count', $this->batches);
-        $text = count($sizes) . (count($sizes) === 1 ? ' batch' : ' batches') . ': ' . implode(', then ', $sizes) . ' ' . (array_sum($sizes) === 1 ? 'device' : 'devices')
+        // "1, then 5, then 2 devices", "1, then 1 device": the word goes with the last number
+        $text = count($sizes) . (count($sizes) === 1 ? ' batch' : ' batches') . ': ' . implode(', then ', $sizes) . ' ' . (end($sizes) === 1 ? 'device' : 'devices')
             . '; stops at ' . $this->stopAt . ' failed ' . ($this->stopAt === 1 ? 'device' : 'devices') . ' in a batch';
         if ($this->waitAfterFirst && count($sizes) > 1) {
             $text .= '; waits for an admin to continue after the first batch';

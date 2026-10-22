@@ -115,7 +115,8 @@
         @endif
         @if($change['error'] && ! in_array($dryState, ['unverified', 'failed'], true) && $status !== ChangeStatus::APPLIED)
             <div class="alert alert-{{ in_array($status, [ChangeStatus::FAILED, ChangeStatus::REJECTED], true) ? 'danger' : 'warning' }}" id="ans-change-error">
-                <strong>{{ ChangeStatus::label($status) }}:</strong> {{ Clock::localize($change['error']) }}
+                @php($outcome = ChangeText::outcome($status, Clock::localize($change['error'])))
+                @if(str_contains($outcome, ': '))<strong>{{ strstr($outcome, ': ', true) }}:</strong> {{ substr(strstr($outcome, ': '), 2) }}@else<strong>{{ $outcome }}</strong>@endif
                 @if($remaining && $canRun && ($remaining['devices'] || $remaining['left_out']))
                     <div style="margin-top: 6px">
                         @if($remaining['devices'])
@@ -266,7 +267,7 @@
                             <td class="ans-wrap">{{ $approval['comment'] }}@if($approval['voided_at'])<div class="ans-help">no longer counts: {{ $approval['void_reason'] }}</div>@endif</td>
                         </tr>
                     @empty
-                        <tr><td class="text-muted">None yet.</td></tr>
+                        <tr><td class="text-muted" id="ans-approvals-none">{{ ApprovalRules::needed($settings->approval) ? 'None yet.' : 'None needed: the settings ask for no approval.' }}</td></tr>
                     @endforelse
                     @if($approvalExpires)
                         <tr><td colspan="3" class="ans-muted">The approval counts until {{ Clock::show($approvalExpires, 'Y-m-d H:i T') }}.</td></tr>
@@ -368,7 +369,7 @@
                             <td class="ans-muted">{{ $local($window['opened_at']) }} – {{ Clock::local($window['status'] === 'closed' ? $window['closed_at'] : $window['ends_at'], 'Y-m-d H:i:s T') }}{{ $window['error'] ? ' · ' . $window['error'] : '' }}</td>
                         </tr>
                     @empty
-                        <tr><td class="text-muted">None yet: the plugin opens one before each batch.</td></tr>
+                        <tr><td class="text-muted">{{ $settings->maintenance ? 'None yet: the plugin opens one before each batch.' : 'None: maintenance windows are switched off in the settings.' }}</td></tr>
                     @endforelse
                 </table>
             </div>
@@ -414,6 +415,8 @@
             'next' => $next,
             'targets' => count($targets),
             'batches' => (int) $change['batch_count'],
+            // what a batch waits for before it starts, as the settings are
+            'prepare' => implode(' and ', array_filter([$settings->maintenance ? 'maintenance window' : null, $settings->backups && $oxidized ? 'backups' : null])),
             'currentBatch' => (int) $change['current_batch'],
             'waiting' => $change['waiting'],
             'hasSecrets' => (bool) $secretVars,
