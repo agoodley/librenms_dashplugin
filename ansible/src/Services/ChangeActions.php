@@ -9,6 +9,7 @@ use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\PermissionRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
+use Agoodley\LibrenmsAnsible\Runs\TargetSelection;
 use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
 use Agoodley\LibrenmsAnsible\Support\Access;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
@@ -118,6 +119,16 @@ final class ChangeActions implements ChangeRunner
     public function connections(array $deviceIds): array
     {
         return Connections::of($this->inventory->build(), $deviceIds);
+    }
+
+    public function busy(array $deviceIds): array
+    {
+        $busy = [];
+        foreach (array_intersect_key($this->runs->busy(), array_flip(array_map('intval', $deviceIds))) as $deviceId => $entry) {
+            $busy[(int) $deviceId] = TargetSelection::busyRefusal($entry)['text'];
+        }
+
+        return $busy;
     }
 
     public function findRun(int $changeId, string $kind, int $number): ?int

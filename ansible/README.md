@@ -414,7 +414,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   comment) or **Reject**s; approvers find the changes that wait for them on the Changes page, with the status filter
   *Awaiting approval*. **Apply** starts the first batch: its maintenance window, the backups, then its run; after
   it the change waits for **Continue** (when *Wait after the first batch* is on), and the next batches follow on their
-  own until the last, or until one fails. **Stop** stops the running batch (as a run's stop: the step in progress runs
+  own until the last, or until one fails. An Apply or a Continue while a device of the batch is busy in another
+  unfinished run (or held after a stop) is refused and changes nothing: the change stays ready, or waiting. **Stop** stops the running batch (as a run's stop: the step in progress runs
   on) and launches nothing more. It never waits, even while another request is busy with the change (or died while
   at it): the stop is recorded at once, the runner is asked at once to stop the batch's task, no batch launches
   afterwards (a launch under way looks for the stop again right before it records its run and right before it asks

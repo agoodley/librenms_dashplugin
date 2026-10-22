@@ -126,6 +126,14 @@ final class FakeChangeRunner implements ChangeRunner
     /** @var string|null what a preflight answers before $verify (a target refused, the runner unreachable...) */
     public ?string $preflightError = null;
 
+    /** @var array<int, string> device => why it is busy (busy()) */
+    public array $busy = [];
+
+    public function busy(array $deviceIds): array
+    {
+        return array_intersect_key($this->busy, array_flip($deviceIds));
+    }
+
     /** Number of preflights. */
     public int $preflights = 0;
 

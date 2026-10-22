@@ -1193,6 +1193,33 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame('cancelled', $this->changes->batches[$id][1]['status']);
     }
 
+    public function testApplyAndContinueAreRefusedWhileADeviceOfTheBatchIsBusy(): void
+    {
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $this->runner->busy = [501 => 'busy in run #90, which has not finished'];
+        $this->assertSame('Batch 1 cannot start now: lab-sw1 is busy in run #90, which has not finished. Nothing changed: the change is still ready; apply it once it is free.',
+            $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->assertSame([ChangeStatus::READY, 'pending', 0], [$this->changes->find($id)['status'], $this->changes->batches[$id][1]['status'], count($this->windows->windows)],
+            'nothing changed: the approved change is not used up');
+        $this->assertNull($this->changes->approvals[0]['voided_at']);
+
+        $this->runner->busy = [];
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 60));
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        $lifecycle->advance($id, $this->t0 + 101);
+        $this->assertSame([ChangeStatus::PAUSED, 'canary'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+        $this->runner->busy = [502 => 'held by run #91 until 2026-10-22 10:30 UTC: it was stopped', 503 => 'busy in run #92, which has not finished'];
+        $this->assertSame('Batch 2 cannot start now: lab-sw2 is held by run #91 until 2026-10-22 10:30 UTC: it was stopped; lab-sw3 is busy in run #92, which has not finished. '
+            . 'Nothing changed: the change keeps waiting; continue it once they are free.', $lifecycle->resume($id, self::ALICE, [], $this->t0 + 110));
+        $this->assertSame([ChangeStatus::PAUSED, 'canary', 'pending'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting'],
+            $this->changes->batches[$id][2]['status']]);
+        $this->runner->busy = [];
+        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 120));
+        $this->assertSame([502, 503], end($this->runner->launches)['devices']);
+    }
+
     public function testAnApprovalOrAPermissionLostDuringTheBackupsStopsTheBatchBeforeItsLaunch(): void
     {
         foreach (['the approver' => fn () => $this->runner->userProblems[2] = 'no longer holds the approve permission',

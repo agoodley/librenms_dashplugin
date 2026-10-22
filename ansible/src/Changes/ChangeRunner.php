@@ -30,6 +30,15 @@ interface ChangeRunner
         ?\Closure $halt = null): array;
 
     /**
+     * The devices busy in an unfinished run or held after a stop (a launch on them is refused), with why ("busy in run
+     * #12, which has not finished").
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, string> device_id => why
+     */
+    public function busy(array $deviceIds): array;
+
+    /**
      * Would a launch of the change's batch be refused now, and why: every check of a launch (the runner's token, the
      * template as the runner has it, by $verify against what was dry-run, the targets and how the runner reaches them),
      * without launching, nor checking the secret answers (they come with the launch). Null when it would be launched.
