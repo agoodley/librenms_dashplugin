@@ -50,6 +50,12 @@ final class ChangeLifecycle
      */
     public const SECRETS_WAIT_MIN = 900;
 
+    /**
+     * Seconds a prepared batch waits for the secret answers before its timeline says so: the change page that holds them
+     * (in its memory) launches it with them within seconds, and then it never waited.
+     */
+    public const SECRETS_ANNOUNCE = 30;
+
     /** @var (\Closure(): void)|null called during long work (calls to the runner and to Oxidized): the follower renews its lock */
     private ?\Closure $heartbeat = null;
 
@@ -103,6 +109,10 @@ final class ChangeLifecycle
         $problem = $this->runner->userProblem((int) $user['user_id'], 'run');
         if ($problem !== null) {
             return 'You may not launch the dry run: ' . $problem . '.';
+        }
+        $missing = self::missingSecrets($change, $secrets, true);
+        if ($missing) {
+            return self::secretsText($missing, 'for the dry run');
         }
         $hadApproval = $change['approved_at'] !== null;
         $change = $this->update($change, ['status' => ChangeStatus::DRY_RUN, 'dry_runs' => (int) $change['dry_runs'] + 1, 'dry_run_id' => null,
@@ -235,6 +245,10 @@ final class ChangeLifecycle
         if ($problem !== null) {
             return 'You may not apply the change: ' . $problem . '.';
         }
+        $missing = self::missingSecrets($change, $secrets);
+        if ($missing) {
+            return self::secretsText($missing, 'to apply the change');
+        }
         $dryRun = $this->dryRunProblem($change, $now);
         if ($dryRun === null) {
             $template = $this->templateCheck($change);
@@ -322,6 +336,14 @@ final class ChangeLifecycle
             return 'You may not continue the change: ' . $problem . '.';
         }
         $batch = (int) $change['current_batch'];
+        $missing = self::missingSecrets($change, $secrets);
+        if ($missing) {
+            // nothing changes: a batch that waits for them keeps waiting (its window open, its backups taken)
+            return $change['waiting'] === 'secrets'
+                ? self::secretsText($missing, "to launch batch $batch") . ' The batch keeps waiting for them until '
+                    . ($change['resume_at'] !== null ? Clock::show(self::at($change['resume_at']), 'Y-m-d H:i T') : 'its deadline') . '.'
+                : self::secretsText($missing, 'to continue with batch ' . ($batch + 1));
+        }
         if ($change['waiting'] === 'secrets') {
             $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]);
             if ($resumed === null) {
@@ -684,6 +706,18 @@ final class ChangeLifecycle
 
             return;
         }
+        if ($change['waiting'] === 'secrets' && $change['resume_at'] !== null) {
+            // the wait is said once it is real: the page that holds the secret answers launches the batch within seconds
+            $number = (int) $change['current_batch'];
+            $deadline = self::at($change['resume_at']);
+            $batch = $this->changes->batches((int) $change['id'])[$number] ?? null;
+            if ($batch !== null && ($batch['note'] ?? null) === null && $now >= $deadline - $this->secretsWait() + self::SECRETS_ANNOUNCE) {
+                $this->changes->updateBatch((int) $change['id'], $number, ['note' => 'until ' . Clock::show($deadline, 'Y-m-d H:i T') . ', then the change ends']);
+                $this->timeline($change, 'apply', ChangeText::waiting($change, $number, 'secrets', $deadline), null, $now);
+            }
+
+            return;
+        }
         if ($change['waiting'] !== 'timer' || $change['resume_at'] === null || self::at($change['resume_at']) > $now) {
             return;
         }
@@ -768,7 +802,8 @@ final class ChangeLifecycle
         if ($this->settings->backups && $this->backups->enabled()) {
             $this->requestBackups($change, $number, $devices, 'before', $now);
             $this->followBackups($id, $now);
-            $this->backupsBefore($change, $number, $now);
+            // backups fresh at once: the batch launches in this request, with the secret answers given now
+            $this->backupsBefore($change, $number, $now, $secrets);
 
             return;
         }
@@ -791,8 +826,10 @@ final class ChangeLifecycle
     /**
      * Launch the batch once each of its devices has a fresh backup (or the settings let it go without, with a warning);
      * refuse it, which ends the change, when a backup is missing.
+     *
+     * @param  array<string, string>|null  $secrets  the secret answers given in this request (an apply or a continue), null in a later one
      */
-    private function backupsBefore(array $change, int $number, int $now): void
+    private function backupsBefore(array $change, int $number, int $now, #[\SensitiveParameter] ?array $secrets = null): void
     {
         $id = (int) $change['id'];
         $missing = [];
@@ -821,7 +858,7 @@ final class ChangeLifecycle
             $this->timeline($change, 'backup', "Batch $number goes without a fresh backup of " . UntrustedText::line(implode(', ', $missing), 600)
                 . ' (setting: continue with a warning).', null, $now);
         }
-        $this->launchBatch($change, $number, $this->starter($change, $number), null, $now);
+        $this->launchBatch($change, $number, $this->starter($change, $number), $secrets, $now);
     }
 
     /**
@@ -848,16 +885,16 @@ final class ChangeLifecycle
             return;
         }
         if (! empty($change['has_secrets']) && $secrets === null) {
-            // its window is open and its backups taken: it waits at most the expected time of a batch, then the change ends
-            $deadline = $now + max(self::SECRETS_WAIT_MIN, $this->settings->expectedSeconds);
+            // its window is open and its backups taken: it waits at most the expected time of a batch, then the change ends;
+            // the wait is said in the timeline only once it is real (paused())
+            $deadline = $now + $this->secretsWait();
             if ($this->update($change, ['status' => ChangeStatus::PAUSED, 'waiting' => 'secrets', 'resume_at' => Clock::store($deadline)]) !== null) {
-                $this->changes->updateBatch($id, $number, ['status' => 'prepared']);
-                $this->timeline($change, 'apply', ChangeText::waiting($change, $number, 'secrets', $deadline), null, $now);
+                $this->changes->updateBatch($id, $number, ['status' => 'prepared', 'note' => null]);
             }
 
             return;
         }
-        $this->changes->updateBatch($id, $number, ['status' => 'launching', 'started_at' => Clock::store($now)]);
+        $this->changes->updateBatch($id, $number, ['status' => 'launching', 'started_at' => Clock::store($now), 'note' => null]);
         $this->beat();
         $result = $this->runner->launch($change, 'batch', $number, $this->batchDevices($change, $number), $user, $secrets ?? [], $this->batchVerify($change));
         if ($result['run_id'] === null) {
@@ -897,6 +934,65 @@ final class ChangeLifecycle
 
             return $moved ? self::movedText($moved, 'since the dry run') . ': its approval no longer counts' : null;
         };
+    }
+
+    /**
+     * Seconds a prepared batch waits for the secret answers: the expected time of a batch, at least SECRETS_WAIT_MIN.
+     */
+    private function secretsWait(): int
+    {
+        return max(self::SECRETS_WAIT_MIN, $this->settings->expectedSeconds);
+    }
+
+    /**
+     * The required secret answers missing from $secrets, by label: as the survey of the template that was dry-run requires
+     * them (its fingerprint), or, for a dry run, as the change recorded them from the survey. The launch checks them
+     * again; this refuses an action that would only fail later (after a window and backups), and changes nothing.
+     *
+     * @param  array<string, string>  $secrets
+     * @return string[]
+     */
+    public static function missingSecrets(array $change, #[\SensitiveParameter] array $secrets, bool $forDryRun = false): array
+    {
+        $labels = [];
+        $required = [];
+        foreach ((array) ($change['variables'] ?? []) as $variable) {
+            if (is_array($variable) && ! empty($variable['secret']) && isset($variable['name'])) {
+                $labels[(string) $variable['name']] = (string) (($variable['label'] ?? '') ?: $variable['name']);
+                if (! empty($variable['required'])) {
+                    $required[(string) $variable['name']] = true;
+                }
+            }
+        }
+        $survey = ((array) (((array) ($change['fingerprint_parts'] ?? []))['template'] ?? []))['survey'] ?? null;
+        if (! $forDryRun && is_array($survey)) {
+            $required = [];
+            foreach ($survey as $var) {
+                $var = (array) $var;
+                if (($var['type'] ?? null) === 'secret' && ! empty($var['required']) && isset($var['name'])) {
+                    $required[(string) $var['name']] = true;
+                }
+            }
+        }
+        $missing = [];
+        foreach (array_keys($required) as $name) {
+            if ((string) ($secrets[$name] ?? '') === '') {
+                $missing[] = UntrustedText::line($labels[$name] ?? $name, 80);
+            }
+        }
+
+        return $missing;
+    }
+
+    /**
+     * Why an action lacks secret answers.
+     *
+     * @param  string[]  $missing
+     */
+    private static function secretsText(array $missing, string $for): string
+    {
+        return 'Enter the secret ' . (count($missing) === 1 ? 'answer' : 'answers') . ' ' . implode(', ', $missing) . " $for: the plugin never keeps secret answers, "
+            . 'so each launch needs them.';
     }
 
     /**
@@ -1564,17 +1660,17 @@ final class ChangeLifecycle
      */
     private function timeline(array $change, string $kind, string $message, ?string $username, int $now): void
     {
-        // the timeline is the change's own: an eventlog text loses its "Ansible change #N (reference)" there
+        // the timeline is the change's own: an eventlog text loses its "Ansible change #N (reference)" there, and ends as a sentence
         $name = ChangeText::name($change);
         if (str_starts_with($message, $name)) {
             $message = ucfirst(ltrim(substr($message, strlen($name)), ':, '));
         }
+        if (preg_match('/[\p{L}\p{N}]$/u', $message)) {
+            $message .= '.';
+        }
         $this->changes->addEvent((int) $change['id'], $kind, UntrustedText::line($message, 2000), $username, $now);
     }
 
-    /**
-     * An eventlog entry on every target, attributed to the change's requester.
-     */
     /**
      * An entry in the eventlog of every target, with the user who did the step (LibreNMS' User column): the admin who
      * acted, else, for a step the plugin took on its own, the admin it took it for (who applied the change, or asked

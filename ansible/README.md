@@ -580,11 +580,14 @@ change that is not over (and for the windows and backups of ended changes), so a
 except where it waits for an admin.
 
 **Secret answers** are never stored, so they are not part of the fingerprint or the approval, and the plugin cannot
-launch a batch that needs them on its own. They are asked at the dry run and at *Apply*; the change page keeps them in
-its memory (not in the browser's storage) and launches each next batch with them while it stays open. When it was
-closed, a batch that needs them waits (*waits for the secret answers*) for an admin to continue with them, with its
-maintenance window open and its backups taken: for the *Expected batch time* (maintenance setting, at least 15
-minutes), after which the change ends as failed and the window closes.
+launch a batch that needs them on its own. They are asked at the dry run, at *Apply* and at each *Continue*, which are
+refused (changing nothing) while a secret answer the template requires is empty. A batch whose backups are fresh
+within that request launches with them at once; the change page keeps them in its memory (not in the browser's
+storage) and launches each later batch with them while it stays open, as soon as the batch is ready (after its window
+and backups). When it was closed, a batch that needs them waits (*waits for the secret answers*, said in the timeline
+once it has waited 30 seconds) for an admin to continue with them, with its maintenance window open and its backups
+taken: for the *Expected batch time* (maintenance setting, at least 15 minutes), after which the change ends as failed
+and the window closes.
 
 ## How runs work
 

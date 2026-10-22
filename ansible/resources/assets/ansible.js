@@ -888,7 +888,7 @@
         function showHeld() {
             var note = byId('ans-secrets-held');
             var alerts = byId('ans-change-alerts');
-            if (heldSecrets && !state.final && alerts) {
+            if (heldSecrets && Object.keys(heldSecrets).length && !state.final && alerts) {
                 if (!note) {
                     note = alertBox('info', null, null);
                     note.id = 'ans-secrets-held';
@@ -1049,7 +1049,9 @@
             request('POST', config.actions[action], body).then(function (result) {
                 busy = false;
                 if (result.status === 200) {
-                    if ((action === 'apply' || action === 'continue') && Object.keys(secrets).length) {
+                    // the page launches the next batches with the answers given here (none, when the template's secret answers are optional
+                    // and were left empty), while it stays open
+                    if ((action === 'apply' || action === 'continue') && current().hasSecrets) {
                         heldSecrets = secrets;
                     }
                     Array.prototype.forEach.call(document.querySelectorAll('#ans-secret-fields .ans-secret'), function (input) {

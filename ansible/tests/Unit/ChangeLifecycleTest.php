@@ -9,6 +9,7 @@ use Agoodley\LibrenmsAnsible\Changes\ChangeSettings;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\Connections;
 use Agoodley\LibrenmsAnsible\Changes\NextChange;
+use Agoodley\LibrenmsAnsible\Runner\SurveyVar;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeBackups;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeChangeRunner;
@@ -109,10 +110,10 @@ class ChangeLifecycleTest extends TestCase
     }
 
     /** A change dry-run (verified, every target would change), awaiting approval. */
-    private function dryRun(int $id, ?array $results = null, int $at = 0): int
+    private function dryRun(int $id, ?array $results = null, int $at = 0, array $secrets = []): int
     {
         $lifecycle = $this->lifecycle();
-        $this->assertNull($lifecycle->startDryRun($id, self::ALICE, [], $at ?: $this->t0));
+        $this->assertNull($lifecycle->startDryRun($id, self::ALICE, $secrets, $at ?: $this->t0));
         $runId = (int) $this->changes->find($id)['dry_run_id'];
         $results ??= array_fill_keys(array_keys(self::TARGETS), 'changed');
         $this->endRun($runId, in_array('failed', $results, true) ? 'failed' : 'success', $results,
@@ -864,44 +865,103 @@ class ChangeLifecycleTest extends TestCase
         $lifecycle = $this->lifecycle();
         $this->backups->now = $this->t0 + 50;
 
-        $lifecycle->apply($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 50);
-        $lifecycle->advance($id, $this->t0 + 60); // backups fresh: the sync command cannot launch without the secrets
-        $this->assertSame(ChangeStatus::PAUSED, $this->changes->find($id)['status']);
-        $this->assertSame('secrets', $this->changes->find($id)['waiting']);
-        $this->assertSame('prepared', $this->changes->batches[$id][1]['status']);
-
-        $this->assertNull($lifecycle->resume($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 70));
-        $this->assertSame(['key' => 's3cret'], $this->runner->launches[1]['secrets'], 'the secrets go to the runner');
-        $this->assertSame(1, $this->runner->launches[1]['number']);
+        // Oxidized backs batch 1 up at once: it launches within the apply, with the secret answers given there
+        $this->assertNull($lifecycle->apply($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 50));
+        $this->assertSame([1, ['key' => 's3cret']], [$this->runner->launches[1]['number'], $this->runner->launches[1]['secrets']], 'the secrets go to the runner');
         $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
         $this->backups->now = $this->t0 + 101;
-        $lifecycle->advance($id, $this->t0 + 101);
-        $this->assertSame('secrets', $this->changes->find($id)['waiting'], 'every batch needs them again');
-        $this->assertSame(2, (int) $this->changes->find($id)['current_batch']);
+        $lifecycle->advance($id, $this->t0 + 101); // the sync command starts batch 2: it cannot launch it without them
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'secrets', 2], [$change['status'], $change['waiting'], (int) $change['current_batch']], 'every batch needs them again');
+        $this->assertSame('prepared', $this->changes->batches[$id][2]['status']);
+        $this->assertNull($lifecycle->resume($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 103), 'the page that holds them launches it');
+        $this->assertSame([2, ['key' => 's3cret']], [$this->runner->launches[2]['number'], $this->runner->launches[2]['secrets']]);
+        $this->assertSame([], array_values(array_filter($this->changes->messages($id), fn ($m) => str_contains($m, 'enter the secret answers'))),
+            'it did not really wait: the timeline does not say it did');
 
         $stored = json_encode([$this->changes->changes, $this->changes->targets, $this->changes->batches, $this->changes->events, $this->runs->runs]);
         $this->assertStringNotContainsString('s3cret', (string) $stored);
 
-        $this->assertNull($lifecycle->stop($id, 'alice', $this->t0 + 110));
-        $lifecycle->advance($id, $this->t0 + 111);
-        $this->assertSame([ChangeStatus::STOPPED, 'stopped by alice before batch 2 was launched'], [$this->changes->find($id)['status'], $this->changes->find($id)['error']],
+        $this->endRun($this->batchRun($id, 2), 'success', [502 => 'changed'], [], $this->t0 + 150);
+        $this->backups->now = $this->t0 + 151;
+        $lifecycle->advance($id, $this->t0 + 151);
+        $this->assertSame('secrets', $this->changes->find($id)['waiting']);
+        $this->assertNull($lifecycle->stop($id, 'alice', $this->t0 + 160));
+        $lifecycle->advance($id, $this->t0 + 161);
+        $this->assertSame([ChangeStatus::STOPPED, 'stopped by alice before batch 3 was launched'], [$this->changes->find($id)['status'], $this->changes->find($id)['error']],
             'a batch waiting for the secret answers was not launched');
+    }
+
+    public function testAnActionWithoutARequiredSecretAnswerIsRefusedAndChangesNothing(): void
+    {
+        $this->runner->snapshot = FakeChangeRunner::snapshotOf(['surveyVars' => [new SurveyVar('interface', 'Interface', '', 'string', '', true),
+            new SurveyVar('key', 'Key', '', 'secret', 'secret', true)]]);
+        $id = $this->change(['has_secrets' => true, 'variables' => [['name' => 'key', 'label' => 'Key', 'type' => 'secret', 'value' => '********', 'secret' => true,
+            'required' => true]]], BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, true, 0));
+        $lifecycle = $this->lifecycle();
+        $why = ': the plugin never keeps secret answers, so each launch needs them.';
+        $this->assertSame("Enter the secret answer Key for the dry run$why", $lifecycle->startDryRun($id, self::ALICE, ['key' => ''], $this->t0));
+        $this->assertSame([ChangeStatus::DRAFT, 0, []], [$this->changes->find($id)['status'], (int) $this->changes->find($id)['dry_runs'], $this->runner->launches]);
+        $this->dryRun($id, null, 0, ['key' => 's3cret']);
+        $this->assertNull($lifecycle->approve($id, self::BOB, true, '', $this->t0 + 40));
+
+        $this->backups->now = $this->t0 + 50;
+        $this->assertSame("Enter the secret answer Key to apply the change$why", $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->assertSame([ChangeStatus::READY, [], []], [$this->changes->find($id)['status'], $this->windows->windows, $this->backups->requests],
+            'no window, no backup: nothing was started');
+        $this->assertNull($lifecycle->apply($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 50));
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        $lifecycle->advance($id, $this->t0 + 101);
+        $this->assertSame([ChangeStatus::PAUSED, 'canary'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+
+        // Continue after the canary without it: refused, the change still waits after its first batch
+        $this->assertSame("Enter the secret answer Key to continue with batch 2$why", $lifecycle->resume($id, self::ALICE, ['key' => ''], $this->t0 + 110));
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'canary', 1], [$change['status'], $change['waiting'], (int) $change['current_batch']]);
+        $this->assertCount(1, $this->windows->windows, 'no window for batch 2');
+
+        // with it, batch 2 starts; its backups come in a later request, which has no secret answers: it waits for them
+        $this->backups->succeed = false;
+        $this->assertNull($lifecycle->resume($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 120));
+        foreach ([502, 503] as $deviceId) {
+            $this->backups->nodes[$deviceId] = ['name' => "dev$deviceId", 'full_name' => "lab/dev$deviceId", 'last' => ['start' => gmdate('Y-m-d H:i:s', $this->t0 + 125) . ' UTC',
+                'end' => gmdate('Y-m-d H:i:s', $this->t0 + 129) . ' UTC', 'status' => 'success']];
+        }
+        $lifecycle->advance($id, $this->t0 + 130);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'secrets', 2], [$change['status'], $change['waiting'], (int) $change['current_batch']]);
+        $deadline = Clock::unix($change['resume_at']);
+        $this->assertSame("Enter the secret answer Key to launch batch 2$why The batch keeps waiting for them until " . Clock::show($deadline, 'Y-m-d H:i T') . '.',
+            $lifecycle->resume($id, self::ALICE, [], $this->t0 + 135));
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'secrets', 'prepared'], [$change['status'], $change['waiting'], $this->changes->batches[$id][2]['status']], 'it keeps waiting');
+        $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'));
+        $this->assertNull($lifecycle->resume($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 140));
+        $this->assertSame([2, ['key' => 's3cret']], [$this->runner->launches[2]['number'], $this->runner->launches[2]['secrets']]);
     }
 
     public function testAWaitForTheSecretAnswersEndsTheChangeAfterTheExpectedTimeOfABatch(): void
     {
         $id = $this->approved(['has_secrets' => true, 'variables' => [['name' => 'key', 'label' => 'Key', 'type' => 'secret', 'value' => '********', 'secret' => true]]]);
         $lifecycle = $this->lifecycle(['expectedSeconds' => 1800]);
-        $this->backups->now = $this->t0 + 50;
+        $this->backups->succeed = false; // Oxidized takes its time: the apply's request ends before the backups
         $lifecycle->apply($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 50);
+        $this->backups->nodes[501] = ['name' => 'dev501', 'full_name' => 'lab/dev501', 'last' => ['start' => gmdate('Y-m-d H:i:s', $this->t0 + 52) . ' UTC',
+            'end' => gmdate('Y-m-d H:i:s', $this->t0 + 56) . ' UTC', 'status' => 'success']];
         $lifecycle->advance($id, $this->t0 + 60); // the backups are fresh; the page that held the secrets was closed
         $change = $this->changes->find($id);
         $this->assertSame(['paused', 'secrets'], [$change['status'], $change['waiting']]);
         $deadline = Clock::unix($change['resume_at']);
-        $this->assertSame($this->t0 + 50 + 1800, $deadline, 'it waits the expected time of a batch');
+        $this->assertSame($this->t0 + 60 + 1800, $deadline, 'it waits the expected time of a batch');
         $this->assertSame('open', current($this->changes->windows($id))['status'], 'its window is open meanwhile');
-        $this->assertStringContainsString('Batch 1 waits for an admin to enter the secret answers again (the plugin never keeps them) until',
-            implode("\n", array_column($this->changes->events[$id], 'message')));
+        $waits = fn () => array_values(array_filter($this->changes->messages($id), fn ($m) => str_contains($m, 'enter the secret answers')));
+        $lifecycle->advance($id, $this->t0 + 60 + ChangeLifecycle::SECRETS_ANNOUNCE - 1);
+        $this->assertSame([], $waits(), 'not said while the page that holds them may still launch it');
+        $lifecycle->advance($id, $this->t0 + 60 + ChangeLifecycle::SECRETS_ANNOUNCE);
+        $lifecycle->advance($id, $this->t0 + 60 + ChangeLifecycle::SECRETS_ANNOUNCE + 5);
+        $this->assertSame(['Batch 1 waits for an admin to enter the secret answers again (the plugin never keeps them) until ' . Clock::show($deadline, 'Y-m-d H:i T')
+            . ', then the change ends.'], $waits(), 'said once it is real, once');
+        $this->assertSame('until ' . Clock::show($deadline, 'Y-m-d H:i T') . ', then the change ends', $this->changes->batches[$id][1]['note']);
 
         $lifecycle->advance($id, $deadline - 1);
         $this->assertSame('paused', $this->changes->find($id)['status']);

@@ -65,9 +65,9 @@ final class LaunchPlan
     }
 
     /**
-     * The answers as the audit log keeps them: secret ones without their value.
+     * The answers as the audit log keeps them: secret ones without their value; with whether the survey requires each.
      *
-     * @return array<int, array{name: string, label: string, type: string, value: string|int|null, secret: bool}>
+     * @return array<int, array{name: string, label: string, type: string, value: string|int|null, secret: bool, required: bool}>
      */
     public function variables(): array
     {
@@ -75,7 +75,8 @@ final class LaunchPlan
         foreach ($this->template?->surveyVars ?? [] as $var) {
             $given = array_key_exists($var->name, $this->values) || array_key_exists($var->name, $this->secrets);
             $variables[] = ['name' => $var->name, 'label' => $var->label(), 'type' => $var->type,
-                'value' => $var->isSecret() ? ($given ? '********' : null) : ($this->values[$var->name] ?? null), 'secret' => $var->isSecret()];
+                'value' => $var->isSecret() ? ($given ? '********' : null) : ($this->values[$var->name] ?? null), 'secret' => $var->isSecret(),
+                'required' => $var->required];
         }
 
         return $variables;

@@ -142,10 +142,10 @@
                 @if($secretVars && ($actions['dry_run'] || $actions['apply'] || $actions['continue']))
                     <div class="form-inline" id="ans-secret-fields" style="margin-bottom: 6px">
                         @foreach($secretVars as $var)
-                            <label style="font-weight: normal; margin-right: 8px">{{ $var['label'] }} <span class="ans-code ans-muted">{{ $var['name'] }}</span>
-                                <input type="password" class="form-control input-sm ans-secret" name="{{ $var['name'] }}" maxlength="1000" autocomplete="new-password"></label>
+                            <label style="font-weight: normal; margin-right: 8px">{{ $var['label'] }} <span class="ans-code ans-muted">{{ $var['name'] }}</span>@if(! empty($var['required'])) <span class="ans-muted">(required)</span>@endif
+                                <input type="password" class="form-control input-sm ans-secret" name="{{ $var['name'] }}" maxlength="1000" autocomplete="new-password"@if(! empty($var['required'])) data-required="1"@endif></label>
                         @endforeach
-                        <span class="ans-help">sent to the runner with the next launch only</span>
+                        <span class="ans-help">never stored: sent to the runner with the launch, and kept in this page's memory for the next batches while it stays open</span>
                     </div>
                 @endif
                 <div class="ans-launchbar" style="margin-top: 0">
