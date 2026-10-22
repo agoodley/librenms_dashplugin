@@ -32,8 +32,12 @@ final class FakeBackups implements ConfigBackups
         return $this->enabled;
     }
 
+    /** Calls of node(). */
+    public int $nodeCalls = 0;
+
     public function node(int $deviceId): ?array
     {
+        $this->nodeCalls++;
         if ($this->unreachable !== null) {
             throw new BackupError($this->unreachable);
         }

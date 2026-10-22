@@ -802,7 +802,8 @@
             var batches = now.batches + (now.batches === 1 ? ' batch' : ' batches');
             return {
                 'dry-run': 'Run the dry run of this change on its ' + now.targets + ' devices? Ansible runs the playbook in check mode (--check --diff): '
-                    + 'it reports what would change and changes nothing, as far as the playbook\'s modules support check mode.',
+                    + 'it reports what would change and changes nothing, as far as the playbook\'s modules support check mode.'
+                    + (now.dryRuns ? ' It replaces the dry run before, and an approval of it no longer counts.' : ''),
                 approve: 'Approve this change as it was dry-run? The approval covers exactly this dry run, the template as it is and the batch plan: '
                     + 'a change of any of them voids it.',
                 reject: 'Reject this change? It ends it: nothing is applied.',

@@ -80,8 +80,9 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
   option (dry run, diff, commit) and the task output API are all free. (Pro adds project runners, external secret
   storages, the Docker executor, the per-host task summary and audit-log export; Enterprise adds high availability,
   custom roles and per-template permissions. Official builds contain the paid code and unlock it with a licence key.)
-* Ansible on the runner with the collections of your platforms; ansible-core 2.13 or later for the check-mode markers
-  the dry runs need (developed and tested with 2.20). The Semaphore UI container image ships Ansible with `cisco.ios`,
+* Ansible on the runner with the collections of your platforms, whose default output has the check-mode markers the
+  dry runs need (its `check_mode_markers` option; developed and tested with ansible-core 2.20, the one the Semaphore UI
+  2.19.17 image ships). The Semaphore UI container image ships Ansible with `cisco.ios`,
   `cisco.iosxr`, `cisco.nxos`, `arista.eos`, `junipernetworks.junos`, `vyos.vyos`, `community.routeros`,
   `community.ciscosmb` and `dellemc.enterprise_sonic`, among others.
 * For backups: [Oxidized](https://github.com/ytti/oxidized) with its web API (oxidized-web), set up in LibreNMS

@@ -1071,9 +1071,14 @@ final class ChangeLifecycle
     private function requestBackups(array $change, int $number, array $devices, string $phase, int $now): void
     {
         $values = [];
+        // once Oxidized could not be reached, the other devices of the batch are not asked (each call may wait its timeout)
+        $down = null;
         foreach ($devices as $deviceId) {
             $state = ['status' => BackupState::REQUESTED, 'requested_at' => Clock::store($now), 'at' => null, 'version' => null, 'error' => null];
             try {
+                if ($down !== null) {
+                    throw new BackupError($down);
+                }
                 $node = $this->backups->node($deviceId);
                 if ($node === null) {
                     $state['status'] = BackupState::NO_NODE;
@@ -1084,6 +1089,7 @@ final class ChangeLifecycle
                 }
             } catch (BackupError $e) {
                 [$state['status'], $state['error']] = [BackupState::UNAVAILABLE, UntrustedText::line($e->getMessage(), 200)];
+                $down = $e->getMessage();
             }
             $values[$deviceId] = ['backup_node' => isset($node['full_name']) ? mb_substr((string) $node['full_name'], 0, 255) : null];
             foreach ($state as $key => $value) {
@@ -1109,6 +1115,8 @@ final class ChangeLifecycle
         if ($change === null) {
             return;
         }
+        // once Oxidized could not be reached, the other backups are not asked about in this refresh
+        $down = null;
         foreach (['before', 'after'] as $phase) {
             $values = [];
             foreach ($this->changes->targets($changeId) as $deviceId => $target) {
@@ -1116,12 +1124,14 @@ final class ChangeLifecycle
                     continue;
                 }
                 $last = null;
-                $error = null;
-                try {
-                    $node = $this->backups->node($deviceId);
-                    $last = is_array($node['last'] ?? null) ? $node['last'] : null;
-                } catch (BackupError $e) {
-                    $error = UntrustedText::line($e->getMessage(), 200);
+                $error = $down;
+                if ($down === null) {
+                    try {
+                        $node = $this->backups->node($deviceId);
+                        $last = is_array($node['last'] ?? null) ? $node['last'] : null;
+                    } catch (BackupError $e) {
+                        $error = $down = UntrustedText::line($e->getMessage(), 200);
+                    }
                 }
                 $state = BackupState::evaluate(['requested_at' => self::at($target["{$phase}_requested_at"]), 'error' => $error ?? $target["{$phase}_error"]], $last, $now,
                     $this->settings->backupTimeoutSeconds);

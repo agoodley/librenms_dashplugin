@@ -593,6 +593,18 @@ class ChangeLifecycleTest extends TestCase
         $this->assertStringContainsString('goes without a fresh backup', implode(' ', $this->changes->messages($warned)));
     }
 
+    public function testAnOxidizedThatCannotBeReachedIsAskedOncePerBatch(): void
+    {
+        $id = $this->approved([], BatchPlan::make(array_keys(self::TARGETS), [], 3, 5, 1, true, 0));
+        $this->backups->unreachable = 'Oxidized cannot be reached (unreachable)';
+        $this->lifecycle()->apply($id, self::ALICE, [], $this->t0 + 50);
+
+        $this->assertSame(1, $this->backups->nodeCalls, 'one call: each one could wait its timeout');
+        $this->assertSame(['unavailable', 'unavailable', 'unavailable'], array_column($this->changes->targets[$id], 'before_status'));
+        $this->assertSame(ChangeStatus::FAILED, $this->changes->find($id)['status']);
+        $this->assertStringContainsString('Oxidized cannot be reached', $this->changes->find($id)['error']);
+    }
+
     public function testAWindowThatCannotBeOpenedStopsTheBatch(): void
     {
         $id = $this->approved();

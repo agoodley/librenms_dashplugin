@@ -358,6 +358,7 @@
             'currentBatch' => (int) $change['current_batch'],
             'waiting' => $change['waiting'],
             'hasSecrets' => (bool) $secretVars,
+            'dryRuns' => (int) $change['dry_runs'],
         ];
     @endphp
     {{-- inside the page's root, so that the page's refresh (it fetches itself again) brings it along; @json() splits its
