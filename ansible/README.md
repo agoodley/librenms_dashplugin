@@ -67,12 +67,16 @@ launches, follows and records.
 
 The plugin is the Composer package `agoodley/librenms-ansible-plugin` in the `ansible/` directory of this
 repository. Composer cannot install a package from a subdirectory of a Git repository, so it is installed from a clone,
-through a Composer *path* repository. Run everything as the `librenms` user:
+through a Composer *path* repository. Create the directory of the clone as root, then run everything else as the
+`librenms` user:
 
 ```bash
+# as root: a directory for the clone, owned by the librenms user (it cannot create one in /opt itself)
+mkdir -p /opt/librenms-plugins && chown librenms:librenms /opt/librenms-plugins
+
 sudo su - librenms
 
-# 1. a clone of the repository (any directory the librenms user can read)
+# 1. a clone of the repository
 git clone https://github.com/agoodley/librenms_dashplugin /opt/librenms-plugins/librenms_dashplugin
 
 # 2. tell composer where the package is (stored in the librenms user's global composer config, so it survives
@@ -90,10 +94,10 @@ runner connection. Its pages are for LibreNMS admins: **Overview → Plugins →
 **Overview → Plugins → Plugin Admin → ansible → Settings**.
 
 The plugin keeps its data in tables of its own: the runs (`ansible_runs`, `ansible_run_targets`), the runner's inventory
-fetches (`ansible_inventory_fetches`) and the runner connection, encrypted (`ansible_config`). The migration also
-creates the permission `ansible.run`. `./validate.php` then warns that the schema "has extra migrations
-(2026_10_24_000000_create_ansible_tables)": that is the plugin's migration, and the warning stays while the plugin is
-installed. Do not delete its row from the `migrations` table, and never apply validate.php's offer to drop the
+fetches (`ansible_inventory_fetches`) and its settings, the runner connection encrypted (`ansible_config`). The
+migrations also create the permission `ansible.run`. `./validate.php` then warns that the schema "has extra
+migrations (2026_10_24_000000_create_ansible_tables, 2026_10_26_000000_ansible_run_lifecycle)": those are the plugin's
+migrations, and the warning stays while the plugin is installed. Do not delete its row from the `migrations` table, and never apply validate.php's offer to drop the
 `ansible_*` tables: they hold the audit log.
 
 **Updating:** `git pull` in the clone (the path repository links to it), then `./lnms migrate`.
@@ -105,7 +109,9 @@ installed. Do not delete its row from the `migrations` table, and never apply va
 ./lnms plugin:remove agoodley/librenms-ansible-plugin
 ```
 
-`./lnms plugin:remove` alone keeps the tables, so a reinstall keeps the audit log.
+`migrate:reset` prints "Migration not found" for each of LibreNMS' own migrations: that is expected, it only rolls back
+the plugin's (a `--pretend` run shows that it drops only the `ansible_*` tables). `./lnms plugin:remove` alone keeps the
+tables, so a reinstall keeps the audit log.
 
 ## Semaphore UI setup
 
@@ -130,8 +136,11 @@ that could change Semaphore. Step by step (the names are suggestions):
    repository, e.g. as `inventory/librenms_inventory.py`, make it executable and commit it:
 
    ```bash
+   # in a clone of the playbook repository
+   mkdir -p inventory
    cp /opt/librenms-plugins/librenms_dashplugin/ansible/contrib/librenms_inventory.py inventory/
-   git add inventory/librenms_inventory.py && git update-index --chmod=+x inventory/librenms_inventory.py && git commit -m "LibreNMS inventory"
+   git add inventory/librenms_inventory.py && git update-index --chmod=+x inventory/librenms_inventory.py
+   git commit -m "LibreNMS inventory" && git push
    ```
 
    It is plain Python (standard library only): `--list` prints the inventory of the plugin, `--host NAME` one host's
@@ -139,19 +148,28 @@ that could change Semaphore. Step by step (the names are suggestions):
    LibreNMS' certificate with) and `LIBRENMS_TIMEOUT` (seconds, default 30); it always verifies TLS certificates,
    never follows redirects, and on an error prints what to check to stderr and exits with code 1.
 6. **A LibreNMS user for the inventory** and its API token: a user whose LibreNMS role sees the devices the runner may
-   change (e.g. *global-read*, or a user limited to some devices), then *API Access* in its user menu (or as an admin
-   for it) → create a token. The inventory has only the devices this user may see.
-7. **An environment** (*Variable Groups*): the environment variable `LIBRENMS_URL` = the LibreNMS address (e.g.
-   `https://librenms.example.com`), and the **secret** environment variable `LIBRENMS_TOKEN` = the token of step 6.
-   Semaphore passes both to Ansible, and so to the inventory script; secrets are write-only in Semaphore.
+   change (e.g. *global-read*, or a user limited to some devices). In LibreNMS 26.10 API tokens need the `api.access`
+   permission (a *global-read* user has no *API Access* menu) and an admin cannot create one for another user in the
+   web UI, so create it on the LibreNMS server: `./lnms api:token-create <user> --name=ansible-inventory` (it prints
+   the token once). Or give the user a role with `api.access` and create it under its user menu → *API Access*. The
+   inventory has only the devices this user may see; it is the plugin's *inventory user* (see the end of this section).
+7. **A variable group** (*Variable Groups*, called environment in Semaphore's API): on its *Variables* tab, under
+   *Environment variables*, `LIBRENMS_URL` = the LibreNMS address (e.g. `https://librenms.example.com`); on its
+   *Secrets* tab, under *Environment variables*, `LIBRENMS_TOKEN` = the token of step 6. Use the *Environment
+   variables* parts, not the *Extra variables* ones: the inventory script only sees environment variables. Semaphore
+   passes both to Ansible, and so to the inventory script; secrets are write-only in Semaphore. The plugin refuses a
+   template whose variable group lacks either.
 8. **The LibreNMS inventory** (*Inventory*): type *File*, path `inventory/librenms_inventory.py` in the repository of
    step 4, with the device key of step 3 as its user credentials (and the enable key as *Sudo credentials* when
-   needed). Its id (in its address or the API) goes in the plugin's settings.
-9. **Templates:** each template the plugin may launch uses the LibreNMS inventory and the environment, and has
-   **Allow limit override** ticked. Without it, Semaphore silently ignores the limit and runs the template on every
-   host of the inventory: the plugin refuses such templates. A template must not have a limit of its own, nor CLI
-   arguments other than verbosity, `--diff`, `--check`, `--forks`, `--timeout`, `--tags`, `--skip-tags`,
-   `--force-handlers` and `--flush-cache`.
+   needed). Semaphore UI does not show inventory ids: save the plugin's connection without one and press *Test
+   connection*, which lists the project's inventories with their ids and says which one runs the plugin's script; or
+   ask the API: `curl -H "Authorization: Bearer <token>" https://semaphore.example.com/api/project/<project id>/inventory`.
+9. **Templates:** each template the plugin may launch uses the LibreNMS inventory and the variable group of step 7,
+   and under **Ansible prompts** has **Limit** ticked (`task_params.allow_override_limit` in the API). Without it,
+   Semaphore silently ignores the limit and runs the template on every host of the inventory: the plugin refuses such
+   templates. Do not confuse it with the **Limit** field under **Ansible options**: that is a limit of the template's
+   own, and the plugin refuses a template that has one. A template must not have CLI arguments other than verbosity,
+   `--diff`, `--check`, `--forks`, `--timeout`, `--tags`, `--skip-tags`, `--force-handlers` and `--flush-cache`.
 10. **Survey variables** are the only variables the plugin sends, as typed answers: *String*, *Text* (several lines),
     *Integer*, *Enum* (one of a list) and *Secret*; *required* is enforced by the plugin. Their names may not be
     Ansible connection or magic variables (`ansible_*`, `hostvars`, `inventory_hostname`, `omit`, ...) nor `librenms_*`;
@@ -286,8 +304,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   `platform_<ansible_network_os>`, `group_<device group>`, `location_<location>` and `type_<device type>`, in
   `[a-z0-9_]`, numbered when two names collide. The answer is Ansible's dynamic inventory JSON with `_meta.hostvars`.
 * **Templates:** before every preview and launch the plugin asks the runner for the template again (no cache) and
-  launches it only when its inventory is the LibreNMS one (a file inventory), it allows the limit override, it has no
-  limit of its own, its CLI arguments are on the short list above, its survey variables have safe names and known
+  launches it only when its inventory is the LibreNMS one (a file inventory), a launch may set its limit (*Ansible
+  prompts → Limit*), it has no limit of its own, its variable group has `LIBRENMS_URL` and the secret `LIBRENMS_TOKEN`, its CLI arguments are on the short list above, its survey variables have safe names and known
   types, and the token's user may run it.
 * **Launch:** the targets are checked again (the plugin's own run of the target check, as the inventory user sees
   them), at most *Max targets per run*; then, under a lock (LibreNMS' cache), the plugin checks that no target is busy
@@ -387,7 +405,7 @@ Checked against Semaphore UI 2.19.17:
   as extra variables, does not store them, and does not return them with the task. An answer to a survey variable of
   the *environment* kind becomes an environment variable of the run, not an extra variable. Semaphore's API does not
   enforce *required*: the plugin does.
-* With *Allow limit override*, the task's limit replaces the template's own limit, and a `--limit` in the template's
+* With *Ansible prompts → Limit* ticked (`allow_override_limit`), the task's limit replaces the template's own limit, and a `--limit` in the template's
   CLI arguments too (the task's comes later); but a `-e` in the arguments overrides the survey answers (later extra
   variables win), and in Ansible an `-i` adds an inventory. Without the override, Semaphore ignores the task's limit and
   runs on every host of the inventory, while the launch answer still shows the limit; a task's `inventory_id` is

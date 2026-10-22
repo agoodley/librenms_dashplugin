@@ -79,20 +79,25 @@
     <details class="panel panel-default" id="ans-setup" @if(! $fetch) open @endif>
         <summary class="panel-heading" style="cursor: pointer"><strong>Setup steps</strong> <span class="text-muted">(the runner pulls the inventory from LibreNMS)</span></summary>
         <div class="panel-body">
-            <ol style="padding-left: 18px; margin-bottom: 0">
-                <li>In LibreNMS, create a user for the inventory (a role that sees the devices the runner may change, e.g. global-read)
-                    and an API token for it (its user menu → API Access).</li>
+            <ol style="padding-left: 22px; margin-bottom: 0">
+                <li>In LibreNMS, create a user for the inventory (a role that sees the devices the runner may change, e.g. global-read) and its API token
+                    on the LibreNMS server: <span class="ans-code">./lnms api:token-create &lt;user&gt; --name=ansible-inventory</span> (a global-read user
+                    has no API Access menu, and admins cannot create tokens for others in the web UI; or give the user a role with
+                    <span class="ans-code">api.access</span>). Then choose it as the inventory user in the <a href="{{ url('plugin/settings/ansible') }}#ans-inventory-user">plugin settings</a>.</li>
                 <li>Copy <span class="ans-code">contrib/librenms_inventory.py</span> of the plugin into the playbook repository as
-                    <span class="ans-code">{{ $script }}</span>, executable (<span class="ans-code">git update-index --chmod=+x {{ $script }}</span>), and commit it.</li>
-                <li>In Semaphore UI, add an environment with the variable <span class="ans-code">LIBRENMS_URL</span> =
-                    <span class="ans-code">{{ url('/') }}</span> and the secret environment variable <span class="ans-code">LIBRENMS_TOKEN</span>
-                    = the token (optional: <span class="ans-code">LIBRENMS_CA_BUNDLE</span>, the path of a CA file in the runner).</li>
+                    <span class="ans-code">{{ $script }}</span> (<span class="ans-code">mkdir -p inventory</span>), executable
+                    (<span class="ans-code">git update-index --chmod=+x {{ $script }}</span>), then commit and push it.</li>
+                <li>In Semaphore UI, add a variable group: on its Variables tab, under "Environment variables", <span class="ans-code">LIBRENMS_URL</span> =
+                    <span class="ans-code">{{ url('/') }}</span>; on its Secrets tab, under "Environment variables", <span class="ans-code">LIBRENMS_TOKEN</span>
+                    = the token (not under "Extra variables": the script only sees environment variables; optional:
+                    <span class="ans-code">LIBRENMS_CA_BUNDLE</span>, the path of a CA file in the runner).</li>
                 <li>Add an inventory of type <em>File</em> with the path <span class="ans-code">{{ $script }}</span> in that repository, with the
                     SSH key of the devices (and the become key for "enable"). Its id goes in the plugin settings
-                    @if($connection && $connection['inventory'])(now: #{{ $connection['inventory'] }})@endif.</li>
-                <li>Give each template the plugin may launch this inventory and the environment, and tick "Allow limit override".</li>
-                <li>Check it: the script fetches <span class="ans-code">{{ $endpoint }}</span>; a run (or Test connection) makes the runner fetch it, and the
-                    last fetch above shows it worked.</li>
+                    @if($connection && $connection['inventory'])(now: #{{ $connection['inventory'] }})@else(Test connection lists the inventories with their ids)@endif.</li>
+                <li>Give each template the plugin may launch this inventory and the variable group, and under "Ansible prompts" tick "Limit" (not the
+                    "Limit" field under "Ansible options", which is a limit of the template's own).</li>
+                <li>Check it: the script fetches <span class="ans-code">{{ $endpoint }}</span>; the first run makes the runner fetch it (Test connection
+                    does not), and the last fetch above shows it worked.</li>
             </ol>
         </div>
     </details>
@@ -161,7 +166,7 @@
                         <td class="ans-code ans-wrap" style="font-size: 11px">{{ implode(' ', $hostGroups[$name] ?? []) }}</td>
                     </tr>
                 @empty
-                    <tr><td colspan="7" class="text-muted">No device is a host: see the devices left out below and the Platform mapping setting.</td></tr>
+                    <tr><td colspan="7" class="text-muted">No device is a host: see the devices left out above and the Platform mapping setting.</td></tr>
                 @endforelse
                 </tbody>
             </table>
