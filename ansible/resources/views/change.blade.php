@@ -180,10 +180,20 @@
                 @elseif($status === ChangeStatus::AWAITING && ! $actions['approve'])
                     <p class="ans-help" id="ans-approval-waits" style="margin-top: 6px">Waits for {{ ApprovalRules::LABELS[$settings->approval] ?? 'an approval' }} by an admin with the approve permission.</p>
                 @endif
+                @if($noApprover)
+                    <div class="alert alert-warning" id="ans-no-approver" style="margin: 6px 0 0"><i class="fa fa-user-times"></i> {{ $noApprover }}
+                        An admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#ans-approve-permission">settings page</a> (<em>Approve permission</em>),
+                        or sets <em>Approval</em> to off there.</div>
+                @endif
             </div>
         </div>
     @elseif($status === ChangeStatus::AWAITING)
         <p class="ans-muted" id="ans-approval-waits">Waits for {{ ApprovalRules::LABELS[$settings->approval] ?? 'an approval' }} by an admin with the approve permission.</p>
+        @if($noApprover)
+            <div class="alert alert-warning" id="ans-no-approver"><i class="fa fa-user-times"></i> {{ $noApprover }}
+                An admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#ans-approve-permission">settings page</a> (<em>Approve permission</em>),
+                or sets <em>Approval</em> to off there.</div>
+        @endif
     @endif
 
     <div class="row">

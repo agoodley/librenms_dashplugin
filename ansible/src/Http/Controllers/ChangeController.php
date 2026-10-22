@@ -456,6 +456,7 @@ class ChangeController extends Controller
             'diffs' => $diffs, 'unattributed' => $unattributed, 'secretVars' => $secretVars, 'settings' => $settings, 'canRun' => $canRun, 'canApprove' => $canApprove,
             'approvalRefusal' => $approvalRefusal, 'actions' => $actions, 'pending' => $follower->pending($id),
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
+            'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($settings->approval, $change) : null,
             // before the apply: the targets Oxidized cannot back up (asked at the dry run), whose batches the setting would refuse
             'backupWarning' => $settings->backups && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true)
                 ? BackupCheck::warning(BackupCheck::missing(array_map(fn ($t) => $t['backup_check'] ?? null, $targets), array_map(fn ($t) => NextChange::name($t), $targets)),
@@ -466,6 +467,27 @@ class ChangeController extends Controller
             'lines' => $run !== null ? OutputBuffer::display($run) : [],
             'oxidized' => (new \Agoodley\LibrenmsAnsible\Services\OxidizedBackups())->enabled(),
         ];
+    }
+
+    /**
+     * Why nobody can approve a change awaiting approval (no enabled admin holds the approve permission, or, with a
+     * second admin, only the requester does); null when someone can.
+     */
+    private static function noApprover(string $mode, array $change): ?string
+    {
+        try {
+            $able = array_filter((new \Agoodley\LibrenmsAnsible\Data\PermissionRepository())->holders(Access::APPROVE),
+                fn ($user) => $user['admin'] && $user['enabled'] && ! ($mode === ApprovalRules::SECOND && $user['user_id'] === (int) ($change['user_id'] ?? 0)));
+        } catch (\Throwable) {
+            return null;
+        }
+        if ($able) {
+            return null;
+        }
+
+        return $mode === ApprovalRules::SECOND && (int) ($change['user_id'] ?? 0) > 0
+            ? 'No admin can approve it yet: no admin other than the requester holds the approve permission, and the settings ask for a second admin.'
+            : 'No admin can approve it yet: no admin holds the approve permission.';
     }
 
     /**
