@@ -21,6 +21,9 @@ final class FakeChangeRunner implements ChangeRunner
 
     public ?string $snapshotError = null;
 
+    /** The snapshot error is the runner's 404 for the template. */
+    public bool $snapshotMissing = false;
+
     /** @var string[] errors a launch answers with (nothing launched) */
     public array $launchErrors = [];
 
@@ -182,7 +185,8 @@ final class FakeChangeRunner implements ChangeRunner
 
     public function snapshot(array $change): array
     {
-        return $this->snapshotError !== null ? ['parts' => null, 'error' => $this->snapshotError] : ['parts' => $this->snapshot, 'error' => null];
+        return $this->snapshotError !== null ? ['parts' => null, 'error' => $this->snapshotError, 'missing' => $this->snapshotMissing]
+            : ['parts' => $this->snapshot, 'error' => null];
     }
 
     public function wholeLog(int $runId): ?array

@@ -71,9 +71,10 @@ interface ChangeRunner
     public function findRun(int $changeId, string $kind, int $number): ?int;
 
     /**
-     * The template's snapshot parts as the runner has it now, or why it cannot be read.
+     * The template's snapshot parts as the runner has it now, or why it cannot be read; missing: the runner answered that it
+     * has no such template (HTTP 404: deleted, or its project no longer visible to the token's user).
      *
-     * @return array{parts: ?array, error: ?string}
+     * @return array{parts: ?array, error: ?string, missing?: bool}
      */
     public function snapshot(array $change): array;
 

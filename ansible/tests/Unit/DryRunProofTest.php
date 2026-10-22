@@ -124,6 +124,20 @@ class DryRunProofTest extends TestCase
         $this->assertStringContainsString('h1 (2)', $proof['findings'][0]);
     }
 
+    public function testAnIncludeCountsOnceForEachOfItsHosts(): void
+    {
+        // Ansible counts an include once in each host's ok: one ok more than the log shows is a hidden result
+        $lines = ['DRY RUN ****', 'PLAY [p] [CHECK MODE] ****', 'TASK [include] [CHECK MODE] ****', 'included: /runner/tasks.yml for h1, h2',
+            'TASK [shown] [CHECK MODE] ****', 'changed: [h1]', 'changed: [h2]', 'PLAY RECAP ****',
+            'h1 : ok=2 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0',
+            'h2 : ok=3 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0'];
+
+        $proof = self::check($lines);
+        $this->assertFalse($proof['verified']);
+        $this->assertStringContainsString('does not show every task result the PLAY RECAP counts', $proof['findings'][0]);
+        $this->assertStringContainsString(': h2 (1).', $proof['findings'][0], 'h2 only: h1\'s include and result are its two');
+    }
+
     public function testIgnoredFailuresInALoopAreCountedForTheirHost(): void
     {
         // "...ignoring" comes with a host's final result, after its last item, when other hosts' items came between

@@ -335,6 +335,16 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'));
         $this->assertSame([], array_filter($this->changes->messages($id), fn ($m) => str_contains($m, 'no longer counts')), 'nothing voided in the timeline');
 
+        // the runner's 404 for the template: it may have been deleted; no "try again in a moment"
+        $this->runner->snapshotError = 'Semaphore UI does not have template #77 in project #8 (HTTP 404), or the token\'s user is not a member of the project.';
+        $this->runner->snapshotMissing = true;
+        $this->assertSame('The runner does not know the template (Semaphore UI does not have template #77 in project #8 (HTTP 404), or the token\'s user is not a member of '
+            . 'the project.): it may have been deleted in Semaphore UI. While it is missing the change can be neither approved nor applied: restore the template (it is '
+            . 'compared with the one dry-run), or cancel the change and make a new one. The dry run and its approval still count until they expire.',
+            $lifecycle->apply($id, self::ALICE, [], $this->t0 + 55));
+        $this->assertSame(ChangeStatus::READY, $this->changes->find($id)['status']);
+        $this->runner->snapshotMissing = false;
+
         $this->runner->snapshotError = null;
         $this->backups->enabled = false;
         $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 60), 'once the runner answers again');

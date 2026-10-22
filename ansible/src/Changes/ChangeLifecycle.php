@@ -177,7 +177,7 @@ final class ChangeLifecycle
         if ($problem === null) {
             $template = $this->templateCheck($change);
             if (isset($template['unreadable'])) {
-                return self::unreadableText($template['unreadable'], false);
+                return self::unreadableText($template['unreadable'], false, $template['missing']);
             }
             $problem = $template['changed'] ?? null;
         }
@@ -261,7 +261,7 @@ final class ChangeLifecycle
         if ($dryRun === null) {
             $template = $this->templateCheck($change);
             if (isset($template['unreadable'])) {
-                return self::unreadableText($template['unreadable'], ApprovalRules::needed($this->settings->approval));
+                return self::unreadableText($template['unreadable'], ApprovalRules::needed($this->settings->approval), $template['missing']);
             }
             $dryRun = $template['changed'] ?? null;
         }
@@ -1349,7 +1349,7 @@ final class ChangeLifecycle
         $this->beat();
         $snapshot = $this->runner->snapshot($change);
         if ($snapshot['parts'] === null) {
-            return ['unreadable' => UntrustedText::line((string) ($snapshot['error'] ?? 'no answer'), 300)];
+            return ['unreadable' => UntrustedText::line((string) ($snapshot['error'] ?? 'no answer'), 300), 'missing' => ! empty($snapshot['missing'])];
         }
         $parts = Fingerprint::parts($snapshot['parts'], self::names($this->changes->targets((int) $change['id'])), self::recorded($change), self::answers($change),
             (array) $change['plan']);
@@ -1364,10 +1364,18 @@ final class ChangeLifecycle
     /**
      * Why an approval or an apply is refused while the runner cannot give the template.
      */
-    private static function unreadableText(string $error, bool $approved): string
+    private static function unreadableText(string $error, bool $approved, bool $missing = false): string
     {
-        return 'The template cannot be read from the runner now (' . $error . '): try again in a moment. The dry run'
-            . ($approved ? ' and its approval still count' : ' still counts') . '; once the template can be read, it is compared with the one dry-run.';
+        $counts = 'The dry run' . ($approved ? ' and its approval still count' : ' still counts');
+        if ($missing) {
+            // a 404 is no passing failure: say what to do rather than to try again
+            return 'The runner does not know the template (' . $error . '): it may have been deleted in Semaphore UI. While it is missing the change can be '
+                . 'neither approved nor applied: restore the template (it is compared with the one dry-run), or cancel the change and make a new one. ' . $counts
+                . ' until ' . ($approved ? 'they expire' : 'it expires') . '.';
+        }
+
+        return 'The template cannot be read from the runner now (' . $error . '): try again in a moment. ' . $counts
+            . '; once the template can be read, it is compared with the one dry-run.';
     }
 
     /**

@@ -145,13 +145,14 @@ final class ChangeActions implements ChangeRunner
 
     public function snapshot(array $change): array
     {
+        $template = null;
         try {
             $connection = $this->plugin->connection();
             $runner = $this->plugin->runner($connection);
             $template = $runner->template((string) $change['template_id']);
             $inventory = $runner->inventory((string) $connection->inventory);
         } catch (RunnerError $e) {
-            return ['parts' => null, 'error' => $e->getMessage()];
+            return ['parts' => null, 'error' => $e->getMessage(), 'missing' => $template === null && $e->kind === RunnerError::NOT_FOUND];
         }
 
         return (new TemplateReader($runner, $connection->project))->snapshot($template, $inventory);

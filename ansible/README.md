@@ -565,7 +565,10 @@ after the backups, a wait for the secret answers or a pause: an approval that ex
 meanwhile stops the change there. When one of these fails before the apply, the dry run or the approval no longer
 counts and the change goes back to a draft or awaits a new approval. A runner that cannot give the template at an
 Approve or an Apply (unreachable, a server error, a timeout) says nothing about the template: the action is refused
-("try again in a moment") and the dry run and approval stand. During the apply, the change stops: no further batch
+("try again in a moment") and the dry run and approval stand; a template the runner answers it does not have (HTTP
+404: deleted in Semaphore UI, or its project no longer visible to the token's user) is said as such, and the change
+can then be neither approved nor applied until the template is back (it is compared with the one dry-run) or the change
+is cancelled. During the apply, the change stops: no further batch
 is launched. The batch itself
 is launched with the commit of the dry run (Semaphore's commit option), and a batch whose run reports another commit
 stops the change.
