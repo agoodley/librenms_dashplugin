@@ -35,6 +35,13 @@ final class ChangeFollower
     /** Seconds a user's action waits for the change's lock. */
     private const WAIT = 15;
 
+    /**
+     * Most runner calls a step makes between two heartbeats: a batch's launch checks the token (info, project, role, user),
+     * reads the template, the inventory, the variable groups and the repository, and asks the runner to start the task (10),
+     * with a margin. The change's lock outlasts them, each up to the connection's timeout.
+     */
+    public const LAUNCH_CALLS = 12;
+
     public function __construct(
         private readonly Plugin $plugin,
         private readonly RunRepository $runs,
@@ -216,6 +223,15 @@ final class ChangeFollower
      */
     private function lockSeconds(): int
     {
-        return max(RunFollower::lockSecondsFor($this->plugin->connection()->timeout), 3 * OxidizedBackups::TIMEOUT + 30);
+        return self::lockSecondsFor($this->plugin->connection()->timeout);
+    }
+
+    /**
+     * The change's lock's time for a connection timeout: longer than a refresh of its run (RunFollower), a launch's runner
+     * calls between two heartbeats (LAUNCH_CALLS) and three calls to Oxidized.
+     */
+    public static function lockSecondsFor(int $timeout): int
+    {
+        return max(RunFollower::lockSecondsFor($timeout), self::LAUNCH_CALLS * $timeout + 60, 3 * OxidizedBackups::TIMEOUT + 30);
     }
 }

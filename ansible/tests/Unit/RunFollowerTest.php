@@ -15,4 +15,13 @@ class RunFollowerTest extends TestCase
         $this->assertSame(7 * 120 + 60, RunFollower::lockSecondsFor(120));
         $this->assertSame(67, RunFollower::lockSecondsFor(1));
     }
+
+    public function testTheLockOfAChangeOutlastsALaunchsRunnerCallsBetweenTwoHeartbeats(): void
+    {
+        // a launch makes 10 runner calls between two heartbeats (the token's checks, the template, inventory, variable groups,
+        // repository, then the POST): more than a refresh of a run
+        $this->assertSame(12, \Agoodley\LibrenmsAnsible\Services\ChangeFollower::LAUNCH_CALLS);
+        $this->assertSame(12 * 15 + 60, \Agoodley\LibrenmsAnsible\Services\ChangeFollower::lockSecondsFor(15));
+        $this->assertGreaterThan(RunFollower::lockSecondsFor(15), \Agoodley\LibrenmsAnsible\Services\ChangeFollower::lockSecondsFor(15));
+    }
 }
