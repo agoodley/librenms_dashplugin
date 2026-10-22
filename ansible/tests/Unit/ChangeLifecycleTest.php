@@ -591,6 +591,8 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($warned)['status']);
         $this->assertSame('running', $this->changes->batches[$warned][1]['status'], 'launched with a warning');
         $this->assertStringContainsString('goes without a fresh backup', implode(' ', $this->changes->messages($warned)));
+        $this->assertContains('Batch 1 of 2 launched by alice (run #' . $this->batchRun($warned, 1) . ')', $this->changes->messages($warned),
+            'the timeline does not repeat the change\'s name');
     }
 
     public function testAnOxidizedThatCannotBeReachedIsAskedOncePerBatch(): void

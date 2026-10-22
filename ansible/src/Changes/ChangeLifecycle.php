@@ -1296,6 +1296,11 @@ final class ChangeLifecycle
      */
     private function timeline(array $change, string $kind, string $message, ?string $username, int $now): void
     {
+        // the timeline is the change's own: an eventlog text loses its "Ansible change #N (reference)" there
+        $name = ChangeText::name($change);
+        if (str_starts_with($message, $name)) {
+            $message = ucfirst(ltrim(substr($message, strlen($name)), ':, '));
+        }
         $this->changes->addEvent((int) $change['id'], $kind, UntrustedText::line($message, 2000), $username, $now);
     }
 

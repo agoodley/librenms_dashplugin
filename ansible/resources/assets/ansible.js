@@ -613,7 +613,7 @@
             ]));
             if (plan.targets.length) {
                 append(body, table(['Batch', 'Device', 'Inventory name', 'Platform'], plan.targets.map(function (t) {
-                    return [{text: String(batchOf[t.device_id] || '-'), cls: 'ans-num'}, t.display, {text: t.name, cls: 'ans-code'}, {text: t.platform, cls: 'ans-code'}];
+                    return [{text: String(batchOf[t.device_id] || '-'), cls: 'ans-batch'}, t.display, {text: t.name, cls: 'ans-code'}, {text: t.platform, cls: 'ans-code'}];
                 }).sort(function (a, b) {
                     return Number(a[0].text) - Number(b[0].text);
                 }), 'ans-preview-targets'));

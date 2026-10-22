@@ -306,7 +306,7 @@
                         <tr data-window="{{ $window['schedule_id'] }}">
                             <td>#{{ $window['schedule_id'] }}<br><span class="ans-muted">batch {{ $window['batch'] }}</span></td>
                             <td><span class="label label-{{ $window['status'] === 'open' ? 'info' : ($window['status'] === 'closed' ? 'success' : 'warning') }} ans-window-state">{{ $window['status'] === 'open' ? ($window['closing'] ? 'closes at its end' : 'open') : (['closed' => 'closed', 'gone' => 'removed in LibreNMS'][$window['status']] ?? $window['status']) }}</span></td>
-                            <td class="ans-muted">{{ $local($window['opened_at']) }} – {{ $window['status'] === 'closed' ? $local($window['closed_at']) : Clock::local($window['ends_at'], 'Y-m-d H:i:s T') }}{{ $window['error'] ? ' · ' . $window['error'] : '' }}</td>
+                            <td class="ans-muted">{{ $local($window['opened_at']) }} – {{ Clock::local($window['status'] === 'closed' ? $window['closed_at'] : $window['ends_at'], 'Y-m-d H:i:s T') }}{{ $window['error'] ? ' · ' . $window['error'] : '' }}</td>
                         </tr>
                     @empty
                         <tr><td class="text-muted">None yet: the plugin opens one before each batch.</td></tr>
