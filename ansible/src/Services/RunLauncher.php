@@ -105,8 +105,8 @@ final class RunLauncher
         if ($inventoryUser === null) {
             $plan->errors[] = (string) $this->inventory->inventoryUserProblem();
         } elseif ($inventoryUser['fetch'] === null) {
-            $plan->warnings[] = 'The runner has not fetched the inventory with ' . $inventoryUser['user']->username . '\'s token yet: '
-                . 'check the LibreNMS inventory in Semaphore UI (see the Inventory page).';
+            $plan->warnings[] = 'The runner has not fetched the inventory with the inventory user ' . $inventoryUser['user']->username . '\'s token yet: '
+                . 'the first run makes it fetch it (see the setup steps on the Inventory page).';
         }
         $selection = new TargetSelection($this->inventory->build(), $devices->exists(), $this->runs->busy(), $inventoryUser['visible'] ?? null,
             (string) ($inventoryUser['user']->username ?? ''));

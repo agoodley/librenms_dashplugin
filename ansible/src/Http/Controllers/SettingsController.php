@@ -130,8 +130,8 @@ class SettingsController extends Controller
         }
         $inventoryInfo = null;
         if ($connection->inventory < 1) {
-            $warnings[] = 'Choose the LibreNMS inventory: the file inventory that runs the plugin\'s inventory script (see the list of the project\'s '
-                . 'inventories below), then save the connection.';
+            $warnings[] = 'Choose the LibreNMS inventory: the file inventory that runs the plugin\'s inventory script. Enter its id (or press its "use" '
+                . 'button in the list of the project\'s inventories below), save the connection and test it again.';
         } else {
             $found = array_values(array_filter($inventories, fn ($inventory) => $inventory->id === $chosen));
             if (! $found) {
@@ -152,7 +152,9 @@ class SettingsController extends Controller
                 'reasons' => $reasons, 'notes' => TemplateCheck::notes($template)];
         }
         if (! array_filter($list, fn ($t) => $t['usable'])) {
-            $warnings[] = 'No template can be launched by the plugin yet: change them as their reasons say.';
+            // before the LibreNMS inventory is chosen, that is every template's reason: the warning above says how
+            $warnings[] = $inventoryInfo === null ? 'No template can be launched by the plugin until the LibreNMS inventory is chosen.'
+                : 'No template can be launched by the plugin yet: change them as their reasons say.';
         }
         $inventoryService = $this->inventoryService();
         $inventoryUser = $inventoryService->inventoryUser();

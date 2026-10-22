@@ -150,10 +150,11 @@ that could change Semaphore. Step by step (the names are suggestions):
    refuses the request (HTTP 4xx) it quotes the reason LibreNMS gives, e.g. that the token is not the inventory user's.
 6. **A LibreNMS user for the inventory** and its API token: a user whose LibreNMS role sees the devices the runner may
    change (e.g. *global-read*, or a user limited to some devices). In LibreNMS 26.10 API tokens need the `api.access`
-   permission (a *global-read* user has no *API Access* menu) and an admin cannot create one for another user in the
-   web UI, so create it on the LibreNMS server: `./lnms api:token-create <user> --name=ansible-inventory` (it prints
-   the token once). Or give the user a role with `api.access` and create it under its user menu → *API Access*. The
-   inventory has only the devices this user may see; it is the plugin's *inventory user* (see the end of this section).
+   permission (a *global-read* user has no *API* menu) and an admin cannot create one for another user in the web UI,
+   so create it on the LibreNMS server: `./lnms api:token-create <user> --name=ansible-inventory` (it prints the token
+   once). Or give the user a role with `api.access` and, logged in as that user, create it in the settings (gear)
+   menu → *API* → *API Tokens*. The inventory has only the devices this user may see; it is the plugin's *inventory
+   user* (see the end of this section).
 7. **A variable group** (*Variable Groups*, called environment in Semaphore's API): on its *Variables* tab, under
    *Environment variables*, `LIBRENMS_URL` = the LibreNMS address (e.g. `https://librenms.example.com`); on its
    *Secrets* tab, under *Environment variables*, `LIBRENMS_TOKEN` = the token of step 6. Use the *Environment
@@ -178,13 +179,14 @@ that could change Semaphore. Step by step (the names are suggestions):
     that change how Ansible, Python, SSH or the inventory script run. For a playbook that takes a list (such as several
     interfaces), use a *Text* variable and split its lines in the playbook.
 
-Then, in the plugin's settings: the runner URL, the token, the project id, the inventory id, **Save connection**, and
-**Test connection**: it shows the Semaphore version, the token's role, the LibreNMS inventory, and every template of
-the project as usable or not, with what to change. Choose the **inventory user** (the user of step 6; the settings
-page lists the users whose token fetched the inventory first): from then on the inventory endpoint answers only that
-user's tokens, and the plugin checks targets against what that user may see; until it is chosen the plugin launches
-nothing. Finally grant the run permission to the admins who may launch runs. The Inventory page shows when the runner
-last fetched the inventory with the inventory user's token and how many hosts it got.
+Then, in the plugin's settings: the runner URL, the token and the project id, **Save connection**, and **Test
+connection**: it shows the Semaphore version, the token's role, the project's inventories with their ids (the one that
+runs the plugin's script with a *use* button) and every template of the project as usable or not, with what to change.
+Enter the id of the LibreNMS inventory of step 8 (or press its *use* button), **Save connection** and test again.
+Choose the **inventory user**: the user of step 6. From then on the inventory endpoint answers only that user's tokens,
+and the plugin checks targets against what that user may see; until it is chosen the plugin launches nothing. Finally
+grant the run permission to the admins who may launch runs. The Inventory page shows when the runner last fetched the
+inventory with the inventory user's token and how many hosts it got: the first run makes it fetch it.
 
 ## Settings
 

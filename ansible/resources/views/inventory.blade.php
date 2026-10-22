@@ -82,8 +82,9 @@
             <ol style="padding-left: 22px; margin-bottom: 0">
                 <li>In LibreNMS, create a user for the inventory (a role that sees the devices the runner may change, e.g. global-read) and its API token
                     on the LibreNMS server: <span class="ans-code">./lnms api:token-create &lt;user&gt; --name=ansible-inventory</span> (a global-read user
-                    has no API Access menu, and admins cannot create tokens for others in the web UI; or give the user a role with
-                    <span class="ans-code">api.access</span>). Then choose it as the inventory user in the <a href="{{ url('plugin/settings/ansible') }}#ans-inventory-user">plugin settings</a>.</li>
+                    has no API menu, and admins cannot create tokens for others in the web UI; or give the user a role with
+                    <span class="ans-code">api.access</span> and, as that user, create it in the settings (gear) menu → API → API Tokens). Then choose it as
+                    the inventory user in the <a href="{{ url('plugin/settings/ansible') }}#ans-inventory-user">plugin settings</a>.</li>
                 <li>Copy <span class="ans-code">contrib/librenms_inventory.py</span> of the plugin into the playbook repository as
                     <span class="ans-code">{{ $script }}</span> (<span class="ans-code">mkdir -p inventory</span>), executable
                     (<span class="ans-code">git update-index --chmod=+x {{ $script }}</span>), then commit and push it.</li>

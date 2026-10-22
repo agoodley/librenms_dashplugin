@@ -135,9 +135,9 @@
             @if($section === 'ans-inventory-user')
                 @include('ansible::partials.settings-answer', ['failed' => 'The inventory user was not saved:'])
             @endif
-            <p class="help-block">The LibreNMS user whose API token the runner fetches the inventory with (the <span class="ans-code">LIBRENMS_TOKEN</span>
-                of its environment in Semaphore UI). Once it is chosen, the inventory endpoint answers only that user's tokens, and the plugin checks
-                the targets against what that user may see. Until then the plugin launches nothing.</p>
+            <p class="help-block">The LibreNMS user whose API token the runner fetches the inventory with (the secret <span class="ans-code">LIBRENMS_TOKEN</span>
+                of the templates' variable group in Semaphore UI). Once it is chosen, the inventory endpoint answers only that user's tokens, and the plugin
+                checks the targets against what that user may see. Until then the plugin launches nothing.</p>
             @if($chosen === '' && $fetchedBy)
                 <div class="alert alert-info" id="ans-inventory-user-proposal">The inventory was fetched with the token of
                     {{ implode(', ', array_column($a['fetches'], 'username')) }}: choose the user the runner should use.</div>
