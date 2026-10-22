@@ -502,8 +502,8 @@ per device, the run page, the runs list, the device panel, the end entry of its 
 may have changed this device* shows instead. A proven dry run's results read *would change* and *no change* there. A dry
 run that never ran (the runner refused it, or it was stopped in the runner's queue) proves nothing and claims nothing:
 the change is back to a draft. Nor does one that Ansible stopped before the playbook because the limit left it no host
-to target (every target left out of the inventory the runner fetched, see below): its log shows Ansible's own error and
-no play, result or recap, so it did not run on any device; it does not count, and says why.
+to target (every target left out of the inventory it fetched, see below): its log shows Ansible's own error and no play,
+result or recap, so it did not run on any device; it does not count, and says why.
 
 A verified dry run with a failed, unreachable or unknown target, or a run on a host that was not a target, cannot be
 approved either. Each target's result comes from the PLAY RECAP: *would change* (changed), *no change*, *failed*, ...
@@ -612,7 +612,7 @@ of the list, *First batch* of them), then batches of *Batch size*. Each batch:
    Oxidized, is finished by the next one: the window's end, the backups not asked yet, then point 4);
 4. stops the change when the batch reached *Stop at* failed devices (failed, unreachable, unknown and not run count), when the
    plugin lost track of its run or it was stopped or released, when it ran on a host that was not a target, when it
-   ran another commit than the dry run, or when the plugin left one of its devices out of the inventory the runner
+   ran another commit than the dry run, or when the plugin left one of its devices out of an inventory the runner
    fetched (see above); else waits after the first batch for *Continue* (when set), or for *Pause between batches*,
    and starts the next.
 
