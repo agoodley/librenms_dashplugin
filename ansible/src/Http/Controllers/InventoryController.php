@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 
 use Agoodley\LibrenmsAnsible\Data\FetchRepository;
+use Agoodley\LibrenmsAnsible\Support\InventoryScript;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
@@ -70,7 +71,7 @@ class InventoryController extends Controller
     /**
      * plugin/ansible/api/inventory[?host=NAME]: the dynamic inventory JSON for the token's user (only the devices
      * that user may see), or one host's variables. Once an admin chose the inventory user, only that user's tokens
-     * get an answer. A --list fetch is recorded (when, as whom, how many hosts).
+     * get an answer. A --list fetch is recorded (when, as whom, how many hosts, the inventory script's version).
      */
     public function runner(Request $request): JsonResponse
     {
@@ -92,7 +93,8 @@ class InventoryController extends Controller
         if (is_string($host) && $host !== '') {
             return response()->json($inventory->hostVars($host), 200, ['Cache-Control' => 'no-store'], self::JSON);
         }
-        (new FetchRepository())->record((int) $user->user_id, (string) $user->username, count($inventory->hosts()), $request->ip());
+        (new FetchRepository())->record((int) $user->user_id, (string) $user->username, count($inventory->hosts()), $request->ip(),
+            InventoryScript::versionFrom($request->userAgent()));
 
         return response()->json($inventory->toAnsible(), 200, ['Cache-Control' => 'no-store'], self::JSON);
     }

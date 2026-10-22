@@ -100,7 +100,10 @@ migrations (2026_10_24_000000_create_ansible_tables, 2026_10_26_000000_ansible_r
 plugin's migrations (`database/migrations`), and the warning stays while the plugin is installed. Do not delete its row from the `migrations` table, and never apply validate.php's offer to drop the
 `ansible_*` tables: they hold the audit log.
 
-**Updating:** `git pull` in the clone (the path repository links to it), then `./lnms migrate`.
+**Updating:** `git pull` in the clone (the path repository links to it), then `./lnms migrate`. When
+`contrib/librenms_inventory.py` changed (its `VERSION`), copy it into the playbook repository again, as in step 5
+of [Semaphore UI setup](#semaphore-ui-setup), and commit and push it: the Inventory page says which version the
+runner's last fetch came from, and warns when it is older than the one the plugin ships.
 
 **Removing:**
 

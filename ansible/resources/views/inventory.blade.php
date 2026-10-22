@@ -62,7 +62,8 @@
                 <h4>Last fetch by the runner</h4>
                 @if($fetch)
                     <div class="ans-card-value" style="font-size: 16px">{{ $fetch['fetched_at'] }}</div>
-                    <p>with the token of the inventory user {{ $inventoryUser['username'] }}, {{ \Agoodley\LibrenmsAnsible\Support\Format::count($fetch['hosts'], 'host') }}{{ $fetch['address'] ? ', from ' . $fetch['address'] : '' }}</p>
+                    <p>with the token of the inventory user {{ $inventoryUser['username'] }}, {{ \Agoodley\LibrenmsAnsible\Support\Format::count($fetch['hosts'], 'host') }}{{ $fetch['address'] ? ', from ' . $fetch['address'] : '' }},
+                        <span id="ans-script-version">{{ ($fetch['script_version'] ?? null) !== null ? 'inventory script version ' . $fetch['script_version'] : 'not by the plugin\'s inventory script (or an old one)' }}</span></p>
                 @else
                     <div class="ans-card-value" style="font-size: 16px">never</div>
                     <p>with the token of the inventory user {{ $inventoryUser['username'] }}: follow the setup steps below</p>
@@ -70,6 +71,13 @@
             @endif
         </div>
     </div>
+
+    @if($fetch && \Agoodley\LibrenmsAnsible\Support\InventoryScript::outdated($fetch['script_version'] ?? null))
+        <div class="alert alert-warning" id="ans-script-outdated"><i class="fa fa-exclamation-triangle"></i> The runner fetched the inventory with version
+            {{ $fetch['script_version'] }} of the inventory script; this plugin ships version {{ \Agoodley\LibrenmsAnsible\Support\InventoryScript::VERSION }}.
+            Copy <span class="ans-code">contrib/librenms_inventory.py</span> of the plugin into the playbook repository again, as
+            <span class="ans-code">{{ $script }}</span>, and commit and push it.</div>
+    @endif
 
     <p>
         <a class="btn btn-sm btn-default" href="{{ route('ansible.inventory.download') }}" id="ans-inventory-download"><i class="fa fa-download"></i> Download JSON</a>
