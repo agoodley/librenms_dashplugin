@@ -1,0 +1,168 @@
+<?php
+
+namespace Agoodley\LibrenmsAnsible\Tests\Unit\Fakes;
+
+use Agoodley\LibrenmsAnsible\Changes\BatchPlan;
+use Agoodley\LibrenmsAnsible\Changes\ChangeStore;
+use Agoodley\LibrenmsAnsible\Support\Clock;
+
+/**
+ * Changes in memory, with the repository's compare-and-set: the change lifecycle's tests. $beforeUpdate runs once
+ * before the next change of a change's row (another request writing in between).
+ */
+final class MemoryChangeStore implements ChangeStore
+{
+    /** @var array<int, array> */
+    public array $changes = [];
+
+    /** @var array<int, array<int, array>> */
+    public array $targets = [];
+
+    /** @var array<int, array<int, array>> */
+    public array $batches = [];
+
+    /** @var array<int, array<int, array>> change id => events */
+    public array $events = [];
+
+    /** @var array<int, array> */
+    public array $approvals = [];
+
+    /** @var array<int, array> */
+    public array $windows = [];
+
+    /** @var array<int, array<int, array>> change id => diff rows */
+    public array $diffs = [];
+
+    public ?\Closure $beforeUpdate = null;
+
+    public int $conflicts = 0;
+
+    /**
+     * A change as the change service records it (a draft), with its targets in batches by the plan.
+     *
+     * @param  array<int, string>  $targets  device_id => inventory name
+     */
+    public function add(array $targets, BatchPlan $plan, array $change = []): int
+    {
+        $id = count($this->changes) + 1;
+        $this->changes[$id] = $change + ['id' => $id, 'user_id' => 1, 'username' => 'alice', 'template_id' => '77', 'template_name' => 'Port description',
+            'playbook' => 'desc.yml', 'reference' => 'CHG-1', 'status' => 'draft', 'version' => 0,
+            'variables' => [['name' => 'interface', 'label' => 'Interface', 'type' => 'enum', 'value' => 'Fa0/1', 'secret' => false]],
+            'has_secrets' => false, 'plan' => $plan->toArray(), 'target_count' => count($targets), 'batch_count' => $plan->count(), 'current_batch' => 0,
+            'dry_run_id' => null, 'dry_runs' => 0, 'dry_run_state' => null, 'dry_run_at' => null, 'dry_run_ended_at' => null, 'dry_run_commit' => null,
+            'dry_run_findings' => null, 'plan_fingerprint' => null, 'fingerprint_parts' => null, 'approval_fingerprint' => null, 'approved_by' => null,
+            'approved_user_id' => null, 'approved_at' => null, 'applied_by' => null, 'applied_user_id' => null, 'apply_started_at' => null, 'waiting' => null,
+            'resume_at' => null, 'stop_requested_by' => null, 'stop_requested_at' => null, 'error' => null, 'finished_at' => null,
+            'created_at' => '2026-10-22 10:00:00'];
+        $position = 0;
+        foreach ($targets as $deviceId => $name) {
+            $this->targets[$id][$deviceId] = ['change_id' => $id, 'device_id' => $deviceId, 'inventory_name' => $name, 'hostname' => $name, 'display' => strtok($name, '.'),
+                'batch' => (int) $plan->batchOf($deviceId), 'position' => $position++, 'dry_result' => null, 'dry_counts' => null, 'result' => null, 'counts' => null,
+                'backup_node' => null, 'before_status' => null, 'before_requested_at' => null, 'before_at' => null, 'before_version' => null, 'before_error' => null,
+                'after_status' => null, 'after_requested_at' => null, 'after_at' => null, 'after_version' => null, 'after_error' => null];
+        }
+        foreach ($plan->batches as $index => $devices) {
+            $this->batches[$id][$index + 1] = ['change_id' => $id, 'number' => $index + 1, 'status' => 'pending', 'run_id' => null, 'failures' => 0,
+                'started_at' => null, 'ended_at' => null, 'note' => null, 'user_id' => null, 'username' => null];
+        }
+
+        return $id;
+    }
+
+    public function find(int $id): ?array
+    {
+        return $this->changes[$id] ?? null;
+    }
+
+    public function updateAt(int $id, int $version, array $values): bool
+    {
+        if ($this->beforeUpdate !== null) {
+            $hook = $this->beforeUpdate;
+            $this->beforeUpdate = null;
+            $hook();
+        }
+        if (! isset($this->changes[$id]) || (int) $this->changes[$id]['version'] !== $version) {
+            $this->conflicts++;
+
+            return false;
+        }
+        $this->changes[$id] = array_merge($this->changes[$id], $values, ['version' => $version + 1]);
+
+        return true;
+    }
+
+    public function targets(int $changeId): array
+    {
+        return $this->targets[$changeId] ?? [];
+    }
+
+    public function updateTargets(int $changeId, array $values): void
+    {
+        foreach ($values as $deviceId => $columns) {
+            $this->targets[$changeId][$deviceId] = array_merge($this->targets[$changeId][$deviceId], $columns);
+        }
+    }
+
+    public function batches(int $changeId): array
+    {
+        return $this->batches[$changeId] ?? [];
+    }
+
+    public function updateBatch(int $changeId, int $number, array $values): void
+    {
+        $this->batches[$changeId][$number] = array_merge($this->batches[$changeId][$number], $values);
+    }
+
+    public function addEvent(int $changeId, string $kind, string $message, ?string $username, int $at): void
+    {
+        $this->events[$changeId][] = ['kind' => $kind, 'message' => $message, 'username' => $username, 'at' => Clock::store($at)];
+    }
+
+    public function addApproval(array $row): void
+    {
+        $this->approvals[] = $row + ['voided_at' => null, 'void_reason' => null];
+    }
+
+    public function voidApprovals(int $changeId, string $reason, int $at): void
+    {
+        foreach ($this->approvals as &$approval) {
+            if ($approval['change_id'] === $changeId && $approval['voided_at'] === null && $approval['decision'] === 'approved') {
+                [$approval['voided_at'], $approval['void_reason']] = [$at, $reason];
+            }
+        }
+    }
+
+    public function windows(int $changeId): array
+    {
+        return array_filter($this->windows, fn ($window) => $window['change_id'] === $changeId);
+    }
+
+    public function addWindow(array $row): int
+    {
+        $id = count($this->windows) + 1;
+        $this->windows[$id] = ['opened_at' => Clock::store($row['opened_at']), 'ends_at' => Clock::store($row['ends_at']), 'closed_at' => null, 'closing' => false,
+            'error' => null] + $row;
+
+        return $id;
+    }
+
+    public function updateWindow(int $id, array $values): void
+    {
+        $this->windows[$id] = array_merge($this->windows[$id], $values);
+    }
+
+    public function replaceDiffs(int $changeId, int $runId, array $rows): void
+    {
+        $this->diffs[$changeId] = array_map(fn ($row) => $row + ['run_id' => $runId], $rows);
+    }
+
+    /**
+     * The timeline messages of a change.
+     *
+     * @return string[]
+     */
+    public function messages(int $changeId): array
+    {
+        return array_column($this->events[$changeId] ?? [], 'message');
+    }
+}
