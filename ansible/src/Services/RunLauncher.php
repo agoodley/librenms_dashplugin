@@ -297,8 +297,7 @@ final class RunLauncher
         $template = $plan->template;
         $lifecycle = (new RunFollower($this->plugin, $this->runs, $this->settings, $this->eventlog, $plan->runner, $this->inventory))->lifecycle();
         try {
-            $task = $plan->runner->launch(new LaunchRequest($template->id, $plan->limit(), $plan->values, $plan->secrets, RunText::taskMessage($runId, $username, $nonce),
-                $spec?->isDryRun() ?? false, $spec?->isDryRun() ?? false, $spec?->commit));
+            $task = $plan->runner->launch(self::request($plan, RunText::taskMessage($runId, $username, $nonce), $spec));
             $lifecycle->launched($runId, $task, time());
         } catch (RunnerError $e) {
             if ($e->uncertain) {
@@ -311,6 +310,19 @@ final class RunLauncher
             Log::error("ansible plugin: launching run #$runId failed: " . ErrorText::forLog($e));
             $lifecycle->launchUncertain($runId, 'the launch failed in LibreNMS (see logs/librenms.log)', time());
         }
+    }
+
+    /**
+     * What the runner is asked to start: the template on the targets' inventory names with the answers; a change's dry
+     * run in check mode with diffs (--check --diff), a batch pinned to the commit its dry run ran; a run of phase 1 as
+     * it is.
+     */
+    public static function request(LaunchPlan $plan, string $message, ?RunSpec $spec = null): LaunchRequest
+    {
+        $dryRun = $spec !== null && $spec->isDryRun();
+
+        return new LaunchRequest((string) $plan->template?->id, $plan->limit(), $plan->values, $plan->secrets, $message, $dryRun, $dryRun,
+            $spec !== null && $spec->kind === RunSpec::BATCH ? $spec->commit : null);
     }
 
     /**

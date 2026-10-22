@@ -37,16 +37,13 @@ final class ChangeActions implements ChangeRunner
     {
         $parts = null;
         $connections = null;
-        $context = $kind === RunSpec::DRY_RUN ? 'change #' . (int) $change['id'] . ', dry run'
-            : 'change #' . (int) $change['id'] . ", batch $number of " . (int) $change['batch_count'];
-        $spec = new RunSpec((int) $change['id'], $kind, $number, $context, $kind === RunSpec::BATCH ? ($change['dry_run_commit'] ?? null) : null,
-            function (array $snapshot) use ($verify, $deviceIds, &$parts, &$connections): ?string {
-                // right before the run is recorded and launched: the template as the runner has it, the devices as the inventory reaches them
-                $parts = $snapshot;
-                $connections = $this->connections($deviceIds);
+        $spec = self::spec($change, $kind, $number, function (array $snapshot) use ($verify, $deviceIds, &$parts, &$connections): ?string {
+            // right before the run is recorded and launched: the template as the runner has it, the devices as the inventory reaches them
+            $parts = $snapshot;
+            $connections = $this->connections($deviceIds);
 
-                return $verify($snapshot, $connections);
-            });
+            return $verify($snapshot, $connections);
+        });
         $launcher = new RunLauncher($this->plugin, $this->runs, $this->inventory, $this->settings, $this->eventlog, $this->changes);
         $result = $launcher->launch((object) ['user_id' => (int) $user['user_id'], 'username' => (string) $user['username']], (string) $change['template_id'],
             $deviceIds, ChangeLifecycle::answers($change) + $secrets, '', $spec);
@@ -62,6 +59,20 @@ final class ChangeActions implements ChangeRunner
 
         return ['run_id' => $result['run_id'], 'errors' => array_values(array_unique($errors)), 'parts' => $parts ?? $result['plan']->snapshot,
             'connections' => $connections];
+    }
+
+    /**
+     * What makes a launch a run of the change: its dry run (no commit: the runner's latest), or one of its batches,
+     * pinned to the commit its dry run ran; with the text of its eventlog entries and the check right before the launch.
+     *
+     * @param  \Closure(array): ?string  $check
+     */
+    public static function spec(array $change, string $kind, int $number, \Closure $check): RunSpec
+    {
+        $context = $kind === RunSpec::DRY_RUN ? 'change #' . (int) $change['id'] . ', dry run'
+            : 'change #' . (int) $change['id'] . ", batch $number of " . (int) $change['batch_count'];
+
+        return new RunSpec((int) $change['id'], $kind, $number, $context, $kind === RunSpec::BATCH ? ($change['dry_run_commit'] ?? null) : null, $check);
     }
 
     public function preflight(array $change, string $kind, int $number, array $deviceIds, \Closure $verify): ?string

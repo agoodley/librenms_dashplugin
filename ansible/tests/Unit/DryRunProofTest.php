@@ -85,6 +85,23 @@ class DryRunProofTest extends TestCase
         $this->assertSame(['TASK [a name]'], $proof['unmarked']);
     }
 
+    public function testTheMarkerCountsOnlyWhereAnsiblePutsIt(): void
+    {
+        // the default callback appends " [CHECK MODE]" right before the banner's stars: a name holding the words does not count
+        $this->assertTrue(AnsibleLog::banner('TASK [Set it] [CHECK MODE] ****')['marked']);
+        $this->assertSame('Set it', AnsibleLog::banner('TASK [Set it] [CHECK MODE] ****')['name']);
+        foreach (['TASK [Push [CHECK MODE] config] ****', 'TASK [[CHECK MODE] Set it] ****', 'TASK [Set it] **** [CHECK MODE]', 'TASK [Set it] [CHECK MODE]',
+            'TASK [Set it] [CHECK MODE]  ****', 'PLAY [p [CHECK MODE]] ****'] as $banner) {
+            $this->assertFalse(AnsibleLog::banner($banner)['marked'], $banner);
+        }
+        // a task named so that its banner holds the words, run outside check mode: not proven
+        $lines = ['DRY RUN ****', 'PLAY [p] [CHECK MODE] ****', 'TASK [Push [CHECK MODE] config] ****', 'changed: [h1]', 'PLAY RECAP ****',
+            'h1 : ok=1 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0'];
+        $proof = self::check($lines);
+        $this->assertFalse($proof['verified']);
+        $this->assertCount(1, $proof['unmarked']);
+    }
+
     public function testTheDryRunBannerMustComeBeforeTheFirstPlay(): void
     {
         $lines = array_values(array_filter(self::log('dry-run-desc'), fn ($line) => AnsibleLog::plain($line) !== 'DRY RUN ************************************************************************'));
