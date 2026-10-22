@@ -73,6 +73,9 @@ final class FakeChangeRunner implements ChangeRunner
     /** @var \Closure|null called after a run is recorded, right before the runner would be asked (a stop landing at the last moment) */
     public ?\Closure $beforeStart = null;
 
+    /** @var \Closure|null called while the runner is asked to start a run, after the last check (a stop landing after it) */
+    public ?\Closure $whileAsked = null;
+
     public function launch(array $change, string $kind, int $number, array $deviceIds, array $user, #[\SensitiveParameter] array $secrets, \Closure $verify,
         ?\Closure $halt = null): array
     {
@@ -111,6 +114,9 @@ final class FakeChangeRunner implements ChangeRunner
                 'finished_at' => $this->runs->runs[$runId]['created_at'] ?? null, 'version' => $this->runs->runs[$runId]['version'] + 1]);
 
             return ['run_id' => $runId, 'errors' => [], 'parts' => $this->snapshot, 'connections' => $connections];
+        }
+        if ($this->whileAsked !== null) {
+            ($this->whileAsked)($kind, $number, $runId);
         }
         $this->launches[] = ['kind' => $kind, 'number' => $number, 'devices' => $deviceIds, 'user' => $user['username'], 'secrets' => $secrets, 'commit' => $pin];
 

@@ -1103,6 +1103,96 @@ class ChangeLifecycleTest extends TestCase
         }
     }
 
+    public function testAStopRecordedWhileTheRunnerIsAskedStopsTheTaskAtOnce(): void
+    {
+        // after the last check: the run is recorded, the runner is being asked; the stop cannot reach the run yet (no task), so the
+        // launch stops the task it just got
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $this->runner->whileAsked = function (string $kind, int $number, int $runId) use ($id, $lifecycle): void {
+            if ($kind === 'batch') {
+                $this->runner->stopError = 'The run is still being launched: try again in a moment.';
+                $this->assertNull($lifecycle->stop($id, 'bob', $this->t0 + 51));
+                $this->runner->stopError = null;
+            }
+        };
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $runId = $this->batchRun($id, 1);
+        $this->assertSame(["$runId by bob", "$runId by bob"], $this->runner->stops, 'asked by the stop (too early), then by the launch at once');
+        $this->assertSame('stopping', $this->runs->runs[$runId]['status']);
+        $this->assertSame(ChangeStatus::STOPPING, $this->changes->find($id)['status']);
+    }
+
+    public function testAStopRecordedRightBeforeABatchStartsOpensNothingForIt(): void
+    {
+        // batch 1 ended; right after the change moved to batch 2, a stop is recorded (another request): batch 2 opens no window,
+        // asks for no backup, is not checked against the runner
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        foreach ([501] as $deviceId) {
+            $this->backups->nodes[$deviceId]['last'] = ['start' => gmdate('Y-m-d H:i:s', $this->t0 + 52) . ' UTC', 'end' => gmdate('Y-m-d H:i:s', $this->t0 + 57) . ' UTC',
+                'status' => 'success'];
+        }
+        $lifecycle->advance($id, $this->t0 + 60);
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        [$windows, $requests, $preflights] = [count($this->windows->windows), count($this->backups->requests), $this->runner->preflights];
+        $this->changes->afterUpdate = function () use ($id, $lifecycle): void {
+            if ((int) $this->changes->find($id)['current_batch'] === 2) {
+                $this->assertNull($lifecycle->stop($id, 'bob', $this->t0 + 101));
+            }
+        };
+        $lifecycle->advance($id, $this->t0 + 101);
+        $this->assertSame((int) $this->changes->find($id)['current_batch'], 2, 'the change had moved to batch 2');
+        $this->assertSame(['pending', 0, 1, 0], [$this->changes->batches[$id][2]['status'], count($this->windows->windows) - $windows,
+            count($this->backups->requests) - $requests, $this->runner->preflights - $preflights], 'no window for batch 2, no backup before it (only the one after batch 1), '
+            . 'no check');
+        $lifecycle->advance($id, $this->t0 + 102);
+        $this->assertSame([ChangeStatus::STOPPED, 'stopped by bob before batch 2 was launched'], [$this->changes->find($id)['status'], $this->changes->find($id)['error']]);
+    }
+
+    public function testAStepWhileABatchIsLaunchedWaitsForItsLaunch(): void
+    {
+        // the stop, then a step of another request (the launching one lost its lock): within the launch's grace the change is not
+        // ended under the launch's feet; the launch itself sees the stop and launches nothing
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $during = null;
+        $this->runner->beforeVerify = function (string $kind) use ($id, $lifecycle, &$during): void {
+            if ($kind === 'batch') {
+                $this->assertNull($lifecycle->stop($id, 'bob', $this->t0 + 51));
+                $this->lifecycle()->advance($id, $this->t0 + 52);
+                $during = [$this->changes->find($id)['status'], $this->changes->batches[$id][1]['status']];
+            }
+        };
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->assertSame([ChangeStatus::STOPPING, 'launching'], $during, 'the other step waited for the launch');
+        $this->assertSame(['cancelled', ['dry_run']], [$this->changes->batches[$id][1]['status'], array_column($this->runner->launches, 'kind')]);
+        $this->lifecycle()->advance($id, $this->t0 + 60);
+        $this->assertSame([ChangeStatus::STOPPED, 'stopped by bob before batch 1 was launched'], [$this->changes->find($id)['status'], $this->changes->find($id)['error']]);
+    }
+
+    public function testAChangeEndedWhileItsBatchIsLaunchedLaunchesNothing(): void
+    {
+        // another request ended the change meanwhile (here: the stop's step after the launch's grace): the launch sees it ended
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $this->runner->beforeVerify = function (string $kind) use ($id, $lifecycle): void {
+            if ($kind === 'batch') {
+                $this->assertNull($lifecycle->stop($id, 'bob', $this->t0 + 51));
+                $this->lifecycle()->advance($id, $this->t0 + 52 + ChangeLifecycle::LAUNCH_GRACE);
+                $this->assertSame(ChangeStatus::STOPPED, $this->changes->find($id)['status']);
+            }
+        };
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'), 'nothing launched for an ended change');
+        $this->assertSame([], array_values(array_filter($this->runs->runs, fn ($run) => ($run['kind'] ?? null) === 'batch')), 'no run recorded');
+        $this->assertSame('cancelled', $this->changes->batches[$id][1]['status']);
+    }
+
     public function testAnApprovalOrAPermissionLostDuringTheBackupsStopsTheBatchBeforeItsLaunch(): void
     {
         foreach (['the approver' => fn () => $this->runner->userProblems[2] = 'no longer holds the approve permission',

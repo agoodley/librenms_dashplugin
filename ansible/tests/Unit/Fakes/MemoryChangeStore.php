@@ -37,6 +37,9 @@ final class MemoryChangeStore implements ChangeStore
 
     public ?\Closure $beforeUpdate = null;
 
+    /** @var \Closure|null runs once right after the next change of a change's row that succeeded (another request writing right after it) */
+    public ?\Closure $afterUpdate = null;
+
     public int $conflicts = 0;
 
     /**
@@ -90,6 +93,11 @@ final class MemoryChangeStore implements ChangeStore
             return false;
         }
         $this->changes[$id] = array_merge($this->changes[$id], $values, ['version' => $version + 1]);
+        if ($this->afterUpdate !== null) {
+            $hook = $this->afterUpdate;
+            $this->afterUpdate = null;
+            $hook();
+        }
 
         return true;
     }

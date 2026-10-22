@@ -967,14 +967,19 @@ final class ChangeLifecycle
         $this->changes->updateBatch($id, $number, ['status' => 'launching', 'started_at' => Clock::store($now), 'note' => null]);
         // a Stop takes no lock: one recorded while this launch is checked keeps it from the runner (asked again right before the
         // run is recorded, under the launch lock, and right before the runner is asked)
+        // (a change another request ended meanwhile launches nothing either)
         $halt = function () use ($id): ?string {
             $current = $this->changes->find($id);
+            if ($current === null || ChangeStatus::isFinal($current['status'])) {
+                return 'the change ended before the batch was launched';
+            }
 
-            return $current === null || self::stopAsked($current) ? 'the change was stopped before the batch was launched' : null;
+            return self::stopAsked($current) ? 'the change was stopped before the batch was launched' : null;
         };
         $result = $this->runner->launch($change, 'batch', $number, $this->batchDevices($change, $number), $user, $secrets ?? [], $this->batchVerify($change), $halt);
         if ($result['run_id'] === null) {
-            if (self::stopAsked($this->changes->find($id) ?? $change)) {
+            $current = $this->changes->find($id) ?? $change;
+            if (self::stopAsked($current) || ChangeStatus::isFinal($current['status'])) {
                 // the stop came while the launch was checked: nothing was recorded or launched; the stop ends the change
                 $this->changes->updateBatch($id, $number, ['status' => 'cancelled', 'ended_at' => Clock::store($now), 'note' => 'not launched: the change was stopped']);
 
@@ -993,6 +998,11 @@ final class ChangeLifecycle
         }
         $this->timeline($change, 'batch', ChangeText::batchLaunched($change, $number, (int) $change['batch_count'], (int) $result['run_id'], $user['username']),
             $user['username'], $now);
+        // a stop recorded while the runner was asked (after the last check): the task it just got is stopped at once
+        $current = $this->changes->find($id);
+        if ($current !== null && self::stopAsked($current)) {
+            $this->runner->stopRun((int) $result['run_id'], (string) (($current['stop_requested_by'] ?? null) ?: $user['username']));
+        }
     }
 
     /**
