@@ -59,7 +59,10 @@ final class ChangeLifecycle
     /** A target's record of what the inventory endpoint served the runner (InventoryGuard), cleared when its dry run or batch begins. */
     private const UNSERVED = ['served_hash' => null, 'served_at' => null, 'served_note' => null];
 
-    /** @var (\Closure(): void)|null called during long work (calls to the runner and to Oxidized): the follower renews its lock */
+    /**
+     * @var (\Closure(): void)|null called during long work (before calls to the runner, to Oxidized and to LibreNMS' maintenance): the follower
+     *                              renews its lock, and throws LockLost when another request took the change over (the step stops there)
+     */
     private ?\Closure $heartbeat = null;
 
     /**
@@ -693,8 +696,7 @@ final class ChangeLifecycle
                 $this->startBatch($change, $number, $this->starter($change, $number), null, $now);
                 break;
             case 'preparing':
-                $this->followBackups($id, $now);
-                $this->backupsBefore($change, $number, $now);
+                $this->prepare($change, $number, $now);
                 break;
             case 'launching':
                 $runId = $this->runner->findRun($id, 'batch', $number);
@@ -840,6 +842,36 @@ final class ChangeLifecycle
     }
 
     /**
+     * A batch being prepared, at a later step: its window and the backups before it as startBatch() opened and asked
+     * for them, and what a request that stopped in the middle (it died, or another request took the change over:
+     * LockLost) left undone, done now; then the batch launches once its backups are in.
+     */
+    private function prepare(array $change, int $number, int $now): void
+    {
+        $id = (int) $change['id'];
+        $devices = $this->batchDevices($change, $number);
+        // a window never opened for it (one an admin removed in LibreNMS meanwhile is not opened again)
+        if ($this->settings->maintenance && ! array_filter($this->changes->windows($id), fn (array $window) => (int) $window['batch'] === $number)) {
+            $error = $this->openWindow($change, $number, $devices, $now);
+            if ($error !== null) {
+                $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($error, 500)]);
+                $this->finish($change, ChangeStatus::FAILED, "the maintenance window of batch $number could not be opened: $error", $now);
+
+                return;
+            }
+        }
+        if ($this->settings->backups && $this->backups->enabled()) {
+            $targets = $this->changes->targets($id);
+            $unasked = array_values(array_filter($devices, fn (int $deviceId) => ($targets[$deviceId]['before_status'] ?? null) === null));
+            if ($unasked) {
+                $this->requestBackups($change, $number, $unasked, 'before', $now);
+            }
+            $this->followBackups($id, $now);
+        }
+        $this->backupsBefore($change, $number, $now);
+    }
+
+    /**
      * Who starts a batch: the admin who applied the change or continued it to this batch.
      *
      * @return array{user_id: int, username: string}
@@ -861,6 +893,12 @@ final class ChangeLifecycle
     private function backupsBefore(array $change, int $number, int $now, #[\SensitiveParameter] ?array $secrets = null): void
     {
         $id = (int) $change['id'];
+        if (! $this->settings->backups || ! $this->backups->enabled()) {
+            // no backups are taken (the settings, or LibreNMS' Oxidized integration is off): nothing to wait for
+            $this->launchBatch($this->changes->find($id) ?? $change, $number, $this->starter($change, $number), $secrets, $now);
+
+            return;
+        }
         $missing = [];
         foreach ($this->changes->targets($id) as $deviceId => $target) {
             if ((int) $target['batch'] !== $number) {
@@ -1406,6 +1444,7 @@ final class ChangeLifecycle
         $targets = $this->changes->targets($id);
         $names = array_map(fn ($deviceId) => (string) (($targets[$deviceId]['display'] ?? '') ?: ($targets[$deviceId]['hostname'] ?? "#$deviceId")), $devices);
         $end = MaintenanceTimes::opening($now, $this->settings->expectedSeconds);
+        $this->beat(); // a window is opened once: by the request that still holds the change
         try {
             $scheduleId = $this->windows->open(ChangeText::windowTitle($change, $number), ChangeText::windowNotes($change, $number, (int) $change['batch_count'], $names,
                 sprintf($this->settings->changeUrl, $id)), $devices, $now, $end, $this->settings->maintenanceBehavior);
@@ -1546,7 +1585,14 @@ final class ChangeLifecycle
         // once Oxidized could not be reached, the other devices of the batch are not asked (each call may wait its timeout)
         $down = null;
         foreach ($devices as $deviceId) {
-            $this->beat();
+            try {
+                $this->beat();
+            } catch (LockLost $e) {
+                // another request holds the change now: what was asked so far is recorded for it, the rest is not asked
+                $this->changes->updateTargets((int) $change['id'], $values);
+
+                throw $e;
+            }
             $state = ['status' => BackupState::REQUESTED, 'requested_at' => Clock::store($now), 'at' => null, 'version' => null, 'error' => null];
             try {
                 if ($down !== null) {

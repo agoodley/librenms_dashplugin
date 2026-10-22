@@ -5,12 +5,14 @@ namespace Agoodley\LibrenmsAnsible\Services;
 use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\ConfigBackups;
+use Agoodley\LibrenmsAnsible\Changes\LockLost;
 use Agoodley\LibrenmsAnsible\Changes\MaintenanceWindows;
 use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Support\ErrorText;
+use Agoodley\LibrenmsAnsible\Support\LockKeeper;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
@@ -20,8 +22,10 @@ use Illuminate\Support\Facades\Log;
  * Follows changes through their lifecycle (Changes\ChangeLifecycle), for the change page and the sync command, and
  * carries out users' actions on them. One lock per change keeps two requests from moving the same change at once:
  * the sync command, page polls, Stop, Approve and Continue all take it (a poll skips a change another request holds,
- * an action waits a few seconds for it). Inside, every write is a compare-and-set, and a batch's run has a one-time
- * token, so even without the lock a batch would not be launched twice.
+ * an action waits a few seconds for it). The lock is short and renewed during long work; a step whose lock another
+ * request took meanwhile stops there (Changes\LockLost), so what is not a compare-and-set (a window opened, a backup
+ * asked for) is done once. Inside, every write is a compare-and-set, and a batch's run has a one-time token, so even
+ * without the lock a batch would not be launched twice.
  */
 final class ChangeFollower
 {
@@ -80,6 +84,10 @@ final class ChangeFollower
         }
         try {
             return $this->held($lock)->advance($id, time()) ?? $change;
+        } catch (LockLost $e) {
+            Log::warning("ansible plugin: following change #$id stopped: " . $e->getMessage());
+
+            return $this->changes->find($id) ?? $change;
         } catch (\Throwable $e) {
             Log::error("ansible plugin: following change #$id failed: " . ErrorText::forLog($e));
 
@@ -104,6 +112,11 @@ final class ChangeFollower
         }
         try {
             return $action($this->held($lock));
+        } catch (LockLost $e) {
+            Log::warning("ansible plugin: an action on change #$id stopped: " . $e->getMessage());
+
+            return 'Another request took over this change while the plugin worked on it: what was done is recorded, and the change goes on from there. '
+                . 'Reload the page.';
         } finally {
             $lock->release();
         }
@@ -132,13 +145,9 @@ final class ChangeFollower
     {
         $lifecycle = $this->lifecycle();
         $seconds = $this->lockSeconds();
-        $lifecycle->setHeartbeat(function () use ($lock, $seconds): void {
-            try {
-                $lock->refresh($seconds);
-            } catch (\RuntimeException) {
-                // a cache driver without refresh: the lock keeps its first duration
-            }
-        });
+        // a step whose lock another request took meanwhile stops before its next call to the runner, Oxidized or LibreNMS'
+        // maintenance (LockLost): the writes that are not a compare-and-set (a window, a backup request) are not made twice
+        $lifecycle->setHeartbeat(fn () => LockKeeper::renew($lock, $seconds));
 
         return $lifecycle;
     }

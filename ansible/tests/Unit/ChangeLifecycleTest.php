@@ -9,6 +9,7 @@ use Agoodley\LibrenmsAnsible\Changes\ChangeSettings;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\Connections;
 use Agoodley\LibrenmsAnsible\Changes\InventoryGuard;
+use Agoodley\LibrenmsAnsible\Changes\LockLost;
 use Agoodley\LibrenmsAnsible\Changes\NextChange;
 use Agoodley\LibrenmsAnsible\Inventory\Inventory;
 use Agoodley\LibrenmsAnsible\Runner\SurveyVar;
@@ -693,6 +694,77 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame([InventoryGuard::LEFT_OUT, 'lab-sw1 is no longer a host of the inventory (disabled in LibreNMS)'],
             [$this->changes->targets[$id][501]['served_hash'], $this->changes->targets[$id][501]['served_note']]);
         $this->assertSame([], array_filter($this->changes->targets[$id], fn ($t) => $t['device_id'] !== 501 && $t['served_hash'] !== null));
+    }
+
+    // ------------------------------------------------------------------ a step whose change another request took over
+
+    /** A heartbeat that finds the lock lost at its $at-th call (LockLost), as ChangeFollower's does. */
+    private function losesLockAt(ChangeLifecycle $lifecycle, int $at): void
+    {
+        $calls = 0;
+        $lifecycle->setHeartbeat(function () use (&$calls, $at): void {
+            if (++$calls === $at) {
+                throw new LockLost('the lock was taken by another request, or released, while this one worked');
+            }
+        });
+    }
+
+    public function testAStepWhoseLockWasLostStopsAndTheNextOneFinishesItsPreparation(): void
+    {
+        // batch 1 of two devices: the heartbeats are the apply's template check (1), the batch's checks (2), the window (3), then one
+        // before each device's backup (4, 5)
+        foreach (['at the window' => 3, 'between two backups' => 5] as $when => $at) {
+            $this->setUp();
+            $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 2, 5, 1, false, 0));
+            $this->backups->succeed = false; // Oxidized takes them later
+            $lifecycle = $this->lifecycle();
+            $this->losesLockAt($lifecycle, $at);
+            try {
+                $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+                $this->fail("$when: the step goes on without the lock");
+            } catch (LockLost) {
+            }
+            $this->assertSame('preparing', $this->changes->batches[$id][1]['status'], $when);
+            $this->assertCount($at === 3 ? 0 : 1, $this->windows->windows, "$when: no window opened after the loss");
+            $this->assertSame($at === 3 ? [] : ['dev501'], array_column($this->backups->requests, 'node'), "$when: no backup asked after the loss");
+            $this->assertSame($at === 3 ? null : 'requested', $this->changes->targets[$id][501]['before_status'], "$when: what was asked is recorded");
+            $this->assertNull($this->changes->targets[$id][502]['before_status']);
+
+            // the request that holds the change now: what was left undone, once
+            $next = $this->lifecycle();
+            $next->advance($id, $this->t0 + 60);
+            $next->advance($id, $this->t0 + 61);
+            $this->assertCount(1, $this->windows->windows, "$when: one window");
+            $this->assertSame(['dev501', 'dev502'], array_column($this->backups->requests, 'node'), "$when: each backup asked once");
+            foreach ([501, 502] as $deviceId) {
+                $this->backups->nodes[$deviceId] = ['name' => "dev$deviceId", 'full_name' => "lab/dev$deviceId", 'last' => ['start' => gmdate('Y-m-d H:i:s', $this->t0 + 62)
+                    . ' UTC', 'end' => gmdate('Y-m-d H:i:s', $this->t0 + 66) . ' UTC', 'status' => 'success']];
+            }
+            $next->advance($id, $this->t0 + 70);
+            $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'), "$when: then the batch launches");
+            $this->assertSame([501, 502], end($this->runner->launches)['devices']);
+        }
+    }
+
+    public function testABatchLeftPreparingWithoutBackupsLaunchesAtTheNextStep(): void
+    {
+        // backups off: a request that stopped right before the launch leaves the batch preparing; it is launched, not refused for
+        // backups that were never asked for
+        $id = $this->approved();
+        $this->backups->enabled = false;
+        $lifecycle = $this->lifecycle();
+        $this->losesLockAt($lifecycle, 4); // the template check (1), the batch's checks (2), the window (3), the launch (4)
+        try {
+            $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+            $this->fail('the launch goes on without the lock');
+        } catch (LockLost) {
+        }
+        $this->assertSame(['preparing', ['dry_run']], [$this->changes->batches[$id][1]['status'], array_column($this->runner->launches, 'kind')]);
+
+        $this->lifecycle()->advance($id, $this->t0 + 60);
+        $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'));
+        $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status']);
+        $this->assertCount(1, $this->windows->windows);
     }
 
     public function testDryRunsAndApprovalsExpire(): void

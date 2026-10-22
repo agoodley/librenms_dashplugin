@@ -642,8 +642,10 @@ and the window closes.
   allowed), so it never takes a task of another database that shares the project.
 * **Following:** the change and run pages ask the plugin every 2 seconds, and the plugin asks the runner at most every
   2 seconds per run (a lock per run and per change, held longer than the slowest refresh, keeps two pages and the sync
-  command from doing it at once; every write is a compare-and-set on the row's version, so a slow answer never writes
-  over a newer state). The `ansible:sync` command does the same every minute for every unfinished run and change, and
+  command from doing it at once; a change's lock is renewed during long work, and a step whose lock another request
+  took meanwhile stops before its next call to the runner, Oxidized or LibreNMS' maintenance, so a window is opened
+  and a backup asked for once, and the request holding the lock goes on from what was recorded; every write is a
+  compare-and-set on the row's version, so a slow answer never writes over a newer state). The `ansible:sync` command does the same every minute for every unfinished run and change, and
   every few minutes for a lost or released run (through the LibreNMS scheduler, one at a time, on one server, while the
   plugin is enabled and its connection set up; output in `logs/ansible-sync.log`), so the audit log is complete when
   nobody watches. The log is stored as it comes, only the new lines at each refresh, in pieces of at most 512 KB per
