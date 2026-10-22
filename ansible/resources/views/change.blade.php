@@ -147,17 +147,18 @@
             }
             $withheldNow = $inProgress ? array_diff_key($withheld, $fetchedWithout) : [];
             $outcome = $status === ChangeStatus::DRY_RUN ? 'it does not count' : 'the change stops when the batch ends';
+            $asRecorded = $status === ChangeStatus::DRY_RUN ? 'as when the dry run was launched' : 'as at the dry run';
         @endphp
         @if($fetchedWithout || $withheldNow)
             <div class="alert alert-warning" id="ans-change-withheld"><i class="fa fa-eye-slash"></i>
                 @if($fetchedWithout)
                     <span id="ans-change-fetched-without"><strong>Left out of an inventory the runner fetched during {{ $phase }}:</strong>
-                        {{ implode('; ', $fetchedWithout) }}. The runner no longer reaches {{ count($fetchedWithout) === 1 ? 'it' : 'them' }} as at the dry run, so {{ $phase }}
+                        {{ implode('; ', $fetchedWithout) }}. The runner no longer reaches {{ count($fetchedWithout) === 1 ? 'it' : 'them' }} {{ $asRecorded }}, so {{ $phase }}
                         may not have run on {{ count($fetchedWithout) === 1 ? 'it' : 'them' }}, and {{ $outcome }}.</span>
                 @endif
                 @if($withheldNow)
                     <span id="ans-change-withheld-now"><strong>Withheld from the runner while {{ $phase }} is in progress:</strong> {{ implode('; ', $withheldNow) }}.
-                        The runner no longer reaches {{ count($withheldNow) === 1 ? 'it' : 'them' }} as at the dry run, so the inventory endpoint leaves
+                        The runner no longer reaches {{ count($withheldNow) === 1 ? 'it' : 'them' }} {{ $asRecorded }}, so the inventory endpoint leaves
                         {{ count($withheldNow) === 1 ? 'it' : 'them' }} out: if the runner fetches the inventory before that is set back, {{ $phase }} does not run on
                         {{ count($withheldNow) === 1 ? 'it' : 'them' }}, and {{ $outcome }}.</span>
                 @endif
