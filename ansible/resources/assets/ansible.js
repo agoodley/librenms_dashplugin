@@ -216,6 +216,12 @@
                 append(error, [el('strong', null, (STATUS_LABELS[data.status] || data.label) + ': '), data.error]);
                 alerts.appendChild(error);
             }
+            if (data.stopped_note) {
+                var stoppedNote = alertBox('warning', null, null);
+                stoppedNote.id = 'ans-run-stopped-note';
+                append(stoppedNote, data.stopped_note);
+                alerts.appendChild(stoppedNote);
+            }
             if (data.poll_error && !data.final) {
                 var pollError = alertBox('warning', null, null);
                 pollError.id = 'ans-run-poll-error';
@@ -261,7 +267,8 @@
 
         if (stopButton) {
             stopButton.addEventListener('click', function () {
-                if (!window.confirm('Stop this run? Ansible finishes the current step on each device, then stops.')) {
+                if (!window.confirm('Stop this run? Semaphore UI stops Ansible\'s main process, so no further task starts. The task each device is in runs in a '
+                    + 'process of its own that a stop does not end: it may still finish on the runner, and a pause task keeps waiting there until it is killed.')) {
                     return;
                 }
                 stopButton.disabled = true;

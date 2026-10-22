@@ -6,6 +6,7 @@ use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTask;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTaskSearch;
 use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
+use Agoodley\LibrenmsAnsible\Runs\RunDiagnosis;
 use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeRunner;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\MemoryRunStore;
@@ -218,6 +219,25 @@ class RunLifecycleTest extends TestCase
         $this->assertStringStartsWith("Ansible run #$id was incomplete: not run", $this->events->of(501)[0]['message']);
     }
 
+    public function testAStoppedRunNamesTheTaskItWasInAndWhatTheStopDoesNotEnd(): void
+    {
+        $lines = ['PLAY [Long run] ****', '', 'TASK [Set the description] ****', 'changed: [lab-sw3.netops.lab]', '', "\e[0;33mTASK [Wait] ****\e[0m"];
+
+        $this->assertSame('Wait', RunDiagnosis::taskInProgress($lines));
+        $this->assertNull(RunDiagnosis::taskInProgress(array_merge($lines, ['ok: [lab-sw3.netops.lab]'])), 'the last task has a result');
+        $this->assertNull(RunDiagnosis::taskInProgress(array_merge($lines, ['PLAY RECAP ****'])));
+        $note = RunDiagnosis::afterStop('205', 'Wait');
+        $this->assertStringStartsWith('The run was stopped during the task "Wait". Semaphore UI stopped Ansible\'s main process', $note);
+        $this->assertStringContainsString('a pause task keeps waiting there until it is killed', $note);
+        $this->assertStringContainsString('(task #205)', $note);
+
+        $id = $this->store->add(['runner_task_id' => '90', 'status' => 'stopping', 'stopped_by' => 'bob', 'runner_final_at' => '2026-10-22 10:00:30'], self::TARGETS);
+        $this->runner->tasks['90'] = 'stopped';
+        $this->runner->logs['90'] = $lines;
+        $this->lifecycle()->refresh($id, $this->t0 + 100);
+        $this->assertStringEndsWith('(stopped by bob; the task in progress may still run on the runner)', $this->events->of(503)[0]['message']);
+    }
+
     public function testASuccessfulTaskWithOneTargetMissingIsIncomplete(): void
     {
         $id = $this->running('success', ['runner_final_at' => '2026-10-22 10:00:30']);
@@ -244,7 +264,7 @@ class RunLifecycleTest extends TestCase
         $results = array_map(fn ($t) => $t['result'], $this->store->targets[$id]);
         $this->assertSame([501 => 'unknown', 502 => 'not_run', 503 => 'changed'], $results);
         $this->assertStringContainsString('was stopped: changed', $this->events->of(503)[0]['message']);
-        $this->assertStringContainsString('(stopped by bob)', $this->events->of(503)[0]['message']);
+        $this->assertStringContainsString('(stopped by bob; the task in progress may still run on the runner)', $this->events->of(503)[0]['message']);
     }
 
     public function testAStaleRefreshNeverWritesOverANewerOne(): void

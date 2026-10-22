@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runs\Ansi;
 use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
+use Agoodley\LibrenmsAnsible\Runs\RunDiagnosis;
 use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
 use Agoodley\LibrenmsAnsible\Runs\RunResults;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
@@ -82,6 +83,7 @@ class RunController extends Controller
             'run' => $run,
             'targets' => (new RunRepository())->targets($id),
             'lines' => OutputBuffer::display($run),
+            'stoppedNote' => self::stoppedNote($run),
             'next' => OutputBuffer::since($run, 0)['next'],
             'canRun' => Access::canRun($request->user()),
             'releasable' => RunLifecycle::releasable($run, time()),
@@ -130,6 +132,7 @@ class RunController extends Controller
             'stop_reason' => $run['stop_reason'],
             'released_by' => $run['released_by'],
             'releasable' => RunLifecycle::releasable($run, time()),
+            'stopped_note' => self::stoppedNote($run),
             'targets' => $targets,
             'lines' => array_map(fn ($line) => Ansi::segments($line), $log['lines']),
             'next' => $log['next'],
@@ -156,6 +159,18 @@ class RunController extends Controller
         $error = $this->follower()->release($id, (string) $request->user()->username);
 
         return $error === null ? response()->json(['ok' => true]) : response()->json(['error' => $error], 422);
+    }
+
+    /**
+     * For a stopped run: what the stop did not end on the runner (the task in progress), null otherwise.
+     */
+    private static function stoppedNote(array $run): ?string
+    {
+        if ($run['status'] !== RunStatus::STOPPED) {
+            return null;
+        }
+
+        return RunDiagnosis::afterStop($run['runner_task_id'], RunDiagnosis::taskInProgress(OutputBuffer::display($run)));
     }
 
     /**

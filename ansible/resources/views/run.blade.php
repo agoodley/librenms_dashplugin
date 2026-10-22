@@ -58,6 +58,9 @@
                 @endif
             </div>
         @endif
+        @if($stoppedNote)
+            <div class="alert alert-warning" id="ans-run-stopped-note"><i class="fa fa-exclamation-triangle"></i> {{ $stoppedNote }}</div>
+        @endif
         @if($run['poll_error'] && ! $final)
             <div class="alert alert-warning" id="ans-run-poll-error"><i class="fa fa-plug"></i> {{ $run['poll_error'] }}
                 <span class="ans-muted">The run keeps its devices until the runner reports its end.</span></div>
@@ -66,7 +69,7 @@
 
     @if($canRun && ! $final)
         <p><button type="button" class="btn btn-sm btn-danger" id="ans-run-stop"><i class="fa fa-stop"></i> Stop</button>
-            <span class="ans-muted" id="ans-run-stop-note">asks the runner to stop the task; Ansible finishes the current step first</span>
+            <span class="ans-muted" id="ans-run-stop-note">asks the runner to stop the task: no further task starts, but the task in progress may still run on the runner</span>
             <span id="ans-run-release-box" @if(! $releasable) style="display: none" @endif>
                 <button type="button" class="btn btn-sm btn-warning" id="ans-run-release" style="margin-left: 12px"><i class="fa fa-unlock"></i> Release the devices</button>
                 <span class="ans-muted">the runner could not be asked about this run for a while: end it as released, its results unknown (written to the eventlog)</span>

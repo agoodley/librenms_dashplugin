@@ -391,7 +391,8 @@ final class RunLifecycle
         }
         $user = (string) $run['username'];
         $note = $late ? 'the runner reported this end after the plugin had given the run up as ' . strtolower(RunStatus::label((string) $run['status']))
-            : ($task->status === RunStatus::STOPPED ? ($run['stop_reason'] ?? ($run['stopped_by'] ? 'stopped by ' . $run['stopped_by'] : null)) : null);
+            : ($task->status === RunStatus::STOPPED ? ($run['stop_reason'] ?? ($run['stopped_by'] ? 'stopped by ' . $run['stopped_by'] : 'stopped in the runner'))
+                . '; the task in progress may still run on the runner' : null);
         foreach ($evaluation['results'] as $deviceId => $result) {
             $this->events->write(RunText::finished($id, $status, $result['result'], $result['counts'], (string) $run['template_name'], $user, $note), $deviceId,
                 RunResults::SEVERITY[$result['result']] ?? 'info', RunText::reference($id), $user);

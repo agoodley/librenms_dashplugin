@@ -122,6 +122,12 @@ final class RunLauncher
         foreach ($chosen['refused'] as $deviceId => $refusal) {
             $plan->refused[$deviceId] = ['device_id' => $deviceId, 'display' => $names[$deviceId] ?? "#$deviceId"] + $refusal;
         }
+        $stopped = $this->runs->recentStops(array_keys($plan->targets));
+        if ($stopped) {
+            $plan->warnings[] = 'Stopped in the last hour: ' . implode('; ', array_map(fn ($deviceId, $stop) => $plan->targets[$deviceId]['display']
+                . " (run #{$stop['run_id']}, task #{$stop['runner_task_id']})", array_keys(array_slice($stopped, 0, 5, true)), array_slice($stopped, 0, 5, true)))
+                . '. A stop does not end the task a run is in: make sure it no longer runs on the runner before you change these devices again.';
+        }
         if (! $plan->targets) {
             $plan->errors[] = 'Choose at least one device that can be a target.';
         } elseif (count($plan->targets) > $plan->maxTargets) {

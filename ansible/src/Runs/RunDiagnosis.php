@@ -55,6 +55,44 @@ final class RunDiagnosis
     }
 
     /**
+     * The task a run was in when its log ends, when no result of it was logged (the run was stopped or killed in
+     * the middle of it); null when the last task has results or there is none.
+     *
+     * @param  string[]  $lines
+     */
+    public static function taskInProgress(array $lines): ?string
+    {
+        $task = null;
+        foreach ($lines as $line) {
+            $line = rtrim(Ansi::strip($line));
+            if (preg_match('/^TASK \[(.+)\] \**$/', $line, $m)) {
+                $task = $m[1];
+            } elseif ($task !== null && preg_match('/^(ok|changed|failed|fatal|skipping|included|unreachable): \[/', $line)) {
+                $task = null;
+            } elseif (str_starts_with($line, 'PLAY RECAP')) {
+                return null;
+            }
+        }
+
+        return $task === null ? null : UntrustedText::line($task, 120);
+    }
+
+    /**
+     * What a stop does not end: Semaphore UI (2.19) stops Ansible's main process, but Ansible runs each host's task in
+     * a process of its own, in its own session, which Semaphore's Stop and Force stop leave running: it finishes the
+     * task it is in, and a pause task waits for ever.
+     */
+    public static function afterStop(?string $taskId, ?string $inProgress): string
+    {
+        $where = $taskId !== null && $taskId !== '' ? " (task #$taskId)" : '';
+
+        return ($inProgress !== null ? 'The run was stopped during the task "' . $inProgress . '". ' : '')
+            . 'Semaphore UI stopped Ansible\'s main process, so no further task started, but the task each target was in runs in a process of its own '
+            . 'that a stop does not end: it may still finish on the runner, and a pause task keeps waiting there until it is killed. Before you change '
+            . "these devices again, look on the runner for the ansible-playbook processes of this run$where and end them.";
+    }
+
+    /**
      * The inventory script's error from Ansible's warning ("Standard error from inventory script:" and the lines
      * after it; older Ansible: "... had an execution error: ..."), cleaned and cut; null when there is none.
      *

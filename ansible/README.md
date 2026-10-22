@@ -276,9 +276,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   the limit. **Launch** checks everything again against the runner and opens the run.
 * **Run:** the status, the template, who launched it and when, each target's result with the PLAY RECAP counters, the
   answers, and the log with Ansible's colours, followed every 2 seconds while the run is unfinished. **Stop** asks the
-  runner to stop the task (Ansible finishes the step it is in on each device). When the plugin could not ask the
-  runner about an unfinished run for 15 minutes, **Release the devices** (for holders of the run permission) ends it as
-  *released* so its devices can be targets again; see [Run states](#run-states).
+  runner to stop the task: no further task starts, but the task in progress may still run on the runner (see
+  [Limitations](#limitations)). When the plugin could not ask the runner about an unfinished run for 15 minutes,
+  **Release the devices** (for holders of the run permission) ends it as *released* so its devices can be targets
+  again; see [Run states](#run-states).
 * **Runs:** filter by device, user, template, status and dates; each run lists its targets and their results. The
   *JSON* button gives the same list.
 * **Inventory:** the hosts with their variables and groups, the groups, the devices left out and why, the runner's
@@ -344,7 +345,7 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 | Success | the runner ended the task with success, and every target is in the PLAY RECAP without a failure | free |
 | Incomplete | the runner ended the task with success, but targets did not run (or failed): the run page says how many and the likely cause, quoting the inventory script's error when there is one (a template without the LibreNMS variable group, a revoked token) | free |
 | Failed | the runner ended the task with an error | free |
-| Stopped | the runner stopped the task (a user's Stop, or the plugin's after *Stop after*) | free |
+| Stopped | the runner stopped the task (a user's Stop, or the plugin's after *Stop after*); the task in progress may still run on the runner (see [Limitations](#limitations)) | free |
 | Not launched | the runner refused the launch, or a launch whose answer never came has no task 10 minutes later, according to a search of the runner's tasks that reached back to the launch | free |
 | Lost | the runner did not find the task at least 3 times over 5 minutes while the token still saw the project (the task was deleted); results from the log as far as the plugin read it, *unknown* where it says nothing | free; watched for a week |
 | Released | an admin with the run permission released the devices after the plugin could not ask the runner about the run for 15 minutes; results *unknown* where the log says nothing | free; watched for a week |
@@ -413,8 +414,15 @@ Checked against Semaphore UI 2.19.17:
   runs on every host of the inventory, while the launch answer still shows the limit; a task's `inventory_id` is
   ignored too.
 * Task statuses: `waiting`, `starting`, `waiting_confirmation`, `confirmed` (queued), `running`, `stopping`, and the
-  final `success`, `error`, `stopped` and `rejected` (a refused confirmation; the plugin counts it as failed). The tasks of one template run one after the other: a second
-  launch of a template waits in the queue. A stopped queued task stays `stopping` until it would have started.
+  final `success`, `error`, `stopped` and `rejected` (a refused confirmation; the plugin counts it as failed). The
+  tasks of one template run one after the other: a second launch of a template waits in the queue. A stopped queued
+  task stays `stopping` until it would have started.
+* **A stop does not end the task in progress.** Stop (`{"force": false}`) and force stop (`{"force": true}`) both end
+  the main `ansible-playbook` process within seconds and record the task as `stopped`, so no further task starts. But
+  Ansible runs the task each host is in in a worker process of its own session, which neither ends: it finishes its
+  task on the runner (a module call, a `wait_for` up to its timeout), and a `pause` task waits for ever. A stop sent to
+  a task already stopped answers 204 and does nothing. (Checked with Semaphore UI 2.19.17 and ansible-core 2.20: a
+  stopped pause was still waiting 12 minutes later.)
 * `GET .../tasks/{id}/output` returns the whole log at every call, one record per line with ANSI colour codes; the
   task is reported finished before its last lines can be read. `POST .../tasks/{id}/stop` needs the body
   `{"force": false}` (an empty body is refused). `GET .../tasks/{id}` answers HTTP 400 for a task it does not have.
@@ -431,6 +439,12 @@ Checked against Semaphore UI 2.19.17:
   in Git, not by the plugin.
 * Between the check of a template and the launch, someone with Semaphore rights could change the template; the
   plugin checks again at every launch, but cannot close that window.
+* **Stop** cannot end the task a run is in on the runner (see [Semaphore UI behaviour](#semaphore-ui-behaviour-the-plugin-relies-on)),
+  and the plugin, which only talks to Semaphore's API, cannot either: after Semaphore reports the task stopped, the
+  plugin frees the devices, but the run page of a stopped run says which task it was in and that it may still run, and
+  a launch on these devices within the hour warns. Avoid `pause` in playbooks the plugin runs (a `wait_for` with a
+  timeout ends on its own); after a stop, look on the runner for the processes of the run's task and end them, e.g.
+  `ps -eo pid,args | grep '"id":<task id>,'` (the task id is on the run page).
 * The results come from the PLAY RECAP: a playbook that runs several plays shows the totals per host. A device that
   fails on its connection after an earlier task succeeded counts as failed, not unreachable.
 * A run page shows at most *Output size* of the log (its start and its end); the runner keeps all of it.

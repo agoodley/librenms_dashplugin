@@ -192,6 +192,28 @@ final class RunRepository implements RunStore
     }
 
     /**
+     * The latest stopped run of each device that ended in the last $seconds: a stop leaves the task in progress
+     * running on the runner, so the next launch says so.
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, array{run_id: int, runner_task_id: ?string, finished_at: string}> device_id => run
+     */
+    public function recentStops(array $deviceIds, int $seconds = 3600): array
+    {
+        if (! $deviceIds) {
+            return [];
+        }
+        $stops = [];
+        foreach (DB::table('ansible_run_targets as t')->join('ansible_runs as r', 'r.id', '=', 't.run_id')->whereIn('t.device_id', $deviceIds)
+            ->where('r.status', RunStatus::STOPPED)->where('r.finished_at', '>=', now()->subSeconds($seconds))->orderBy('r.id')
+            ->get(['t.device_id', 'r.id', 'r.runner_task_id', 'r.finished_at']) as $row) {
+            $stops[(int) $row->device_id] = ['run_id' => (int) $row->id, 'runner_task_id' => $row->runner_task_id, 'finished_at' => (string) $row->finished_at];
+        }
+
+        return $stops;
+    }
+
+    /**
      * Ids of the runs that have not finished, oldest first.
      *
      * @return int[]
