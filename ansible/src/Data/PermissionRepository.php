@@ -16,7 +16,7 @@ final class PermissionRepository
     /**
      * The users who hold the permission.
      *
-     * @return array<int, array{user_id: int, username: string, realname: string, admin: bool, enabled: bool}>
+     * @return array<int, array{user_id: int, username: string, realname: string, admin: bool, enabled: bool, holds: bool}>
      */
     public function holders(): array
     {
@@ -27,7 +27,7 @@ final class PermissionRepository
     /**
      * LibreNMS admins who do not hold it (the only users who can use it).
      *
-     * @return array<int, array{user_id: int, username: string, realname: string, admin: bool, enabled: bool}>
+     * @return array<int, array{user_id: int, username: string, realname: string, admin: bool, enabled: bool, holds: bool}>
      */
     public function candidates(): array
     {
@@ -38,7 +38,7 @@ final class PermissionRepository
     /**
      * A user as the settings page lists it, null when there is no such user.
      *
-     * @return array{user_id: int, username: string, realname: string, admin: bool, enabled: bool}|null
+     * @return array{user_id: int, username: string, realname: string, admin: bool, enabled: bool, holds: bool}|null
      */
     public function user(int $userId): ?array
     {
@@ -81,11 +81,11 @@ final class PermissionRepository
     /**
      * A user as the settings page lists it.
      *
-     * @return array{user_id: int, username: string, realname: string, admin: bool, enabled: bool}
+     * @return array{user_id: int, username: string, realname: string, admin: bool, enabled: bool, holds: bool}
      */
     private static function row(User $user): array
     {
         return ['user_id' => (int) $user->user_id, 'username' => (string) $user->username, 'realname' => (string) $user->realname,
-            'admin' => $user->hasRole('admin'), 'enabled' => (bool) $user->enabled];
+            'admin' => $user->hasRole('admin'), 'enabled' => (bool) $user->enabled, 'holds' => Access::holds($user)];
     }
 }

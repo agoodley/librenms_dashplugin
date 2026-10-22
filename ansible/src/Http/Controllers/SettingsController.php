@@ -59,29 +59,36 @@ class SettingsController extends Controller
     }
 
     /**
-     * POST plugin/ansible/settings/connection: save the runner connection. An empty token keeps the saved one.
+     * POST plugin/ansible/settings/connection: save the runner connection. An empty token keeps the saved one, unless
+     * the token would then go elsewhere (another URL, TLS verification off, another CA bundle).
      */
     public function connection(Request $request): RedirectResponse
     {
         $repository = new ConnectionRepository();
+        $before = $repository->get();
         $input = $request->only(['url', 'token', 'project', 'inventory', 'verify_tls', 'ca_bundle', 'timeout']);
-        $result = Connection::fromInput(array_map(fn ($v) => is_scalar($v) ? (string) $v : '', $input), $repository->get(),
+        $result = Connection::fromInput(array_map(fn ($v) => is_scalar($v) ? (string) $v : '', $input), $before,
             (string) $request->user()->username, time(), $request->boolean('remove_token'));
         if ($result['connection'] === null) {
             unset($input['token']);
 
-            return $this->back()->with('ansible_errors', $result['errors'])->with('ansible_old', $input);
+            return $this->back('ans-connection-form')->with('ansible_errors', $result['errors'])->with('ansible_old', $input);
         }
-        $repository->save($result['connection']);
-        $status = 'The runner connection was saved.';
         $connection = $result['connection'];
+        $changes = $connection->changes($before);
+        if (! $changes) {
+            return $this->back('ans-connection-form')->with('ansible_status', 'Nothing changed.');
+        }
+        $repository->save($connection);
+        $this->audit(AuditText::connectionChanged((string) $request->user()->username, $changes), $connection->verifyTls ? 'notice' : 'warning');
+        $status = 'The runner connection was saved: ' . implode('; ', $changes) . '.';
         if ($connection->verifyTls && $connection->caBundle !== '' && ! is_readable($connection->caBundle)) {
             $status .= " LibreNMS cannot read the CA bundle {$connection->caBundle}: fix it before testing.";
         } elseif (! $connection->verifyTls) {
             $status .= ' TLS certificates are not verified: anyone between LibreNMS and the runner could read the token.';
         }
 
-        return $this->back()->with('ansible_status', $status);
+        return $this->back('ans-connection-form')->with('ansible_status', $status);
     }
 
     /**
@@ -140,7 +147,8 @@ class SettingsController extends Controller
     }
 
     /**
-     * POST plugin/ansible/settings/permission {user_id, action: grant|revoke}: give or take the run permission.
+     * POST plugin/ansible/settings/permission {user_id, action: grant|revoke}: give or take the run permission. Any
+     * admin may grant it, also to themselves: it is an explicit opt-in, written to the eventlog.
      */
     public function permission(Request $request): RedirectResponse
     {
@@ -148,18 +156,29 @@ class SettingsController extends Controller
         $action = $request->input('action');
         $repository = new PermissionRepository();
         if (! in_array($action, ['grant', 'revoke'], true) || $userId < 1) {
-            return $this->back()->with('ansible_errors', ['permission' => 'Choose a user to grant the permission to or revoke it from.']);
+            return $this->back('ans-permission')->with('ansible_errors', ['permission' => 'Choose a user to grant the permission to or revoke it from.']);
         }
         $user = $repository->user($userId);
         if ($user === null) {
-            return $this->back()->with('ansible_errors', ['permission' => 'There is no such user.']);
+            return $this->back('ans-permission')->with('ansible_errors', ['permission' => 'There is no such user.']);
         }
         if ($action === 'grant' && ! $user['admin']) {
-            return $this->back()->with('ansible_errors', ['permission' => "{$user['username']} is not a LibreNMS admin: only admins can use the run permission."]);
+            return $this->back('ans-permission')->with('ansible_errors', ['permission' => "{$user['username']} is not a LibreNMS admin: only admins can use the run permission."]);
         }
-        $name = $action === 'grant' ? $repository->grant($userId) : $repository->revoke($userId);
+        if ($user['holds'] === ($action === 'grant')) {
+            return $this->back('ans-permission')->with('ansible_status', $action === 'grant' ? "{$user['username']} already holds the run permission." : "{$user['username']} does not hold the run permission.");
+        }
+        $by = (string) $request->user()->username;
+        if ($action === 'grant') {
+            $name = (string) $repository->grant($userId);
+            $this->audit(AuditText::permissionGranted($by, $name));
 
-        return $this->back()->with('ansible_status', $action === 'grant' ? "$name may now launch and stop runs." : "$name may no longer launch or stop runs.");
+            return $this->back('ans-permission')->with('ansible_status', "$name may now launch and stop runs.");
+        }
+        $name = (string) $repository->revoke($userId);
+        $this->audit(AuditText::permissionRevoked($by, $name));
+
+        return $this->back('ans-permission')->with('ansible_status', "$name may no longer launch or stop runs.");
     }
 
     /**

@@ -180,7 +180,7 @@ The runner connection is stored encrypted with LibreNMS' `APP_KEY`.
 |---|---|---|
 | *Runner connection* | | |
 | Runner URL | – | Semaphore UI's address, e.g. `https://semaphore.example.com` (http or https; without `/api`) |
-| API token | – | the Task Runner user's token; write-only: never shown again, never sent to a browser; an empty field keeps it |
+| API token | – | the Task Runner user's token; write-only: never shown again, never sent to a browser; an empty field keeps it, except when the runner URL (scheme, host, port or path) or the CA bundle changes or TLS verification is turned off: then it must be entered again, so the saved token only ever goes where it was saved for |
 | Project id | – | the project of the plugin (the number in its address, `/project/<id>/...`) |
 | LibreNMS inventory id | – | the file inventory that runs the inventory script; only templates with this inventory can be launched |
 | Verify TLS certificates | on | off only for a test lab: anyone between LibreNMS and the runner could read the token |
@@ -229,8 +229,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 * **Launching and stopping** runs also needs the plugin's own permission, `ansible.run`, which an admin grants on the
   settings page (*Run permission*). Admins do not get it automatically: an admin without it sees everything, but no
   *New run* or *Stop*, and the plugin answers 403 to such requests.
-* The permission keeps launch rights explicit and visible; it is no barrier between admins (an admin can grant it,
-  also to themselves).
+* Any LibreNMS admin can grant the run permission, also to themselves: it is an explicit, logged opt-in (each grant
+  and revoke goes to the eventlog, with who did it), not a separation of duties between admins. Each change of the
+  runner connection or of the other settings is logged the same way (never the token).
 * `ansible.run` is a **direct permission of the user**, not of a role. LibreNMS' role editor (*Roles*) saves only the
   permissions of its own list (`resources/definitions/permissions.yaml`), so a plugin permission given to a role is
   dropped the next time someone saves that role; its user editor sets roles only, and keeps a user's direct
@@ -308,7 +309,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   role in the project (`GET /api/project/{p}/role`) and its user (`GET /api/user`), and launches nothing when the
   role is Owner or Manager or the user is a Semaphore admin (they could change templates), or when the role may not
   run tasks. The token is stored encrypted (Laravel's `Crypt` with LibreNMS' `APP_KEY`), never
-  shown again or sent to a browser, never in an error message or log, and only sent to the URL an admin saved with it.
+  shown again or sent to a browser, never in an error message or log, and only sent to the URL an admin saved with it
+  (changing the URL, the CA bundle or turning TLS verification off needs the token entered again).
   Calls to the runner verify TLS certificates (unless an admin turns that off), never follow redirects, and time out.
 * **Only reviewed templates and playbooks:** the plugin launches only templates that pass the checks above, and sends
   only the survey answers, never playbooks, inventories, branches, CLI arguments or configuration text. But a Task

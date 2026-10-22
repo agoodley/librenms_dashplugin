@@ -35,7 +35,9 @@ final class Connection
 
     /**
      * The connection posted by an admin, or what is wrong with it. An empty token keeps the saved one ($current),
-     * unless $removeToken.
+     * unless $removeToken; but not when the token would go somewhere else than where it was saved for (another
+     * runner URL, TLS verification turned off, another CA bundle): then the token must be entered again, so an admin
+     * who does not know it cannot send it to a host of their choice.
      *
      * @param  array<string, mixed>  $input  url, token, project, inventory, verify_tls, ca_bundle, timeout
      * @return array{connection: self|null, errors: array<string, string>}
@@ -44,15 +46,21 @@ final class Connection
     {
         $errors = [];
         $url = self::url((string) ($input['url'] ?? ''), $errors);
+        $verifyTls = ! empty($input['verify_tls']);
+        $caBundle = trim((string) ($input['ca_bundle'] ?? ''));
         $token = trim((string) ($input['token'] ?? ''));
         if ($token === '' && ! $removeToken) {
             $token = $current->token;
+            $moved = $token !== '' && $url !== '' ? self::moved($current, $url, $verifyTls, $caBundle) : [];
+            if ($moved) {
+                $errors['token'] = ucfirst(implode(' and ', $moved)) . ': enter the API token again. The saved token is only sent to the runner '
+                    . 'it was saved for, checked as it was then.';
+            }
         } elseif ($token !== '' && ! preg_match('/^[\x21-\x7e]{8,512}$/D', $token)) {
             $errors['token'] = 'The token is 8 to 512 printable characters without spaces (Semaphore UI shows it once, when it is created).';
         }
         $project = self::positive($input['project'] ?? '', 'project', 'The project id is the number in the project\'s URL in Semaphore UI (/project/<id>/...).', $errors);
         $inventory = self::positive($input['inventory'] ?? '', 'inventory', 'The inventory id is the number of the LibreNMS inventory in Semaphore UI (Inventory, then its URL or the API).', $errors);
-        $caBundle = trim((string) ($input['ca_bundle'] ?? ''));
         if ($caBundle !== '' && (! str_starts_with($caBundle, '/') || str_contains($caBundle, "\0") || strlen($caBundle) > 500)) {
             $errors['ca_bundle'] = 'The CA bundle is the absolute path of a PEM file on the LibreNMS server, or empty for the system CAs.';
         }
@@ -67,7 +75,80 @@ final class Connection
             return ['connection' => null, 'errors' => $errors];
         }
 
-        return ['connection' => new self($url, $token, $project, $inventory, ! empty($input['verify_tls']), $caBundle, (int) $timeout, $user, $now), 'errors' => []];
+        return ['connection' => new self($url, $token, $project, $inventory, $verifyTls, $caBundle, (int) $timeout, $user, $now), 'errors' => []];
+    }
+
+    /**
+     * How the saved token's destination would change: another runner (scheme, host, port or path), TLS verification
+     * turned off, or another CA bundle to verify the runner with.
+     *
+     * @return string[]
+     */
+    private static function moved(self $current, string $url, bool $verifyTls, string $caBundle): array
+    {
+        $moved = [];
+        if (self::destination($current->url) !== self::destination($url)) {
+            $moved[] = 'the runner URL changed';
+        }
+        if ($current->verifyTls && ! $verifyTls) {
+            $moved[] = 'TLS verification was turned off';
+        } elseif ($current->verifyTls && $verifyTls && $current->caBundle !== $caBundle) {
+            $moved[] = 'the CA bundle changed';
+        }
+
+        return $moved;
+    }
+
+    /**
+     * Where a URL sends the token: scheme, host and port (the default one when none is given) and path, compared
+     * without case where case does not matter.
+     */
+    public static function destination(string $url): string
+    {
+        $parts = parse_url($url);
+        if ($parts === false || empty($parts['host'])) {
+            return '';
+        }
+        $scheme = strtolower($parts['scheme'] ?? '');
+        $port = $parts['port'] ?? ($scheme === 'https' ? 443 : 80);
+
+        return $scheme . '://' . strtolower($parts['host']) . ':' . $port . rtrim($parts['path'] ?? '', '/');
+    }
+
+    /**
+     * What differs from $before, for the eventlog: never the token itself, only that it was set, replaced or removed.
+     *
+     * @return string[]
+     */
+    public function changes(self $before): array
+    {
+        $changes = [];
+        if ($before->url !== $this->url) {
+            $changes[] = 'runner URL ' . ($before->url ?: 'none') . ' → ' . ($this->url ?: 'none');
+        }
+        if ($before->token !== $this->token) {
+            $changes[] = match (true) {
+                $before->token === '' => 'token set',
+                $this->token === '' => 'token removed',
+                default => 'token replaced',
+            };
+        }
+        foreach (['project' => 'project', 'inventory' => 'LibreNMS inventory'] as $field => $label) {
+            if ($before->$field !== $this->$field) {
+                $changes[] = "$label " . ($before->$field ?: 'none') . ' → ' . ($this->$field ?: 'none');
+            }
+        }
+        if ($before->verifyTls !== $this->verifyTls) {
+            $changes[] = 'TLS verification ' . ($this->verifyTls ? 'on' : 'off');
+        }
+        if ($before->caBundle !== $this->caBundle) {
+            $changes[] = 'CA bundle ' . ($before->caBundle ?: 'system CAs') . ' → ' . ($this->caBundle ?: 'system CAs');
+        }
+        if ($before->timeout !== $this->timeout) {
+            $changes[] = "timeout {$before->timeout} → {$this->timeout} s";
+        }
+
+        return $changes;
     }
 
     /**

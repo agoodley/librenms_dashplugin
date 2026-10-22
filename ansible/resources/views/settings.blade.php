@@ -62,7 +62,7 @@
                     <label class="col-sm-4 control-label" for="ans-token" style="font-weight: normal">API token</label>
                     <div class="col-sm-8">
                         <input id="ans-token" type="password" class="form-control input-sm" name="token" value="" autocomplete="new-password"
-                               placeholder="{{ ! empty($c['has_token']) ? 'saved: leave empty to keep it' : 'not set' }}">
+                               placeholder="{{ ! empty($c['has_token']) ? 'saved: leave empty to keep it (enter it again to change the URL or the TLS checks)' : 'not set' }}">
                         <span class="help-block" style="margin: 2px 0 0; font-size: 12px">write-only: never shown again or sent to a browser
                             @if(! empty($c['has_token']))· saved {{ $c['saved_at'] ? date('Y-m-d H:i', $c['saved_at']) : '' }} by {{ $c['saved_by'] }}
                                 <label style="font-weight: normal; margin-left: 8px"><input type="checkbox" name="remove_token" value="1"> remove it</label>@endif
@@ -199,7 +199,9 @@
             <legend>Run permission</legend>
             <p class="help-block">LibreNMS admins see the runs and the inventory; to launch and stop runs they also need this permission
                 (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::PERMISSION }}</span>). It is given to each user directly:
-                LibreNMS' role editor keeps only its own permissions, so a role would lose it the next time it is saved.</p>
+                LibreNMS' role editor keeps only its own permissions, so a role would lose it the next time it is saved. Any LibreNMS admin can
+                grant it, also to themselves: it is an explicit opt-in, written to the eventlog with who granted or revoked it, not a separation
+                of duties between admins.</p>
             <table class="table table-condensed ans-table" id="ans-permission-holders" style="max-width: 700px">
                 <thead><tr><th>User</th><th>Name</th><th></th></tr></thead>
                 <tbody>

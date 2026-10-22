@@ -110,12 +110,55 @@ class SettingsTest extends TestCase
 
     public function testAnEmptyTokenKeepsTheSavedOne(): void
     {
-        $current = new Connection('https://x', 'saved-token-1');
+        $current = new Connection('https://semaphore.example.com', 'saved-token-1');
 
         $this->assertSame('saved-token-1', Connection::fromInput(self::input(['token' => '']), $current, 'a', 1)['connection']->token);
         $this->assertSame('', Connection::fromInput(self::input(['token' => '']), $current, 'a', 1, true)['connection']->token);
         $this->assertFalse(Connection::fromInput(self::input(['token' => '', 'verify_tls' => '']), new Connection(), 'a', 1)['connection']->complete());
         $this->assertFalse(Connection::fromInput(self::input(['verify_tls' => null]), $current, 'a', 1)['connection']->verifyTls);
+    }
+
+    public function testTheSavedTokenOnlyGoesWhereItWasSavedFor(): void
+    {
+        $current = new Connection('https://semaphore.example.com', 'saved-token-1', 3, 7, true, '');
+        $keep = fn (array $changes) => Connection::fromInput(self::input(['token' => ''] + $changes), $current, 'a', 1);
+
+        $this->assertSame('saved-token-1', $keep([])['connection']->token);
+        $this->assertSame('saved-token-1', $keep(['url' => 'HTTPS://Semaphore.Example.com:443/'])['connection']->token, 'the same place, written otherwise');
+        $this->assertSame('saved-token-1', $keep(['project' => '4', 'timeout' => '30'])['connection']->token);
+        foreach (['https://evil.example.com', 'http://semaphore.example.com', 'https://semaphore.example.com:8443', 'https://semaphore.example.com/other'] as $url) {
+            $result = $keep(['url' => $url]);
+            $this->assertNull($result['connection'], $url);
+            $this->assertStringStartsWith('The runner URL changed: enter the API token again.', $result['errors']['token']);
+        }
+        $this->assertStringStartsWith('TLS verification was turned off: enter the API token again', $keep(['verify_tls' => ''])['errors']['token']);
+        $this->assertStringStartsWith('The CA bundle changed: enter the API token again', $keep(['ca_bundle' => '/tmp/mine.pem'])['errors']['token']);
+        $this->assertSame('The runner URL changed and TLS verification was turned off: enter the API token again. The saved token is only sent to the runner it was saved for, checked as it was then.',
+            $keep(['url' => 'https://evil.example.com', 'verify_tls' => ''])['errors']['token']);
+
+        // with the token entered again, or removed, or no token saved, the URL may change
+        $this->assertSame('new-token-22', Connection::fromInput(self::input(['url' => 'https://evil.example.com', 'token' => 'new-token-22']), $current, 'a', 1)['connection']->token);
+        $this->assertSame('', Connection::fromInput(self::input(['url' => 'https://evil.example.com', 'token' => '']), $current, 'a', 1, true)['connection']->token);
+        $this->assertSame([], Connection::fromInput(self::input(['url' => 'https://evil.example.com', 'token' => '']), new Connection('https://x'), 'a', 1)['errors']);
+        // TLS verification turned back on, with or without a CA bundle, makes the token safer: no need to enter it
+        $lab = new Connection('http://127.0.0.1:3000', 'saved-token-1', 3, 7, false, '/old.pem');
+        $this->assertSame([], Connection::fromInput(self::input(['url' => 'http://127.0.0.1:3000', 'token' => '', 'ca_bundle' => '/new.pem']), $lab, 'a', 1)['errors']);
+    }
+
+    public function testConnectionChangesNeverShowTheToken(): void
+    {
+        $before = new Connection('http://127.0.0.1:3000', 'old-token-value', 3, 4, true, '', 15);
+        $after = new Connection('http://127.0.0.1:3999', 'new-token-value', 3, 5, false, '/etc/ca.pem', 3);
+
+        $changes = $after->changes($before);
+        $this->assertSame(['runner URL http://127.0.0.1:3000 → http://127.0.0.1:3999', 'token replaced', 'LibreNMS inventory 4 → 5', 'TLS verification off',
+            'CA bundle system CAs → /etc/ca.pem', 'timeout 15 → 3 s'], $changes);
+        $this->assertStringNotContainsString('token-value', implode(' ', $changes));
+        $this->assertSame(['token set'], (new Connection('', 'x-token-123'))->changes(new Connection()));
+        $this->assertSame(['token removed'], (new Connection())->changes(new Connection('', 'x-token-123')));
+        $this->assertSame([], $after->changes($after));
+        $this->assertSame('https://a.example:443/x', Connection::destination('https://A.example/x/'));
+        $this->assertSame('http://a.example:80', Connection::destination('http://a.example'));
     }
 
     public function testConnectionErrors(): void
