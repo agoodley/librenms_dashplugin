@@ -113,9 +113,14 @@ class RecapParserTest extends TestCase
             'fatal: [sw3]: FAILED! => {"msg": "Invalid input detected"}',
             '    - fatal: [sw4]: FAILED! => Connection refused',
             'fatal: [sw5 -> localhost]: FAILED! => Connection refused',
+            // a reachable device whose task failed with these words in its message is not unreachable
+            'fatal: [sw6]: FAILED! => {"changed": false, "msg": "copy failed: Connection refused"}',
+            "\e[0;31mfatal: [sw7]: FAILED! => \e[0m",
+            "\e[0;31m    msg: 'Error: % Connection refused by remote host'\e[0m",
+            'fatal: [sw8]: FAILED! => {"changed": false, "msg": "[Errno 111] Connection refused"}',
         ];
 
-        $this->assertSame(['sw1' => true, 'sw2' => true], RecapParser::connectionFailures($lines));
+        $this->assertSame(['sw1' => true, 'sw2' => true, 'sw8' => true], RecapParser::connectionFailures($lines));
     }
 
     public function testUnexpectedHostsAreReported(): void

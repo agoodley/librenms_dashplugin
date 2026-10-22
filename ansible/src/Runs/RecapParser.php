@@ -13,10 +13,15 @@ final class RecapParser
     /** Counters of a recap line, in Ansible's order. */
     public const COUNTERS = ['ok', 'changed', 'unreachable', 'failed', 'skipped', 'rescued', 'ignored'];
 
-    /** Connection errors of paramiko, libssh and OpenSSH, as network connections report them. */
-    private const CONNECTION_ERRORS = '/unable to connect to port|connection refused|no route to host|network is unreachable|name or service not known'
-        . '|nodename nor servname|could not resolve hostname|temporary failure in name resolution|authentication failed|connection timed out'
-        . '|timed out while connecting|ssh connection failed|failed to connect/i';
+    /**
+     * Connection errors of paramiko, libssh and OpenSSH as network connections report them: the message starts with
+     * one (after an optional "[Errno N]"), as when the connection itself failed. A task whose message only contains
+     * such words (a device that answered "% Connection refused" to a command, a module that could not reach a
+     * server) is a failure on a reachable device.
+     */
+    private const CONNECTION_ERRORS = '/^(?:\[Errno [^\]]*\]\s*)?(?:unable to connect to port|connection refused|no route to host|network is unreachable'
+        . '|name or service not known|nodename nor servname|could not resolve hostname|temporary failure in name resolution|authentication failed'
+        . '|failed to authenticate|connection timed out|timed out while connecting|ssh connect failed|ssh connection failed|failed to connect to the host)/i';
 
     private const HOST_LINE = '/^(\S+)\s+:\s+ok=(\d+)\s+changed=(\d+)\s+unreachable=(\d+)\s+failed=(\d+)(?:\s+skipped=(\d+))?(?:\s+rescued=(\d+))?(?:\s+ignored=(\d+))?\s*$/D';
 
@@ -78,7 +83,7 @@ final class RecapParser
             if (! preg_match('/^fatal: \[([^\]\s]+)\]: FAILED! =>(.*)$/D', rtrim(Ansi::strip($line)), $m)) {
                 continue;
             }
-            if (preg_match(self::CONNECTION_ERRORS, self::message($m[2], $lines, $index))) {
+            if (preg_match(self::CONNECTION_ERRORS, trim(trim(self::message($m[2], $lines, $index)), "'\""))) {
                 $hosts[$m[1]] = true;
             }
         }
