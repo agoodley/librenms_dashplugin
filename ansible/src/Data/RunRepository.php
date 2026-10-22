@@ -263,19 +263,22 @@ final class RunRepository implements RunStore
     }
 
     /**
-     * Users, templates and devices that appear in the runs, for the filters (the latest names).
+     * Users, templates and devices that appear in the runs, for the filters, with the latest name of each template
+     * and device: one row each from the database (grouped there), whatever the number of runs.
      *
      * @return array{users: string[], templates: array<string, string>, devices: array<int, string>}
      */
     public function filterOptions(): array
     {
+        $latestRuns = DB::table('ansible_runs')->selectRaw('max(id) as latest')->groupBy('template_id');
         $templates = [];
-        foreach (DB::table('ansible_runs')->orderBy('id')->get(['template_id', 'template_name']) as $row) {
+        foreach (DB::table('ansible_runs as r')->joinSub($latestRuns, 'l', 'l.latest', '=', 'r.id')->get(['r.template_id', 'r.template_name']) as $row) {
             $templates[(string) $row->template_id] = (string) $row->template_name;
         }
         asort($templates);
+        $latestTargets = DB::table('ansible_run_targets')->selectRaw('max(id) as latest')->groupBy('device_id');
         $devices = [];
-        foreach (DB::table('ansible_run_targets')->orderBy('id')->get(['device_id', 'display', 'hostname']) as $row) {
+        foreach (DB::table('ansible_run_targets as t')->joinSub($latestTargets, 'l', 'l.latest', '=', 't.id')->get(['t.device_id', 't.display', 't.hostname']) as $row) {
             $devices[(int) $row->device_id] = (string) ($row->display ?: $row->hostname);
         }
         asort($devices);
