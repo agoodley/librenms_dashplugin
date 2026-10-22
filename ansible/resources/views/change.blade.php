@@ -115,7 +115,7 @@
         @endif
         @if($change['error'] && ! in_array($dryState, ['unverified', 'failed'], true) && $status !== ChangeStatus::APPLIED)
             <div class="alert alert-{{ in_array($status, [ChangeStatus::FAILED, ChangeStatus::REJECTED], true) ? 'danger' : 'warning' }}" id="ans-change-error">
-                @php($outcome = ChangeText::outcome($status, Clock::localize($change['error'])))
+                @php $outcome = ChangeText::outcome($status, Clock::localize($change['error'])); @endphp
                 @if(str_contains($outcome, ': '))<strong>{{ strstr($outcome, ': ', true) }}:</strong> {{ substr(strstr($outcome, ': '), 2) }}@else<strong>{{ $outcome }}</strong>@endif
                 @if($remaining && $canRun && ($remaining['devices'] || $remaining['left_out']))
                     <div style="margin-top: 6px">
