@@ -24,13 +24,17 @@ final class BackupCheck
      * What Oxidized says about each device.
      *
      * @param  int[]  $deviceIds
+     * @param  (\Closure(): void)|null  $beat  called before each call to Oxidized (long work)
      * @return array{checks: array<int, string>, error: ?string}
      */
-    public static function of(ConfigBackups $backups, array $deviceIds): array
+    public static function of(ConfigBackups $backups, array $deviceIds, ?\Closure $beat = null): array
     {
         $checks = [];
         $error = null;
         foreach ($deviceIds as $deviceId) {
+            if ($beat !== null) {
+                $beat();
+            }
             if ($error !== null) {
                 $checks[(int) $deviceId] = self::UNKNOWN;
 

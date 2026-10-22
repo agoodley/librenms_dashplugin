@@ -62,6 +62,28 @@ final class ChangeActions implements ChangeRunner
             'connections' => $connections];
     }
 
+    public function preflight(array $change, string $kind, int $number, array $deviceIds, \Closure $verify): ?string
+    {
+        $spec = new RunSpec((int) $change['id'], $kind, $number, '', null,
+            fn (array $snapshot): ?string => $verify($snapshot, $this->connections($deviceIds)));
+        $launcher = new RunLauncher($this->plugin, $this->runs, $this->inventory, $this->settings, $this->eventlog, $this->changes);
+        $plan = $launcher->plan((string) $change['template_id'], $deviceIds, ChangeLifecycle::answers($change), $spec);
+        foreach ($plan->template?->surveyVars ?? [] as $var) {
+            if ($var->isSecret()) {
+                unset($plan->variableErrors[$var->name]); // the secret answers come with the launch
+            }
+        }
+        $errors = $plan->errors;
+        foreach ($plan->refused as $refusal) {
+            $errors[] = $refusal['display'] . ': ' . $refusal['text'] . '.';
+        }
+        foreach ($plan->variableErrors as $name => $error) {
+            $errors[] = 'The answer "' . $name . '" ' . $error . '.';
+        }
+
+        return $errors ? implode(' ', array_values(array_unique($errors))) : null;
+    }
+
     public function connections(array $deviceIds): array
     {
         return Connections::of($this->inventory->build(), $deviceIds);

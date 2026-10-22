@@ -26,6 +26,16 @@ interface ChangeRunner
     public function launch(array $change, string $kind, int $number, array $deviceIds, array $user, #[\SensitiveParameter] array $secrets, \Closure $verify): array;
 
     /**
+     * Would a launch of the change's batch be refused now, and why: every check of a launch (the runner's token, the
+     * template as the runner has it, by $verify against what was dry-run, the targets and how the runner reaches them),
+     * without launching, nor checking the secret answers (they come with the launch). Null when it would be launched.
+     *
+     * @param  int[]  $deviceIds
+     * @param  \Closure(array, array): ?string  $verify  as for launch()
+     */
+    public function preflight(array $change, string $kind, int $number, array $deviceIds, \Closure $verify): ?string;
+
+    /**
      * How the runner reaches these devices as the LibreNMS inventory is now (Connections::of()).
      *
      * @param  int[]  $deviceIds

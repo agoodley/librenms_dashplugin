@@ -75,7 +75,7 @@ final class ChangeFollower
             return $change;
         }
         try {
-            return $this->lifecycle()->advance($id, time()) ?? $change;
+            return $this->held($lock)->advance($id, time()) ?? $change;
         } catch (\Throwable $e) {
             Log::error("ansible plugin: following change #$id failed: " . ErrorText::forLog($e));
 
@@ -99,10 +99,44 @@ final class ChangeFollower
             return 'The plugin is working on this change right now (a launch or a refresh): try again in a moment.';
         }
         try {
-            return $action($this->lifecycle());
+            return $action($this->held($lock));
         } finally {
             $lock->release();
         }
+    }
+
+    /**
+     * Stop a change without its lock (Changes\ChangeLifecycle::stop()): the emergency brake works while another request
+     * is busy with the change, or died holding its lock. The change then moves on at once when its lock is free, else
+     * at its follower's next step. Null when the stop was asked for, else why not.
+     */
+    public function stop(int $id, string $username): ?string
+    {
+        $error = $this->lifecycle()->stop($id, $username, time());
+        if ($error === null) {
+            $this->refresh($id, false);
+        }
+
+        return $error;
+    }
+
+    /**
+     * The lifecycle for a request that holds the change's lock: during long work it renews the lock, so the lock can be
+     * short (a request that dies holds the change only that long).
+     */
+    private function held(\Illuminate\Contracts\Cache\Lock $lock): ChangeLifecycle
+    {
+        $lifecycle = $this->lifecycle();
+        $seconds = $this->lockSeconds();
+        $lifecycle->setHeartbeat(function () use ($lock, $seconds): void {
+            try {
+                $lock->refresh($seconds);
+            } catch (\RuntimeException) {
+                // a cache driver without refresh: the lock keeps its first duration
+            }
+        });
+
+        return $lifecycle;
     }
 
     /**
@@ -134,11 +168,11 @@ final class ChangeFollower
     }
 
     /**
-     * How long the lock of a change is held at most: longer than a launch (each runner call may take the whole timeout)
-     * and the calls to Oxidized of one refresh.
+     * How long the lock of a change is held at most, renewed during long work (each launch, each call to Oxidized): the
+     * longest work between two renewals, a launch's calls to the runner (each may take the whole timeout).
      */
     private function lockSeconds(): int
     {
-        return 2 * RunFollower::lockSecondsFor($this->plugin->connection()->timeout) + 300;
+        return max(RunFollower::lockSecondsFor($this->plugin->connection()->timeout), 3 * OxidizedBackups::TIMEOUT + 30);
     }
 }

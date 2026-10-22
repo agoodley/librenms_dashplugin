@@ -411,7 +411,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   comment) or **Reject**s. **Apply** starts the first batch: its maintenance window, the backups, then its run; after
   it the change waits for **Continue** (when *Wait after the first batch* is on), and the next batches follow on their
   own until the last, or until one fails. **Stop** stops the running batch (as a run's stop: the step in progress runs
-  on) and launches nothing more; after a stop the page says, as the run page does, how long the batch's devices stay
+  on) and launches nothing more. It never waits, even while another request is busy with the change (or died while
+  at it): the stop is recorded at once, the runner is asked at once to stop the batch's task, no batch launches
+  afterwards, and the change ends at its next step; a batch whose run had already ended is recorded with its results,
+  and the change ends after it. After a stop the page says, as the run page does, how long the batch's devices stay
   held and how to find the step that may still run on the runner. **Cancel** drops a change that has not been applied.
   A change that failed or was stopped offers **a new change with the remaining devices** (the devices that failed or
   were never reached; held ones are left out and named, with until when), and a dry run that failed on some devices
@@ -542,7 +545,10 @@ plugin reads the template from the runner and the devices from LibreNMS again an
   still is an admin with the approve permission (and, with a second admin, not the requester);
 * the admin who launches the batch still holds the run permission.
 
-When one of these fails before the apply, the dry run or the approval no longer counts and the change goes back to
+A batch is checked when it starts, before its window opens and its backups are taken (with the template and its
+targets as a launch checks them, so a batch that would be refused opens nothing), and again right before its launch,
+after the backups, a wait for the secret answers or a pause: an approval that expired or a permission withdrawn
+meanwhile stops the change there. When one of these fails before the apply, the dry run or the approval no longer counts and the change goes back to
 a draft or awaits a new approval. During the apply, the change stops: no further batch is launched. The batch itself
 is launched with the commit of the dry run (Semaphore's commit option), and a batch whose run reports another commit
 stops the change, as does a batch at the end of which a device of it is no longer reached as at the dry run (the
@@ -739,6 +745,10 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   final `success`, `error`, `stopped` and `rejected` (a refused confirmation; the plugin counts it as failed). The
   tasks of one template run one after the other: a second launch of a template waits in the queue. A stopped queued
   task stays `stopping` until it would have started.
+* **A stop after a task's end turns it into `stopped`:** Semaphore UI records a task that ended with `success` or
+  `error` as `stopped` when a stop comes after its end. So the plugin asks the runner for the task's status first and
+  never sends a stop to a task that has ended (it records its end at its next refresh), and an end it already saw
+  (success, error) stays when the runner reports the task stopped afterwards.
 * **A stop does not end the task in progress.** Stop (`{"force": false}`) and force stop (`{"force": true}`) both end
   only the main `ansible-playbook` process, within seconds, and record the task as `stopped`, so no further task
   starts. But Ansible runs the step each host is in in a worker process of its own session, which neither ends: it

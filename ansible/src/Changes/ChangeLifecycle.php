@@ -50,6 +50,24 @@ final class ChangeLifecycle
      */
     public const SECRETS_WAIT_MIN = 900;
 
+    /** @var (\Closure(): void)|null called during long work (calls to the runner and to Oxidized): the follower renews its lock */
+    private ?\Closure $heartbeat = null;
+
+    /**
+     * What to call during long work (the follower renews the change's lock with it, so the lock can be short).
+     */
+    public function setHeartbeat(?\Closure $heartbeat): void
+    {
+        $this->heartbeat = $heartbeat;
+    }
+
+    private function beat(): void
+    {
+        if ($this->heartbeat !== null) {
+            ($this->heartbeat)();
+        }
+    }
+
     public function __construct(
         private readonly ChangeStore $changes,
         private readonly RunStore $runs,
@@ -98,6 +116,7 @@ final class ChangeLifecycle
         }
         $targets = $this->changes->targets($id);
         $answers = self::answers($change);
+        $this->beat();
         $result = $this->runner->launch($change, 'dry_run', (int) $change['dry_runs'], array_keys($targets), $user, $secrets,
             fn (array $snapshot, array $connections) => null);
         if ($result['run_id'] === null) {
@@ -276,54 +295,78 @@ final class ChangeLifecycle
 
     /**
      * Stop a change: the running batch is stopped (phase 1's stop: the devices stay held a while) and the remaining
-     * batches are cancelled; a running dry run is stopped. Null when the stop was asked for, else why not.
+     * batches are cancelled; a running dry run is stopped. It needs no lock, so it works while another request is busy
+     * with the change (or died holding its lock): the request is recorded (compare-and-set), the runner is asked at
+     * once to stop the batch's task when it is known, no batch launches once it is recorded, and the change's next step
+     * ends the change (stopping()). Null when the stop was asked for, else why not.
      */
     public function stop(int $id, string $username, int $now): ?string
     {
-        $change = $this->changes->find($id);
-        if ($change === null) {
-            return 'There is no such change.';
-        }
-        if ($change['status'] === ChangeStatus::DRY_RUN) {
-            if ($change['dry_run_id'] === null) {
-                return 'The dry run is still being launched: try again in a moment.';
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $change = $this->changes->find($id);
+            if ($change === null) {
+                return 'There is no such change.';
             }
-            $error = $this->runner->stopRun((int) $change['dry_run_id'], $username);
-            if ($error === null) {
-                $this->timeline($change, 'dry_run', 'Stop of the dry run requested.', $username, $now);
-            }
+            if ($change['status'] === ChangeStatus::DRY_RUN) {
+                $runId = $change['dry_run_id'] !== null ? (int) $change['dry_run_id'] : $this->runner->findRun($id, 'dry_run', (int) $change['dry_runs']);
+                if ($runId === null) {
+                    return 'The dry run is still being launched: try again in a moment.';
+                }
+                $error = $this->runner->stopRun($runId, $username);
+                if ($error === null) {
+                    $this->timeline($change, 'dry_run', 'Stop of the dry run requested.', $username, $now);
+                }
 
-            return $error;
-        }
-        if ($change['status'] === ChangeStatus::STOPPING) {
-            return 'The change is being stopped.';
-        }
-        if (! in_array($change['status'], [ChangeStatus::APPLYING, ChangeStatus::PAUSED], true)) {
-            return 'Only a change being applied can be stopped' . (in_array($change['status'], ChangeStatus::PREPARING, true) ? ': cancel it instead.' : '.');
-        }
-        $batch = (int) $change['current_batch'];
-        $row = $this->changes->batches($id)[$batch] ?? null;
-        $running = $row !== null && $row['run_id'] !== null && ($run = $this->runs->find((int) $row['run_id'])) !== null && ! RunStatus::isFinal($run['status']);
-        $stopping = $this->update($change, ['status' => $running ? ChangeStatus::STOPPING : $change['status'], 'stop_requested_by' => mb_substr($username, 0, 255),
-            'stop_requested_at' => Clock::store($now)]);
-        if ($stopping === null) {
-            return 'The change changed meanwhile: reload the page.';
-        }
-        $this->timeline($stopping, 'stop', 'Stop requested.', $username, $now);
-        $this->eventAll($stopping, ChangeText::stopRequested($stopping, $username), 'warning', $username);
-        if (! $running) {
-            $this->finish($stopping, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line($username, 60)
-                . ($change['status'] === ChangeStatus::PAUSED && $change['waiting'] !== 'secrets' ? " after batch $batch" : " before batch $batch was launched"), $now, $username);
+                return $error;
+            }
+            if ($change['status'] === ChangeStatus::STOPPING) {
+                return 'The change is being stopped.';
+            }
+            if (! in_array($change['status'], [ChangeStatus::APPLYING, ChangeStatus::PAUSED], true)) {
+                return 'Only a change being applied can be stopped' . (in_array($change['status'], ChangeStatus::PREPARING, true) ? ': cancel it instead.' : '.');
+            }
+            $stopping = $this->update($change, ['status' => ChangeStatus::STOPPING, 'stop_requested_by' => mb_substr($username, 0, 255),
+                'stop_requested_at' => Clock::store($now)]);
+            if ($stopping === null) {
+                continue; // the change moved meanwhile (another request is at it): read it again
+            }
+            $this->timeline($stopping, 'stop', 'Stop requested.', $username, $now);
+            $this->eventAll($stopping, ChangeText::stopRequested($stopping, $username), 'warning', $username);
+            $run = $this->batchRun($stopping);
+            if ($run !== null && ! RunStatus::isFinal($run['status'])) {
+                $error = $this->runner->stopRun((int) $run['id'], $username);
+                if ($error !== null) {
+                    $this->timeline($stopping, 'stop', 'The runner could not be asked to stop batch ' . (int) $stopping['current_batch'] . ' yet ('
+                        . UntrustedText::line($error, 300) . '): the plugin asks again.', null, $now);
+                }
+            }
 
             return null;
         }
-        $error = $this->runner->stopRun((int) $row['run_id'], $username);
-        if ($error !== null) {
-            $this->timeline($stopping, 'stop', 'The runner could not be asked to stop batch ' . $batch . ' yet (' . UntrustedText::line($error, 300)
-                . '): the plugin asks again.', null, $now);
+
+        return 'The change kept changing while the stop was recorded: try again.';
+    }
+
+    /**
+     * The run of the change's current batch: as recorded, or found by its one-time token (a launch whose request has not
+     * recorded it on the batch yet); null when it has none.
+     */
+    private function batchRun(array $change): ?array
+    {
+        $number = (int) $change['current_batch'];
+        $batch = $this->changes->batches((int) $change['id'])[$number] ?? null;
+        if ($batch === null) {
+            return null;
+        }
+        $runId = $batch['run_id'] ?? null;
+        if ($runId === null && in_array($batch['status'], ['launching', 'running'], true)) {
+            $runId = $this->runner->findRun((int) $change['id'], 'batch', $number);
+            if ($runId !== null) {
+                $this->changes->updateBatch((int) $change['id'], $number, ['status' => 'running', 'run_id' => $runId]);
+            }
         }
 
-        return null;
+        return $runId !== null ? $this->runs->find((int) $runId) : null;
     }
 
     /**
@@ -604,26 +647,36 @@ final class ChangeLifecycle
     }
 
     /**
-     * A change whose stop was asked for: the batch's run is stopped (asked again while the runner did not take it),
-     * then the change ends as stopped with what the batch did.
+     * A change whose stop was asked for, at its next step: the batch's run is stopped (asked again while the runner did
+     * not take it); a batch whose run ended (stopped, or before the stop came) is recorded as any batch end, with its
+     * results, the backups after it and its window's settle time, and the change ends after it; without a batch run
+     * (waiting before it, its window or backups pending) the change ends before it.
      */
     private function stopping(array $change, int $now): void
     {
         $id = (int) $change['id'];
         $number = (int) $change['current_batch'];
+        $by = (string) (($change['stop_requested_by'] ?? null) ?: 'an admin');
         $batch = $this->changes->batches($id)[$number] ?? null;
-        $run = $batch !== null && $batch['run_id'] !== null ? $this->runs->find((int) $batch['run_id']) : null;
+        $run = $this->batchRun($change);
+        if ($run === null && ($batch['status'] ?? null) === 'launching' && $now - self::at($batch['started_at'] ?? null) <= self::LAUNCH_GRACE) {
+            return; // the request that launches it may still record its run
+        }
         if ($run !== null && ! RunStatus::isFinal($run['status'])) {
             if ($run['status'] !== RunStatus::STOPPING) {
-                $this->runner->stopRun((int) $run['id'], (string) ($change['stop_requested_by'] ?? 'the plugin'));
+                $this->runner->stopRun((int) $run['id'], $by);
             }
 
             return;
         }
-        if ($run !== null) {
-            $this->recordBatch($change, $number, $run, 'stopped', null, $now);
+        $batch = $this->changes->batches($id)[$number] ?? $batch;
+        if ($run !== null && in_array($batch['status'] ?? null, ['launching', 'running'], true)) {
+            $this->batchEnd($change, $number, $run, $now, $by);
+
+            return;
         }
-        $this->finish($change, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line($change['stop_requested_by'] ?? 'an admin', 60) . " during batch $number", $now);
+        $this->finish($change, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line($by, 60)
+            . (in_array($batch['status'] ?? null, ['done', 'failed', 'stopped'], true) ? " after batch $number" : " before batch $number was launched"), $now, $by);
     }
 
     // ------------------------------------------------------------------ batches
@@ -638,7 +691,14 @@ final class ChangeLifecycle
     private function startBatch(array $change, int $number, array $user, #[\SensitiveParameter] ?array $secrets, int $now): void
     {
         $id = (int) $change['id'];
-        $problem = $this->batchProblem($change, $user, $now);
+        if (self::stopAsked($this->changes->find($id) ?? $change)) {
+            return; // its stop ends it at its next step
+        }
+        // everything a launch checks, before the window opens and the backups are taken: the dry run, the approval, the users,
+        // the template as the runner has it, the targets and how the runner reaches them
+        $this->beat();
+        $problem = $this->batchProblem($change, $user, $now) ?? $this->runner->preflight($change, 'batch', $number, $this->batchDevices($change, $number),
+            $this->batchVerify($change));
         if ($problem !== null) {
             $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($problem, 500)]);
             $this->finish($change, ChangeStatus::FAILED, "stopped before batch $number: $problem", $now);
@@ -726,6 +786,19 @@ final class ChangeLifecycle
     private function launchBatch(array $change, int $number, array $user, #[\SensitiveParameter] ?array $secrets, int $now): void
     {
         $id = (int) $change['id'];
+        // right before the launch (after the backups, a wait for the secret answers, a pause): a stop asked for meanwhile,
+        // and everything startBatch() checked, again
+        $change = $this->changes->find($id) ?? $change;
+        if (self::stopAsked($change)) {
+            return; // its stop ends it at its next step
+        }
+        $problem = $this->batchProblem($change, $user, $now);
+        if ($problem !== null) {
+            $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($problem, 500)]);
+            $this->finish($change, ChangeStatus::FAILED, "stopped before batch $number was launched: $problem", $now);
+
+            return;
+        }
         if (! empty($change['has_secrets']) && $secrets === null) {
             // its window is open and its backups taken: it waits at most the expected time of a batch, then the change ends
             $deadline = $now + max(self::SECRETS_WAIT_MIN, $this->settings->expectedSeconds);
@@ -737,23 +810,8 @@ final class ChangeLifecycle
             return;
         }
         $this->changes->updateBatch($id, $number, ['status' => 'launching', 'started_at' => Clock::store($now)]);
-        $expected = (string) $change['plan_fingerprint'];
-        $targets = $this->changes->targets($id);
-        $answers = self::answers($change);
-        $plan = (array) $change['plan'];
-        $recorded = self::recorded($change);
-        $result = $this->runner->launch($change, 'batch', $number, $this->batchDevices($change, $number), $user, $secrets ?? [],
-            function (array $snapshot, array $connections) use ($expected, $targets, $recorded, $answers, $plan, $change): ?string {
-                $parts = Fingerprint::parts($snapshot, self::names($targets), $recorded, $answers, $plan);
-                if (Fingerprint::of($parts) !== $expected) {
-                    $what = Fingerprint::differences((array) ($change['fingerprint_parts'] ?? []), $parts);
-
-                    return 'the template changed in the runner since the dry run' . ($what ? ' (' . implode(', ', $what) . ')' : '') . ': its approval no longer counts';
-                }
-                $moved = Connections::differences($recorded, $connections, self::displays($targets));
-
-                return $moved ? self::movedText($moved, 'since the dry run') . ': its approval no longer counts' : null;
-            });
+        $this->beat();
+        $result = $this->runner->launch($change, 'batch', $number, $this->batchDevices($change, $number), $user, $secrets ?? [], $this->batchVerify($change));
         if ($result['run_id'] === null) {
             $error = UntrustedText::line(implode(' ', $result['errors']) ?: 'the launch was refused', 1000);
             $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($error, 500)]);
@@ -767,10 +825,45 @@ final class ChangeLifecycle
     }
 
     /**
+     * The check of a batch's launch against what was dry-run and approved: the template as the runner has it now (its
+     * snapshot, against the fingerprint) and how the inventory reaches the batch's devices now (against the dry run's).
+     *
+     * @return \Closure(array, array): ?string
+     */
+    private function batchVerify(array $change): \Closure
+    {
+        $expected = (string) $change['plan_fingerprint'];
+        $targets = $this->changes->targets((int) $change['id']);
+        $answers = self::answers($change);
+        $plan = (array) $change['plan'];
+        $recorded = self::recorded($change);
+
+        return function (array $snapshot, array $connections) use ($expected, $targets, $recorded, $answers, $plan, $change): ?string {
+            $parts = Fingerprint::parts($snapshot, self::names($targets), $recorded, $answers, $plan);
+            if (Fingerprint::of($parts) !== $expected) {
+                $what = Fingerprint::differences((array) ($change['fingerprint_parts'] ?? []), $parts);
+
+                return 'the template changed in the runner since the dry run' . ($what ? ' (' . implode(', ', $what) . ')' : '') . ': its approval no longer counts';
+            }
+            $moved = Connections::differences($recorded, $connections, self::displays($targets));
+
+            return $moved ? self::movedText($moved, 'since the dry run') . ': its approval no longer counts' : null;
+        };
+    }
+
+    /**
+     * Was a stop asked for (it ends the change at its next step, and no batch launches meanwhile)?
+     */
+    private static function stopAsked(array $change): bool
+    {
+        return $change['status'] === ChangeStatus::STOPPING || (($change['stop_requested_at'] ?? null) !== null && ! ChangeStatus::isFinal($change['status']));
+    }
+
+    /**
      * The batch's run ended: record what it did, close its window after the settle time, ask for the backups after it,
      * and stop the change, end it, or go on (after an admin, a pause, or at once).
      */
-    private function batchEnd(array $change, int $number, array $run, int $now): void
+    private function batchEnd(array $change, int $number, array $run, int $now, ?string $stoppedBy = null): void
     {
         $id = (int) $change['id'];
         $results = [];
@@ -789,10 +882,20 @@ final class ChangeLifecycle
                 $stop = self::movedText($moved, "by the end of batch $number") . ': the batch may have run on other devices than the ones dry-run';
             }
         }
-        $this->recordBatch($change, $number, $run, $stop === null ? 'done' : 'failed', $stop, $now);
         $count = (int) $change['batch_count'];
+        if ($stoppedBy !== null && $run['status'] === RunStatus::STOPPED) {
+            // the stop asked for stopped the batch's run
+            $this->recordBatch($change, $number, $run, 'stopped', null, $now);
+            $this->finish($change, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line($stoppedBy, 60) . " during batch $number", $now, $stoppedBy);
+
+            return;
+        }
+        $this->recordBatch($change, $number, $run, $stop === null ? 'done' : 'failed', $stop, $now);
         if ($stop !== null) {
             $this->finish($change, ChangeStatus::FAILED, $stop, $now);
+        } elseif ($stoppedBy !== null && $number < $count) {
+            // the batch's run ended before the stop could stop it: the change ends after it
+            $this->finish($change, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line($stoppedBy, 60) . " after batch $number", $now, $stoppedBy);
         } elseif ($number >= $count) {
             $this->finish($change, ChangeStatus::APPLIED, null, $now);
         } elseif ($number === 1 && ! empty($plan['wait_after_first'])) {
@@ -1148,7 +1251,7 @@ final class ChangeLifecycle
         if (! $this->settings->backups || ! $this->backups->enabled()) {
             return;
         }
-        $result = BackupCheck::of($this->backups, array_keys($targets));
+        $result = BackupCheck::of($this->backups, array_keys($targets), fn () => $this->beat());
         $this->changes->updateTargets((int) $change['id'], array_map(fn ($check) => ['backup_check' => $check], $result['checks']));
         $missing = BackupCheck::missing($result['checks'], self::displays($targets));
         $warning = BackupCheck::warning($missing, $this->settings->refuseWithoutBackup, $result['error']);
@@ -1175,6 +1278,7 @@ final class ChangeLifecycle
         // once Oxidized could not be reached, the other devices of the batch are not asked (each call may wait its timeout)
         $down = null;
         foreach ($devices as $deviceId) {
+            $this->beat();
             $state = ['status' => BackupState::REQUESTED, 'requested_at' => Clock::store($now), 'at' => null, 'version' => null, 'error' => null];
             try {
                 if ($down !== null) {
@@ -1224,6 +1328,7 @@ final class ChangeLifecycle
                 if (($target["{$phase}_status"] ?? null) !== BackupState::REQUESTED) {
                     continue;
                 }
+                $this->beat();
                 $last = null;
                 $error = $down;
                 if ($down === null) {

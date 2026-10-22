@@ -291,6 +291,7 @@ class ChangeLifecycleTest extends TestCase
         $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
         $lifecycle->advance($id, $this->t0 + 101);
         $this->assertNull($lifecycle->stop($id, 'dave', $this->t0 + 110));
+        $lifecycle->advance($id, $this->t0 + 111);
 
         $users = [];
         foreach ($this->events->of(501) as $entry) {
@@ -563,13 +564,15 @@ class ChangeLifecycleTest extends TestCase
         $lifecycle->advance($id, $this->t0 + 101);
         $this->runner->snapshot = FakeChangeRunner::snapshotOf(['arguments' => ['-v'], 'argumentsRaw' => '["-v"]']);
 
+        $windows = count($this->windows->windows);
         $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 200));
         $change = $this->changes->find($id);
         $this->assertSame(ChangeStatus::FAILED, $change['status']);
-        $this->assertStringContainsString("batch 2 was not launched: The launch was refused: the template changed in the runner since the dry run (the template's CLI arguments)",
+        $this->assertStringContainsString("stopped before batch 2: The launch was refused: the template changed in the runner since the dry run (the template's CLI arguments)",
             $change['error']);
         $this->assertCount(2, $this->runner->launches);
         $this->assertSame('failed', $this->changes->batches[$id][2]['status']);
+        $this->assertSame($windows, count($this->windows->windows), 'refused before its window opened');
     }
 
     public function testABatchThatRanAnotherCommitStopsTheChange(): void
@@ -629,7 +632,7 @@ class ChangeLifecycleTest extends TestCase
         $this->assertStringContainsString('only a change being applied', strtolower((string) $lifecycle->stop($id, 'carol', $this->t0 + 95)));
     }
 
-    public function testAStopWhileWaitingEndsTheChangeAtOnce(): void
+    public function testAStopWhileWaitingEndsTheChangeAtItsNextStep(): void
     {
         $id = $this->approved();
         $lifecycle = $this->lifecycle();
@@ -639,6 +642,9 @@ class ChangeLifecycleTest extends TestCase
         $lifecycle->advance($id, $this->t0 + 101);
 
         $this->assertNull($lifecycle->stop($id, 'alice', $this->t0 + 150));
+        $this->assertSame(ChangeStatus::STOPPING, $this->changes->find($id)['status'], 'recorded at once');
+        $this->assertStringContainsString('Only a paused change', (string) $lifecycle->resume($id, self::ALICE, [], $this->t0 + 151), 'nothing continues it');
+        $lifecycle->advance($id, $this->t0 + 152);
         $this->assertSame(ChangeStatus::STOPPED, $this->changes->find($id)['status']);
         $this->assertSame('stopped by alice after batch 1', $this->changes->find($id)['error']);
         $this->assertStringContainsString('Only a paused change', (string) $lifecycle->resume($id, self::ALICE, [], $this->t0 + 160));
@@ -661,6 +667,93 @@ class ChangeLifecycleTest extends TestCase
 
         $this->assertSame(ChangeStatus::STOPPED, $this->changes->find($id)['status']);
         $this->assertCount(2, $this->runner->launches, 'no batch of a stopped change');
+    }
+
+    public function testAStopAfterTheRunEndedRecordsTheBatchAndEndsAfterIt(): void
+    {
+        // the batch's run ended, the change did not process it yet, then Stop
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->now = $this->t0 + 50;
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50); // backups fresh: batch 1 launched
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        $this->backups->now = $this->t0 + 101;
+
+        $this->assertNull($lifecycle->stop($id, 'alice', $this->t0 + 101));
+        $lifecycle->advance($id, $this->t0 + 102);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::STOPPED, 'stopped by alice after batch 1'], [$change['status'], $change['error']]);
+        $this->assertSame('done', $this->changes->batches[$id][1]['status'], 'the batch is recorded, not left running');
+        $this->assertSame('changed', $this->changes->targets[$id][501]['result'], 'with its results');
+        $this->assertSame('requested', $this->changes->targets[$id][501]['after_status'], 'its backups after it are asked for');
+        $window = current($this->changes->windows($id));
+        $this->assertSame($this->t0 + 100 + 600, Clock::unix($window['ends_at']), 'its window ends the settle time after it, not at once');
+        $this->assertSame([502, 503], NextChange::devices($this->changes->targets[$id], NextChange::REMAINING), 'the remaining devices are those not changed');
+    }
+
+    public function testAStopReachesABatchWhoseLaunchHasNotRecordedItsRun(): void
+    {
+        // a request launched batch 1 and died before recording the run on the batch: the stop finds it by its token
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $runId = $this->batchRun($id, 1);
+        $this->changes->batches[$id][1] = array_merge($this->changes->batches[$id][1], ['status' => 'launching', 'run_id' => null]);
+
+        $this->assertNull($lifecycle->stop($id, 'bob', $this->t0 + 60));
+        $this->assertSame(["$runId by bob"], $this->runner->stops, 'the runner is asked to stop it at once');
+        $this->assertSame($runId, (int) $this->changes->batches[$id][1]['run_id']);
+    }
+
+    public function testNoBatchLaunchesOnceAStopIsAsked(): void
+    {
+        // the stop lands while Oxidized takes the backups of batch 1
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->succeed = false;
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->assertSame('preparing', $this->changes->batches[$id][1]['status']);
+        $this->assertNull($lifecycle->stop($id, 'bob', $this->t0 + 55));
+        $lifecycle->advance($id, $this->t0 + 60);
+        $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'), 'batch 1 never launched');
+        $this->assertSame([ChangeStatus::STOPPED, 'stopped by bob before batch 1 was launched'], [$this->changes->find($id)['status'], $this->changes->find($id)['error']]);
+
+        // the stop lands while another request is between the backups and the launch (it read the change before)
+        $this->setUp();
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->now = $this->t0 + 50;
+        $this->backups->onRequest = function () use ($id): void {
+            $this->changes->changes[$id] = array_merge($this->changes->changes[$id], ['status' => ChangeStatus::STOPPING, 'stop_requested_by' => 'bob',
+                'stop_requested_at' => Clock::store($this->t0 + 50), 'version' => $this->changes->changes[$id]['version'] + 1]);
+        };
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'), 'its launch checks for the stop right before it');
+    }
+
+    public function testAnApprovalOrAPermissionLostDuringTheBackupsStopsTheBatchBeforeItsLaunch(): void
+    {
+        foreach (['the approver' => fn () => $this->runner->userProblems[2] = 'no longer holds the approve permission',
+            'the applier' => fn () => $this->runner->userProblems[1] = 'no longer holds the run permission',
+            'the approval' => fn (int $id) => $this->changes->changes[$id]['approved_at'] = Clock::store($this->t0 - 90000)] as $what => $lose) {
+            $this->setUp();
+            $id = $this->approved();
+            $lifecycle = $this->lifecycle();
+            $this->backups->succeed = false; // Oxidized takes its time
+            $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+            $this->assertSame('preparing', $this->changes->batches[$id][1]['status'], $what);
+            $lose($id);
+            $this->backups->succeed = true;
+            $this->backups->nodes = [501 => ['name' => 'dev501', 'full_name' => 'lab/dev501', 'last' => ['start' => gmdate('Y-m-d H:i:s', $this->t0 + 70) . ' UTC',
+                'end' => gmdate('Y-m-d H:i:s', $this->t0 + 74) . ' UTC', 'status' => 'success']]];
+            $lifecycle->advance($id, $this->t0 + 80);
+
+            $change = $this->changes->find($id);
+            $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'), "$what: batch 1 never launched");
+            $this->assertSame(ChangeStatus::FAILED, $change['status'], $what);
+            $this->assertStringStartsWith('stopped before batch 1 was launched: ', $change['error'], $what);
+        }
     }
 
     public function testATimedPauseContinuesOnItsOwn(): void
@@ -721,6 +814,7 @@ class ChangeLifecycleTest extends TestCase
         $this->assertStringNotContainsString('s3cret', (string) $stored);
 
         $this->assertNull($lifecycle->stop($id, 'alice', $this->t0 + 110));
+        $lifecycle->advance($id, $this->t0 + 111);
         $this->assertSame([ChangeStatus::STOPPED, 'stopped by alice before batch 2 was launched'], [$this->changes->find($id)['status'], $this->changes->find($id)['error']],
             'a batch waiting for the secret answers was not launched');
     }

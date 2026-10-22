@@ -46,9 +46,15 @@ final class FakeBackups implements ConfigBackups
             : ['name' => "dev$deviceId", 'full_name' => "lab/dev$deviceId", 'last' => ['start' => '2026-10-01 00:00:00 UTC', 'end' => '2026-10-01 00:00:04 UTC', 'status' => 'success']];
     }
 
+    /** @var \Closure|null called at each request (to make something happen at that moment) */
+    public ?\Closure $onRequest = null;
+
     public function request(string $nodeName, string $message, string $username): bool
     {
         $this->requests[] = ['node' => $nodeName, 'message' => $message, 'user' => $username];
+        if ($this->onRequest !== null) {
+            ($this->onRequest)($nodeName);
+        }
         if (! $this->succeed) {
             return true;
         }

@@ -335,8 +335,20 @@ class ChangeController extends Controller
     public function stop(Request $request, int $id): JsonResponse
     {
         $username = (string) $request->user()->username;
+        if (($problem = self::tablesProblem()) !== null) {
+            return response()->json(['error' => $problem], 503);
+        }
+        if ((new ChangeRepository())->find($id) === null) {
+            return response()->json(['error' => "There is no Ansible change #$id."], 404);
+        }
+        // never waits for the change's lock: the emergency brake works while another request is busy with the change
+        try {
+            $error = $this->changeFollower()->stop($id, $username);
+        } catch (\Throwable $e) {
+            return response()->json(['error' => $this->failure('change stop', $e)], 500);
+        }
 
-        return $this->act($id, fn (ChangeLifecycle $lifecycle) => $lifecycle->stop($id, $username, time()));
+        return $error === null ? response()->json(['ok' => true]) : response()->json(['error' => $error], 422);
     }
 
     /**

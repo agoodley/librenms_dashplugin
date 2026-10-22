@@ -97,6 +97,26 @@ final class FakeChangeRunner implements ChangeRunner
         return ['run_id' => $runId, 'errors' => [], 'parts' => $this->snapshot, 'connections' => $connections];
     }
 
+    /** @var string|null what a preflight answers before $verify (a target refused, the runner unreachable...) */
+    public ?string $preflightError = null;
+
+    /** Number of preflights. */
+    public int $preflights = 0;
+
+    public function preflight(array $change, string $kind, int $number, array $deviceIds, \Closure $verify): ?string
+    {
+        $this->preflights++;
+        if ($this->preflightError !== null) {
+            return $this->preflightError;
+        }
+        if ($this->snapshotError !== null) {
+            return 'The template cannot be read completely from the runner: ' . $this->snapshotError . '.';
+        }
+        $refusal = $verify($this->snapshot, $this->connections($deviceIds));
+
+        return $refusal !== null ? "The launch was refused: $refusal." : null;
+    }
+
     public function connections(array $deviceIds): array
     {
         $connections = [];
