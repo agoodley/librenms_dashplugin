@@ -12,8 +12,7 @@
     $pages = max(1, (int) ceil($total / $perPage));
     $pageUrl = fn (int $p) => route('ansible.changes', array_filter($filters + ['page' => $p], fn ($v) => $v !== null && $v !== ''));
     $statuses = ['open' => 'Not ended'] + ChangeStatus::LABELS;
-    $dryStates = ['verified' => ['success', 'verified'], 'unverified' => ['danger', 'NOT PROVEN'], 'failed' => ['danger', 'failed'], 'running' => ['info', 'running'],
-        'launching' => ['info', 'launching'], 'void' => ['default', 'no longer counts'], 'not_launched' => ['warning', 'not launched']];
+    $dryStates = \Agoodley\LibrenmsAnsible\Changes\ChangeText::DRY_STATES;
 @endphp
 
 @section('content')

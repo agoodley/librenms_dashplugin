@@ -86,7 +86,10 @@ class ChangeController extends Controller
         return response()->json(['total' => $result['total'], 'per_page' => self::PER_PAGE, 'changes' => array_map(fn ($change) => [
             'id' => (int) $change['id'], 'created_at' => Clock::local($change['created_at']), 'finished_at' => Clock::local($change['finished_at']),
             'user' => $change['username'], 'template_id' => $change['template_id'], 'template' => $change['template_name'], 'reference' => $change['reference'],
-            'status' => $change['status'], 'label' => ChangeStatus::label($change['status']), 'targets' => (int) $change['target_count'],
+            'status' => $change['status'], 'label' => ChangeStatus::label($change['status']),
+            // the dry run as the page shows it: "NOT PROVEN" for one not proven to be a dry run (it may have changed its devices)
+            'dry_run_state' => $change['dry_run_state'], 'dry_run_label' => ChangeText::DRY_STATES[$change['dry_run_state'] ?? ''][1] ?? null,
+            'targets' => (int) $change['target_count'],
             'target_names' => $change['target_names'], 'batches' => (int) $change['batch_count'], 'current_batch' => (int) $change['current_batch'],
             'url' => route('ansible.changes.show', $change['id']),
         ], $result['rows'])]);

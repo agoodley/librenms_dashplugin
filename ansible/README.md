@@ -428,7 +428,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   runs and results, the backups (with a link to each device's config page), the maintenance windows, the log of the
   run it follows, and a timeline of every step.
 * **Changes:** filter by device, requester, template, status ("Not ended" for the changes still going) and dates; the
-  *JSON* button gives the same list.
+  *JSON* button gives the same list, with each change's status and the state of its dry run as the page shows them
+  (`dry_run_state`, and `dry_run_label`: *NOT PROVEN* for a dry run not proven to be one, which may have changed its
+  devices).
 * **Runs:** each run of a change, its dry run or a batch (and the runs of phase 1), with the change it belongs to;
   filter by device, user, template, status and dates. A run's page shows its status, each target's result with the
   PLAY RECAP counters, the answers and the log, live; **Stop** and **Release the devices** as in phase 1 (see [Run

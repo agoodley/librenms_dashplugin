@@ -13,6 +13,13 @@ use Agoodley\LibrenmsAnsible\Support\Clock;
  */
 final class ChangeText
 {
+    /**
+     * The state of a change's dry run, as the changes list (page and JSON) shows it: the label and its colour. A dry run
+     * not proven to be one is NOT PROVEN: it may have changed its devices.
+     */
+    public const DRY_STATES = ['verified' => ['success', 'verified'], 'unverified' => ['danger', 'NOT PROVEN'], 'failed' => ['danger', 'failed'],
+        'running' => ['info', 'running'], 'launching' => ['info', 'launching'], 'void' => ['default', 'no longer counts'], 'not_launched' => ['warning', 'not launched']];
+
     /** Labels of a target's dry-run result. */
     public const DRY_RESULTS = ['changed' => 'would change', 'ok' => 'no change', 'skipped' => 'no change (skipped)', 'failed' => 'failed',
         'unreachable' => 'unreachable', 'not_run' => 'not run', 'unknown' => 'unknown'];

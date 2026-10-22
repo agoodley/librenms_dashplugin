@@ -7,6 +7,7 @@ use Agoodley\LibrenmsAnsible\Changes\BackupState;
 use Agoodley\LibrenmsAnsible\Changes\BatchOutcome;
 use Agoodley\LibrenmsAnsible\Changes\BatchPlan;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
+use Agoodley\LibrenmsAnsible\Changes\ChangeText;
 use Agoodley\LibrenmsAnsible\Changes\Connections;
 use Agoodley\LibrenmsAnsible\Changes\DryRunCheck;
 use Agoodley\LibrenmsAnsible\Changes\Fingerprint;
@@ -26,6 +27,13 @@ use PHPUnit\Framework\TestCase;
  */
 class ChangeRulesTest extends TestCase
 {
+    public function testEveryDryRunStateHasTheLabelTheListsShow(): void
+    {
+        // the states the lifecycle writes (ChangeLifecycle): the changes page and its JSON show them with these labels
+        $this->assertSame(['verified', 'unverified', 'failed', 'running', 'launching', 'void', 'not_launched'], array_keys(ChangeText::DRY_STATES));
+        $this->assertSame(['danger', 'NOT PROVEN'], ChangeText::DRY_STATES['unverified'], 'a dry run not proven to be one, loudly');
+    }
+
     // ------------------------------------------------------------------ batch plan
 
     public function testThePlanPutsTheCanaryFirstThenBatchesOfTheBatchSize(): void
