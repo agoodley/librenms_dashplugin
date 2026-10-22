@@ -218,11 +218,11 @@ final class RunLifecycle
         $id = (int) $run['id'];
         if (! $this->runs->updateAt($id, (int) $run['version'], ['runner_task_id' => $task->id, 'runner_status' => $task->rawStatus,
             'status' => RunStatus::isFinal($task->status) ? RunStatus::RUNNING : $task->status, 'poll_error' => null, 'runner_seen_at' => self::time($now),
-            'started_at' => $task->started !== null ? self::time($task->started) : null])) {
+            'started_at' => $task->started !== null ? self::time($task->started) : null] + self::commit($task))) {
             return false;
         }
         foreach (array_keys($this->targetNames($id)) as $deviceId) {
-            $this->events->write(RunText::started($id, (string) $run['template_name'], (string) $run['username']), $deviceId, 'info', RunText::reference($id),
+            $this->events->write(RunText::started($id, (string) $run['template_name'], (string) $run['username'], $run['context'] ?? null), $deviceId, 'info', RunText::reference($id),
                 (string) $run['username']);
         }
 
@@ -242,7 +242,7 @@ final class RunLifecycle
         }
         $this->runs->setResults($id, array_fill_keys(array_keys($targets), ['result' => RunResults::NOT_RUN, 'counts' => null]));
         foreach (array_keys($targets) as $deviceId) {
-            $this->events->write(RunText::notLaunched($id, (string) $run['template_name'], (string) $run['username'], $reason), $deviceId, 'warning',
+            $this->events->write(RunText::notLaunched($id, (string) $run['template_name'], (string) $run['username'], $reason, $run['context'] ?? null), $deviceId, 'warning',
                 RunText::reference($id), (string) $run['username']);
         }
     }
@@ -278,7 +278,7 @@ final class RunLifecycle
         $buffer = OutputBuffer::add($run, $output->lines, $this->outputMaxBytes);
         $values = $buffer['values'] + ['output_lines' => $output->next, 'runner_status' => $task->rawStatus, 'poll_error' => null,
             'polled_at' => self::time($now), 'runner_seen_at' => self::time($now), 'missing_checks' => 0, 'missing_since' => null,
-            'started_at' => $task->started !== null ? self::time($task->started) : $run['started_at']];
+            'started_at' => $task->started !== null ? self::time($task->started) : $run['started_at']] + self::commit($task);
         if (! RunStatus::isFinal($task->status)) {
             // a requested stop stays "stopping" until the runner says how the task ended
             $values['status'] = $run['status'] === RunStatus::STOPPING ? RunStatus::STOPPING : $task->status;
@@ -372,7 +372,7 @@ final class RunLifecycle
         }
         $this->runs->setResults($id, $evaluation['results']);
         foreach ($evaluation['results'] as $deviceId => $result) {
-            $this->events->write(RunText::finished($id, RunStatus::LOST, $result['result'], null, (string) $run['template_name'], (string) $run['username'], $reason),
+            $this->events->write(RunText::finished($id, RunStatus::LOST, $result['result'], null, (string) $run['template_name'], (string) $run['username'], $reason, $run['context'] ?? null),
                 $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
         }
     }
@@ -431,15 +431,15 @@ final class RunLifecycle
                 . (! $runsOn ? ' before the runner started it' : '; the step in progress may still run on the runner'
                     . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . date('Y-m-d H:i T', $heldUntil) : '')) : null);
         foreach ($evaluation['results'] as $deviceId => $result) {
-            $this->events->write(RunText::finished($id, $status, $result['result'], $result['counts'], (string) $run['template_name'], $user, $note), $deviceId,
+            $this->events->write(RunText::finished($id, $status, $result['result'], $result['counts'], (string) $run['template_name'], $user, $note, $run['context'] ?? null), $deviceId,
                 RunResults::SEVERITY[$result['result']] ?? 'info', RunText::reference($id), $user);
         }
         foreach ($unexpected as $deviceId => $row) {
-            $this->events->write(RunText::unexpectedDevice($id, $row['inventory_name'], $row['result'], (string) $run['template_name'], $user), $deviceId, 'error',
+            $this->events->write(RunText::unexpectedDevice($id, $row['inventory_name'], $row['result'], (string) $run['template_name'], $user, $run['context'] ?? null), $deviceId, 'error',
                 RunText::reference($id), $user);
         }
         if ($evaluation['unexpected']) {
-            $this->events->write(RunText::unexpectedHosts($id, array_keys($evaluation['unexpected']), (string) $run['template_name']), null, 'error',
+            $this->events->write(RunText::unexpectedHosts($id, array_keys($evaluation['unexpected']), (string) $run['template_name'], $run['context'] ?? null), null, 'error',
                 RunText::reference($id), $user);
         }
     }
@@ -505,7 +505,7 @@ final class RunLifecycle
                     . strtolower(RunStatus::label((string) $run['status'])) . ').'])) {
                 $this->runs->setResults($id, array_fill_keys(array_keys($this->targetNames($id)), ['result' => null, 'counts' => null]));
                 foreach (array_keys($this->targetNames($id)) as $deviceId) {
-                    $this->events->write(RunText::followedAgain($id, $task->id, (string) $run['status'], (string) $run['template_name'], (string) $run['username'], $found !== []),
+                    $this->events->write(RunText::followedAgain($id, $task->id, (string) $run['status'], (string) $run['template_name'], (string) $run['username'], $found !== [], $run['context'] ?? null),
                         $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
                 }
             }
@@ -592,7 +592,7 @@ final class RunLifecycle
         $this->runs->setResults($id, $evaluation['results']);
         foreach ($evaluation['results'] as $deviceId => $result) {
             $this->events->write(RunText::finished($id, RunStatus::RELEASED, $result['result'], null, (string) $run['template_name'], (string) $run['username'],
-                'devices released by ' . $username . ' while the runner could not be asked'), $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
+                'devices released by ' . $username . ' while the runner could not be asked', $run['context'] ?? null), $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
         }
 
         return null;
@@ -611,7 +611,7 @@ final class RunLifecycle
             return 'The run changed meanwhile: reload the page.';
         }
         foreach (array_keys($this->targetNames($id)) as $deviceId) {
-            $this->events->write(RunText::holdReleased($id, $username, (string) $run['held_until'], (string) $run['template_name'], (string) $run['username']),
+            $this->events->write(RunText::holdReleased($id, $username, (string) $run['held_until'], (string) $run['template_name'], (string) $run['username'], $run['context'] ?? null),
                 $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
         }
 
@@ -643,6 +643,16 @@ final class RunLifecycle
         }
 
         return $names;
+    }
+
+    /**
+     * The commit of the repository the runner says the task runs, as a column to write (none when it does not say).
+     *
+     * @return array<string, string>
+     */
+    private static function commit(RunnerTask $task): array
+    {
+        return $task->commit !== null ? ['commit_hash' => $task->commit] : [];
     }
 
     /**

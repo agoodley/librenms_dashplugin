@@ -11,7 +11,8 @@
     $errors_ = session('ansible_errors', []);
     // the part the admin saved: the page returns to its anchor, and shows the answer there
     $section = (string) session('ansible_section', '');
-    $section = in_array($section, ['ans-connection-form', 'ans-inventory-user', 'ans-settings-form', 'ans-permission'], true) ? $section : '';
+    $section = in_array($section, ['ans-connection-form', 'ans-inventory-user', 'ans-settings-form', 'ans-changes-form', 'ans-backups-form', 'ans-permission',
+        'ans-approve-permission'], true) ? $section : '';
     $invalid = fn (string $key) => isset($errors_[$key]) ? ' ans-invalid' : '';
     $describedBy = fn (string $key) => isset($errors_[$key]) ? new \Illuminate\Support\HtmlString('aria-invalid="true" aria-describedby="ans-error-' . e($key) . '"') : '';
     $fieldError = fn (string $key) => isset($errors_[$key])
@@ -22,11 +23,34 @@
     $defaults = \Agoodley\LibrenmsAnsible\Support\PluginSettings::DEFAULTS;
     $limits = \Agoodley\LibrenmsAnsible\Support\PluginSettings::LIMITS;
     $numbers = [
-        'max_targets' => ['Max targets per run', 'devices one run may change'],
+        'max_targets' => ['Max targets per change', 'devices one change may have (and one run)'],
         'output_max_kb' => ['Output size (KB)', 'the log the plugin keeps per run; the runner keeps the whole log'],
         'stop_after_hours' => ['Stop after (hours)', 'a run still unfinished after this long is stopped by the plugin (it keeps its devices until the runner confirms the stop)'],
         'stop_hold_minutes' => ['Hold after a stop (minutes)', 'a stopped run keeps its devices this long after the runner stopped it, because the step in progress runs on: '
             . 'an admin with the run permission can release them on the run page once it no longer runs'],
+    ];
+    $choices = \Agoodley\LibrenmsAnsible\Support\PluginSettings::CHOICES;
+    // the settings of changes: [key, label, help]; a key of CHOICES is a list, the others whole numbers
+    $changeFields = [
+        ['approval', 'Approval', 'after its verified dry run, before it can be applied: by an admin with the approve permission (the requester may approve their own change), '
+            . 'or by a second admin with it (never the requester). A new dry run, a change of the template, the targets, the answers or the plan voids an approval'],
+        ['approval_hours', 'Approval valid (hours)', 'a change not applied by then needs a new approval'],
+        ['dry_run_hours', 'Dry run valid (hours)', 'a verified dry run counts this long for an approval and an apply; a run on its devices since then (of another change, or a run) voids it too'],
+        ['canary_size', 'First batch (devices)', 'the first batch, the canary, when the new change does not choose its devices'],
+        ['batch_size', 'Batch size (devices)', 'each further batch'],
+        ['stop_at', 'Stop at (failed devices in a batch)', 'a batch with this many devices failed, unreachable, unknown or not run stops the change: no further batch starts'],
+        ['wait_after_canary', 'Wait after the first batch', 'the change waits for an admin to continue after its first batch'],
+        ['batch_pause_minutes', 'Pause between batches (minutes)', 'the time between the end of a batch and the start of the next (0: none)'],
+    ];
+    $backupFields = [
+        ['backups', 'Oxidized backups', 'before and after each batch, of its devices, when LibreNMS uses Oxidized (its oxidized.enabled and oxidized.url settings)'],
+        ['backup_policy', 'Without a fresh backup', 'what a batch does when a device has no fresh backup before it (Oxidized cannot be reached, its backup failed, the device is not in Oxidized): '
+            . 'refuse the batch (the change stops) or continue with a warning in the eventlog'],
+        ['backup_timeout_minutes', 'Backup timeout (minutes)', 'how long the plugin waits for a fresh backup before it counts as failed'],
+        ['maintenance', 'Maintenance windows', 'one LibreNMS maintenance window per batch, on its devices, from its start to the settle time after its end'],
+        ['maintenance_behavior', 'Maintenance behavior', 'what LibreNMS does with the alerts of the devices in the window'],
+        ['maintenance_minutes', 'Expected batch time (minutes)', 'the window\'s end when it opens; the plugin moves it while the batch runs'],
+        ['settle_minutes', 'Settle time (minutes)', 'the window closes this long after its batch ended (for polling and alerts to settle)'],
     ];
 @endphp
 
@@ -37,7 +61,7 @@
 @endif
 
 <div class="ans-settings" style="margin: 15px; max-width: 980px;">
-    <h4>Ansible plugin settings @if($a['admin'])<small><a href="{{ route('ansible.runs') }}">Runs</a> · <a href="{{ route('ansible.inventory') }}">Inventory</a></small>@endif</h4>
+    <h4>Ansible plugin settings @if($a['admin'])<small><a href="{{ route('ansible.changes') }}">Changes</a> · <a href="{{ route('ansible.runs') }}">Runs</a> · <a href="{{ route('ansible.inventory') }}">Inventory</a></small>@endif</h4>
 
     @if($section === '' || ! $a['admin'])
         @include('ansible::partials.settings-answer', ['failed' => 'Nothing was saved:'])
@@ -252,12 +276,51 @@
         </fieldset>
     </form>
 
+    @foreach([['ans-changes-form', 'Changes', $changeFields, 'How a change is approved and applied: its dry run, its approval and its batches. A change keeps the batch plan it was created with.', 'ans-changes-save'],
+        ['ans-backups-form', 'Backups and maintenance windows', $backupFields, ($a['oxidized'] ? 'LibreNMS uses Oxidized: the plugin asks it for a backup before and after each batch.'
+            : 'LibreNMS does not use Oxidized now (oxidized.enabled, oxidized.url): no backups are made, whatever is set here.') . ' The maintenance windows are LibreNMS\' own (Alerts, Maintenance).', 'ans-backups-save']]
+        as [$formId, $legend, $fields, $intro, $saveId])
+        <form method="post" action="{{ route('ansible.settings.runs') }}" id="{{ $formId }}">
+            @csrf
+            <input type="hidden" name="section" value="{{ $formId }}">
+            <fieldset>
+                <legend>{{ $legend }}</legend>
+                @if($section === $formId)
+                    @include('ansible::partials.settings-answer', ['failed' => 'Nothing was saved:'])
+                @endif
+                <p class="help-block">{{ $intro }} Saved by the plugin; each change goes to the eventlog.</p>
+                @foreach($fields as [$name, $label, $help])
+                    <div class="form-group row">
+                        <label class="col-sm-4 control-label" for="ans-setting-{{ $name }}" style="font-weight: normal">{{ $label }}</label>
+                        <div class="col-sm-8">
+                            @if(isset($choices[$name]))
+                                <select id="ans-setting-{{ $name }}" class="form-control input-sm{{ $invalid($name) }}" {{ $describedBy($name) }} style="max-width: 320px" name="{{ $name }}">
+                                    @foreach($choices[$name] as $choice => $choiceLabel)
+                                        <option value="{{ $choice }}" @selected($setting($name) === (string) $choice)>{{ $choiceLabel }}</option>
+                                    @endforeach
+                                </select>
+                                {{ $fieldError($name) }}
+                                <span class="help-block" style="margin: 2px 0 0; font-size: 12px">{{ $help }} · default: {{ $choices[$name][$defaults[$name]] ?? $defaults[$name] }}</span>
+                            @else
+                                <input id="ans-setting-{{ $name }}" type="number" min="{{ $limits[$name][0] }}" max="{{ $limits[$name][1] }}" class="form-control input-sm{{ $invalid($name) }}" {{ $describedBy($name) }} style="max-width: 140px"
+                                       name="{{ $name }}" value="{{ $setting($name) }}">
+                                {{ $fieldError($name) }}
+                                <span class="help-block" style="margin: 2px 0 0; font-size: 12px">{{ $help }} · {{ $limits[$name][0] }} to {{ $limits[$name][1] }} · default: {{ $defaults[$name] }}</span>
+                            @endif
+                        </div>
+                    </div>
+                @endforeach
+                <button type="submit" class="btn btn-primary btn-sm" id="{{ $saveId }}"><i class="fa fa-save"></i> Save</button>
+            </fieldset>
+        </form>
+    @endforeach
+
         <fieldset id="ans-permission">
             <legend>Run permission</legend>
             @if($section === 'ans-permission')
                 @include('ansible::partials.settings-answer', ['failed' => 'Nothing was changed:'])
             @endif
-            <p class="help-block">LibreNMS admins see the runs and the inventory; to launch and stop runs they also need this permission
+            <p class="help-block">LibreNMS admins see the changes, the runs and the inventory; to create, dry-run, apply and stop changes (and stop runs) they also need this permission
                 (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::PERMISSION }}</span>). It is given to each user directly:
                 LibreNMS' role editor keeps only its own permissions, so a role would lose it the next time it is saved. Any LibreNMS admin can
                 grant it, also to themselves: it is an explicit opt-in, written to the eventlog with who granted or revoked it, not a separation
@@ -279,7 +342,7 @@
                         </td>
                     </tr>
                 @empty
-                    <tr><td colspan="3" class="text-muted">Nobody may launch runs yet.</td></tr>
+                    <tr><td colspan="3" class="text-muted">Nobody may apply changes yet.</td></tr>
                 @endforelse
                 </tbody>
             </table>
@@ -288,6 +351,51 @@
                     @csrf
                     <select name="user_id" class="form-control input-sm">
                         @foreach($a['candidates'] as $candidate)
+                            <option value="{{ $candidate['user_id'] }}">{{ $candidate['username'] }}{{ $candidate['realname'] ? ' (' . $candidate['realname'] . ')' : '' }}</option>
+                        @endforeach
+                    </select>
+                    <button type="submit" name="action" value="grant" class="btn btn-sm btn-success"><i class="fa fa-check"></i> Grant</button>
+                    <span class="ans-muted" style="font-size: 12px">LibreNMS admins without the permission</span>
+                </form>
+            @endif
+        </fieldset>
+
+        <fieldset id="ans-approve-permission">
+            <legend>Approve permission</legend>
+            @if($section === 'ans-approve-permission')
+                @include('ansible::partials.settings-answer', ['failed' => 'Nothing was changed:'])
+            @endif
+            <p class="help-block">To approve or reject a change after its verified dry run, a LibreNMS admin needs this permission
+                (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::APPROVE }}</span>), given to each user directly like the run permission and written to the eventlog.
+                With "an approval from a second admin" (Changes, above) the requester of a change can never approve it, whoever holds this permission.</p>
+            <table class="table table-condensed ans-table" id="ans-approve-holders" style="max-width: 700px">
+                <thead><tr><th>User</th><th>Name</th><th></th></tr></thead>
+                <tbody>
+                @forelse($a['approveHolders'] as $holder)
+                    <tr data-user="{{ $holder['user_id'] }}">
+                        <td>{{ $holder['username'] }} @unless($holder['admin'])<span class="label label-warning">not an admin: cannot use it</span>@endunless
+                            @unless($holder['enabled'])<span class="label label-default">disabled</span>@endunless</td>
+                        <td>{{ $holder['realname'] }}</td>
+                        <td class="ans-num">
+                            <form method="post" action="{{ route('ansible.settings.permission') }}" style="display: inline">
+                                @csrf
+                                <input type="hidden" name="user_id" value="{{ $holder['user_id'] }}">
+                                <input type="hidden" name="permission" value="{{ \Agoodley\LibrenmsAnsible\Support\Access::APPROVE }}">
+                                <button type="submit" name="action" value="revoke" class="btn btn-xs btn-danger"><i class="fa fa-times"></i> Revoke</button>
+                            </form>
+                        </td>
+                    </tr>
+                @empty
+                    <tr><td colspan="3" class="text-muted">Nobody may approve changes yet{{ ($a['settings']['approval'] ?? 'required') === 'off' ? ' (the settings ask for no approval)' : ': a change cannot be applied' }}.</td></tr>
+                @endforelse
+                </tbody>
+            </table>
+            @if($a['approveCandidates'])
+                <form method="post" action="{{ route('ansible.settings.permission') }}" class="form-inline" id="ans-approve-grant">
+                    @csrf
+                    <input type="hidden" name="permission" value="{{ \Agoodley\LibrenmsAnsible\Support\Access::APPROVE }}">
+                    <select name="user_id" class="form-control input-sm">
+                        @foreach($a['approveCandidates'] as $candidate)
                             <option value="{{ $candidate['user_id'] }}">{{ $candidate['username'] }}{{ $candidate['realname'] ? ' (' . $candidate['realname'] . ')' : '' }}</option>
                         @endforeach
                     </select>

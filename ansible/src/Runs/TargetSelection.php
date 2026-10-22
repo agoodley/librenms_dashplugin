@@ -10,7 +10,8 @@ use Agoodley\LibrenmsAnsible\Support\Clock;
  * Which chosen devices can be a run's targets, and by which inventory name. A target must exist, be a host of
  * the inventory (enabled, in the allowed device group, with a platform mapping and a usable address), be
  * visible to the user the runner fetches the inventory as (else the runner would not find it), and not be busy
- * in another unfinished run of the plugin, nor held by a stopped one. The others are refused with the reason.
+ * in another unfinished run of the plugin, nor held by a stopped one, nor reserved by a change being applied (from its
+ * first batch to its end). The others are refused with the reason.
  */
 final class TargetSelection
 {
@@ -21,6 +22,7 @@ final class TargetSelection
      *                                                               that holds it until held_until (RunRepository::busy())
      * @param  array<int, true>|null  $runnerVisible  devices the inventory user may see (null: none chosen)
      * @param  string  $runnerUser  that user's name, for the reason
+     * @param  array<int, int>  $reserved  device_id => the change being applied that reserves it (Data\ChangeRepository::reserved())
      */
     public function __construct(
         private readonly Inventory $inventory,
@@ -28,6 +30,7 @@ final class TargetSelection
         private readonly array $busy,
         private readonly ?array $runnerVisible,
         private readonly string $runnerUser = '',
+        private readonly array $reserved = [],
     ) {
     }
 
@@ -80,8 +83,21 @@ final class TargetSelection
         if ($busy !== null && $busy['run'] !== $ignoreRun) {
             return self::busyRefusal($busy);
         }
+        if (isset($this->reserved[$deviceId])) {
+            return self::reservedRefusal($this->reserved[$deviceId]);
+        }
 
         return null;
+    }
+
+    /**
+     * Why a device reserved by a change being applied cannot be a target.
+     *
+     * @return array{reason: string, text: string}
+     */
+    public static function reservedRefusal(int $changeId): array
+    {
+        return ['reason' => 'reserved', 'text' => "reserved by change #$changeId, which is being applied: its later batches will change it"];
     }
 
     /**

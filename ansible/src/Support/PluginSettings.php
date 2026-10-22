@@ -8,9 +8,11 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 /**
  * What runs may reach and how: the platform mapping, the allowed device group, the max targets per run, the
  * output kept, when an unfinished run is stopped, how long a stopped run keeps its devices, and the inventory user
- * (the LibreNMS user whose API token the runner fetches the inventory with). The plugin stores them itself (Data\SettingsRepository) and only LibreNMS
- * admins change them, like the runner connection: LibreNMS' own plugin settings form can be saved by any holder of
- * its plugin.admin permission, which non-admin roles can have, so the plugin keeps nothing there.
+ * (the LibreNMS user whose API token the runner fetches the inventory with); and how changes go (phase 2): approvals,
+ * how long a dry run and an approval count, the batches, the Oxidized backups and the maintenance windows. The plugin
+ * stores them itself (Data\SettingsRepository) and only LibreNMS admins change them, like the runner connection:
+ * LibreNMS' own plugin settings form can be saved by any holder of its plugin.admin permission, which non-admin roles
+ * can have, so the plugin keeps nothing there.
  */
 final class PluginSettings
 {
@@ -22,6 +24,31 @@ final class PluginSettings
         'stop_after_hours' => '24',
         'stop_hold_minutes' => '30',
         'inventory_user' => '',
+        'approval' => 'required',
+        'approval_hours' => '24',
+        'dry_run_hours' => '24',
+        'canary_size' => '1',
+        'batch_size' => '5',
+        'stop_at' => '1',
+        'wait_after_canary' => '1',
+        'batch_pause_minutes' => '0',
+        'backups' => '1',
+        'backup_policy' => 'refuse',
+        'backup_timeout_minutes' => '10',
+        'maintenance' => '1',
+        'maintenance_behavior' => '',
+        'maintenance_minutes' => '60',
+        'settle_minutes' => '10',
+    ];
+
+    /** Settings with a fixed set of values: key => value => label. */
+    public const CHOICES = [
+        'approval' => ['off' => 'no approval', 'required' => 'an approval', 'second' => 'an approval from a second admin'],
+        'backup_policy' => ['refuse' => 'refuse the batch', 'warn' => 'continue with a warning'],
+        'maintenance_behavior' => ['' => "LibreNMS' default", '1' => 'skip alerts', '2' => 'mute alerts', '3' => 'run alerts'],
+        'wait_after_canary' => ['1' => 'on', '0' => 'off'],
+        'backups' => ['1' => 'on', '0' => 'off'],
+        'maintenance' => ['1' => 'on', '0' => 'off'],
     ];
 
     /** Ranges of the numbers: [minimum, maximum]. */
@@ -30,6 +57,15 @@ final class PluginSettings
         'output_max_kb' => [16, 8192],
         'stop_after_hours' => [1, 720],
         'stop_hold_minutes' => [1, 1440],
+        'approval_hours' => [1, 720],
+        'dry_run_hours' => [1, 720],
+        'canary_size' => [1, 100],
+        'batch_size' => [1, 500],
+        'stop_at' => [1, 500],
+        'batch_pause_minutes' => [0, 1440],
+        'backup_timeout_minutes' => [1, 120],
+        'maintenance_minutes' => [5, 1440],
+        'settle_minutes' => [0, 1440],
     ];
 
     /** Names of the settings in messages and the eventlog. */
@@ -41,6 +77,21 @@ final class PluginSettings
         'stop_after_hours' => 'stop after (hours)',
         'stop_hold_minutes' => 'hold after a stop (minutes)',
         'inventory_user' => 'inventory user',
+        'approval' => 'approval',
+        'approval_hours' => 'approval valid (hours)',
+        'dry_run_hours' => 'dry run valid (hours)',
+        'canary_size' => 'first batch (devices)',
+        'batch_size' => 'batch size',
+        'stop_at' => 'stop at failed devices in a batch',
+        'wait_after_canary' => 'wait after the first batch',
+        'batch_pause_minutes' => 'pause between batches (minutes)',
+        'backups' => 'Oxidized backups',
+        'backup_policy' => 'without a fresh backup',
+        'backup_timeout_minutes' => 'backup timeout (minutes)',
+        'maintenance' => 'maintenance windows',
+        'maintenance_behavior' => 'maintenance behavior',
+        'maintenance_minutes' => 'expected batch time (minutes)',
+        'settle_minutes' => 'settle time (minutes)',
     ];
 
     /** Most characters of the platform mapping. */
@@ -115,6 +166,11 @@ final class PluginSettings
         if ($values['inventory_user'] !== '' && ! (ctype_digit($values['inventory_user']) && isset($users[(int) $values['inventory_user']]))) {
             $errors['inventory_user'] = 'The inventory user is one of LibreNMS\' users, or not chosen yet.';
         }
+        foreach (self::CHOICES as $key => $choices) {
+            if (! array_key_exists($values[$key], $choices)) {
+                $errors[$key] = ucfirst(self::LABELS[$key]) . ' is one of: ' . implode(', ', $choices) . '.';
+            }
+        }
 
         return $errors ? ['settings' => null, 'errors' => $errors] : ['settings' => new self($values), 'errors' => []];
     }
@@ -138,7 +194,7 @@ final class PluginSettings
                 'platform_map' => 'platform mapping: ' . self::mapChanges($before->platformMap(), $this->platformMap()),
                 'allowed_group' => 'allowed device group ' . self::name($old, $groups, 'every device') . ' → ' . self::name($new, $groups, 'every device'),
                 'inventory_user' => 'inventory user ' . self::name($old, $users, 'not chosen') . ' → ' . self::name($new, $users, 'not chosen'),
-                default => self::LABELS[$key] . " $old → $new",
+                default => self::LABELS[$key] . ' ' . (self::CHOICES[$key][$old] ?? $old) . ' → ' . (self::CHOICES[$key][$new] ?? $new),
             };
         }
 
@@ -252,6 +308,40 @@ final class PluginSettings
     public function stopHoldSeconds(): int
     {
         return $this->int('stop_hold_minutes') * 60;
+    }
+
+    /**
+     * How changes go (the change lifecycle's settings).
+     *
+     * @param  string  $changeUrl  the address of a change's page, with %d for its id
+     */
+    public function changeSettings(string $changeUrl = 'plugin/ansible/changes/%d'): \Agoodley\LibrenmsAnsible\Changes\ChangeSettings
+    {
+        return new \Agoodley\LibrenmsAnsible\Changes\ChangeSettings(
+            $this->values['approval'] === '' || ! isset(self::CHOICES['approval'][$this->values['approval']]) ? 'required' : $this->values['approval'],
+            $this->int('approval_hours') * 3600,
+            $this->int('dry_run_hours') * 3600,
+            $this->values['backups'] !== '0',
+            $this->values['backup_policy'] !== 'warn',
+            $this->int('backup_timeout_minutes') * 60,
+            $this->values['maintenance'] !== '0',
+            in_array($this->values['maintenance_behavior'], ['1', '2', '3'], true) ? (int) $this->values['maintenance_behavior'] : null,
+            $this->int('maintenance_minutes') * 60,
+            $this->int('settle_minutes') * 60,
+            $changeUrl,
+        );
+    }
+
+    /**
+     * The batch plan of the settings for a change's targets, with the canary devices an admin chose.
+     *
+     * @param  int[]  $deviceIds
+     * @param  int[]  $canary
+     */
+    public function batchPlan(array $deviceIds, array $canary = []): \Agoodley\LibrenmsAnsible\Changes\BatchPlan
+    {
+        return \Agoodley\LibrenmsAnsible\Changes\BatchPlan::make($deviceIds, $canary, $this->int('canary_size'), $this->int('batch_size'), $this->int('stop_at'),
+            $this->values['wait_after_canary'] !== '0', $this->int('batch_pause_minutes'));
     }
 
     /**

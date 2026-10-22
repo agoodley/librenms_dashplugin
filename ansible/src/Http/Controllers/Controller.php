@@ -8,7 +8,6 @@ use Agoodley\LibrenmsAnsible\Services\Eventlog;
 use Agoodley\LibrenmsAnsible\Services\InventoryService;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Agoodley\LibrenmsAnsible\Services\RunFollower;
-use Agoodley\LibrenmsAnsible\Services\RunLauncher;
 use Agoodley\LibrenmsAnsible\Support\ErrorText;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
 use Illuminate\Routing\Controller as BaseController;
@@ -32,11 +31,6 @@ abstract class Controller extends BaseController
     protected function inventoryService(): InventoryService
     {
         return new InventoryService(new DeviceRepository(), $this->settings());
-    }
-
-    protected function launcher(): RunLauncher
-    {
-        return new RunLauncher(new Plugin(), new RunRepository(), $this->inventoryService(), $this->settings());
     }
 
     protected function follower(): RunFollower

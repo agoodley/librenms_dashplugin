@@ -27,7 +27,7 @@ final class RunRepository implements RunStore
 
     /** Columns of the later migrations that the runs need: without one of them the plugin asks for ./lnms migrate. */
     private const LATER_COLUMNS = ['version', 'launch_nonce', 'missing_since', 'missing_checks', 'stop_requested_at', 'stop_reason', 'released_by',
-        'runner_seen_at', 'watch_until', 'output_tail', 'output_omitted', 'held_until'];
+        'runner_seen_at', 'watch_until', 'output_tail', 'output_omitted', 'held_until', 'change_id', 'kind', 'batch', 'context', 'commit_hash', 'proof'];
 
     /**
      * Do the plugin's tables exist with all their columns (./lnms migrate ran, also after an update)?
@@ -240,6 +240,40 @@ final class RunRepository implements RunStore
     }
 
     /**
+     * The devices among $deviceIds that a run may have changed since $since (launched then or later, and not refused
+     * by the runner), not counting the runs of change $changeId: a dry run from before such a run no longer tells what
+     * an apply would do. Every run counts, also on a device it ran on without it being a target, except a dry run
+     * proven to be one, and a dry run that has not ended (it holds its devices: it is judged when it ends).
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, int> device_id => the latest such run
+     */
+    public function changedSince(array $deviceIds, int $since, int $changeId): array
+    {
+        if (! $deviceIds) {
+            return [];
+        }
+        $changed = [];
+        foreach ($this->sql->select('SELECT t.`device_id`, r.`id` FROM ' . $this->sql->table('ansible_run_targets') . ' t JOIN ' . $this->sql->table('ansible_runs')
+            . ' r ON r.`id` = t.`run_id` WHERE t.`device_id` IN (' . self::marks($deviceIds) . ') AND r.`created_at` >= ? AND r.`status` <> ?'
+            . " AND NOT (COALESCE(r.`kind`, '') = 'dry_run' AND (COALESCE(r.`proof`, '') = 'verified' OR r.`status` IN (" . self::marks(RunStatus::UNFINISHED) . ')))'
+            . ' AND (r.`change_id` IS NULL OR r.`change_id` <> ?) ORDER BY r.`id`',
+            array_merge(array_map('intval', $deviceIds), [Clock::store($since), RunStatus::NOT_LAUNCHED], RunStatus::UNFINISHED, [$changeId])) as $row) {
+            $changed[(int) $row['device_id']] = (int) $row['id'];
+        }
+
+        return $changed;
+    }
+
+    /**
+     * Record whether a dry run is proven to be one ('verified' or 'unverified').
+     */
+    public function setProof(int $runId, string $proof): void
+    {
+        $this->sql->change('UPDATE ' . $this->sql->table('ansible_runs') . ' SET `proof` = ? WHERE `id` = ?', [$proof, $runId]);
+    }
+
+    /**
      * Ids of the runs that have not finished, oldest first.
      *
      * @return int[]
@@ -296,7 +330,7 @@ final class RunRepository implements RunStore
         $total = (clone $query)->count();
         $rows = $query->orderByDesc('r.id')->forPage(max(1, $page), $perPage)
             ->get(['r.id', 'r.username', 'r.template_id', 'r.template_name', 'r.status', 'r.runner_status', 'r.summary', 'r.unexpected_hosts',
-                'r.created_at', 'r.started_at', 'r.finished_at'])
+                'r.created_at', 'r.started_at', 'r.finished_at', 'r.change_id', 'r.kind', 'r.batch'])
             ->map(fn ($r) => self::decode((array) $r))->all();
         $names = [];
         if ($rows) {
@@ -347,7 +381,7 @@ final class RunRepository implements RunStore
     {
         return DB::table('ansible_run_targets as t')->join('ansible_runs as r', 'r.id', '=', 't.run_id')->where('t.device_id', $deviceId)
             ->orderByDesc('r.id')->limit($limit)
-            ->get(['r.id', 'r.username', 'r.template_name', 'r.status', 'r.created_at', 'r.finished_at', 't.result', 't.unexpected'])
+            ->get(['r.id', 'r.username', 'r.template_name', 'r.status', 'r.created_at', 'r.finished_at', 't.result', 't.unexpected', 'r.change_id', 'r.kind', 'r.batch'])
             ->map(fn ($r) => (array) $r)->all();
     }
 

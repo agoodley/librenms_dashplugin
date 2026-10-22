@@ -56,7 +56,7 @@
         <a class="btn btn-sm btn-default" href="{{ route('ansible.api.runs', request()->query()) }}" target="_blank"><i class="fa fa-code"></i> JSON</a>
         <span class="ans-spacer"></span>
         @if($canRun)
-            <a class="btn btn-sm btn-success" href="{{ route('ansible.runs.new') }}" id="ans-new-run"><i class="fa fa-play"></i> New run</a>
+            <a class="btn btn-sm btn-success" href="{{ route('ansible.changes.new') }}" id="ans-new-change"><i class="fa fa-plus"></i> New change</a>
         @endif
     </form>
 
@@ -69,7 +69,7 @@
         <div class="table-responsive">
         <table class="table table-condensed table-hover ans-table" id="ans-runs">
             <thead>
-            <tr><th>#</th><th>Started</th><th>User</th><th>Template</th><th>Targets</th><th>Status</th><th class="ans-num">Duration</th></tr>
+            <tr><th>#</th><th>Started</th><th>User</th><th>Change</th><th>Template</th><th>Targets</th><th>Status</th><th class="ans-num">Duration</th></tr>
             </thead>
             <tbody>
             @forelse($rows as $run)
@@ -77,6 +77,8 @@
                     <td><a href="{{ route('ansible.runs.show', $run['id']) }}">#{{ $run['id'] }}</a></td>
                     <td style="white-space: nowrap">{{ \Agoodley\LibrenmsAnsible\Support\Clock::local($run['started_at'] ?? $run['created_at']) }}</td>
                     <td>{{ $run['username'] }}</td>
+                    <td style="white-space: nowrap">@if(! empty($run['change_id']))<a href="{{ route('ansible.changes.show', $run['change_id']) }}">#{{ $run['change_id'] }}</a>
+                        <br><span class="ans-muted">{{ $run['kind'] === 'dry_run' ? 'dry run' : 'batch ' . $run['batch'] }}</span>@else<span class="text-muted" title="a run of phase 1, before changes">-</span>@endif</td>
                     <td class="ans-wrap">{{ $run['template_name'] }}</td>
                     <td>
                         <span class="ans-wrap">{{ implode(', ', $run['target_names']) }}{{ $run['targets'] > count($run['target_names']) ? ' and ' . ($run['targets'] - count($run['target_names'])) . ' more' : '' }}</span>
@@ -92,9 +94,9 @@
                 </tr>
             @empty
                 @if($total > 0)
-                    <tr><td colspan="7" class="text-muted">No runs on page {{ $page }}: <a href="{{ $pageUrl(1) }}">back to the first page</a>.</td></tr>
+                    <tr><td colspan="8" class="text-muted">No runs on page {{ $page }}: <a href="{{ $pageUrl(1) }}">back to the first page</a>.</td></tr>
                 @else
-                    <tr><td colspan="7" class="text-muted">No runs{{ array_filter($filters) ? ' match these filters' : ' yet' }}.</td></tr>
+                    <tr><td colspan="8" class="text-muted">No runs{{ array_filter($filters) ? ' match these filters' : ' yet' }}.</td></tr>
                 @endif
             @endforelse
             </tbody>

@@ -42,6 +42,9 @@ final class LaunchPlan
 
     public int $maxTargets = 0;
 
+    /** @var array<string, mixed>|null the template's snapshot (Changes\TemplateSnapshot), for the runs of changes */
+    public ?array $snapshot = null;
+
     /**
      * Can its targets be launched as they are? Refused devices are left out of the run (the preview lists them);
      * a launch request that names one is refused (RunLauncher::launch()).

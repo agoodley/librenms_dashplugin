@@ -1,11 +1,15 @@
-{{-- Tabs of every page of the plugin; "New run" only for users holding the run permission. --}}
+{{-- Tabs of every page of the plugin; "New change" only for users holding the run permission. --}}
 @php($navCanRun = \Agoodley\LibrenmsAnsible\Support\Access::canRun(auth()->user()))
 <div class="ans-nav">
     <ul class="nav nav-tabs">
-        <li class="{{ $active === 'runs' ? 'active' : '' }}"><a href="{{ route('ansible.runs') }}"><i class="fa fa-list fa-fw"></i> Runs</a></li>
+        <li class="{{ $active === 'changes' ? 'active' : '' }}"><a href="{{ route('ansible.changes') }}"><i class="fa fa-random fa-fw"></i> Changes</a></li>
         @if($navCanRun)
-            <li class="{{ $active === 'new' ? 'active' : '' }}"><a href="{{ route('ansible.runs.new') }}"><i class="fa fa-play fa-fw"></i> New run</a></li>
+            <li class="{{ $active === 'new' ? 'active' : '' }}"><a href="{{ route('ansible.changes.new') }}" id="ans-nav-new-change"><i class="fa fa-plus fa-fw"></i> New change</a></li>
         @endif
+        @if($active === 'change')
+            <li class="active"><a href="#"><i class="fa fa-random fa-fw"></i> Change #{{ $changeId }}</a></li>
+        @endif
+        <li class="{{ $active === 'runs' ? 'active' : '' }}"><a href="{{ route('ansible.runs') }}"><i class="fa fa-list fa-fw"></i> Runs</a></li>
         @if($active === 'run')
             <li class="active"><a href="#"><i class="fa fa-terminal fa-fw"></i> Run #{{ $runId }}</a></li>
         @endif

@@ -96,3 +96,21 @@ html.dark .ans-targets tr.ans-selected td { background: rgba(110, 168, 222, 0.16
 html.dark .ans-warning-loud { background: #3a1f1c; border-color: #f08a80; color: #f6d5d1; }
 html.dark .ans-log { background: #111214; color: #d8dade; }
 html.dark .ans-page .alert-warning, html.dark .ans-settings .alert-warning { color: #2b1a00; }
+
+/* changes: diffs per device (text only; + green, - red, @@ blue) */
+.ans-diff-cell { min-width: 260px; }
+.ans-diff-block { margin: 0 0 4px; }
+.ans-diff-block summary { cursor: pointer; font-size: 12px; }
+.ans-diff {
+    margin: 2px 0 4px; padding: 4px 6px; max-height: 380px; overflow: auto; font-size: 12px; line-height: 1.35;
+    background: #f7f7f9; border: 1px solid #e1e1e8; border-radius: 3px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.ans-diff .ans-diff-add { display: inline-block; min-width: 100%; color: #116329; background: #e6ffec; }
+.ans-diff .ans-diff-del { display: inline-block; min-width: 100%; color: #a40e26; background: #ffebe9; }
+.ans-diff .ans-diff-hunk { color: #0b5e8c; }
+#ans-change-actions .ans-launchbar .form-control { display: inline-block; width: auto; }
+#ans-timeline-table td { font-size: 12px; }
+html.dark .ans-diff { background: #1b1d21; border-color: #3a3f45; color: #d8dade; }
+html.dark .ans-diff .ans-diff-add { color: #8ee6a8; background: rgba(46, 160, 67, 0.2); }
+html.dark .ans-diff .ans-diff-del { color: #ffaba3; background: rgba(248, 81, 73, 0.2); }
+html.dark .ans-diff .ans-diff-hunk { color: #8cc8ff; }

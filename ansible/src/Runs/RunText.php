@@ -30,19 +30,29 @@ final class RunText
     }
 
     /**
+     * "Ansible run #57", with the change it belongs to: "Ansible run #57 (change #5, batch 1 of 2)".
+     */
+    public static function label(int $runId, ?string $context = null): string
+    {
+        $context = UntrustedText::line($context ?? '', 120);
+
+        return "Ansible run #$runId" . ($context !== '' ? " ($context)" : '');
+    }
+
+    /**
      * Eventlog entry of each target when the runner accepted the run.
      */
-    public static function started(int $runId, string $template, string $user): string
+    public static function started(int $runId, string $template, string $user, ?string $context = null): string
     {
-        return "Ansible run #$runId started: template " . self::quote($template) . ' by ' . UntrustedText::line($user, 60);
+        return self::label($runId, $context) . ' started: template ' . self::quote($template) . ' by ' . UntrustedText::line($user, 60);
     }
 
     /**
      * Eventlog entry of each target when the runner refused the run or could not be reached.
      */
-    public static function notLaunched(int $runId, string $template, string $user, string $error): string
+    public static function notLaunched(int $runId, string $template, string $user, string $error, ?string $context = null): string
     {
-        return "Ansible run #$runId was not launched: template " . self::quote($template) . ' by ' . UntrustedText::line($user, 60)
+        return self::label($runId, $context) . ' was not launched: template ' . self::quote($template) . ' by ' . UntrustedText::line($user, 60)
             . ': ' . UntrustedText::line($error, 300);
     }
 
@@ -52,9 +62,9 @@ final class RunText
      *
      * @param  array<string, int>|null  $counts
      */
-    public static function finished(int $runId, string $status, string $result, ?array $counts, string $template, string $user, ?string $note = null): string
+    public static function finished(int $runId, string $status, string $result, ?array $counts, string $template, string $user, ?string $note = null, ?string $context = null): string
     {
-        $text = "Ansible run #$runId " . self::ending($status) . ': ' . strtolower(RunResults::LABELS[$result] ?? $result);
+        $text = self::label($runId, $context) . ' ' . self::ending($status) . ': ' . strtolower(RunResults::LABELS[$result] ?? $result);
         if ($counts !== null) {
             $text .= ' (' . implode(' ', array_map(fn ($c) => $c . '=' . ($counts[$c] ?? 0), ['ok', 'changed', 'unreachable', 'failed', 'skipped'])) . ')';
         }
@@ -66,9 +76,9 @@ final class RunText
     /**
      * Eventlog entry of a device the runner ran on although it was not a target of the run.
      */
-    public static function unexpectedDevice(int $runId, string $host, string $result, string $template, string $user): string
+    public static function unexpectedDevice(int $runId, string $host, string $result, string $template, string $user, ?string $context = null): string
     {
-        return "Ansible run #$runId ran on this device although it was not a target (as " . UntrustedText::clean($host, 60) . '): '
+        return self::label($runId, $context) . ' ran on this device although it was not a target (as ' . UntrustedText::clean($host, 60) . '): '
             . strtolower(RunResults::LABELS[$result] ?? $result) . ', template ' . self::quote($template) . ' by ' . UntrustedText::line($user, 60)
             . '. Check in the runner that the template uses the LibreNMS inventory and lets a launch set the limit (Ansible prompts, Limit).';
     }
@@ -78,9 +88,9 @@ final class RunText
      * released before its task was known, has a task for it after all), unfinished: the run is followed again and
      * its devices are busy again.
      */
-    public static function followedAgain(int $runId, string $taskId, string $was, string $template, string $user, bool $found = false): string
+    public static function followedAgain(int $runId, string $taskId, string $was, string $template, string $user, bool $found = false, ?string $context = null): string
     {
-        return "Ansible run #$runId: the runner has " . ($found ? 'a task for it after all, #' . UntrustedText::line($taskId, 20) : 'its task #' . UntrustedText::line($taskId, 20) . ' again')
+        return self::label($runId, $context) . ': the runner has ' . ($found ? 'a task for it after all, #' . UntrustedText::line($taskId, 20) : 'its task #' . UntrustedText::line($taskId, 20) . ' again')
             . ', unfinished: the plugin follows it again (it was ' . strtolower(RunStatus::label($was)) . '), template ' . self::quote($template) . ' by ' . UntrustedText::line($user, 60);
     }
 
@@ -88,9 +98,9 @@ final class RunText
      * Eventlog entry of each target when an admin releases the devices of a stopped run before the end of its hold
      * (the step in progress at the stop may still run on the runner).
      */
-    public static function holdReleased(int $runId, string $by, string $heldUntil, string $template, string $user): string
+    public static function holdReleased(int $runId, string $by, string $heldUntil, string $template, string $user, ?string $context = null): string
     {
-        return "Ansible run #$runId: the devices held after its stop were released by " . UntrustedText::line($by, 60) . ' (held until '
+        return self::label($runId, $context) . ': the devices held after its stop were released by ' . UntrustedText::line($by, 60) . ' (held until '
             . Clock::local($heldUntil, 'Y-m-d H:i T') . '; the step in progress at the stop may still run on the runner), template ' . self::quote($template)
             . ' by ' . UntrustedText::line($user, 60);
     }
@@ -100,11 +110,11 @@ final class RunText
      *
      * @param  string[]  $hosts
      */
-    public static function unexpectedHosts(int $runId, array $hosts, string $template): string
+    public static function unexpectedHosts(int $runId, array $hosts, string $template, ?string $context = null): string
     {
         $names = implode(', ', array_map(fn ($h) => UntrustedText::clean($h, 60), array_slice($hosts, 0, 10))) . (count($hosts) > 10 ? ', ...' : '');
 
-        return "Ansible run #$runId ran on hosts that were not its targets: $names. Check in the runner that template "
+        return self::label($runId, $context) . " ran on hosts that were not its targets: $names. Check in the runner that template "
             . self::quote($template) . ' uses the LibreNMS inventory and lets a launch set the limit (Ansible prompts, Limit).';
     }
 

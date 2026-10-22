@@ -56,11 +56,17 @@ interface ChangeRunner
     public function userProblem(int $userId, string $permission): ?string;
 
     /**
-     * The devices among $deviceIds that a run other than a dry run changed since $since, not counting the change's own
-     * batches: device_id => run id.
+     * The devices among $deviceIds that a run may have changed since $since, not counting the change's own runs: every
+     * run but a dry run proven to be one (or not ended yet): device_id => run id.
      *
      * @param  int[]  $deviceIds
      * @return array<int, int>
      */
     public function changedSince(array $deviceIds, int $since, int $changeId): array;
+
+    /**
+     * Record on a dry run whether it is proven to be one: a dry run that is not counts as a run that may have changed
+     * its devices (changedSince()).
+     */
+    public function recordProof(int $runId, bool $verified): void;
 }

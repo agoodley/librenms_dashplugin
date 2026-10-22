@@ -424,6 +424,7 @@ final class ChangeLifecycle
         $recap = $lines !== null ? RecapParser::parse($lines) : null;
         $proof = $lines !== null ? DryRunProof::check($lines, $recap)
             : ['verified' => false, 'findings' => ['The plugin could not read the dry run\'s whole log from the runner, so nothing proves it was a dry run.']];
+        $this->runner->recordProof((int) $run['id'], (bool) $proof['verified']);
         $targets = [];
         foreach ($this->runs->targets((int) $run['id']) as $deviceId => $target) {
             if (empty($target['unexpected'])) {

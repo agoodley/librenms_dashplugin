@@ -146,6 +146,7 @@ class ChangeLifecycleTest extends TestCase
         $change = $this->changes->find($id);
         $this->assertSame(ChangeStatus::AWAITING, $change['status']);
         $this->assertSame('verified', $change['dry_run_state']);
+        $this->assertSame([$runId => true], $this->runner->proofs, 'recorded on the run');
         $this->assertSame('abc1234', $change['dry_run_commit'], 'the commit the runner reported for the dry run');
         $this->assertSame(64, strlen((string) $change['plan_fingerprint']));
         $this->assertSame(['dry_run', 1, [501, 502, 503]], [$this->runner->launches[0]['kind'], $this->runner->launches[0]['number'], $this->runner->launches[0]['devices']],
@@ -172,6 +173,7 @@ class ChangeLifecycleTest extends TestCase
         $change = $this->changes->find($id);
         $this->assertSame(ChangeStatus::DRAFT, $change['status']);
         $this->assertSame('unverified', $change['dry_run_state']);
+        $this->assertSame([$runId => false], $this->runner->proofs, 'recorded on the run: it counts as one that may have changed its devices');
         $this->assertStringContainsString('DRY RUN banner', $change['dry_run_findings'][0]);
         foreach (array_keys(self::TARGETS) as $deviceId) {
             $entry = end($this->events->entries) && ($e = array_values(array_filter($this->events->of($deviceId), fn ($e) => $e['severity'] === 'error'))) ? $e[0] : null;

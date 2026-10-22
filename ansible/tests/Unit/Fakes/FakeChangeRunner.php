@@ -123,4 +123,12 @@ final class FakeChangeRunner implements ChangeRunner
     {
         return array_intersect_key($this->changed, array_flip($deviceIds));
     }
+
+    /** @var array<int, bool> run id => proven a dry run */
+    public array $proofs = [];
+
+    public function recordProof(int $runId, bool $verified): void
+    {
+        $this->proofs[$runId] = $verified;
+    }
 }

@@ -46,6 +46,13 @@
         </div>
     </div>
 
+    @if(! empty($run['change_id']))
+        <div class="alert alert-info" id="ans-run-change" style="padding: 6px 10px"><i class="fa fa-random"></i>
+            This run is {{ $run['kind'] === 'dry_run' ? 'the dry run (--check --diff)' : 'batch ' . $run['batch'] }} of
+            <a href="{{ route('ansible.changes.show', $run['change_id']) }}">change #{{ $run['change_id'] }}</a>: its page shows the {{ $run['kind'] === 'dry_run' ? 'diffs per device, the approval' : 'other batches, the backups and the maintenance windows' }}, and stops it.
+            @if($run['commit_hash'])<span class="ans-muted">Commit <span class="ans-code">{{ substr($run['commit_hash'], 0, 12) }}</span>.</span>@endif</div>
+    @endif
+
     <div id="ans-run-alerts">
         @if($run['unexpected_hosts'])
             <div class="alert alert-danger" id="ans-run-unexpected"><i class="fa fa-exclamation-triangle"></i>
