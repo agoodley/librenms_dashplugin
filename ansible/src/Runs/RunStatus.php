@@ -3,8 +3,11 @@
 namespace Agoodley\LibrenmsAnsible\Runs;
 
 /**
- * Status of a run in the plugin's terms, whatever the runner calls it. A run is unfinished (its targets are
- * busy, the sync command follows it) until it reaches a final status.
+ * Status of a run in the plugin's terms, whatever the runner calls it. A run is unfinished (its targets are busy,
+ * the sync command follows it) until it reaches a final status, and it only gets one on clear evidence: the
+ * runner's own final status for its task, a stop the plugin asked for and the runner confirmed, a launch the runner
+ * refused, a task the runner keeps not finding while the token still sees the project, or an admin who released
+ * the devices. Lost and released runs are still watched for a while, so a later real end is recorded.
  */
 final class RunStatus
 {
@@ -19,28 +22,38 @@ final class RunStatus
     /** A stop was asked for. */
     public const STOPPING = 'stopping';
 
+    /** The runner ended the task with success, and every target is in the PLAY RECAP without a failure. */
     public const SUCCESS = 'success';
+
+    /** The runner ended the task with success, but some targets did not run (or failed): see the run's alert. */
+    public const INCOMPLETE = 'incomplete';
 
     /** The runner ended the task with an error (a host failed or was unreachable, or the playbook could not start). */
     public const FAILED = 'failed';
 
     public const STOPPED = 'stopped';
 
-    /** The runner no longer knows the task, or it stayed unfinished past the timeout. */
+    /** The runner keeps not finding the task while the token still sees the project (it was deleted). */
     public const LOST = 'lost';
 
-    /** The runner refused or could not be reached at launch: nothing ran. */
+    /** The runner could not be asked about the run for long, and an admin released its devices. */
+    public const RELEASED = 'released';
+
+    /** The runner refused the launch, or has no task for a launch whose answer never came: nothing ran. */
     public const NOT_LAUNCHED = 'not_launched';
 
     public const UNFINISHED = [self::PENDING, self::QUEUED, self::RUNNING, self::STOPPING];
 
-    public const FINAL = [self::SUCCESS, self::FAILED, self::STOPPED, self::LOST, self::NOT_LAUNCHED];
+    public const FINAL = [self::SUCCESS, self::INCOMPLETE, self::FAILED, self::STOPPED, self::LOST, self::RELEASED, self::NOT_LAUNCHED];
+
+    /** Final statuses that do not come from the runner's end of the task: the run is still checked for a late end. */
+    public const WATCHED = [self::LOST, self::RELEASED];
 
     /** Labels for the pages. */
     public const LABELS = [
         self::PENDING => 'Launching', self::QUEUED => 'Queued', self::RUNNING => 'Running', self::STOPPING => 'Stopping',
-        self::SUCCESS => 'Success', self::FAILED => 'Failed', self::STOPPED => 'Stopped', self::LOST => 'Lost',
-        self::NOT_LAUNCHED => 'Not launched',
+        self::SUCCESS => 'Success', self::INCOMPLETE => 'Incomplete', self::FAILED => 'Failed', self::STOPPED => 'Stopped', self::LOST => 'Lost',
+        self::RELEASED => 'Released', self::NOT_LAUNCHED => 'Not launched',
     ];
 
     /**
@@ -85,7 +98,7 @@ final class RunStatus
         return match ($status) {
             self::SUCCESS => 'success',
             self::FAILED, self::LOST, self::NOT_LAUNCHED => 'danger',
-            self::STOPPED, self::STOPPING => 'warning',
+            self::INCOMPLETE, self::STOPPED, self::STOPPING, self::RELEASED => 'warning',
             default => 'info',
         };
     }

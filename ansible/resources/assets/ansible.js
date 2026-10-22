@@ -8,9 +8,10 @@
 
     /** Bootstrap label classes the server may name. */
     var LABELS = ['default', 'primary', 'success', 'info', 'warning', 'danger'];
-    var RESULTS = {unreachable: 'Unreachable', failed: 'Failed', not_run: 'Not run', changed: 'Changed', ok: 'OK', skipped: 'Skipped'};
-    var RESULT_CSS = {ok: 'success', changed: 'warning', failed: 'danger', unreachable: 'danger'};
-    var ORDER = ['unreachable', 'failed', 'not_run', 'changed', 'ok', 'skipped'];
+    var RESULTS = {unreachable: 'Unreachable', failed: 'Failed', unknown: 'Unknown', not_run: 'Not run', changed: 'Changed', ok: 'OK', skipped: 'Skipped'};
+    var RESULT_CSS = {ok: 'success', changed: 'warning', unknown: 'warning', failed: 'danger', unreachable: 'danger'};
+    var ORDER = ['unreachable', 'failed', 'unknown', 'not_run', 'changed', 'ok', 'skipped'];
+    var STATUS_LABELS = {not_launched: 'Not launched', incomplete: 'Incomplete', lost: 'Lost', released: 'Released', failed: 'Failed', stopped: 'Stopped'};
 
     /**
      * An element with a class and text (or child nodes).
@@ -121,13 +122,14 @@
 
     /**
      * Follow a run: poll the plugin every 2 seconds while it is unfinished, append the new log lines, update the
-     * status, the targets and the alerts; the Stop button.
+     * status, the targets and the alerts; the Stop and Release buttons.
      */
     function run(config) {
         var next = config.next;
         var log = byId('ans-log');
         var follow = byId('ans-log-follow');
         var stopButton = byId('ans-run-stop');
+        var releaseButton = byId('ans-run-release');
         var timer = null;
 
         function scroll() {
@@ -173,7 +175,21 @@
             data.targets.forEach(function (target) {
                 var row = document.querySelector('#ans-run-targets tr[data-device="' + Number(target.device_id) + '"]');
                 if (!row) {
-                    return;
+                    // a device the runner ran on although it was not a target
+                    row = el('tr', target.unexpected ? 'danger' : null, [
+                        el('td', 'ans-wrap', [el('span', null, target.display || target.name), ' ',
+                            target.unexpected ? el('span', 'label label-danger', 'not a target') : null]),
+                        el('td', 'ans-code', target.name), el('td', 'ans-target-result')]);
+                    ['ok', 'changed', 'unreachable', 'failed', 'skipped'].forEach(function (counter) {
+                        var count = el('td', 'ans-num ans-count');
+                        count.setAttribute('data-counter', counter);
+                        row.appendChild(count);
+                    });
+                    row.setAttribute('data-device', Number(target.device_id));
+                    if (target.unexpected) {
+                        row.setAttribute('data-unexpected', '1');
+                    }
+                    document.querySelector('#ans-run-targets tbody').appendChild(row);
                 }
                 var cell = clear(row.querySelector('.ans-target-result'));
                 if (target.result) {
@@ -195,25 +211,29 @@
                 alerts.appendChild(unexpected);
             }
             if (data.error) {
-                var error = alertBox(data.status === 'lost' ? 'warning' : 'danger', null, null);
+                var error = alertBox(data.status === 'not_launched' || data.status === 'failed' ? 'danger' : 'warning', null, null);
                 error.id = 'ans-run-error';
-                append(error, (data.status === 'not_launched' ? 'Not launched' : (data.status === 'lost' ? 'Lost' : 'Error')) + ': ' + data.error);
+                append(error, [el('strong', null, (STATUS_LABELS[data.status] || data.label) + ': '), data.error]);
                 alerts.appendChild(error);
             }
             if (data.poll_error && !data.final) {
                 var pollError = alertBox('warning', null, null);
                 pollError.id = 'ans-run-poll-error';
-                append(pollError, 'The plugin cannot ask the runner right now: ' + data.poll_error);
+                append(pollError, [data.poll_error + ' ', el('span', 'ans-muted', 'The run keeps its devices until the runner reports its end.')]);
                 alerts.appendChild(pollError);
+            }
+            var releaseBox = byId('ans-run-release-box');
+            if (releaseBox) {
+                releaseBox.style.display = data.releasable && !data.final ? '' : 'none';
             }
             if (data.lines.length) {
                 appendLines(data.lines);
                 scroll();
             }
             next = data.next;
-            setText('ans-log-count', next + ' lines');
+            setText('ans-log-count', next.toLocaleString('en-US') + ' lines');
             if (data.truncated && !byId('ans-log-truncated')) {
-                var note = el('span', 'text-warning', 'The output is longer than the Output size setting: the rest is in the runner (task #' + data.runner_task_id + ').');
+                var note = el('span', 'text-warning', 'The log is longer than the Output size setting: its start and its end are kept here, the whole log is in the runner (task #' + data.runner_task_id + ').');
                 note.id = 'ans-log-truncated';
                 byId('ans-log-count').parentNode.appendChild(note);
             }
@@ -254,6 +274,24 @@
                     } else {
                         stopButton.disabled = false;
                         byId('ans-run-stop-note').textContent = result.body.error || 'the stop failed';
+                    }
+                });
+            });
+        }
+        if (releaseButton) {
+            releaseButton.addEventListener('click', function () {
+                if (!window.confirm('Release the devices of this run? The plugin could not ask the runner about it for a while. The run ends as released, '
+                    + 'its results unknown, and its devices can be targets again; the task may still run in the runner.')) {
+                    return;
+                }
+                releaseButton.disabled = true;
+                request('POST', config.release, {}).then(function (result) {
+                    if (result.status === 200) {
+                        window.clearTimeout(timer);
+                        poll();
+                    } else {
+                        releaseButton.disabled = false;
+                        window.alert(result.body.error || 'The release failed.');
                     }
                 });
             });

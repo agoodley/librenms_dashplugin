@@ -76,6 +76,26 @@ final class InventoryService
     }
 
     /**
+     * The devices of inventory names (any device, host or not), for the hosts a runner reports.
+     *
+     * @param  string[]  $names
+     * @return array<string, array{device_id: int, hostname: string, display: string}> inventory name => device
+     */
+    public function devicesNamed(array $names): array
+    {
+        $rows = $this->devices->devices();
+        $all = (new InventoryBuilder($this->settings->platformMap(), $this->settings->allowedGroup()))
+            ->names($rows, $this->devices->deviceGroups(), $this->devices->locations());
+        $found = [];
+        foreach (array_intersect($all, $names) as $deviceId => $name) {
+            $found[$name] = ['device_id' => (int) $deviceId, 'hostname' => (string) ($rows[$deviceId]['hostname'] ?? ''),
+                'display' => (string) (($rows[$deviceId]['display'] ?? '') ?: ($rows[$deviceId]['hostname'] ?? ''))];
+        }
+
+        return $found;
+    }
+
+    /**
      * The device data the inventory was built from.
      */
     public function devices(): DeviceRepository

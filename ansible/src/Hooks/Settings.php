@@ -55,7 +55,7 @@ class Settings implements SettingsHook
                 $data['fetches'] = (new FetchRepository())->all();
             }
         } catch (\Throwable $e) {
-            Log::error('ansible plugin: settings page failed: ' . $e->getMessage());
+            Log::error('ansible plugin: settings page failed: ' . \Agoodley\LibrenmsAnsible\Support\ErrorText::forLog($e));
             $data['connectionError'] = 'The plugin could not read its data: see logs/librenms.log (did ./lnms migrate run?).';
         }
 

@@ -23,6 +23,7 @@ class SemaphoreRunnerTest extends TestCase
             'GET /api/project/2/' => new HttpResponse(200, FakeTransport::fixture('project.json')),
             'GET /api/project/2/role' => new HttpResponse(200, FakeTransport::fixture('role.json')),
             'GET /api/user' => new HttpResponse(200, FakeTransport::fixture('user.json')),
+            'GET /api/ping' => new HttpResponse(200, 'pong'),
             'GET /api/project/2/templates' => new HttpResponse(200, FakeTransport::fixture('templates.json')),
             'GET /api/project/2/templates/5' => new HttpResponse(200, FakeTransport::fixture('template-survey.json')),
             'GET /api/project/2/inventory/3' => new HttpResponse(200, FakeTransport::fixture('inventory-static.json')),
@@ -263,15 +264,81 @@ class SemaphoreRunnerTest extends TestCase
         }
     }
 
-    public function testFindTheTaskOfALaunchByItsMessage(): void
+    public function testFindTheTaskOfALaunchByItsMessageAndTime(): void
     {
-        $this->http->on('GET /api/project/2/tasks/last?count=200', new HttpResponse(200, FakeTransport::fixture('tasks-last.json')));
+        $this->http->on('GET /api/project/2/tasks/last?count=1000', new HttpResponse(200, FakeTransport::fixture('tasks-last.json')));
+        $before = strtotime('2026-10-21T23:09:00Z');
 
-        $task = $this->runner()->findTask('15', 'LibreNMS Ansible run #41 by admin');
-        $this->assertSame('61', $task->id);
-        $this->assertSame(RunStatus::STOPPED, $task->status);
-        $this->assertNull($this->runner()->findTask('11', 'LibreNMS Ansible run #41 by admin'), 'another template');
-        $this->assertNull($this->runner()->findTask('15', 'LibreNMS Ansible run #4 by admin'), 'the message must match exactly');
+        $search = $this->runner()->findTask('15', 'LibreNMS Ansible run #41 by admin', $before);
+        $this->assertSame('61', $search->task->id);
+        $this->assertSame(RunStatus::STOPPED, $search->task->status);
+        $this->assertSame(strtotime('2026-10-21T23:09:47Z'), $search->task->created);
+        $this->assertTrue($search->complete, 'the list holds every task of the project');
+        $this->assertNull($this->runner()->findTask('11', 'LibreNMS Ansible run #41 by admin', $before)->task, 'another template');
+        $this->assertNull($this->runner()->findTask('15', 'LibreNMS Ansible run #4 by admin', $before)->task, 'the message must match exactly');
+        $this->assertNull($this->runner()->findTask('15', 'LibreNMS Ansible run #41 by admin', strtotime('2026-10-21T23:10:00Z'))->task,
+            'a task created before the run is not its task');
+    }
+
+    public function testASearchThatDoesNotReachBackIsNotComplete(): void
+    {
+        $tasks = [];
+        for ($i = 1000; $i > 0; $i--) {
+            $tasks[] = ['id' => $i, 'template_id' => 3, 'status' => 'success', 'message' => '', 'created' => '2026-10-22T10:00:00Z'];
+        }
+        $this->http->on('GET /api/project/2/tasks/last?count=1000', new HttpResponse(200, json_encode($tasks)));
+
+        $this->assertFalse($this->runner()->findTask('15', 'LibreNMS Ansible run #41 by admin [x]', strtotime('2026-10-22T09:00:00Z'))->complete,
+            'a thousand tasks since the launch: the launch\'s may be older');
+        $this->assertTrue($this->runner()->findTask('15', 'LibreNMS Ansible run #41 by admin [x]', strtotime('2026-10-22T11:00:00Z'))->complete);
+    }
+
+    public function testANonSemaphoreAddressIsNotReportedAsAWrongToken(): void
+    {
+        $this->http->on('GET /api/info', new HttpResponse(401, '<html>login</html>'));
+        $this->http->on('GET /api/ping', new HttpResponse(404, ''));
+
+        try {
+            $this->runner()->health();
+            $this->fail('no error');
+        } catch (RunnerError $e) {
+            $this->assertSame(RunnerError::BAD_RESPONSE, $e->kind);
+            $this->assertStringContainsString('https://semaphore.example.com does not look like Semaphore UI', $e->getMessage());
+        }
+        $this->assertArrayNotHasKey('Authorization', end($this->http->requests)['headers'], 'the ping carries no token');
+    }
+
+    public function testTheProjectItselfMissingIsSaidPlainly(): void
+    {
+        $this->http->on('GET /api/project/2/', new HttpResponse(404, ''));
+
+        $this->expectExceptionMessage('Semaphore UI has no project 2 (HTTP 404), or the token\'s user is not a member of it.');
+        $this->runner()->health();
+    }
+
+    public function testRoleInventoriesAndVariableGroups(): void
+    {
+        $this->http->on('GET /api/project/2/inventory', new HttpResponse(200, '[{"id":4,"name":"LibreNMS","type":"file","inventory":"inventory/librenms_inventory.py"},'
+            . '{"id":5,"name":"Static","type":"static-yaml","inventory":"all: {}"}]'));
+        $this->http->on('GET /api/project/2/environment/4', new HttpResponse(200, '{"id":4,"name":"LibreNMS inventory","env":"{\\"LIBRENMS_URL\\": \\"https://nms\\"}",'
+            . '"secrets":[{"id":9,"type":"env","name":"LIBRENMS_TOKEN","secret":""},{"id":10,"type":"var","name":"api_key","secret":""}]}'));
+
+        $this->assertSame('task_runner', $this->runner()->role());
+        $inventories = $this->runner()->inventories();
+        $this->assertSame(['4', '5'], array_map(fn ($i) => $i->id, $inventories));
+        $this->assertSame('inventory/librenms_inventory.py', $inventories[0]->source);
+        $this->assertSame('', $inventories[1]->source, 'a static inventory\'s hosts are not read');
+        $environment = $this->runner()->environment('4');
+        $this->assertSame(['LIBRENMS_URL'], $environment->envNames);
+        $this->assertSame(['LIBRENMS_TOKEN'], $environment->secretEnvNames, 'secret extra variables are not environment variables');
+    }
+
+    public function testAForcedStop(): void
+    {
+        $this->http->on('POST /api/project/2/tasks/18/stop', fn (?string $body) => new HttpResponse($body === '{"force":true}' ? 204 : 400, ''));
+
+        $this->runner()->stop('18', true);
+        $this->assertSame(['force' => true], $this->http->lastBody());
     }
 
     public function testCurlErrorsThatNeverSent(): void

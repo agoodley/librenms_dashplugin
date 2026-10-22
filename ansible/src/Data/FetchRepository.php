@@ -20,7 +20,7 @@ final class FetchRepository
             DB::table('ansible_inventory_fetches')->updateOrInsert(['user_id' => $userId],
                 ['username' => $username, 'hosts' => $hosts, 'address' => $address !== null ? substr($address, 0, 45) : null, 'fetched_at' => now()]);
         } catch (\Throwable $e) {
-            Log::error('ansible plugin: cannot record the inventory fetch: ' . $e->getMessage());
+            Log::error('ansible plugin: cannot record the inventory fetch: ' . \Agoodley\LibrenmsAnsible\Support\ErrorText::forLog($e));
         }
     }
 
@@ -36,7 +36,7 @@ final class FetchRepository
                 ->map(fn ($r) => ['user_id' => (int) $r->user_id, 'username' => (string) $r->username, 'hosts' => (int) $r->hosts,
                     'address' => $r->address, 'fetched_at' => $r->fetched_at])->all();
         } catch (\Throwable $e) {
-            Log::debug('ansible plugin: cannot read the inventory fetches: ' . $e->getMessage());
+            Log::debug('ansible plugin: cannot read the inventory fetches: ' . \Agoodley\LibrenmsAnsible\Support\ErrorText::forLog($e));
 
             return [];
         }

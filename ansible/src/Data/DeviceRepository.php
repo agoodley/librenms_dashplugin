@@ -60,7 +60,7 @@ final class DeviceRepository
                 $memberships[(int) $row->device_id][] = (int) $row->device_group_id;
             }
         } catch (\Throwable $e) {
-            Log::debug('ansible plugin: cannot read device groups: ' . $e->getMessage());
+            Log::debug('ansible plugin: cannot read device groups: ' . \Agoodley\LibrenmsAnsible\Support\ErrorText::forLog($e));
         }
 
         return $memberships;
@@ -76,7 +76,7 @@ final class DeviceRepository
         try {
             return DB::table('device_groups')->orderBy('name')->pluck('name', 'id')->map(fn ($n) => (string) $n)->all();
         } catch (\Throwable $e) {
-            Log::debug('ansible plugin: cannot read device groups: ' . $e->getMessage());
+            Log::debug('ansible plugin: cannot read device groups: ' . \Agoodley\LibrenmsAnsible\Support\ErrorText::forLog($e));
 
             return [];
         }
@@ -92,7 +92,7 @@ final class DeviceRepository
         try {
             return DB::table('locations')->orderBy('location')->pluck('location', 'id')->map(fn ($n) => (string) $n)->all();
         } catch (\Throwable $e) {
-            Log::debug('ansible plugin: cannot read locations: ' . $e->getMessage());
+            Log::debug('ansible plugin: cannot read locations: ' . \Agoodley\LibrenmsAnsible\Support\ErrorText::forLog($e));
 
             return [];
         }

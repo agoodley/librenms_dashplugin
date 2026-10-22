@@ -26,7 +26,7 @@ final class SettingsRepository
         try {
             return new PluginSettings($this->store->get(self::NAME) ?? []);
         } catch (\Throwable $e) {
-            Log::error('ansible plugin: cannot read the settings: ' . $e->getMessage());
+            Log::error('ansible plugin: cannot read the settings: ' . \Agoodley\LibrenmsAnsible\Support\ErrorText::forLog($e));
 
             return new PluginSettings([], 'The plugin\'s settings cannot be read (see logs/librenms.log): save them again on the settings page.');
         }

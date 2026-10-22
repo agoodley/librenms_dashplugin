@@ -8,11 +8,13 @@ use Agoodley\LibrenmsAnsible\Runner\Http\Transport;
 use Agoodley\LibrenmsAnsible\Runner\Http\TransportError;
 use Agoodley\LibrenmsAnsible\Runner\LaunchRequest;
 use Agoodley\LibrenmsAnsible\Runner\Runner;
+use Agoodley\LibrenmsAnsible\Runner\RunnerEnvironment;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runner\RunnerHealth;
 use Agoodley\LibrenmsAnsible\Runner\RunnerInventory;
 use Agoodley\LibrenmsAnsible\Runner\RunnerOutput;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTask;
+use Agoodley\LibrenmsAnsible\Runner\RunnerTaskSearch;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
 use Agoodley\LibrenmsAnsible\Runner\SurveyVar;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
@@ -30,6 +32,9 @@ final class SemaphoreRunner implements Runner
 
     /** Bit of a template's "permissions" that allows running it. */
     private const PERMISSION_RUN = 1;
+
+    /** Tasks read when looking for the task of a launch whose answer never came. */
+    private const SEARCH_COUNT = 1000;
 
     /** What a template may let a task override besides the limit (task_params / template flags). */
     private const OVERRIDES = [
@@ -109,7 +114,59 @@ final class SemaphoreRunner implements Runner
      */
     public function inventory(string $id): RunnerInventory
     {
-        $inventory = $this->get($this->projectPath('/inventory/' . rawurlencode($id)), "inventory $id");
+        return $this->inventory_($this->get($this->projectPath('/inventory/' . rawurlencode($id)), "inventory $id"), $id);
+    }
+
+    /**
+     * GET /api/project/{p}/inventory: every inventory of the project.
+     */
+    public function inventories(): array
+    {
+        $list = $this->get($this->projectPath('/inventory'), 'the inventories');
+        if (! array_is_list($list)) {
+            throw $this->badResponse('/inventory');
+        }
+
+        return array_map(fn ($inventory) => $this->inventory_($inventory, ''), array_values(array_filter($list, 'is_array')));
+    }
+
+    /**
+     * GET /api/project/{p}/environment/{id}: the names of the variable group's environment variables (its "env"
+     * JSON) and secret environment variables; Semaphore never returns the secrets' values.
+     */
+    public function environment(string $id): RunnerEnvironment
+    {
+        $environment = $this->get($this->projectPath('/environment/' . rawurlencode($id)), "variable group $id");
+        $env = is_string($environment['env'] ?? null) && trim($environment['env']) !== '' ? json_decode($environment['env'], true) : [];
+        if (! is_array($env)) {
+            throw $this->badResponse('/environment/{id}');
+        }
+        $secrets = [];
+        foreach (is_array($environment['secrets'] ?? null) ? $environment['secrets'] : [] as $secret) {
+            if (is_array($secret) && ($secret['type'] ?? '') === 'env' && is_string($secret['name'] ?? null)) {
+                $secrets[] = $secret['name'];
+            }
+        }
+
+        return new RunnerEnvironment((string) ($environment['id'] ?? $id), UntrustedText::line($environment['name'] ?? '', 120),
+            array_values(array_map('strval', array_keys($env))), array_values(array_unique($secrets)));
+    }
+
+    /**
+     * GET /api/project/{p}/role: the token's role in the project.
+     */
+    public function role(): string
+    {
+        $role = $this->get($this->projectPath('/role'), "the token's role in project {$this->project}");
+
+        return is_string($role['role'] ?? null) ? $role['role'] : '';
+    }
+
+    /**
+     * An inventory of Semaphore's JSON.
+     */
+    private function inventory_(array $inventory, string $id): RunnerInventory
+    {
         $type = (string) ($inventory['type'] ?? '');
 
         return new RunnerInventory((string) ($inventory['id'] ?? $id), UntrustedText::line($inventory['name'] ?? '', 120), $type,
@@ -148,24 +205,32 @@ final class SemaphoreRunner implements Runner
     }
 
     /**
-     * GET /api/project/{p}/tasks/last: the newest task of the template with this message, among the last 200 of the
-     * project.
+     * GET /api/project/{p}/tasks/last: the newest task of the template with this message created at $notBefore or
+     * later, among the last 1000 tasks of the project. The search is complete when that list reaches back past
+     * $notBefore (or holds every task of the project).
      */
-    public function findTask(string $templateId, string $message): ?RunnerTask
+    public function findTask(string $templateId, string $message, int $notBefore): RunnerTaskSearch
     {
-        $tasks = $this->get($this->projectPath('/tasks/last?count=200'), 'the latest tasks');
+        $tasks = $this->get($this->projectPath('/tasks/last?count=' . self::SEARCH_COUNT), 'the latest tasks');
         if (! array_is_list($tasks)) {
             throw $this->badResponse('/tasks/last');
         }
         $found = null;
+        $oldest = null;
         foreach ($tasks as $task) {
-            if (is_array($task) && (string) ($task['template_id'] ?? '') === $templateId && ($task['message'] ?? null) === $message
-                && ($found === null || (int) $task['id'] > (int) $found['id'])) {
+            if (! is_array($task)) {
+                continue;
+            }
+            $created = self::time($task['created'] ?? null);
+            $oldest = $created !== null && ($oldest === null || $created < $oldest) ? $created : $oldest;
+            if ((string) ($task['template_id'] ?? '') === $templateId && ($task['message'] ?? null) === $message
+                && $created !== null && $created >= $notBefore && ($found === null || (int) $task['id'] > (int) $found['id'])) {
                 $found = $task;
             }
         }
+        $complete = count($tasks) < self::SEARCH_COUNT || ($oldest !== null && $oldest < $notBefore);
 
-        return $found === null ? null : $this->task_($found);
+        return new RunnerTaskSearch($found === null ? null : $this->task_($found), $complete);
     }
 
     /**
@@ -198,11 +263,12 @@ final class SemaphoreRunner implements Runner
     }
 
     /**
-     * POST /api/project/{p}/tasks/{id}/stop with {"force": false} (an empty body is refused with 400).
+     * POST /api/project/{p}/tasks/{id}/stop with {"force": false}, or true to kill a task a stop did not end (an empty
+     * body is refused with 400).
      */
-    public function stop(string $taskId): void
+    public function stop(string $taskId, bool $force = false): void
     {
-        $this->call('POST', $this->projectPath('/tasks/' . rawurlencode($taskId) . '/stop'), "stopping task $taskId", ['force' => false], true);
+        $this->call('POST', $this->projectPath('/tasks/' . rawurlencode($taskId) . '/stop'), "stopping task $taskId", ['force' => $force], true);
     }
 
     /**
@@ -237,6 +303,7 @@ final class SemaphoreRunner implements Runner
             array_map(fn ($var) => self::surveyVar($var), array_values(array_filter(is_array($t['survey_vars'] ?? null) ? $t['survey_vars'] : [], 'is_array'))),
             is_int($t['permissions'] ?? null) ? ($t['permissions'] & self::PERMISSION_RUN) === self::PERMISSION_RUN : null,
             $overrides,
+            isset($t['environment_id']) && is_numeric($t['environment_id']) && (int) $t['environment_id'] > 0 ? (string) (int) $t['environment_id'] : null,
         );
     }
 
@@ -275,8 +342,8 @@ final class SemaphoreRunner implements Runner
             throw $this->badResponse('/tasks');
         }
 
-        return new RunnerTask((string) $t['id'], RunStatus::fromSemaphore($t['status']), $t['status'],
-            self::time($t['start'] ?? null), self::time($t['end'] ?? null));
+        return new RunnerTask((string) $t['id'], RunStatus::fromSemaphore($t['status']), UntrustedText::line($t['status'], 32),
+            self::time($t['start'] ?? null), self::time($t['end'] ?? null), self::time($t['created'] ?? null));
     }
 
     /**
@@ -387,14 +454,34 @@ final class SemaphoreRunner implements Runner
             return;
         }
         $detail = self::errorText($response);
+        if (($status === 401 || ($status >= 300 && $status < 400)) && ! $this->looksLikeSemaphore()) {
+            throw new RunnerError(RunnerError::BAD_RESPONSE, "{$this->host()} does not look like Semaphore UI: it answered HTTP $status to $what, and its /api/ping "
+                . 'does not answer "pong". Check the runner URL (the address of Semaphore UI, without /api).', $status);
+        }
+        $project = "project {$this->project}";
         throw match (true) {
             $status === 401 => new RunnerError(RunnerError::UNAUTHORIZED, 'Semaphore UI refused the API token (HTTP 401): it is wrong, expired or revoked. Create a token for the Task Runner user and save it in the plugin settings.', $status),
-            $status === 403 => new RunnerError(RunnerError::FORBIDDEN, "The token's user may not do this in project {$this->project} (HTTP 403, $what). It needs the Task Runner role in the project.", $status),
-            $status === 404 => new RunnerError(RunnerError::NOT_FOUND, "Semaphore UI does not have $what in project {$this->project} (HTTP 404), or the token's user is not a member of the project.", $status),
+            $status === 403 => new RunnerError(RunnerError::FORBIDDEN, "The token's user may not do this in $project (HTTP 403, $what). It needs the Task Runner role in the project.", $status),
+            $status === 404 && $what === $project => new RunnerError(RunnerError::NOT_FOUND, "Semaphore UI has no $project (HTTP 404), or the token's user is not a member of it.", $status),
+            $status === 404 => new RunnerError(RunnerError::NOT_FOUND, "Semaphore UI does not have $what in $project (HTTP 404), or the token's user is not a member of the project.", $status),
             $status === 400 && $missingTask => new RunnerError(RunnerError::NOT_FOUND, "Semaphore UI does not have $what in project {$this->project} (HTTP 400).", $status),
             $status >= 400 && $status < 500 => new RunnerError(RunnerError::REFUSED, "Semaphore UI refused $what (HTTP $status)" . ($detail !== '' ? ": $detail" : '.'), $status),
             default => new RunnerError(RunnerError::BAD_RESPONSE, "Semaphore UI failed on $what (HTTP $status)" . ($detail !== '' ? ": $detail" : '.') . ' Check its log.', $status, $changes),
         };
+    }
+
+    /**
+     * Does the runner URL lead to Semaphore UI? Its /api/ping answers "pong" without a token (none is sent here).
+     */
+    private function looksLikeSemaphore(): bool
+    {
+        try {
+            $response = $this->http->send('GET', rtrim($this->baseUrl, '/') . '/api/ping', ['Accept' => 'text/plain']);
+        } catch (TransportError) {
+            return false;
+        }
+
+        return $response->status === 200 && trim($response->body) === 'pong';
     }
 
     /**

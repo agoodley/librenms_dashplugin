@@ -4,10 +4,12 @@ namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 
 use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
+use Agoodley\LibrenmsAnsible\Services\Eventlog;
 use Agoodley\LibrenmsAnsible\Services\InventoryService;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Agoodley\LibrenmsAnsible\Services\RunFollower;
 use Agoodley\LibrenmsAnsible\Services\RunLauncher;
+use Agoodley\LibrenmsAnsible\Support\ErrorText;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
 use Illuminate\Routing\Controller as BaseController;
 use Illuminate\Support\Facades\Log;
@@ -39,7 +41,7 @@ abstract class Controller extends BaseController
 
     protected function follower(): RunFollower
     {
-        return new RunFollower(new Plugin(), new RunRepository(), $this->settings());
+        return new RunFollower(new Plugin(), new RunRepository(), $this->settings(), new Eventlog(), null, $this->inventoryService());
     }
 
     /**
@@ -48,10 +50,10 @@ abstract class Controller extends BaseController
      */
     protected function failure(string $what, \Throwable $e): string
     {
-        Log::error("ansible plugin: $what failed: " . $e->getMessage() . PHP_EOL . self::trace($e));
+        Log::error("ansible plugin: $what failed: " . ErrorText::forLog($e) . PHP_EOL . self::trace($e));
         $message = "The $what failed: see logs/librenms.log for details.";
 
-        return config('app.debug') ? $message . ' (' . $e->getMessage() . ')' : $message;
+        return config('app.debug') ? $message . ' (' . ErrorText::forLog($e) . ')' : $message;
     }
 
     /**

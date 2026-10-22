@@ -16,7 +16,7 @@
     $numbers = [
         'max_targets' => ['Max targets per run', 'devices one run may change'],
         'output_max_kb' => ['Output size (KB)', 'the log the plugin keeps per run; the runner keeps the whole log'],
-        'lost_after_hours' => ['Lost after (hours)', 'a run still unfinished after this long ends as lost'],
+        'stop_after_hours' => ['Stop after (hours)', 'a run still unfinished after this long is stopped by the plugin (it keeps its devices until the runner confirms the stop)'],
     ];
 @endphp
 

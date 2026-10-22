@@ -17,6 +17,7 @@ final class RunnerTemplate
      * @param  SurveyVar[]  $surveyVars
      * @param  bool|null  $canRun  may the token's user run it (null: unknown)
      * @param  string[]  $taskOverrides  what else a task may override (arguments, inventory, branch, ...)
+     * @param  string|null  $environmentId  the template's variable group (null: none)
      */
     public function __construct(
         public readonly string $id,
@@ -33,6 +34,7 @@ final class RunnerTemplate
         public readonly array $surveyVars,
         public readonly ?bool $canRun = null,
         public readonly array $taskOverrides = [],
+        public readonly ?string $environmentId = null,
     ) {
     }
 

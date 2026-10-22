@@ -38,15 +38,33 @@ interface Runner
     public function inventory(string $id): RunnerInventory;
 
     /**
+     * The project's inventories (to choose the LibreNMS one).
+     *
+     * @return RunnerInventory[]
+     */
+    public function inventories(): array;
+
+    /**
+     * A variable group of the project (the names of its variables, never their values).
+     */
+    public function environment(string $id): RunnerEnvironment;
+
+    /**
+     * The token's role in the project ("" when it has none); RunnerError when the runner cannot tell, e.g. when
+     * the token's user is not in the project.
+     */
+    public function role(): string;
+
+    /**
      * Start a task of a template; the runner's own id of the task and its first status.
      */
     public function launch(LaunchRequest $request): RunnerTask;
 
     /**
-     * The task the runner started for a launch whose answer never came, by the launch's message (unique per run);
-     * null when it has none.
+     * The task the runner started for a launch whose answer never came: a task of the template with the launch's
+     * message (unique per run: it holds a random nonce) created at $notBefore or later (a Unix time).
      */
-    public function findTask(string $templateId, string $message): ?RunnerTask;
+    public function findTask(string $templateId, string $message, int $notBefore): RunnerTaskSearch;
 
     /**
      * The task's status and times.
@@ -59,7 +77,7 @@ interface Runner
     public function output(string $taskId, int $from = 0): RunnerOutput;
 
     /**
-     * Ask the runner to stop the task (it ends as stopped).
+     * Ask the runner to stop the task (it ends as stopped); $force when an earlier stop was not carried out.
      */
-    public function stop(string $taskId): void;
+    public function stop(string $taskId, bool $force = false): void;
 }

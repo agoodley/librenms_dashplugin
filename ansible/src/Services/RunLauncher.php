@@ -3,15 +3,14 @@
 namespace Agoodley\LibrenmsAnsible\Services;
 
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
-use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Runner\LaunchRequest;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
-use Agoodley\LibrenmsAnsible\Runs\RunResults;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Runs\RunText;
 use Agoodley\LibrenmsAnsible\Runs\TargetSelection;
 use Agoodley\LibrenmsAnsible\Runs\TemplateCheck;
 use Agoodley\LibrenmsAnsible\Runs\VariableValidator;
+use Agoodley\LibrenmsAnsible\Support\ErrorText;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
@@ -178,11 +177,12 @@ final class RunLauncher
                 return self::refused($plan, array_map(fn ($deviceId, $runId) => $plan->targets[$deviceId]['display'] . " became busy in run #$runId: preview again.",
                     array_keys($busy), $busy));
             }
-            $runId = $this->record($user, $plan, $requestToken);
+            $nonce = bin2hex(random_bytes(6));
+            $runId = $this->record($user, $plan, $requestToken, $nonce);
         } finally {
             $lock->release();
         }
-        $this->start($runId, $plan, (string) $user->username);
+        $this->start($runId, $plan, (string) $user->username, $nonce);
 
         return ['run_id' => $runId, 'plan' => $plan, 'errors' => [], 'existing' => false];
     }
@@ -192,7 +192,7 @@ final class RunLauncher
      *
      * @param  \App\Models\User  $user
      */
-    private function record($user, LaunchPlan $plan, string $requestToken): int
+    private function record($user, LaunchPlan $plan, string $requestToken, string $nonce): int
     {
         $connection = $this->plugin->connection();
         $targets = [];
@@ -211,49 +211,35 @@ final class RunLauncher
             'limit' => implode(',', $plan->limit()),
             'variables' => $plan->variables(),
             'request_token' => $requestToken,
+            'launch_nonce' => $nonce,
             'status' => RunStatus::PENDING,
         ], $targets);
     }
 
     /**
-     * Ask the runner to start the recorded run, and write the eventlog of its targets. When no proper answer came
-     * (a timeout, a server error) the runner may have started the task anyway: the run stays recorded as launching
-     * and RunFollower looks for its task by the launch's message, so the audit log never says "not launched" for a
-     * task that runs.
+     * Ask the runner to start the recorded run (the lifecycle records the task and the "started" eventlog of its
+     * targets). When no proper answer came (a timeout, a server error) the runner may have started the task anyway:
+     * the run stays launching, keeps its devices, and the lifecycle looks for its task by the launch's message (with
+     * its nonce), so the audit log never says "not launched" for a task that runs. Only a launch the runner refused
+     * (it answered, with an error) is not launched at once.
      */
-    private function start(int $runId, LaunchPlan $plan, string $username): void
+    private function start(int $runId, LaunchPlan $plan, string $username, string $nonce): void
     {
         $template = $plan->template;
+        $lifecycle = (new RunFollower($this->plugin, $this->runs, $this->settings, $this->eventlog, $plan->runner, $this->inventory))->lifecycle();
         try {
-            $task = $plan->runner->launch(new LaunchRequest($template->id, $plan->limit(), $plan->values, $plan->secrets, RunText::taskMessage($runId, $username)));
-            if (RunFollower::adopt($this->runs, $runId, $task)) {
-                foreach (array_keys($plan->targets) as $deviceId) {
-                    $this->eventlog->write(RunText::started($runId, $template->name, $username), $deviceId, 'info', RunText::reference($runId));
-                }
-            }
+            $task = $plan->runner->launch(new LaunchRequest($template->id, $plan->limit(), $plan->values, $plan->secrets, RunText::taskMessage($runId, $username, $nonce)));
+            $lifecycle->launched($runId, $task, time());
         } catch (RunnerError $e) {
             if ($e->uncertain) {
-                $this->runs->update($runId, ['poll_error' => UntrustedText::line('The runner gave no proper answer to the launch, so the plugin looks for its task: '
-                    . $e->getMessage(), 500)]);
+                $lifecycle->launchUncertain($runId, $e->getMessage(), time());
             } else {
-                $this->notLaunched($runId, $plan, $username, $e->getMessage());
+                $lifecycle->launchRefused($runId, $e->getMessage(), time());
             }
         } catch (\Throwable $e) {
-            Log::error("ansible plugin: launching run #$runId failed: " . $e->getMessage());
-            $this->notLaunched($runId, $plan, $username, 'the launch failed, see logs/librenms.log');
-        }
-    }
-
-    /**
-     * The runner refused the run or could not be reached: nothing ran.
-     */
-    private function notLaunched(int $runId, LaunchPlan $plan, string $username, string $error): void
-    {
-        $this->runs->update($runId, ['status' => RunStatus::NOT_LAUNCHED, 'error' => UntrustedText::line($error, 1000), 'finished_at' => now(),
-            'summary' => [RunResults::NOT_RUN => count($plan->targets)]]);
-        $this->runs->setResults($runId, array_fill_keys(array_keys($plan->targets), ['result' => RunResults::NOT_RUN, 'counts' => null]));
-        foreach (array_keys($plan->targets) as $deviceId) {
-            $this->eventlog->write(RunText::notLaunched($runId, $plan->template->name, $username, $error), $deviceId, 'warning', RunText::reference($runId));
+            // the launch request may have reached the runner: look for the task rather than say it was not launched
+            Log::error("ansible plugin: launching run #$runId failed: " . ErrorText::forLog($e));
+            $lifecycle->launchUncertain($runId, 'the launch failed in LibreNMS (see logs/librenms.log)', time());
         }
     }
 

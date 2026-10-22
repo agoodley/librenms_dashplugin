@@ -192,8 +192,8 @@ The runner connection is stored encrypted with LibreNMS' `APP_KEY`.
 | Platform mapping | the defaults below | one line per LibreNMS os: `os ansible_network_os [connection] [become]`; a device whose os has no line cannot be a target |
 | Allowed device group | every device | only the members of this LibreNMS device group are in the inventory and can be targets |
 | Max targets per run | 25 | 1–500 |
-| Output size | 1024 KB | the log kept per run (16–65536 KB); the runner keeps the whole log |
-| Lost after | 24 h | a run still unfinished after this long ends as *lost* (1–720 h) |
+| Output size | 1024 KB | the log kept per run (16–8192 KB): a longer log keeps its start and its end (the PLAY RECAP, the errors) with a line that counts the lines left out; the runner keeps the whole log |
+| Stop after | 24 h | a run still unfinished after this long is stopped by the plugin (1–720 h); it keeps its devices until the runner confirms the stop |
 | *Run permission* | | which admins may launch and stop runs ([Permissions](#permissions)) |
 
 A setting that cannot be used is refused with the reason, and nothing is saved: a platform mapping line that cannot
@@ -256,7 +256,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   the limit. **Launch** checks everything again against the runner and opens the run.
 * **Run:** the status, the template, who launched it and when, each target's result with the PLAY RECAP counters, the
   answers, and the log with Ansible's colours, followed every 2 seconds while the run is unfinished. **Stop** asks the
-  runner to stop the task (Ansible finishes the step it is in on each device).
+  runner to stop the task (Ansible finishes the step it is in on each device). When the plugin could not ask the
+  runner about an unfinished run for 15 minutes, **Release the devices** (for holders of the run permission) ends it as
+  *released* so its devices can be targets again; see [Run states](#run-states).
 * **Runs:** filter by device, user, template, status and dates; each run lists its targets and their results. The
   *JSON* button gives the same list.
 * **Inventory:** the hosts with their variables and groups, the groups, the devices left out and why, the runner's
@@ -264,8 +266,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 * **Device panel:** the device's latest runs (template, when, who, result) and a link to run a template on it.
 * **Eventlog:** each target gets an entry (type `ansible`) when its run starts ("Ansible run #12 started: template
   'Port descriptions' by admin") and when it ends, with its result and counters; the severity follows the result
-  (ok, info for skipped, notice for changed, warning for not run, error for failed and unreachable). The reference is
-  the run's address (`plugin/ansible/runs/12`).
+  (ok, info for skipped, notice for changed, warning for not run and unknown, error for failed and unreachable). A
+  device the runner ran on although it was not a target gets an error entry too. The reference is the run's address
+  (`plugin/ansible/runs/12`), and the entries of a run carry the user who launched it (in LibreNMS' *User* column),
+  whoever's page or the sync command recorded them; configuration entries carry the admin who made the change.
 
 ## How it works
 
@@ -290,18 +294,47 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   in another unfinished run and records the run before it asks the runner: two launches cannot take the same device,
   and a form that is submitted twice starts one run (each form has a one-time token). The runner gets the template id,
   the limit (the targets' inventory names), the answers that are not secret as extra variables, the secret ones in
-  Semaphore's write-only secret field, and a message "LibreNMS Ansible run #N by user"; nothing else.
+  Semaphore's write-only secret field, and a message "LibreNMS Ansible run #N by user [nonce]"; nothing else. The
+  nonce is random per run: a launch whose answer never came (a timeout) is found again by its message, among the
+  tasks created after the run (a minute of clock difference allowed), so it never takes a task of another database
+  that shares the project.
 * **Following:** the run page asks the plugin every 2 seconds, and the plugin asks the runner at most every 2 seconds
-  per run (a lock per run keeps two pages and the sync command from doing it at once). The `ansible:sync` command does
-  the same every minute for every unfinished run (through the LibreNMS scheduler, one at a time, on one server, while
-  the plugin is enabled and its connection set up; output in `logs/ansible-sync.log`), so the audit log is complete
-  when nobody watches. The output is stored as it comes, up to *Output size*.
+  per run (a lock per run, held longer than the slowest refresh, keeps two pages and the sync command from doing it at
+  once; every write is a compare-and-set on the run's version, so a slow answer never writes over a newer state). The
+  `ansible:sync` command does the same every minute for every unfinished run, and every few minutes for a lost or
+  released run (through the LibreNMS scheduler, one at a time, on one server, while the plugin is enabled and its
+  connection set up; output in `logs/ansible-sync.log`), so the audit log is complete when nobody watches. The log is
+  stored as it comes, in pieces of at most 512 KB per statement, up to *Output size*.
 * **Results:** when the runner reports the task finished, the plugin reads the output once more (Semaphore reports
   the end before the last lines are readable) and takes each target's result from the last `PLAY RECAP`: unreachable,
-  failed, changed, ok, skipped, or *not run* for a target the recap does not name. A target that failed on its
-  connection without any task succeeding counts as unreachable (network connections report an unreachable device as a
-  failed task). A host in the recap that is not a target flags the run, on its page and with an error in the
-  eventlog. A run whose task the runner no longer has, or that is unfinished after *Lost after*, ends as *lost*.
+  failed, changed, ok, skipped, or *not run* for a target the recap does not name. Without a recap (a stopped or
+  killed run) the result comes from Ansible's task result lines (`ok:`, `changed:`, `failed:`, `fatal:`,
+  `skipping:` for the host): changed, failed or unreachable when a line says so, *unknown* when the host only had ok
+  or skipped results before the run ended, *not run* when the log never names it. A target whose connection failed
+  (the message of its first failure starts with an SSH or network error) without any task succeeding counts as
+  unreachable (network connections report an unreachable device as a failed task). A host the runner ran on that is
+  not a target flags the run: it is listed with its result on the run page, its device (found by its inventory name)
+  gets an error entry in the eventlog, and the run gets one too.
+
+### Run states
+
+| State | When | Devices |
+|---|---|---|
+| Launching, Queued, Running, Stopping | the plugin recorded the run and follows the task on the runner | busy |
+| Success | the runner ended the task with success, and every target is in the PLAY RECAP without a failure | free |
+| Incomplete | the runner ended the task with success, but targets did not run (or failed): the run page says how many and the likely cause, quoting the inventory script's error when there is one (a template without the LibreNMS variable group, a revoked token) | free |
+| Failed | the runner ended the task with an error | free |
+| Stopped | the runner stopped the task (a user's Stop, or the plugin's after *Stop after*) | free |
+| Not launched | the runner refused the launch, or a launch whose answer never came has no task 10 minutes later, according to a search of the runner's tasks that reached back to the launch | free |
+| Lost | the runner did not find the task at least 3 times over 5 minutes while the token still saw the project (the task was deleted); results from the log as far as the plugin read it, *unknown* where it says nothing | free; watched for a week |
+| Released | an admin with the run permission released the devices after the plugin could not ask the runner about the run for 15 minutes; results *unknown* where the log says nothing | free; watched for a week |
+
+The plugin never ends a run, nor frees its devices, on ambiguous evidence: a timeout, a server error, a "not found"
+while the token cannot see the project, a search that failed, are noted on the run page and the run keeps its devices
+while the plugin keeps asking. A run unfinished after *Stop after* is stopped, and is forced if the runner has not
+stopped it 5 minutes later; it stays *Stopping* until the runner confirms. A lost or released run is still asked about
+every few minutes for a week: a later end is recorded with its real results ("the runner reported this end after the
+plugin had given the run up"), and a task that runs again makes the run unfinished again, its devices busy.
 
 ## Safety
 
@@ -380,7 +413,7 @@ Checked against Semaphore UI 2.19.17:
   plugin checks again at every launch, but cannot close that window.
 * The results come from the PLAY RECAP: a playbook that runs several plays shows the totals per host. A device that
   fails on its connection after an earlier task succeeded counts as failed, not unreachable.
-* A run page shows at most *Output size* of the log; the runner keeps all of it.
+* A run page shows at most *Output size* of the log (its start and its end); the runner keeps all of it.
 * The target list loads every device of LibreNMS at once (fine for thousands of devices, slow for many more).
 * Runs are not batched yet: all targets of a run go at once (at most *Max targets per run*).
 

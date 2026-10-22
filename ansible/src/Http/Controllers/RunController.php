@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runs\Ansi;
 use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
+use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
 use Agoodley\LibrenmsAnsible\Runs\RunResults;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Support\Access;
@@ -69,6 +70,9 @@ class RunController extends Controller
      */
     public function show(Request $request, int $id): View
     {
+        if (! (new RunRepository())->available()) {
+            abort(503, 'The Ansible plugin\'s tables are missing: run ./lnms migrate.');
+        }
         $run = $this->follower()->refresh($id);
         if ($run === null) {
             abort(404, "There is no Ansible run #$id.");
@@ -77,30 +81,34 @@ class RunController extends Controller
         return view('ansible::run', [
             'run' => $run,
             'targets' => (new RunRepository())->targets($id),
-            'lines' => OutputBuffer::lines((string) $run['output']),
+            'lines' => OutputBuffer::display($run),
+            'next' => OutputBuffer::since($run, 0)['next'],
             'canRun' => Access::canRun($request->user()),
+            'releasable' => RunLifecycle::releasable($run, time()),
             'assetVersion' => self::assetVersion(),
         ]);
     }
 
     /**
-     * plugin/ansible/api/runs/{id}?after=N: the run's status, targets and the log lines after line N, refreshed
-     * from the runner at most every two seconds. Lines are runs of text with a CSS class: the page inserts them
-     * as text, never as HTML.
+     * plugin/ansible/api/runs/{id}?after=N: the run's status, targets and the log lines after the runner's line N
+     * (with a line that says how many were left out of a long log), refreshed from the runner at most every two
+     * seconds. Lines are runs of text with a CSS class: the page inserts them as text, never as HTML.
      */
     public function poll(Request $request, int $id): JsonResponse
     {
+        if (! (new RunRepository())->available()) {
+            return response()->json(['error' => 'The Ansible plugin\'s tables are missing: run ./lnms migrate.'], 503);
+        }
         $run = $this->follower()->refresh($id);
         if ($run === null) {
             return response()->json(['error' => "There is no Ansible run #$id."], 404);
         }
-        $lines = OutputBuffer::lines((string) $run['output']);
-        $after = min(count($lines), max(0, (int) $request->query('after', '0')));
+        $log = OutputBuffer::since($run, max(0, (int) $request->query('after', '0')));
         $targets = [];
         foreach ((new RunRepository())->targets($id) as $deviceId => $target) {
             $targets[] = ['device_id' => $deviceId, 'name' => $target['inventory_name'], 'display' => $target['display'], 'result' => $target['result'],
                 'label' => $target['result'] !== null ? RunResults::LABELS[$target['result']] ?? $target['result'] : null,
-                'css' => RunResults::css($target['result']), 'counts' => $target['counts']];
+                'css' => RunResults::css($target['result']), 'counts' => $target['counts'], 'unexpected' => $target['unexpected']];
         }
 
         return response()->json([
@@ -119,9 +127,12 @@ class RunController extends Controller
             'error' => $run['error'],
             'poll_error' => $run['poll_error'],
             'stopped_by' => $run['stopped_by'],
+            'stop_reason' => $run['stop_reason'],
+            'released_by' => $run['released_by'],
+            'releasable' => RunLifecycle::releasable($run, time()),
             'targets' => $targets,
-            'lines' => array_map(fn ($line) => Ansi::segments($line), array_slice($lines, $after)),
-            'next' => count($lines),
+            'lines' => array_map(fn ($line) => Ansi::segments($line), $log['lines']),
+            'next' => $log['next'],
             'truncated' => (bool) $run['output_truncated'],
         ]);
     }
@@ -132,6 +143,17 @@ class RunController extends Controller
     public function stop(Request $request, int $id): JsonResponse
     {
         $error = $this->follower()->stop($id, (string) $request->user()->username);
+
+        return $error === null ? response()->json(['ok' => true]) : response()->json(['error' => $error], 422);
+    }
+
+    /**
+     * POST plugin/ansible/runs/{id}/release: release the devices of a run the runner could not be asked about for
+     * a while (Runs\RunLifecycle::release()); written to the eventlog of its targets.
+     */
+    public function release(Request $request, int $id): JsonResponse
+    {
+        $error = $this->follower()->release($id, (string) $request->user()->username);
 
         return $error === null ? response()->json(['ok' => true]) : response()->json(['error' => $error], 422);
     }

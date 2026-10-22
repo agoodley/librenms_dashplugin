@@ -28,8 +28,13 @@
                     <td>
                         @if($run['result'])
                             <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($run['result']) }}">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::LABELS[$run['result']] ?? $run['result'] }}</span>
-                        @else
+                        @endif
+                        @if(! $run['result'] || ! in_array($run['status'], ['success', 'failed'], true))
+                            {{-- how the run ended, when that says more than the device's result (incomplete, stopped, lost, released) --}}
                             <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::css($run['status']) }}">{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::label($run['status']) }}</span>
+                        @endif
+                        @if(! empty($run['unexpected']))
+                            <span class="label label-danger" title="The runner ran on this device although it was not a target">not a target</span>
                         @endif
                     </td>
                 </tr>

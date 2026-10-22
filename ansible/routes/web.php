@@ -37,6 +37,7 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
             Route::post('api/preview', [LaunchController::class, 'preview'])->name('api.preview');
             Route::post('runs', [LaunchController::class, 'store'])->name('runs.store');
             Route::post('runs/{id}/stop', [RunController::class, 'stop'])->whereNumber('id')->name('runs.stop');
+            Route::post('runs/{id}/release', [RunController::class, 'release'])->whereNumber('id')->name('runs.release');
         });
     });
 

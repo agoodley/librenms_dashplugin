@@ -1,0 +1,445 @@
+<?php
+
+namespace Agoodley\LibrenmsAnsible\Tests\Unit;
+
+use Agoodley\LibrenmsAnsible\Runner\RunnerError;
+use Agoodley\LibrenmsAnsible\Runner\RunnerTask;
+use Agoodley\LibrenmsAnsible\Runner\RunnerTaskSearch;
+use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
+use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
+use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeRunner;
+use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\MemoryRunStore;
+use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\RecordingEvents;
+use PHPUnit\Framework\TestCase;
+
+/**
+ * The run lifecycle with a fake runner and an in-memory store: every transition, and that no run ends (or frees its
+ * devices) on ambiguous evidence.
+ */
+class RunLifecycleTest extends TestCase
+{
+    private const TARGETS = [501 => 'lab-sw1.netops.lab', 502 => 'lab-sw2.netops.lab', 503 => 'lab-sw3.netops.lab'];
+
+    private MemoryRunStore $store;
+
+    private FakeRunner $runner;
+
+    private RecordingEvents $events;
+
+    private int $t0;
+
+    protected function setUp(): void
+    {
+        $this->store = new MemoryRunStore();
+        $this->runner = new FakeRunner();
+        $this->events = new RecordingEvents();
+        $this->t0 = strtotime('2026-10-22 10:00:00');
+    }
+
+    private function lifecycle(int $outputMax = 1048576, int $stopAfter = 86400): RunLifecycle
+    {
+        return new RunLifecycle($this->store, fn () => $this->runner, $this->events, $outputMax, $stopAfter,
+            fn (array $names) => array_intersect_key(['lab-sw9.netops.lab' => ['device_id' => 509, 'hostname' => 'lab-sw9.netops.lab', 'display' => 'lab-sw9']],
+                array_flip($names)));
+    }
+
+    /** A run of the three switches whose task the runner has. */
+    private function running(string $status = 'running', array $run = []): int
+    {
+        $id = $this->store->add($run + ['runner_task_id' => '90', 'status' => 'running', 'started_at' => '2026-10-22 10:00:01'], self::TARGETS);
+        $this->runner->tasks['90'] = $status;
+
+        return $id;
+    }
+
+    /**
+     * A log with a PLAY RECAP.
+     *
+     * @param  array<string, string>  $hosts  host => recap counters "ok=2 changed=1 unreachable=0 failed=0"
+     * @return string[]
+     */
+    private static function recapLog(array $hosts, array $before = []): array
+    {
+        $lines = array_merge(['PLAY [Show version] ************************************************************', '',
+            'TASK [show version] ************************************************************'], $before);
+        foreach ($hosts as $host => $counts) {
+            $lines[] = (str_contains($counts, 'changed=1') ? 'changed' : 'ok') . ": [$host]";
+        }
+        $lines[] = '';
+        $lines[] = 'PLAY RECAP *********************************************************************';
+        foreach ($hosts as $host => $counts) {
+            $lines[] = "$host : $counts skipped=0 rescued=0 ignored=0";
+        }
+        $lines[] = '';
+
+        return $lines;
+    }
+
+    /**
+     * Refresh until the run is final (the runner's end settles over two refreshes), at most $times.
+     */
+    private function settle(RunLifecycle $lifecycle, int $id, int $now, int $times = 4): array
+    {
+        $run = $this->store->find($id);
+        for ($i = 0; $i < $times && ! \Agoodley\LibrenmsAnsible\Runs\RunStatus::isFinal($run['status']); $i++) {
+            $run = $lifecycle->refresh($id, $now + $i * 3);
+        }
+
+        return $run;
+    }
+
+    // ------------------------------------------------------------------ launch
+
+    public function testALaunchTheRunnerAnsweredIsFollowedWithItsStartedEntries(): void
+    {
+        $id = $this->store->add([], self::TARGETS);
+
+        $this->assertTrue($this->lifecycle()->launched($id, new RunnerTask('90', 'queued', 'waiting'), $this->t0));
+        $run = $this->store->find($id);
+        $this->assertSame('90', $run['runner_task_id']);
+        $this->assertSame('queued', $run['status']);
+        $this->assertCount(3, $this->events->entries);
+        $this->assertSame('alice', $this->events->entries[0]['user'], 'attributed to who launched the run');
+        $this->assertStringStartsWith("Ansible run #$id started: template 'Show version' by alice", $this->events->entries[0]['message']);
+        $this->assertFalse($this->lifecycle()->launched($id, new RunnerTask('91', 'queued', 'waiting'), $this->t0), 'a run takes one task, once');
+    }
+
+    public function testALaunchTheRunnerRefusedWasNotLaunched(): void
+    {
+        $id = $this->store->add([], self::TARGETS);
+
+        $this->lifecycle()->launchRefused($id, 'Semaphore UI refused a task of template 11 (HTTP 400): Task queue is full', $this->t0);
+        $run = $this->store->find($id);
+        $this->assertSame('not_launched', $run['status']);
+        $this->assertSame('not_run', $this->store->targets[$id][501]['result']);
+        $this->assertSame('warning', $this->events->entries[0]['severity']);
+    }
+
+    public function testAnUncertainLaunchIsFoundByItsMessageWithTheNonce(): void
+    {
+        $id = $this->store->add([], self::TARGETS);
+        $lifecycle = $this->lifecycle();
+        $lifecycle->launchUncertain($id, 'Cannot reach Semaphore UI: timed out', $this->t0);
+        $this->assertSame('pending', $this->store->find($id)['status']);
+
+        $this->runner->search = new RunnerTaskSearch(new RunnerTask('90', 'running', 'running', $this->t0 + 1), true);
+        $run = $lifecycle->refresh($id, $this->t0 + 5);
+        $this->assertSame('90', $run['runner_task_id']);
+        $this->assertSame('running', $run['status']);
+        $this->assertContains("find LibreNMS Ansible run #$id by alice [abcdef123456]", $this->runner->calls);
+        $this->assertCount(3, $this->events->entries);
+    }
+
+    public function testAnUncertainLaunchIsNotGivenUpWhileTheSearchFailsOrDoesNotReachBack(): void
+    {
+        $id = $this->store->add([], self::TARGETS);
+        $lifecycle = $this->lifecycle();
+        $lifecycle->launchUncertain($id, 'timed out', $this->t0);
+
+        // the search fails at the timeout: nothing is known, the run keeps its devices
+        $this->runner->search = new RunnerError(RunnerError::UNREACHABLE, 'Cannot reach Semaphore UI: refused');
+        $run = $lifecycle->refresh($id, $this->t0 + RunLifecycle::LAUNCH_TIMEOUT + 60);
+        $this->assertSame('pending', $run['status']);
+        $this->assertStringContainsString('keeps its devices', $run['poll_error']);
+
+        // the list of tasks does not reach back to the launch (too many tasks since): not conclusive either
+        $this->runner->search = new RunnerTaskSearch(null, false);
+        $this->assertSame('pending', $lifecycle->refresh($id, $this->t0 + RunLifecycle::LAUNCH_TIMEOUT + 120)['status']);
+        $this->assertSame([], $this->events->entries);
+
+        // a complete search that finds nothing, after the timeout: not launched
+        $this->runner->search = new RunnerTaskSearch(null, true);
+        $run = $lifecycle->refresh($id, $this->t0 + RunLifecycle::LAUNCH_TIMEOUT + 180);
+        $this->assertSame('not_launched', $run['status']);
+        $this->assertStringContainsString('has no task for it', $run['error']);
+    }
+
+    public function testACompleteSearchBeforeTheTimeoutWaits(): void
+    {
+        $id = $this->store->add([], self::TARGETS);
+        $lifecycle = $this->lifecycle();
+        $lifecycle->launchUncertain($id, 'timed out', $this->t0);
+        $this->runner->search = new RunnerTaskSearch(null, true);
+
+        $this->assertSame('pending', $lifecycle->refresh($id, $this->t0 + 60)['status']);
+        // a launch whose request is still at it is not looked for before the grace period
+        $quiet = $this->store->add([], self::TARGETS);
+        $lifecycle->refresh($quiet, $this->t0 + 30);
+        $this->assertNotContains("find LibreNMS Ansible run #$quiet by alice [abcdef123456]", $this->runner->calls);
+    }
+
+    // ------------------------------------------------------------------ following and ending
+
+    public function testARunEndsWithSuccessOnceTheLogSettled(): void
+    {
+        $id = $this->running();
+        $lifecycle = $this->lifecycle();
+        $this->runner->logs['90'] = ['PLAY [Show version] ****', ''];
+        $this->assertSame('running', $lifecycle->refresh($id, $this->t0 + 10)['status']);
+
+        $this->runner->tasks['90'] = 'success';
+        $this->runner->logs['90'] = self::recapLog(['lab-sw1.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0',
+            'lab-sw2.netops.lab' => 'ok=1 changed=1 unreachable=0 failed=0', 'lab-sw3.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0']);
+        $run = $lifecycle->refresh($id, $this->t0 + 20);
+        $this->assertSame('running', $run['status'], 'the runner reported the end with new lines: the log may not be complete yet');
+        $this->assertNotNull($run['runner_final_at']);
+
+        $run = $lifecycle->refresh($id, $this->t0 + 23);
+        $this->assertSame('success', $run['status']);
+        $this->assertSame(['changed' => 1, 'ok' => 2], $run['summary']);
+        $this->assertSame('changed', $this->store->targets[$id][502]['result']);
+        $this->assertSame(1, $this->store->targets[$id][502]['counts']['changed']);
+        $this->assertCount(3, $this->events->entries);
+        $this->assertSame('notice', $this->events->of(502)[0]['severity']);
+        $this->assertSame('alice', $this->events->of(502)[0]['user']);
+        $this->assertStringContainsString('PLAY RECAP', $run['output']);
+
+        $lifecycle->refresh($id, $this->t0 + 30);
+        $this->assertCount(3, $this->events->entries, 'an ended run is not ended again');
+    }
+
+    public function testASuccessfulTaskWithTargetsThatDidNotRunIsIncompleteWithTheCause(): void
+    {
+        // the inventory script failed: Ansible found no host and still ended with success
+        $id = $this->running('success', ['runner_final_at' => '2026-10-22 10:00:30']);
+        $this->runner->logs['90'] = ["\e[1;35m[WARNING]: Failed to parse inventory with 'script' plugin: Inventory script returned non-zero exit code 1.\e[0m",
+            "\e[1;35mStandard error from inventory script:\e[0m",
+            "\e[1;35mlibrenms_inventory: LibreNMS refused the API token (HTTP 401): check LIBRENMS_TOKEN (it may have been deleted or have expired)\e[0m",
+            "\e[1;35m\e[0m", "\e[1;35m[WARNING]: Could not match supplied host pattern, ignoring: lab-sw1.netops.lab\e[0m", '',
+            'PLAY [Show version] ****', "\e[0;36mskipping: no hosts matched\e[0m", '', 'PLAY RECAP ****', ''];
+
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 100);
+        $this->assertSame('incomplete', $run['status']);
+        $this->assertSame(['not_run' => 3], $run['summary']);
+        $this->assertStringStartsWith('3 of 3 targets did not run: the runner reported success, but the PLAY RECAP does not name them. The inventory script failed: '
+            . '"librenms_inventory: LibreNMS refused the API token (HTTP 401)', $run['error']);
+        $this->assertStringContainsString('LIBRENMS_TOKEN', $run['error']);
+        $this->assertSame('warning', $this->events->of(501)[0]['severity']);
+        $this->assertStringStartsWith("Ansible run #$id was incomplete: not run", $this->events->of(501)[0]['message']);
+    }
+
+    public function testASuccessfulTaskWithOneTargetMissingIsIncomplete(): void
+    {
+        $id = $this->running('success', ['runner_final_at' => '2026-10-22 10:00:30']);
+        $this->runner->logs['90'] = array_merge(["\e[1;35m[WARNING]: Could not match supplied host pattern, ignoring: lab-sw3.netops.lab\e[0m"],
+            self::recapLog(['lab-sw1.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0', 'lab-sw2.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0']));
+
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 100);
+        $this->assertSame('incomplete', $run['status']);
+        $this->assertSame(['not_run' => 1, 'ok' => 2], $run['summary']);
+        $this->assertStringContainsString("The runner's inventory did not have lab-sw3.netops.lab", $run['error']);
+    }
+
+    public function testAStoppedRunWithoutARecapTakesItsResultsFromTheTaskLines(): void
+    {
+        // stopped during a pause after the change: the log names lab-sw3 changed, lab-sw1 ok so far, lab-sw2 never
+        $id = $this->store->add(['runner_task_id' => '90', 'status' => 'stopping', 'stopped_by' => 'bob', 'runner_final_at' => '2026-10-22 10:00:30'],
+            self::TARGETS);
+        $this->runner->tasks['90'] = 'stopped';
+        $this->runner->logs['90'] = ['TASK [set description] ****', 'ok: [lab-sw1.netops.lab]', 'changed: [lab-sw3.netops.lab]',
+            'TASK [pause] ****', 'Pausing for 30 seconds'];
+
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 100);
+        $this->assertSame('stopped', $run['status']);
+        $results = array_map(fn ($t) => $t['result'], $this->store->targets[$id]);
+        $this->assertSame([501 => 'unknown', 502 => 'not_run', 503 => 'changed'], $results);
+        $this->assertStringContainsString('was stopped: changed', $this->events->of(503)[0]['message']);
+        $this->assertStringContainsString('(stopped by bob)', $this->events->of(503)[0]['message']);
+    }
+
+    public function testAStaleRefreshNeverWritesOverANewerOne(): void
+    {
+        // a page poll reads the run, its runner answer comes late; meanwhile the sync command ends the run
+        $id = $this->running('success', ['runner_final_at' => '2026-10-22 10:00:30']);
+        $this->runner->logs['90'] = self::recapLog(['lab-sw1.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0',
+            'lab-sw2.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0', 'lab-sw3.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0']);
+        $slow = $this->lifecycle();
+        $this->store->beforeUpdate = function () use ($id): void {
+            $this->runner->tasks['90'] = 'success';
+            $this->lifecycle()->refresh($id, $this->t0 + 100); // the sync command, in between
+        };
+        $run = $slow->refresh($id, $this->t0 + 100);
+
+        $this->assertSame('success', $run['status']);
+        $this->assertSame(1, $this->store->conflicts, 'the slow refresh found the run changed and wrote nothing');
+        $this->assertCount(3, $this->events->entries, 'one end entry per target');
+
+        // the same with a slow refresh of an unfinished run: it cannot set the ended run back to running
+        $other = $this->running('running');
+        $this->store->beforeUpdate = function () use ($other): void {
+            $this->store->runs[$other]['status'] = 'success';
+            $this->store->runs[$other]['version']++;
+        };
+        $this->assertSame('success', $this->lifecycle()->refresh($other, $this->t0 + 10)['status']);
+    }
+
+    public function testHostsTheRunnerRanOnThatWereNotTargetsAreRecordedOnTheirDevices(): void
+    {
+        $id = $this->store->add(['runner_task_id' => '90', 'status' => 'running', 'runner_final_at' => '2026-10-22 10:00:30'], [501 => 'lab-sw1.netops.lab']);
+        $this->runner->tasks['90'] = 'success';
+        $this->runner->logs['90'] = self::recapLog(['lab-sw1.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0',
+            'lab-sw9.netops.lab' => 'ok=1 changed=1 unreachable=0 failed=0', 'ghost.example' => 'ok=1 changed=0 unreachable=0 failed=0']);
+
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 100);
+        $this->assertSame(['ghost.example', 'lab-sw9.netops.lab'], $run['unexpected_hosts']);
+        $this->assertTrue($this->store->targets[$id][509]['unexpected']);
+        $this->assertSame('changed', $this->store->targets[$id][509]['result']);
+        $device = $this->events->of(509);
+        $this->assertCount(1, $device);
+        $this->assertSame('error', $device[0]['severity']);
+        $this->assertStringContainsString('ran on this device although it was not a target (as lab-sw9.netops.lab): changed', $device[0]['message']);
+        $this->assertStringContainsString('ghost.example', $this->events->of(null)[0]['message']);
+    }
+
+    // ------------------------------------------------------------------ missing tasks and lost runs
+
+    public function testOneNotFoundIsNotEnoughToLoseARun(): void
+    {
+        $id = $this->running();
+        unset($this->runner->tasks['90']); // 404
+        $lifecycle = $this->lifecycle();
+
+        $run = $lifecycle->refresh($id, $this->t0 + 10);
+        $this->assertSame('running', $run['status']);
+        $this->assertSame(1, $run['missing_checks']);
+        $this->assertStringContainsString('does not find task #90', $run['poll_error']);
+
+        // the token is out of the project for a moment: not counted
+        $this->runner->role = new RunnerError(RunnerError::NOT_FOUND, 'not a member');
+        $run = $lifecycle->refresh($id, $this->t0 + 400);
+        $this->assertSame('running', $run['status']);
+        $this->assertSame(1, $run['missing_checks']);
+
+        // back in the project, the task found again: the count starts over
+        $this->runner->role = 'task_runner';
+        $this->runner->tasks['90'] = 'running';
+        $run = $lifecycle->refresh($id, $this->t0 + 410);
+        $this->assertSame(0, $run['missing_checks']);
+        $this->assertNull($run['missing_since']);
+        $this->assertSame([], $this->events->entries);
+    }
+
+    public function testATaskMissingForMinutesWhileTheProjectIsVisibleIsLostThenWatched(): void
+    {
+        $id = $this->running('running', ['output' => "TASK [x] ****\nok: [lab-sw1.netops.lab]", 'output_lines' => 2]);
+        unset($this->runner->tasks['90']);
+        $lifecycle = $this->lifecycle();
+        $lifecycle->refresh($id, $this->t0 + 10);
+        $lifecycle->refresh($id, $this->t0 + 20);
+        $run = $lifecycle->refresh($id, $this->t0 + 200);
+        $this->assertSame('running', $run['status'], 'three times, but not yet five minutes');
+
+        $run = $lifecycle->refresh($id, $this->t0 + 400);
+        $this->assertSame('lost', $run['status']);
+        $this->assertStringContainsString('the runner no longer has task #90 (not found 4 times', $run['error']);
+        $this->assertSame(['unknown' => 3], $run['summary'], 'the plugin lost track: what the log does not say is unknown');
+        $this->assertNotNull($run['watch_until']);
+
+        // the runner has the task again, finished: the real end is recorded
+        $this->runner->tasks['90'] = 'success';
+        $this->runner->logs['90'] = self::recapLog(['lab-sw1.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0',
+            'lab-sw2.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0', 'lab-sw3.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0']);
+        $this->assertSame('lost', $lifecycle->refresh($id, $this->t0 + 500)['status'], 'watched every few minutes only');
+        $run = $lifecycle->refresh($id, $this->t0 + 400 + RunLifecycle::WATCH_INTERVAL);
+        $this->assertSame('success', $run['status']);
+        $this->assertNull($run['watch_until']);
+        $this->assertStringContainsString('the runner reported this end after the plugin had given the run up as lost', $this->events->of(501)[1]['message']);
+    }
+
+    public function testAWatchedRunWhoseTaskRunsAgainIsFollowedAgain(): void
+    {
+        $id = $this->running('running', ['status' => 'lost', 'error' => 'the runner no longer has task #90', 'finished_at' => '2026-10-22 10:05:00',
+            'watch_until' => '2026-10-29 10:05:00', 'polled_at' => '2026-10-22 10:05:00']);
+
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 3600);
+        $this->assertSame('running', $run['status'], 'its devices are busy again');
+        $this->assertNull($run['finished_at']);
+        $this->assertStringStartsWith("Ansible run #$id: the runner has its task #90 again, unfinished", $this->events->of(502)[0]['message']);
+    }
+
+    // ------------------------------------------------------------------ stops, the Stop after setting, release
+
+    public function testARunPastStopAfterIsStoppedAndKeepsItsDevicesUntilTheRunnerConfirms(): void
+    {
+        $id = $this->running();
+        $lifecycle = $this->lifecycle(1048576, 3600);
+        $this->assertSame('running', $lifecycle->refresh($id, $this->t0 + 3000)['status']);
+
+        $run = $lifecycle->refresh($id, $this->t0 + 3700);
+        $this->assertSame('stopping', $run['status']);
+        $this->assertSame([['90', false]], $this->runner->stops);
+        $this->assertSame('stopped by the plugin: still unfinished after 1 hour (Stop after setting)', $run['stop_reason']);
+
+        // not stopped five minutes later: asked again, forced
+        $lifecycle->refresh($id, $this->t0 + 3800);
+        $this->assertCount(1, $this->runner->stops);
+        $lifecycle->refresh($id, $this->t0 + 4100);
+        $this->assertSame(['90', true], $this->runner->stops[1]);
+
+        // the runner confirms
+        $this->runner->tasks['90'] = 'stopped';
+        $run = $this->settle($lifecycle, $id, $this->t0 + 4200);
+        $this->assertSame('stopped', $run['status']);
+        $this->assertStringContainsString('(stopped by the plugin: still unfinished after 1 hour', $this->events->of(501)[0]['message']);
+    }
+
+    public function testAStopThatFailsAtTheTimeoutKeepsTheRunGoing(): void
+    {
+        $id = $this->running();
+        $this->runner->stopError = new RunnerError(RunnerError::UNREACHABLE, 'Cannot reach Semaphore UI');
+
+        $run = $this->lifecycle(1048576, 3600)->refresh($id, $this->t0 + 3700);
+        $this->assertSame('running', $run['status']);
+        $this->assertStringStartsWith('Still unfinished after 1 hour (Stop after setting): the plugin asked the runner to stop it, which failed', $run['poll_error']);
+        $this->assertSame([], $this->events->entries);
+    }
+
+    public function testAUserStop(): void
+    {
+        $id = $this->running();
+
+        $this->assertNull($this->lifecycle()->stop($id, 'bob', $this->t0 + 10));
+        $run = $this->store->find($id);
+        $this->assertSame('stopping', $run['status']);
+        $this->assertSame('bob', $run['stopped_by']);
+        $this->assertSame('The run has already ended.', $this->lifecycle()->stop($this->running('success', ['status' => 'success']), 'bob', $this->t0));
+    }
+
+    public function testDevicesAreReleasedOnlyWhenTheRunnerCouldNotBeAskedForLong(): void
+    {
+        $id = $this->running('running', ['runner_seen_at' => '2026-10-22 10:00:10']);
+        $lifecycle = $this->lifecycle();
+        $this->runner->tasks['90'] = new RunnerError(RunnerError::UNREACHABLE, 'Cannot reach Semaphore UI');
+        $lifecycle->refresh($id, $this->t0 + 60);
+
+        $this->assertSame('The plugin still gets answers about this run from the runner: wait for its end, or stop it.', $lifecycle->release($id, 'carol', $this->t0 + 120));
+        $this->assertNull($lifecycle->release($id, 'carol', $this->t0 + 10 + RunLifecycle::RELEASE_AFTER));
+        $run = $this->store->find($id);
+        $this->assertSame('released', $run['status']);
+        $this->assertSame('carol', $run['released_by']);
+        $this->assertSame(['unknown' => 3], $run['summary']);
+        $this->assertStringContainsString('devices released by carol while the runner could not be asked', $this->events->of(501)[0]['message']);
+        $this->assertSame('alice', $this->events->of(501)[0]['user']);
+    }
+
+    // ------------------------------------------------------------------ the log
+
+    public function testALongLogKeepsItsHeadAndItsTailWithThePlayRecap(): void
+    {
+        $id = $this->running('success', ['runner_final_at' => '2026-10-22 10:00:30']);
+        $noise = array_map(fn ($i) => "  line $i " . str_repeat('x', 60), range(1, 2000));
+        $this->runner->logs['90'] = array_merge(['PLAY [Show version] ****'], $noise, self::recapLog(['lab-sw1.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0',
+            'lab-sw2.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0', 'lab-sw3.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0']));
+
+        $run = $this->lifecycle(16384)->refresh($id, $this->t0 + 100);
+        $this->assertSame('success', $run['status']);
+        $this->assertTrue($run['output_truncated']);
+        $this->assertLessThanOrEqual(16384, strlen($run['output']) + strlen($run['output_tail']));
+        $display = OutputBuffer::display($run);
+        $this->assertSame('PLAY [Show version] ****', $display[0]);
+        $this->assertStringContainsString('lines left out here', implode("\n", $display));
+        $this->assertStringContainsString('PLAY RECAP', $run['output_tail'], 'the end of the log survives');
+        $since = OutputBuffer::since($run, 5);
+        $this->assertSame($run['output_lines'], $since['next']);
+    }
+}

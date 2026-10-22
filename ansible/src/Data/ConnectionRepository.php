@@ -41,7 +41,7 @@ final class ConnectionRepository
         } catch (\Illuminate\Contracts\Encryption\DecryptException) {
             $this->error = 'The saved runner connection cannot be decrypted (was the LibreNMS APP_KEY changed?): save it again.';
         } catch (\Throwable $e) {
-            Log::error('ansible plugin: cannot read the runner connection: ' . $e->getMessage());
+            Log::error('ansible plugin: cannot read the runner connection: ' . \Agoodley\LibrenmsAnsible\Support\ErrorText::forLog($e));
             $this->error = 'The runner connection cannot be read: see logs/librenms.log.';
         }
 

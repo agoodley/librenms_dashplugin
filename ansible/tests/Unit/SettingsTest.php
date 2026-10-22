@@ -12,11 +12,11 @@ class SettingsTest extends TestCase
 {
     public function testDefaultsAndClamping(): void
     {
-        $settings = new PluginSettings(['max_targets' => '900', 'output_max_kb' => 'lots', 'lost_after_hours' => '0', 'allowed_group' => '12', 'extra' => 'x']);
+        $settings = new PluginSettings(['max_targets' => '900', 'output_max_kb' => 'lots', 'stop_after_hours' => '0', 'allowed_group' => '12', 'extra' => 'x']);
 
         $this->assertSame(500, $settings->maxTargets());
         $this->assertSame(1024 * 1024, $settings->outputMaxBytes());
-        $this->assertSame(3600, $settings->lostAfterSeconds());
+        $this->assertSame(3600, $settings->stopAfterSeconds());
         $this->assertSame(12, $settings->allowedGroup());
         $this->assertArrayNotHasKey('extra', $settings->all());
         $this->assertNotNull($settings->platformMap()->for('iosxe'));
@@ -31,11 +31,11 @@ class SettingsTest extends TestCase
 
     public function testSettingsFromInputAreCheckedNotClamped(): void
     {
-        $result = PluginSettings::fromInput(['max_targets' => '900', 'output_max_kb' => 'lots', 'lost_after_hours' => '0', 'allowed_group' => '12',
+        $result = PluginSettings::fromInput(['max_targets' => '900', 'output_max_kb' => 'lots', 'stop_after_hours' => '0', 'allowed_group' => '12',
             'platform_map' => "ios cisco.ios.ios bogus\nnxos cisco.nxos.nxos", 'inventory_user' => '77'], new PluginSettings(), self::GROUPS, self::USERS);
 
         $this->assertNull($result['settings']);
-        $this->assertSame(['platform_map', 'allowed_group', 'max_targets', 'output_max_kb', 'lost_after_hours', 'inventory_user'], array_keys($result['errors']));
+        $this->assertSame(['platform_map', 'allowed_group', 'max_targets', 'output_max_kb', 'stop_after_hours', 'inventory_user'], array_keys($result['errors']));
         $this->assertStringContainsString('line 1 (ios cisco.ios.ios bogus)', $result['errors']['platform_map']);
         $this->assertSame('Max targets per run is a whole number from 1 to 500.', $result['errors']['max_targets']);
     }

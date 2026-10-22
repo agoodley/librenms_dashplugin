@@ -7,7 +7,7 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 
 /**
  * What runs may reach and how: the platform mapping, the allowed device group, the max targets per run, the
- * output kept, when an unfinished run is lost, and the inventory user (the LibreNMS user whose API token the
+ * output kept, when an unfinished run is stopped, and the inventory user (the LibreNMS user whose API token the
  * runner fetches the inventory with). The plugin stores them itself (Data\SettingsRepository) and only LibreNMS
  * admins change them, like the runner connection: LibreNMS' own plugin settings form can be saved by any holder of
  * its plugin.admin permission, which non-admin roles can have, so the plugin keeps nothing there.
@@ -19,15 +19,15 @@ final class PluginSettings
         'allowed_group' => '',
         'max_targets' => '25',
         'output_max_kb' => '1024',
-        'lost_after_hours' => '24',
+        'stop_after_hours' => '24',
         'inventory_user' => '',
     ];
 
     /** Ranges of the numbers: [minimum, maximum]. */
     public const LIMITS = [
         'max_targets' => [1, 500],
-        'output_max_kb' => [16, 65536],
-        'lost_after_hours' => [1, 720],
+        'output_max_kb' => [16, 8192],
+        'stop_after_hours' => [1, 720],
     ];
 
     /** Names of the settings in messages and the eventlog. */
@@ -36,7 +36,7 @@ final class PluginSettings
         'allowed_group' => 'allowed device group',
         'max_targets' => 'max targets per run',
         'output_max_kb' => 'output size (KB)',
-        'lost_after_hours' => 'lost after (hours)',
+        'stop_after_hours' => 'stop after (hours)',
         'inventory_user' => 'inventory user',
     ];
 
@@ -77,7 +77,7 @@ final class PluginSettings
      * The settings posted by an admin over the current ones, or what is wrong with them. A setting left out of
      * $input keeps its current value; an empty one takes its default.
      *
-     * @param  array<string, mixed>  $input  platform_map, allowed_group, max_targets, output_max_kb, lost_after_hours, inventory_user
+     * @param  array<string, mixed>  $input  platform_map, allowed_group, max_targets, output_max_kb, stop_after_hours, inventory_user
      * @param  array<int, string>  $groups  the device groups (id => name)
      * @param  array<int, string>  $users  the LibreNMS users (id => username)
      * @return array{settings: self|null, errors: array<string, string>}
@@ -235,11 +235,11 @@ final class PluginSettings
     }
 
     /**
-     * After how long an unfinished run is given up as lost, in seconds.
+     * After how long the plugin stops a run that is still unfinished, in seconds.
      */
-    public function lostAfterSeconds(): int
+    public function stopAfterSeconds(): int
     {
-        return $this->int('lost_after_hours') * 3600;
+        return $this->int('stop_after_hours') * 3600;
     }
 
     /**

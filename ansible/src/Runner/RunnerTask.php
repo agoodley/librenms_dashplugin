@@ -14,6 +14,7 @@ final class RunnerTask
         public readonly string $rawStatus,
         public readonly ?int $started = null,
         public readonly ?int $ended = null,
+        public readonly ?int $created = null,
     ) {
     }
 }

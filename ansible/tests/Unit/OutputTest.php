@@ -42,19 +42,62 @@ class OutputTest extends TestCase
         $this->assertSame('&#039;onmouseover=&#039;x', Ansi::html("\e[38;5;1m'onmouseover='x"), 'unknown codes give no class');
     }
 
-    public function testBufferCapsWholeLines(): void
+    public function testTheLogIsAppendedWhileItFits(): void
     {
-        $first = OutputBuffer::append('', ['one', 'two'], 20);
-        $this->assertSame(['text' => "one\ntwo", 'truncated' => false], $first);
-
-        $second = OutputBuffer::append($first['text'], ['three', 'four', 'five-is-too-long'], 20);
-        $this->assertSame("one\ntwo\nthree\nfour", $second['text']);
-        $this->assertTrue($second['truncated']);
-
-        $this->assertSame(['text' => $second['text'], 'truncated' => true], OutputBuffer::append($second['text'], ['x'], 1000, true),
-            'nothing is added after a gap');
+        $first = OutputBuffer::add([], ['one', 'two'], 40);
+        $this->assertSame(['append' => "one\ntwo", 'values' => []], $first);
+        $second = OutputBuffer::add(['output' => "one\ntwo"], ['three'], 40);
+        $this->assertSame("\nthree", $second['append'], 'only the new text goes to the database');
+        $this->assertSame(['append' => '', 'values' => []], OutputBuffer::add(['output' => 'x'], [], 40));
         $this->assertSame(['one', 'two'], OutputBuffer::lines("one\ntwo"));
         $this->assertSame([], OutputBuffer::lines(''));
-        $this->assertSame('', OutputBuffer::append('', [''], 20)['text']);
+    }
+
+    public function testALongLogKeepsItsHeadAndItsTail(): void
+    {
+        $lines = array_map(fn ($i) => sprintf('line %02d', $i), range(1, 20)); // 7 bytes each
+        $cut = OutputBuffer::add(['output' => ''], $lines, 64);
+
+        $this->assertSame('', $cut['append']);
+        $this->assertSame(implode("\n", array_slice($lines, 0, 4)), $cut['values']['output'], 'the head: the first half');
+        $this->assertSame(implode("\n", array_slice($lines, 16)), $cut['values']['output_tail'], 'the tail: the last half');
+        $this->assertSame(12, $cut['values']['output_omitted']);
+        $this->assertTrue($cut['values']['output_truncated']);
+
+        $run = $cut['values'] + ['output_lines' => 20];
+        $more = OutputBuffer::add($run, ['line 21', 'line 22'], 64);
+        $this->assertSame('line 19' . "\n" . 'line 20' . "\n" . 'line 21' . "\n" . 'line 22', $more['values']['output_tail']);
+        $this->assertSame(14, $more['values']['output_omitted']);
+
+        $run = $more['values'] + $run;
+        $run['output_lines'] = 22;
+        $display = OutputBuffer::display($run);
+        $this->assertSame(['line 01', 'line 02', 'line 03', 'line 04'], array_slice($display, 0, 4));
+        $this->assertStringContainsString('14 lines left out here', $display[4]);
+        $this->assertSame(['line 19', 'line 20', 'line 21', 'line 22'], array_slice($display, 5));
+
+        // a page that showed 10 lines gets a marker for the lines it never saw, then the tail
+        $since = OutputBuffer::since($run, 10);
+        $this->assertSame(22, $since['next']);
+        $this->assertStringContainsString('8 lines left out here', $since['lines'][0]);
+        $this->assertSame(['line 19', 'line 20', 'line 21', 'line 22'], array_slice($since['lines'], 1));
+        $this->assertSame(['line 22'], OutputBuffer::since($run, 21)['lines']);
+        $this->assertSame([], OutputBuffer::since($run, 22)['lines']);
+    }
+
+    public function testLongValuesAreWrittenInPiecesBetweenCharacters(): void
+    {
+        $text = str_repeat('é', OutputBuffer::CHUNK); // two bytes each
+        $pieces = OutputBuffer::pieces($text);
+
+        $this->assertCount(2, $pieces);
+        $this->assertSame($text, implode('', $pieces));
+        foreach ($pieces as $piece) {
+            $this->assertTrue(mb_check_encoding($piece, 'UTF-8'));
+            $this->assertLessThanOrEqual(OutputBuffer::CHUNK, strlen($piece));
+        }
+        $long = OutputBuffer::add([], [str_repeat('x', 200000)], 8 * 1024 * 1024)['append'];
+        $this->assertLessThan(70000, strlen($long), 'a very long line is cut');
+        $this->assertStringEndsWith('(line cut by the plugin)', $long);
     }
 }

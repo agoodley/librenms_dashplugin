@@ -74,6 +74,23 @@ final class InventoryBuilder
     }
 
     /**
+     * The inventory name of every device, hosts or not (the name a device has whenever it is a host): to find the
+     * devices of the host names a runner reports.
+     *
+     * @param  array<int, array<string, mixed>>  $devices
+     * @param  array<int, string>  $deviceGroups
+     * @param  array<int, string>  $locations
+     * @return array<int, string> device_id => inventory name
+     */
+    public function names(array $devices, array $deviceGroups, array $locations): array
+    {
+        ksort($devices);
+        [$groupNames] = $this->groupNames($devices, $deviceGroups, $locations);
+
+        return HostNames::assign(array_map(fn ($d) => (string) ($d['hostname'] ?? ''), $devices), array_merge([], ...array_values(array_map('array_values', $groupNames))));
+    }
+
+    /**
      * Why a device is not a host, null when it is one.
      *
      * @param  int[]  $groupIds

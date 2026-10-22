@@ -42,7 +42,7 @@ class DeviceOverview implements DeviceOverviewHook
 
             return $view;
         } catch (\Throwable $e) {
-            Log::error('ansible plugin: device overview failed: ' . $e->getMessage());
+            Log::error('ansible plugin: device overview failed: ' . \Agoodley\LibrenmsAnsible\Support\ErrorText::forLog($e));
 
             return view("$pluginName::device-overview", ['device' => $device, 'runs' => [], 'canRun' => false, 'error' => 'The Ansible runs cannot be shown: see logs/librenms.log.']);
         }

@@ -5,22 +5,88 @@ namespace Agoodley\LibrenmsAnsible\Runs;
 /**
  * The result of each target of a run, from the PLAY RECAP: unreachable, failed, changed, ok or skipped, and
  * "not run" for a target the recap does not name (the run stopped before it, or the runner did not find it).
- * A host in the recap that is not a target means the runner ran on more than the plugin chose: the run is
- * flagged.
+ * Without a recap (a stopped, killed or lost run) the results come from Ansible's task result lines (TaskLines):
+ * "unknown" where the evidence is partial, "not run" for a target a complete log never names. A host the runner
+ * ran on that is not a target means the runner ran on more than the plugin chose: the run is flagged.
  */
 final class RunResults
 {
     public const NOT_RUN = 'not_run';
 
-    /** Results from worst to best, as the pages count them. */
-    public const ORDER = ['unreachable', 'failed', self::NOT_RUN, 'changed', 'ok', 'skipped'];
+    /** Some of the run is known for the target, not how it ended (no PLAY RECAP), or nothing at all (the plugin lost track). */
+    public const UNKNOWN = 'unknown';
 
-    public const LABELS = ['unreachable' => 'Unreachable', 'failed' => 'Failed', self::NOT_RUN => 'Not run', 'changed' => 'Changed',
-        'ok' => 'OK', 'skipped' => 'Skipped'];
+    /** Results from worst to best, as the pages count them. */
+    public const ORDER = ['unreachable', 'failed', self::UNKNOWN, self::NOT_RUN, 'changed', 'ok', 'skipped'];
+
+    public const LABELS = ['unreachable' => 'Unreachable', 'failed' => 'Failed', self::UNKNOWN => 'Unknown', self::NOT_RUN => 'Not run',
+        'changed' => 'Changed', 'ok' => 'OK', 'skipped' => 'Skipped'];
 
     /** Eventlog severity of each result. */
-    public const SEVERITY = ['unreachable' => 'error', 'failed' => 'error', self::NOT_RUN => 'warning', 'changed' => 'notice',
-        'ok' => 'ok', 'skipped' => 'info'];
+    public const SEVERITY = ['unreachable' => 'error', 'failed' => 'error', self::UNKNOWN => 'warning', self::NOT_RUN => 'warning',
+        'changed' => 'notice', 'ok' => 'ok', 'skipped' => 'info'];
+
+    /** Results of a target that did what the run asked. */
+    public const DONE = ['ok', 'changed', 'skipped'];
+
+    /**
+     * Each target's result from the log of an ended run: from the PLAY RECAP when there is one, else from the task
+     * result lines. $complete says whether the log is the whole log of the task: in a partial one (the plugin lost
+     * track of the run) a target that is never named may still have run, so it is unknown rather than not run.
+     *
+     * @param  array<int, string>  $targets  device_id => inventory name
+     * @param  string[]  $lines
+     * @return array{results: array<int, array{result: string, counts: array<string, int>|null}>, unexpected: array<string, array{result: string, counts: array<string, int>|null}>, summary: array<string, int>, recap: bool}
+     */
+    public static function evaluate(array $targets, array $lines, bool $complete = true): array
+    {
+        $recap = RecapParser::parse($lines);
+        if ($recap !== null) {
+            $combined = self::combine($targets, $recap, RecapParser::connectionFailures($lines));
+            $unexpected = [];
+            foreach ($combined['unexpected'] as $host) {
+                $unexpected[$host] = ['result' => RecapParser::result($recap[$host]), 'counts' => $recap[$host]];
+            }
+
+            return ['results' => $combined['results'], 'unexpected' => $unexpected, 'summary' => $combined['summary'], 'recap' => true];
+        }
+        $hosts = TaskLines::parse($lines);
+        $results = [];
+        $summary = array_fill_keys(self::ORDER, 0);
+        foreach ($targets as $deviceId => $name) {
+            $result = isset($hosts[$name]) ? TaskLines::result($hosts[$name]) : ($complete ? self::NOT_RUN : self::UNKNOWN);
+            $results[$deviceId] = ['result' => $result, 'counts' => null];
+            $summary[$result]++;
+        }
+        $unexpected = [];
+        foreach (array_diff(array_keys($hosts), array_values($targets)) as $host) {
+            $unexpected[(string) $host] = ['result' => TaskLines::result($hosts[$host]), 'counts' => null];
+        }
+        ksort($unexpected);
+
+        return ['results' => $results, 'unexpected' => $unexpected, 'summary' => array_filter($summary), 'recap' => false];
+    }
+
+    /**
+     * The run's status when the runner ended its task: success only when every target did what it was asked
+     * (in the PLAY RECAP, without a failure); a task the runner reports successful while targets did not run or
+     * failed is incomplete.
+     *
+     * @param  array<int, array{result: string, counts: array<string, int>|null}>  $results
+     */
+    public static function status(string $taskStatus, array $results): string
+    {
+        if ($taskStatus !== RunStatus::SUCCESS) {
+            return $taskStatus;
+        }
+        foreach ($results as $result) {
+            if (! in_array($result['result'], self::DONE, true)) {
+                return RunStatus::INCOMPLETE;
+            }
+        }
+
+        return RunStatus::SUCCESS;
+    }
 
     /**
      * Each target's result. A target that failed without any task succeeding, on its connection
@@ -58,7 +124,7 @@ final class RunResults
     {
         return match ($result) {
             'ok' => 'success',
-            'changed' => 'warning',
+            'changed', self::UNKNOWN => 'warning',
             'failed', 'unreachable' => 'danger',
             default => 'default',
         };

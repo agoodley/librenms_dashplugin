@@ -3,41 +3,27 @@
 namespace Agoodley\LibrenmsAnsible\Services;
 
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
-use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Runner\Runner;
-use Agoodley\LibrenmsAnsible\Runner\RunnerError;
-use Agoodley\LibrenmsAnsible\Runner\RunnerTask;
-use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
-use Agoodley\LibrenmsAnsible\Runs\RecapParser;
-use Agoodley\LibrenmsAnsible\Runs\RunResults;
+use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
-use Agoodley\LibrenmsAnsible\Runs\RunText;
+use Agoodley\LibrenmsAnsible\Support\ErrorText;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Follows a run on the runner until it ends: its status, its output (appended, capped), and at the end the
- * per-target results from the PLAY RECAP and the eventlog of every target. The run page and the sync command
- * both call it: a lock per run keeps them from refreshing the same run at once, a run is asked at most once
- * every two seconds, and only one of them can finish it. Semaphore reports a task as finished before the last
- * lines of its output are readable, so a run ends once a refresh after that brings no new lines.
+ * Follows runs on the runner through their lifecycle (Runs\RunLifecycle), for the run page and the sync command: a
+ * lock per run keeps two requests from asking the runner about the same run at once (its TTL outlasts the longest
+ * refresh), a run is asked at most once every INTERVAL seconds, and every write is a compare-and-set, so a refresh
+ * that took long never writes over a newer one.
  */
 final class RunFollower
 {
     /** Least seconds between two refreshes of a run from the runner. */
     public const INTERVAL = 2;
 
-    /** Seconds after the runner's end at which the output is taken as complete anyway. */
-    private const SETTLE = 60;
-
-    /**
-     * Seconds after which the follower looks for the task of a launch that did not complete (the launching request
-     * died; one that got no proper answer from the runner says so at once), and after which it gives the launch up.
-     */
-    private const LAUNCH_GRACE = 300;
-
-    private const LAUNCH_TIMEOUT = 600;
+    /** Most runner calls one refresh makes (task, output, role or stop, the whole log at the end). */
+    private const CALLS = 5;
 
     public function __construct(
         private readonly Plugin $plugin,
@@ -45,48 +31,60 @@ final class RunFollower
         private readonly PluginSettings $settings,
         private readonly Eventlog $eventlog = new Eventlog(),
         private readonly ?Runner $runner = null,
+        private readonly ?InventoryService $inventory = null,
     ) {
     }
 
     /**
-     * Refresh an unfinished run from the runner, unless it was refreshed less than INTERVAL seconds ago (or another
-     * request is refreshing it). Returns the run as stored afterwards, null when there is no such run.
+     * The lifecycle of the plugin's runs, with the stored runner connection.
+     */
+    public function lifecycle(): RunLifecycle
+    {
+        $inventory = $this->inventory;
+
+        return new RunLifecycle($this->runs, fn () => $this->runner ?? $this->plugin->runner(), $this->eventlog, $this->settings->outputMaxBytes(),
+            $this->settings->stopAfterSeconds(), $inventory === null ? null : fn (array $names) => $inventory->devicesNamed($names));
+    }
+
+    /**
+     * Refresh a run from the runner, unless it was refreshed less than INTERVAL seconds ago (or another request is
+     * refreshing it). Returns the run as stored afterwards, null when there is no such run.
      */
     public function refresh(int $runId, bool $throttle = true): ?array
     {
         $run = $this->runs->find($runId);
-        if ($run === null || RunStatus::isFinal($run['status'])) {
+        if ($run === null || (RunStatus::isFinal($run['status']) && ! RunLifecycle::watched($run, time()))) {
             return $run;
         }
-        $lock = Cache::lock("ansible-plugin-run-$runId", 60);
+        if ($throttle && $run['polled_at'] !== null && time() - strtotime((string) $run['polled_at']) < self::INTERVAL) {
+            return $run;
+        }
+        $lock = Cache::lock("ansible-plugin-run-$runId", $this->lockSeconds());
         if (! $lock->get()) {
             return $run;
         }
         try {
-            $run = $this->runs->find($runId);
-            if ($run !== null && ! RunStatus::isFinal($run['status']) && (! $throttle || self::due($run))) {
-                $this->follow($run);
-                $run = $this->runs->find($runId);
-            }
+            return $this->lifecycle()->refresh($runId, time()) ?? $run;
         } catch (\Throwable $e) {
-            Log::error("ansible plugin: following run #$runId failed: " . $e->getMessage());
+            Log::error("ansible plugin: following run #$runId failed: " . ErrorText::forLog($e));
+
+            return $this->runs->find($runId) ?? $run;
         } finally {
             $lock->release();
         }
-
-        return $run;
     }
 
     /**
-     * Is the run's last refresh old enough?
+     * How long the lock of a refresh is held at most: longer than the slowest refresh (each runner call may take the
+     * connection's whole timeout).
      */
-    private static function due(array $run): bool
+    private function lockSeconds(): int
     {
-        return $run['polled_at'] === null || time() - strtotime((string) $run['polled_at']) >= self::INTERVAL;
+        return max(60, self::CALLS * $this->plugin->connection()->timeout + 60);
     }
 
     /**
-     * Has the runner reported the run finished, but its output may still be incomplete (refresh it again soon)?
+     * Has the runner reported the run finished, but its log may still be incomplete (refresh it again soon)?
      */
     public static function settling(array $run): bool
     {
@@ -94,194 +92,26 @@ final class RunFollower
     }
 
     /**
-     * One refresh: status, new output lines, and the end when the run is over.
-     */
-    private function follow(array $run): void
-    {
-        $id = (int) $run['id'];
-        $age = time() - strtotime((string) $run['created_at']);
-        if ($run['runner_task_id'] === null) {
-            if ($run['poll_error'] !== null || $age > self::LAUNCH_GRACE) {
-                $this->findLaunch($run, $age);
-            }
-
-            return;
-        }
-        try {
-            $runner = $this->runner ?? $this->plugin->runner();
-            $task = $runner->task((string) $run['runner_task_id']);
-            $output = $runner->output((string) $run['runner_task_id'], (int) $run['output_lines']);
-        } catch (RunnerError $e) {
-            if ($e->kind === RunnerError::NOT_FOUND) {
-                $this->lose($run, 'the runner no longer has task #' . $run['runner_task_id']);
-            } elseif ($age > $this->settings->lostAfterSeconds()) {
-                $this->lose($run, 'still unfinished after ' . $this->settings->int('lost_after_hours') . ' hours, and the runner cannot be asked: ' . $e->getMessage());
-            } else {
-                $this->runs->update($id, ['poll_error' => UntrustedText::line($e->getMessage(), 500), 'polled_at' => now()]);
-            }
-
-            return;
-        }
-
-        $buffer = OutputBuffer::append((string) $run['output'], $output->lines, $this->settings->outputMaxBytes(), (bool) $run['output_truncated']);
-        $values = ['output' => $buffer['text'], 'output_truncated' => $buffer['truncated'], 'output_lines' => $output->next,
-            'runner_status' => $task->rawStatus, 'poll_error' => null, 'polled_at' => now(),
-            'started_at' => $task->started !== null ? date('Y-m-d H:i:s', $task->started) : $run['started_at']];
-
-        if (! RunStatus::isFinal($task->status)) {
-            // a requested stop stays "stopping" until the runner says how the task ended
-            $values['status'] = $run['status'] === RunStatus::STOPPING ? RunStatus::STOPPING : $task->status;
-            if ($age > $this->settings->lostAfterSeconds()) {
-                $this->runs->update($id, $values);
-                $this->lose($run, 'still unfinished after ' . $this->settings->int('lost_after_hours') . ' hours (Lost after setting)');
-
-                return;
-            }
-            $this->runs->update($id, $values);
-
-            return;
-        }
-        $settled = ($run['runner_final_at'] !== null && ! $output->lines)
-            || ($task->ended !== null && time() - $task->ended >= self::SETTLE)
-            || ($run['runner_final_at'] !== null && time() - strtotime((string) $run['runner_final_at']) >= self::SETTLE);
-        if (! $settled) {
-            $values['runner_final_at'] = $run['runner_final_at'] ?? now();
-            $this->runs->update($id, $values);
-
-            return;
-        }
-        $this->finish($run, $values, $task, $runner);
-    }
-
-    /**
-     * A launch without a recorded task: find the task the runner started for it (by the launch's message, unique per
-     * run) and follow it from now on, or, after LAUNCH_TIMEOUT, record that it was not launched.
-     */
-    private function findLaunch(array $run, int $age): void
-    {
-        $id = (int) $run['id'];
-        try {
-            $runner = $this->runner ?? $this->plugin->runner();
-            $task = $runner->findTask((string) $run['template_id'], RunText::taskMessage($id, (string) $run['username']));
-        } catch (RunnerError $e) {
-            $task = null;
-            $error = $e->getMessage();
-        }
-        if ($task !== null) {
-            if (self::adopt($this->runs, $id, $task)) {
-                foreach (array_keys($this->runs->targets($id)) as $deviceId) {
-                    $this->eventlog->write(RunText::started($id, (string) $run['template_name'], (string) $run['username']), $deviceId, 'info', RunText::reference($id));
-                }
-            }
-
-            return;
-        }
-        if ($age <= self::LAUNCH_TIMEOUT) {
-            $this->runs->update($id, ['polled_at' => now()] + (isset($error) ? ['poll_error' => UntrustedText::line($error, 500)] : []));
-
-            return;
-        }
-        $reason = 'the runner gave no proper answer to the launch and has no task for it';
-        $targets = $this->runs->targets($id);
-        if (! $this->runs->updateUnfinished($id, ['status' => RunStatus::NOT_LAUNCHED, 'error' => $reason, 'finished_at' => now(),
-            'summary' => [RunResults::NOT_RUN => count($targets)]])) {
-            return;
-        }
-        $this->runs->setResults($id, array_fill_keys(array_keys($targets), ['result' => RunResults::NOT_RUN, 'counts' => null]));
-        foreach (array_keys($targets) as $deviceId) {
-            $this->eventlog->write(RunText::notLaunched($id, (string) $run['template_name'], (string) $run['username'], $reason), $deviceId, 'warning',
-                RunText::reference($id));
-        }
-    }
-
-    /**
-     * Record the runner's task of a launch, once: false when the run already had one (or had ended). A final status
-     * comes later from refresh(), with the output and the PLAY RECAP.
-     */
-    public static function adopt(RunRepository $runs, int $runId, RunnerTask $task): bool
-    {
-        return $runs->updateUnfinished($runId, ['runner_task_id' => $task->id, 'runner_status' => $task->rawStatus,
-            'status' => RunStatus::isFinal($task->status) ? RunStatus::RUNNING : $task->status, 'poll_error' => null,
-            'started_at' => $task->started !== null ? date('Y-m-d H:i:s', $task->started) : null], true);
-    }
-
-    /**
-     * The run is over: per-target results from the PLAY RECAP, the summary, and the eventlog of each target (and
-     * of the run, when the runner ran on hosts that were not targets). The PLAY RECAP is read from the stored
-     * output, or from the runner's whole log when the stored one was capped.
-     *
-     * @param  array<string, mixed>  $values  the columns this refresh writes
-     */
-    private function finish(array $run, array $values, RunnerTask $task, Runner $runner): void
-    {
-        $id = (int) $run['id'];
-        $lines = OutputBuffer::lines((string) $values['output']);
-        if ($values['output_truncated']) {
-            try {
-                $lines = $runner->output((string) $run['runner_task_id'])->lines;
-            } catch (RunnerError $e) {
-                Log::warning("ansible plugin: run #$id: the whole log for the PLAY RECAP cannot be read, the stored part is used: " . $e->getMessage());
-            }
-        }
-        $targets = $this->runs->targets($id);
-        $combined = RunResults::combine(array_map(fn ($t) => (string) $t['inventory_name'], $targets), RecapParser::parse($lines),
-            RecapParser::connectionFailures($lines));
-        $values += ['status' => $task->status, 'summary' => $combined['summary'], 'unexpected_hosts' => $combined['unexpected'] ?: null,
-            'finished_at' => $task->ended !== null ? date('Y-m-d H:i:s', $task->ended) : now()];
-        if (! $this->runs->updateUnfinished($id, $values)) {
-            return; // another process finished it
-        }
-        $this->runs->setResults($id, $combined['results']);
-        $note = $task->status === RunStatus::STOPPED && $run['stopped_by'] ? 'stopped by ' . $run['stopped_by'] : null;
-        foreach ($combined['results'] as $deviceId => $result) {
-            $this->eventlog->write(RunText::finished($id, $task->status, $result['result'], $result['counts'], (string) $run['template_name'],
-                (string) $run['username'], $note), $deviceId, RunResults::SEVERITY[$result['result']] ?? 'info', RunText::reference($id));
-        }
-        if ($combined['unexpected']) {
-            $this->eventlog->write(RunText::unexpectedHosts($id, $combined['unexpected'], (string) $run['template_name']), null, 'error', RunText::reference($id));
-        }
-    }
-
-    /**
-     * Give a run up as lost: its targets did not run as far as the plugin knows.
-     */
-    private function lose(array $run, string $reason): void
-    {
-        $id = (int) $run['id'];
-        $targets = $this->runs->targets($id);
-        if (! $this->runs->updateUnfinished($id, ['status' => RunStatus::LOST, 'error' => UntrustedText::line($reason, 1000), 'finished_at' => now(),
-            'summary' => [RunResults::NOT_RUN => count($targets)]])) {
-            return;
-        }
-        $this->runs->setResults($id, array_fill_keys(array_keys($targets), ['result' => RunResults::NOT_RUN, 'counts' => null]));
-        foreach (array_keys($targets) as $deviceId) {
-            $this->eventlog->write(RunText::finished($id, RunStatus::LOST, RunResults::NOT_RUN, null, (string) $run['template_name'], (string) $run['username'], $reason),
-                $deviceId, 'warning', RunText::reference($id));
-        }
-    }
-
-    /**
      * Ask the runner to stop a run; null when it was asked, else why it cannot be stopped.
      */
     public function stop(int $runId, string $username): ?string
     {
-        $run = $this->runs->find($runId);
-        if ($run === null) {
-            return 'There is no such run.';
-        }
-        if (RunStatus::isFinal($run['status'])) {
-            return 'The run has already ended.';
-        }
-        if ($run['runner_task_id'] === null) {
-            return 'The run is still being launched: try again in a moment.';
+        return $this->lifecycle()->stop($runId, $username, time());
+    }
+
+    /**
+     * Release the devices of a run the runner could not be asked about for a while; null when released, else why not.
+     */
+    public function release(int $runId, string $username): ?string
+    {
+        $lock = Cache::lock("ansible-plugin-run-$runId", $this->lockSeconds());
+        if (! $lock->get()) {
+            return 'The plugin is asking the runner about this run right now: try again in a moment.';
         }
         try {
-            ($this->runner ?? $this->plugin->runner())->stop((string) $run['runner_task_id']);
-        } catch (RunnerError $e) {
-            return $e->getMessage();
+            return $this->lifecycle()->release($runId, $username, time());
+        } finally {
+            $lock->release();
         }
-        $this->runs->updateUnfinished($runId, ['status' => RunStatus::STOPPING, 'stopped_by' => mb_substr($username, 0, 255)]);
-
-        return null;
     }
 }

@@ -2,16 +2,18 @@
 
 namespace Agoodley\LibrenmsAnsible\Data;
 
+use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
+use Agoodley\LibrenmsAnsible\Runs\RunStore;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
  * The audit log: runs (ansible_runs) and their targets (ansible_run_targets). Only LibreNMS admins see it, and
  * every admin sees every run, so queries are not scoped by device. Rows are returned as arrays with their JSON
- * columns decoded.
+ * columns decoded. The run lifecycle changes runs only through updateAt(), a compare-and-set on their version.
  */
-final class RunRepository
+final class RunRepository implements RunStore
 {
     /** JSON columns of a run. */
     private const JSON = ['variables', 'summary', 'unexpected_hosts'];
@@ -37,7 +39,7 @@ final class RunRepository
     {
         $busy = [];
         foreach (DB::table('ansible_run_targets as t')->join('ansible_runs as r', 'r.id', '=', 't.run_id')
-            ->whereIn('r.status', RunStatus::UNFINISHED)->orderBy('r.id')->get(['t.device_id', 't.run_id']) as $row) {
+            ->whereIn('r.status', RunStatus::UNFINISHED)->where('t.unexpected', false)->orderBy('r.id')->get(['t.device_id', 't.run_id']) as $row) {
             $busy[(int) $row->device_id] = (int) $row->run_id;
         }
 
@@ -96,9 +98,10 @@ final class RunRepository
     public function targets(int $runId): array
     {
         $targets = [];
-        foreach (DB::table('ansible_run_targets')->where('run_id', $runId)->orderBy('inventory_name')->get() as $row) {
+        foreach (DB::table('ansible_run_targets')->where('run_id', $runId)->orderBy('unexpected')->orderBy('inventory_name')->get() as $row) {
             $row = (array) $row;
             $row['counts'] = $row['counts'] !== null ? json_decode((string) $row['counts'], true) : null;
+            $row['unexpected'] = (bool) ($row['unexpected'] ?? false);
             $targets[(int) $row['device_id']] = $row;
         }
 
@@ -106,38 +109,85 @@ final class RunRepository
     }
 
     /**
-     * Change columns of a run.
+     * {@inheritdoc}
      *
-     * @param  array<string, mixed>  $values
+     * One UPDATE ... WHERE id = ? AND version = ? that bumps the version. A log value bigger than
+     * OutputBuffer::CHUNK is written in pieces (the first with the change, the others appended to it), so no
+     * statement exceeds the database's packet size.
      */
-    public function update(int $id, array $values): void
+    public function updateAt(int $id, int $version, array $values, string $appendOutput = ''): bool
     {
-        DB::table('ansible_runs')->where('id', $id)->update(self::encode($values) + ['updated_at' => now()]);
+        $values = self::encode($values);
+        $later = [];
+        foreach (['output', 'output_tail'] as $column) {
+            if (isset($values[$column]) && is_string($values[$column]) && strlen($values[$column]) > OutputBuffer::CHUNK) {
+                $pieces = OutputBuffer::pieces($values[$column]);
+                $values[$column] = array_shift($pieces);
+                $later[$column] = $pieces;
+            }
+        }
+        $sets = [];
+        $bindings = [];
+        foreach ($values as $column => $value) {
+            if (! preg_match('/^[a-z_]+$/D', (string) $column)) {
+                throw new \InvalidArgumentException("not a column of ansible_runs: $column");
+            }
+            $sets[] = "`$column` = ?";
+            $bindings[] = $value;
+        }
+        if ($appendOutput !== '') {
+            $pieces = OutputBuffer::pieces($appendOutput);
+            if (array_key_exists('output', $values)) {
+                $later['output'] = array_merge($later['output'] ?? [], $pieces);
+            } else {
+                $sets[] = "`output` = CONCAT(COALESCE(`output`, ''), ?)";
+                $bindings[] = array_shift($pieces);
+                $later['output'] = $pieces;
+            }
+        }
+        $sets[] = '`version` = `version` + 1';
+        $sets[] = '`updated_at` = ?';
+        $bindings[] = now()->format('Y-m-d H:i:s');
+        $table = DB::getTablePrefix() . 'ansible_runs';
+        if (DB::update("UPDATE `$table` SET " . implode(', ', $sets) . ' WHERE `id` = ? AND `version` = ?', array_merge($bindings, [$id, $version])) < 1) {
+            return false;
+        }
+        foreach ($later as $column => $pieces) {
+            foreach ($pieces as $piece) {
+                DB::update("UPDATE `$table` SET `$column` = CONCAT(COALESCE(`$column`, ''), ?) WHERE `id` = ? AND `version` = ?", [$piece, $id, $version + 1]);
+            }
+        }
+
+        return true;
     }
 
     /**
-     * Change columns of a run that has not finished yet (and, with $withoutTask, has no runner task recorded yet);
-     * false when it already had (another process got there first).
-     *
-     * @param  array<string, mixed>  $values
-     */
-    public function updateUnfinished(int $id, array $values, bool $withoutTask = false): bool
-    {
-        return DB::table('ansible_runs')->where('id', $id)->whereIn('status', RunStatus::UNFINISHED)
-            ->when($withoutTask, fn ($q) => $q->whereNull('runner_task_id'))
-            ->update(self::encode($values) + ['updated_at' => now()]) > 0;
-    }
-
-    /**
-     * Store the result of each target.
-     *
-     * @param  array<int, array{result: string, counts: array<string, int>|null}>  $results  device_id => result
+     * {@inheritdoc}
      */
     public function setResults(int $runId, array $results): void
     {
         foreach ($results as $deviceId => $result) {
             DB::table('ansible_run_targets')->where('run_id', $runId)->where('device_id', $deviceId)
                 ->update(['result' => $result['result'], 'counts' => $result['counts'] !== null ? json_encode($result['counts']) : null]);
+        }
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function addUnexpected(int $runId, array $rows): void
+    {
+        $known = DB::table('ansible_run_targets')->where('run_id', $runId)->pluck('device_id')->map(fn ($id) => (int) $id)->all();
+        $insert = [];
+        foreach ($rows as $deviceId => $row) {
+            if (! in_array((int) $deviceId, $known, true)) {
+                $insert[] = ['run_id' => $runId, 'device_id' => (int) $deviceId, 'inventory_name' => mb_substr($row['inventory_name'], 0, 255),
+                    'hostname' => mb_substr($row['hostname'], 0, 255), 'display' => mb_substr($row['display'], 0, 255), 'result' => $row['result'],
+                    'counts' => $row['counts'] !== null ? json_encode($row['counts']) : null, 'unexpected' => true];
+            }
+        }
+        foreach (array_chunk($insert, 500) as $chunk) {
+            DB::table('ansible_run_targets')->insert($chunk);
         }
     }
 
@@ -149,6 +199,17 @@ final class RunRepository
     public function unfinished(): array
     {
         return array_map('intval', DB::table('ansible_runs')->whereIn('status', RunStatus::UNFINISHED)->orderBy('id')->pluck('id')->all());
+    }
+
+    /**
+     * Ids of the lost and released runs still watched for a late end.
+     *
+     * @return int[]
+     */
+    public function watched(): array
+    {
+        return array_map('intval', DB::table('ansible_runs')->whereIn('status', RunStatus::WATCHED)->whereNotNull('watch_until')
+            ->where('watch_until', '>', now())->orderBy('id')->pluck('id')->all());
     }
 
     /**
@@ -232,7 +293,7 @@ final class RunRepository
     {
         return DB::table('ansible_run_targets as t')->join('ansible_runs as r', 'r.id', '=', 't.run_id')->where('t.device_id', $deviceId)
             ->orderByDesc('r.id')->limit($limit)
-            ->get(['r.id', 'r.username', 'r.template_name', 'r.status', 'r.created_at', 'r.finished_at', 't.result'])
+            ->get(['r.id', 'r.username', 'r.template_name', 'r.status', 'r.created_at', 'r.finished_at', 't.result', 't.unexpected'])
             ->map(fn ($r) => (array) $r)->all();
     }
 

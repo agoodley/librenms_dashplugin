@@ -2,7 +2,10 @@
 
 namespace Agoodley\LibrenmsAnsible\Console;
 
+use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
+use Agoodley\LibrenmsAnsible\Services\Eventlog;
+use Agoodley\LibrenmsAnsible\Services\InventoryService;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Agoodley\LibrenmsAnsible\Services\RunFollower;
 use Agoodley\LibrenmsAnsible\Support\Format;
@@ -10,8 +13,8 @@ use Illuminate\Console\Command;
 
 /**
  * ansible:sync, every minute through the LibreNMS scheduler: follows every unfinished run on the runner to its
- * end (status, output, results, eventlog), so the audit log is complete when nobody watches the run page. A run
- * whose task the runner no longer has, or that stays unfinished past the Lost after setting, ends as lost.
+ * end (status, output, results, eventlog), so the audit log is complete when nobody watches the run page, and asks
+ * about lost and released runs every few minutes for a week, so a later real end is recorded (Runs\RunLifecycle).
  */
 class SyncCommand extends Command
 {
@@ -31,7 +34,11 @@ class SyncCommand extends Command
 
             return self::SUCCESS;
         }
-        $follower = new RunFollower(new Plugin(), $runs, Plugin::settings());
+        $settings = Plugin::settings();
+        $follower = new RunFollower(new Plugin(), $runs, $settings, new Eventlog(), null, new InventoryService(new DeviceRepository(), $settings));
+        foreach ($runs->watched() as $id) {
+            $follower->refresh($id);
+        }
         $ids = $runs->unfinished();
         $settling = [];
         foreach ($ids as $id) {
