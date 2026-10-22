@@ -174,7 +174,8 @@ final class RunRepository implements RunStore
             }
             foreach ($later as $column => $pieces) {
                 foreach ($pieces as $piece) {
-                    $this->sql->change("UPDATE $table SET `$column` = CONCAT(COALESCE(`$column`, ''), ?) WHERE `id` = ? AND `version` = ?", [$piece, $id, $version + 1]);
+                    $name = self::column((string) $column);
+                    $this->sql->change("UPDATE $table SET $name = CONCAT(COALESCE($name, ''), ?) WHERE `id` = ? AND `version` = ?", [$piece, $id, $version + 1]);
                 }
             }
 
