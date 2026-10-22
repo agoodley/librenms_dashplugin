@@ -412,24 +412,24 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   plugin cannot prove to be one is shown in red, *NOT PROVEN*, with why: it may have changed the devices, and it can be
   neither approved nor applied. Once it is verified, an admin with the approve permission **Approve**s (with a
   comment) or **Reject**s; approvers find the changes that wait for them on the Changes page, with the status filter
-  *Awaiting approval*. **Apply** starts the first batch: its maintenance window, the backups, then its run; after
-  it the change waits for **Continue** (when *Wait after the first batch* is on), and the next batches follow on their
+  *Awaiting approval*. **Apply** starts the first batch: its maintenance window, the backups, then its run; after it
+  the change waits for **Continue** (when *Wait after the first batch* is on), and the next batches follow on their
   own until the last, or until one fails. An Apply or a Continue while a device of the batch is busy in another
-  unfinished run (or held after a stop) is refused and changes nothing: the change stays ready, or waiting. **Stop** stops the running batch (as a run's stop: the step in progress runs
-  on) and launches nothing more. It never waits, even while another request is busy with the change (or died while
-  at it): the stop is recorded at once, the runner is asked at once to stop the batch's task, no batch launches
-  afterwards (a launch under way looks for the stop again right before it records its run and right before it asks
-  the runner, and then launches nothing; a stop that comes while the runner is being asked stops the task it just got
-  at once; a launch whose request died after asking the runner has its task looked for at once), and the change ends
-  at its next step; a batch whose run had already ended is
-  recorded with its results, and the change ends after it. After a stop the page says, as the run page does, how long the batch's devices stay
-  held and how to find the step that may still run on the runner. **Cancel** drops a change that has not been applied.
-  A change that failed or was stopped offers **a new change with the remaining devices** (the devices that failed or
-  were never reached; held ones are left out and named, with until when), and a dry run that failed on some devices
-  offers **a new change without them**: the same template, answers (not the secret ones), reference and first batch,
-  the devices chosen and listed first, to dry-run and approve again. The page follows the change every 2 seconds: the batches with their
-  runs and results, the backups (with a link to each device's config page), the maintenance windows, the log of the
-  run it follows, and a timeline of every step.
+  unfinished run (or held after a stop) is refused and changes nothing: the change stays ready, or waiting. **Stop**
+  stops the running batch (as a run's stop: the step in progress runs on) and launches nothing more. It never waits,
+  even while another request is busy with the change (or died while at it): the stop is recorded at once, the runner
+  is asked at once to stop the batch's task, no batch launches afterwards (a launch under way looks for the stop again
+  right before it records its run and right before it asks the runner, and then launches nothing; a stop that comes
+  while the runner is being asked stops the task it just got at once; a launch whose request died after asking the
+  runner has its task looked for at once), and the change ends at its next step; a batch whose run had already ended
+  is recorded with its results, and the change ends after it. After a stop the page says, as the run page does, how
+  long the batch's devices stay held and how to find the step that may still run on the runner. **Cancel** drops a
+  change that has not been applied. A change that failed or was stopped offers **a new change with the remaining
+  devices** (the devices that failed or were never reached; held ones are left out and named, with until when), and a
+  dry run that failed on some devices offers **a new change without them**: the same template, answers (not the secret
+  ones), reference and first batch, the devices chosen and listed first, to dry-run and approve again. The page
+  follows the change every 2 seconds: the batches with their runs and results, the backups (with a link to each
+  device's config page), the maintenance windows, the log of the run it follows, and a timeline of every step.
 * **Changes:** filter by device, requester, template, status ("Not ended" for the changes still going) and dates; the
   *JSON* button gives the same list, with each change's status and the state of its dry run as the page shows them
   (`dry_run_state`, and `dry_run_label`: *NOT PROVEN* for a dry run not proven to be one, which may have changed its
@@ -619,20 +619,20 @@ and the window closes.
 ## How runs work
 
 * **Inventory:** built from LibreNMS' devices by the plugin for the user of the API token: the devices that user may
-  see that are enabled, in the allowed device group (when set), have a platform mapping and a usable address. A
-  host's name is its LibreNMS hostname when that is a plain Ansible host name (letters, digits, `.`, `_`, `-`, not
-  starting with `-` or `.`, at most 253 characters), else `device<id>` (IPv6 addresses, names with other characters);
-  a name used twice (ignoring case) goes to the device with the lowest id, and a host never has a group's name (a
-  limit naming a group would select all of its hosts). Names are computed over every LibreNMS device, so they do not
-  depend on which devices a user may see. Host variables: `ansible_host` (the device's overwrite IP, else its
-  hostname), `ansible_network_os`, `ansible_connection` (and `ansible_become` / `ansible_become_method`) from the
-  platform mapping, and `librenms_device_id`, `librenms_hostname`, `librenms_os`, `librenms_sysname`,
-  `librenms_location`, `librenms_hardware`, `librenms_version`, `librenms_type`. Groups: `os_<os>`,
-  `platform_<ansible_network_os>`, `group_<device group>`, `location_<location>` and `type_<device type>`, in
-  `[a-z0-9_]`, numbered when two names collide. The answer is Ansible's dynamic inventory JSON with `_meta.hostvars`.
-  While a change's dry run or batch is in progress, its devices are served only as its dry run recorded how the
-  runner reaches them, else left out (see [What is approved](#what-is-approved-and-what-stays-true-until-the-last-batch)), and each fetch records what it served
-  them.
+  see that are enabled, in the allowed device group (when set), have a platform mapping and a usable address. A host's
+  name is its LibreNMS hostname when that is a plain Ansible host name (letters, digits, `.`, `_`, `-`, not starting
+  with `-` or `.`, at most 253 characters), else `device<id>` (IPv6 addresses, names with other characters); a name
+  used twice (ignoring case) goes to the device with the lowest id, and a host never has a group's name (a limit
+  naming a group would select all of its hosts). Names are computed over every LibreNMS device, so they do not depend
+  on which devices a user may see. Host variables: `ansible_host` (the device's overwrite IP, else its hostname),
+  `ansible_network_os`, `ansible_connection` (and `ansible_become` / `ansible_become_method`) from the platform
+  mapping, and `librenms_device_id`, `librenms_hostname`, `librenms_os`, `librenms_sysname`, `librenms_location`,
+  `librenms_hardware`, `librenms_version`, `librenms_type`. Groups: `os_<os>`, `platform_<ansible_network_os>`,
+  `group_<device group>`, `location_<location>` and `type_<device type>`, in `[a-z0-9_]`, numbered when two names
+  collide. The answer is Ansible's dynamic inventory JSON with `_meta.hostvars`. While a change's dry run or batch is
+  in progress, its devices are served only as its dry run recorded how the runner reaches them, else left out (see
+  [What is approved](#what-is-approved-and-what-stays-true-until-the-last-batch)), and each fetch records what it
+  served them.
 * **Templates:** before every preview and launch the plugin asks the runner for the template again (no cache) and
   launches it only when its inventory is the LibreNMS one (a file inventory), a launch may set its limit (*Ansible
   prompts → Limit*), it has no limit of its own, its variable group has `LIBRENMS_URL`, the secret `LIBRENMS_TOKEN` and
@@ -644,23 +644,25 @@ and the window closes.
   launches cannot take the same device, and a form that is submitted twice makes one change (each form has a one-time
   token), a dry run or batch launched twice one run (a run of a change has a token made of the change's id and its own
   random one, and a run found by it counts only for the same change, dry run or batch: a change that gets the id of an
-  earlier one, after the change tables were rolled back and made again, never takes over its runs). The runner gets the template id, the limit (the targets' inventory
-  names), the answers that are not secret as extra variables, the secret ones in Semaphore's write-only secret field,
-  for a dry run the dry-run and diff options, for a batch the dry run's commit, and a message "LibreNMS Ansible run #N
-  by user [nonce]"; nothing else. The nonce is random per run: a launch whose answer never came (a timeout) is found
-  again by its message, among the tasks created after the run (two minutes of clock difference between the servers
-  allowed), so it never takes a task of another database that shares the project.
+  earlier one, after the change tables were rolled back and made again, never takes over its runs). The runner gets
+  the template id, the limit (the targets' inventory names), the answers that are not secret as extra variables, the
+  secret ones in Semaphore's write-only secret field, for a dry run the dry-run and diff options, for a batch the dry
+  run's commit, and a message "LibreNMS Ansible run #N by user [nonce]"; nothing else. The nonce is random per run: a
+  launch whose answer never came (a timeout) is found again by its message, among the tasks created after the run (two
+  minutes of clock difference between the servers allowed), so it never takes a task of another database that shares
+  the project.
 * **Following:** the change and run pages ask the plugin every 2 seconds, and the plugin asks the runner at most every
   2 seconds per run (a lock per run and per change, held longer than the slowest refresh, keeps two pages and the sync
   command from doing it at once; a change's lock is renewed during long work, and a step whose lock another request
   took meanwhile stops before its next call to the runner, Oxidized or LibreNMS' maintenance, so a window is opened
   and a backup asked for once, and the request holding the lock goes on from what was recorded; every write is a
-  compare-and-set on the row's version, so a slow answer never writes over a newer state). The `ansible:sync` command does the same every minute for every unfinished run and change, and
-  every few minutes for a lost or released run (through the LibreNMS scheduler, one at a time, on one server, while the
-  plugin is enabled and its connection set up; output in `logs/ansible-sync.log`), so the audit log is complete when
-  nobody watches. The log is stored as it comes, only the new lines at each refresh, in pieces of at most 512 KB per
-  statement and one transaction per change, up to *Output size*; past it the new lines go to the end kept (the tail),
-  which is cut to three quarters of its size when it is full.
+  compare-and-set on the row's version, so a slow answer never writes over a newer state). The `ansible:sync` command
+  does the same every minute for every unfinished run and change, and every few minutes for a lost or released run
+  (through the LibreNMS scheduler, one at a time, on one server, while the plugin is enabled and its connection set
+  up; output in `logs/ansible-sync.log`), so the audit log is complete when nobody watches. The log is stored as it
+  comes, only the new lines at each refresh, in pieces of at most 512 KB per statement and one transaction per change,
+  up to *Output size*; past it the new lines go to the end kept (the tail), which is cut to three quarters of its size
+  when it is full.
 * **Results:** when the runner reports the task finished, the plugin reads the output once more (Semaphore reports
   the end before the last lines are readable) and takes each target's result from the last `PLAY RECAP`: unreachable,
   failed, changed, ok, skipped, or *not run* for a target the recap does not name. Without a recap (a stopped or
