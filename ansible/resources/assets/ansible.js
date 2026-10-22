@@ -1042,6 +1042,10 @@
                 return;
             }
             var secrets = readSecrets();
+            // a Continue with empty fields uses the secret answers this page holds (given at the apply or a continue before)
+            if (action === 'continue' && !Object.keys(secrets).length && heldSecrets) {
+                secrets = heldSecrets;
+            }
             var commentField = byId('ans-approval-comment');
             var body = {secrets: secrets, comment: commentField ? commentField.value : ''};
             busy = true;
