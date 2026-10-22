@@ -151,6 +151,8 @@ class ChangeRulesTest extends TestCase
             'switching to a second admin voids an approval of the requester');
         $this->assertSame('its approver no longer holds the approve permission',
             ApprovalRules::problem(ApprovalRules::REQUIRED, $change, 86400, $now, 'no longer holds the approve permission'));
+        $this->assertSame('its approver bob no longer holds the approve permission',
+            ApprovalRules::problem(ApprovalRules::REQUIRED, ['approved_by' => 'bob'] + $change, 86400, $now, 'no longer holds the approve permission'), 'named');
     }
 
     // ------------------------------------------------------------------ batches
@@ -187,6 +189,9 @@ class ChangeRulesTest extends TestCase
         $failed = BackupState::evaluate($state, ['start' => '2026-10-22 06:15:01 UTC', 'end' => '2026-10-22 06:15:31 UTC', 'status' => 'no_connection'], $requested + 40, 600);
         $this->assertSame('requested', $failed['status'], 'Oxidized may retry');
         $this->assertStringContainsString('"no_connection"', (string) $failed['error']);
+        $this->assertSame(['status' => 'failed', 'at' => null, 'error' => 'Oxidized\'s backup ended with "no_connection"'],
+            BackupState::evaluate($state, ['start' => '2026-10-22 06:15:01 UTC', 'end' => '2026-10-22 06:15:31 UTC', 'status' => 'no_connection'], $requested + 31 + 91, 600),
+            'no retry within 90 seconds of the failed attempt: failed, before the timeout');
         $timeout = BackupState::evaluate(['error' => $failed['error']] + $state, null, $requested + 601, 600);
         $this->assertSame('failed', $timeout['status']);
         $this->assertStringContainsString('no_connection', (string) $timeout['error']);

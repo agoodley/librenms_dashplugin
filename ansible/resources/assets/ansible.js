@@ -607,6 +607,7 @@
             append(body, definition([
                 ['Template', plan.template.name + ' (' + plan.template.playbook + ', #' + plan.template.id + ')'],
                 ['Targets', String(plan.targets.length) + ' (at most ' + plan.max_targets + ')'],
+                ['Limit', el('span', 'ans-code', plan.limit || '-')],
                 ['Batches', plan.plan_text || '-'],
                 ['Reference', plan.reference ? el('span', 'ans-code', plan.reference) : el('span', 'text-muted', '(none)')]
             ]));

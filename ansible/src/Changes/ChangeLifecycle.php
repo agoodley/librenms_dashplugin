@@ -303,7 +303,7 @@ final class ChangeLifecycle
         $this->eventAll($stopping, ChangeText::stopRequested($stopping, $username), 'warning');
         if (! $running) {
             $this->finish($stopping, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line($username, 60)
-                . ($change['status'] === ChangeStatus::PAUSED ? " after batch $batch" : " before batch $batch was launched"), $now);
+                . ($change['status'] === ChangeStatus::PAUSED && $change['waiting'] !== 'secrets' ? " after batch $batch" : " before batch $batch was launched"), $now);
 
             return null;
         }
@@ -396,6 +396,15 @@ final class ChangeLifecycle
     }
 
     /**
+     * A run that did nothing on its devices: the runner refused its launch, or it was stopped in the runner's queue
+     * (the runner reports no start).
+     */
+    private static function neverRan(array $run): bool
+    {
+        return $run['status'] === RunStatus::NOT_LAUNCHED || ($run['status'] === RunStatus::STOPPED && ($run['started_at'] ?? null) === null);
+    }
+
+    /**
      * The dry run ended: prove it, take each target's result from the PLAY RECAP and its diffs from the log, and move the
      * change on (awaiting approval, ready) or back to draft.
      */
@@ -415,6 +424,19 @@ final class ChangeLifecycle
         }
         $run = $this->runs->find((int) $change['dry_run_id']);
         if ($run === null || ! RunStatus::isFinal($run['status'])) {
+            return;
+        }
+        if (self::neverRan($run)) {
+            // nothing ran (the runner refused the launch, or it was stopped in the runner's queue): nothing to prove
+            $values = array_fill_keys(array_keys($this->changes->targets($id)), ['dry_result' => 'not_run', 'dry_counts' => null]);
+            $text = $run['status'] === RunStatus::NOT_LAUNCHED ? 'The dry run was not launched' . ($run['error'] ? ': ' . UntrustedText::line((string) $run['error'], 500) : '.')
+                : 'The dry run was stopped before the runner started it: nothing ran.';
+            if ($this->update($change, ['status' => ChangeStatus::DRAFT, 'dry_run_state' => 'not_launched', 'dry_run_ended_at' => Clock::store($now),
+                'error' => $text]) !== null) {
+                $this->changes->updateTargets($id, $values);
+                $this->timeline($change, 'dry_run', "Dry run #{$run['id']}: " . lcfirst($text), null, $now);
+            }
+
             return;
         }
         $lines = $this->runner->wholeLog((int) $run['id']);

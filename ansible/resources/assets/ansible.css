@@ -60,6 +60,7 @@
 .ans-device-panel .ans-device-result .label { display: inline-block; margin: 1px 3px 1px 0; }
 @media (max-width: 480px) {
     .ans-device-panel .ans-device-runs .table > thead > tr > th, .ans-device-panel .ans-device-runs .table > tbody > tr > td { padding-left: 4px; padding-right: 4px; }
+    .ans-device-panel .ans-device-result .label { white-space: normal; text-align: left; }
 }
 .ans-nowrap { white-space: nowrap; }
 

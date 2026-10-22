@@ -223,6 +223,26 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame('not_launched', $this->changes->find($id)['dry_run_state']);
     }
 
+    public function testADryRunThatNeverRanNeedsNoProofAndWarnsOfNothing(): void
+    {
+        foreach ([['not_launched', ['error' => 'the runner refused a task of template 77 (HTTP 400): Task queue is full']], ['stopped', ['started_at' => null]]] as [$status, $more]) {
+            $id = $this->change();
+            $lifecycle = $this->lifecycle();
+            $lifecycle->startDryRun($id, self::ALICE, [], $this->t0);
+            $runId = (int) $this->changes->find($id)['dry_run_id'];
+            $this->endRun($runId, $status, array_fill_keys(array_keys(self::TARGETS), 'not_run'), [], $this->t0 + 5, $more);
+            $before = count($this->events->entries);
+            $lifecycle->advance($id, $this->t0 + 10);
+
+            $change = $this->changes->find($id);
+            $this->assertSame([ChangeStatus::DRAFT, 'not_launched'], [$change['status'], $change['dry_run_state']], $status);
+            $this->assertStringContainsString($status === 'stopped' ? 'stopped before the runner started it: nothing ran' : 'Task queue is full', (string) $change['error']);
+            $this->assertSame('not_run', $this->changes->targets[$id][501]['dry_result']);
+            $this->assertCount($before, $this->events->entries, 'no "not proven" error in the eventlog of its devices: nothing ran');
+            $this->assertArrayNotHasKey($runId, $this->runner->proofs);
+        }
+    }
+
     // ------------------------------------------------------------------ approvals
 
     public function testApprovalsFollowTheRules(): void
@@ -289,7 +309,7 @@ class ChangeLifecycleTest extends TestCase
         $this->runner->userProblems[2] = 'no longer holds the approve permission';
 
         $error = $this->lifecycle()->apply($id, self::ALICE, [], $this->t0 + 50);
-        $this->assertStringContainsString('its approver no longer holds the approve permission', (string) $error);
+        $this->assertStringContainsString('its approver bob no longer holds the approve permission', (string) $error);
         $this->assertSame(ChangeStatus::AWAITING, $this->changes->find($id)['status']);
     }
 
@@ -540,6 +560,10 @@ class ChangeLifecycleTest extends TestCase
 
         $stored = json_encode([$this->changes->changes, $this->changes->targets, $this->changes->batches, $this->changes->events, $this->runs->runs]);
         $this->assertStringNotContainsString('s3cret', (string) $stored);
+
+        $this->assertNull($lifecycle->stop($id, 'alice', $this->t0 + 110));
+        $this->assertSame([ChangeStatus::STOPPED, 'stopped by alice before batch 2 was launched'], [$this->changes->find($id)['status'], $this->changes->find($id)['error']],
+            'a batch waiting for the secret answers was not launched');
     }
 
     public function testWithoutAFreshBackupTheBatchIsRefusedOrGoesWithAWarning(): void

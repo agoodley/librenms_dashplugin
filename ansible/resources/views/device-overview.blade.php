@@ -19,16 +19,17 @@
         <div class="panel-body text-danger">{{ $error }}</div>
     @endif
     @if(! $error && $changes)
+        {{-- three columns, so that it fits a phone like the runs below: the status under the change, who and when under the template --}}
         <div class="table-responsive ans-device-runs" id="ans-device-changes">
         <table class="table table-condensed table-hover" style="margin-bottom: 0">
-            <thead><tr><th>Change</th><th>Template</th><th>When</th><th>Status</th><th>On this device</th></tr></thead>
+            <thead><tr><th>Change</th><th>Template</th><th>On this device</th></tr></thead>
             <tbody>
             @foreach($changes as $change)
-                <tr>
-                    <td><a href="{{ route('ansible.changes.show', $change['id']) }}">#{{ $change['id'] }}</a>@if($change['reference'] !== '')<div class="ans-code ans-muted ans-wrap">{{ $change['reference'] }}</div>@endif</td>
-                    <td class="ans-wrap">{{ $change['template_name'] }}<div class="ans-muted">{{ $change['username'] }}, batch {{ $change['batch'] }}</div></td>
-                    <td>@foreach(explode(' ', (string) \Agoodley\LibrenmsAnsible\Support\Clock::local($change['created_at'])) as $part)<span class="ans-nowrap">{{ $part }}</span> @endforeach</td>
-                    <td><span class="label label-{{ \Agoodley\LibrenmsAnsible\Changes\ChangeStatus::css($change['status']) }}">{{ \Agoodley\LibrenmsAnsible\Changes\ChangeStatus::label($change['status']) }}</span></td>
+                <tr data-change="{{ $change['id'] }}">
+                    <td><a href="{{ route('ansible.changes.show', $change['id']) }}">#{{ $change['id'] }}</a>
+                        <div class="ans-device-result"><span class="label label-{{ \Agoodley\LibrenmsAnsible\Changes\ChangeStatus::css($change['status']) }}">{{ \Agoodley\LibrenmsAnsible\Changes\ChangeStatus::label($change['status']) }}</span></div></td>
+                    <td class="ans-wrap">{{ $change['template_name'] }}@if($change['reference'] !== '') <span class="ans-code ans-muted">{{ $change['reference'] }}</span>@endif
+                        <div class="ans-muted">{{ $change['username'] }}, batch {{ $change['batch'] }} · @foreach(explode(' ', (string) \Agoodley\LibrenmsAnsible\Support\Clock::local($change['created_at'])) as $part)<span class="ans-nowrap">{{ $part }}</span> @endforeach</div></td>
                     <td class="ans-device-result">
                         @if($change['dry_result'])
                             <span class="label label-{{ in_array($change['dry_result'], ['failed', 'unreachable'], true) ? 'danger' : ($change['dry_result'] === 'changed' ? 'warning' : 'default') }}">dry run: {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::DRY_RESULTS[$change['dry_result']] ?? $change['dry_result'] }}</span>

@@ -55,8 +55,8 @@ These are useful but are not about topology, or would change devices, so they fi
 
 * **Change automation with Ansible:** push configuration changes to all or some devices from LibreNMS, made safer by
   this plugin's topology data. It is the largest of these ideas, so it is worked out
-  [below](#change-automation-with-ansible); phase 1 is built, as [a plugin of its own](ansible/README.md) in this
-  repository.
+  [below](#change-automation-with-ansible); phases 1 and 2 are built, as [a plugin of its own](ansible/README.md) in
+  this repository.
 * **Switch port capacity:** ports unused for N days (`ifLastChange` and uptime), err-disabled ports, free (PoE) ports
   per wiring closet or location.
 * **Config compliance via Oxidized:** rule checks on backed-up configurations (portfast and BPDU guard on edge ports,
@@ -98,7 +98,7 @@ from the LibreNMS pages.
 | Phase | Scope | Needs |
 |---|---|---|
 | 1 | **Done:** [the Ansible plugin](ansible/README.md). Connection to the runner; an Ansible inventory from LibreNMS (device groups, locations, LibreNMS `os` mapped to `ansible_network_os`; devices without a mapping are refused); run a template on selected devices; live status and log; an audit log (who, what, when, result), also in each device's eventlog | – |
-| 2 | Dry run (`--check --diff`) showing the diff per device; approval, optionally by a second admin; batches that stop at the first failures; Oxidized backups before and after (its REST API's `node/next`); a LibreNMS maintenance window for the targets | 1 |
+| 2 | **Done:** [changes](ansible/README.md#how-a-change-works). A dry run (`--check --diff`) the plugin proves from the log (`ANSIBLE_CHECK_MODE_MARKERS`), with the diff per device; approval, optionally by a second admin, bound to the dry run, the template as the runner has it and its commit, and checked again before every batch; batches (a first one on its own, then batches of a set size) that stop at the first failures; Oxidized backups before and after each batch (LibreNMS' Oxidized client, `node/next`); a LibreNMS maintenance window per batch | 1 |
 | 3 | Rollout plan and blast radius from this plugin (`api/rollout` and `api/simulate`); the maintenance window also covers what each batch cuts off | 1 |
 | 4 | Verification: topology and findings before and after the change (root bridge moved, uplink lost, new single point of failure); one-click fixes for findings with a clear configuration (port descriptions, STP root priority) | 1; this plugin's topology history and background checks (items 5 and 6) |
 
@@ -112,4 +112,4 @@ from the LibreNMS pages.
   * never everything at once: every run goes in batches.
 * Keep it to picking targets, launching, following and verifying on top of the runner, not a configuration management
   product.
-* Effort: L overall; phase 1 is M.
+* Effort: L overall; phases 1 and 2 were M each.

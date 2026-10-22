@@ -99,12 +99,15 @@
                 <li>In Semaphore UI, add a variable group: on its Variables tab, under "Environment variables", <span class="ans-code">LIBRENMS_URL</span> =
                     <span class="ans-code">{{ url('/') }}</span>; on its Secrets tab, under "Environment variables", <span class="ans-code">LIBRENMS_TOKEN</span>
                     = the token (not under "Extra variables": the script only sees environment variables; optional:
-                    <span class="ans-code">LIBRENMS_CA_BUNDLE</span>, the path of a CA file in the runner).</li>
+                    <span class="ans-code">LIBRENMS_CA_BUNDLE</span>, the path of a CA file in the runner). On its Variables tab also
+                    <span class="ans-code">ANSIBLE_CHECK_MODE_MARKERS</span> = <span class="ans-code">true</span>: Ansible then marks what runs in
+                    check mode, which is how the plugin proves that a change's dry run was one.</li>
                 <li>Add an inventory of type <em>File</em> with the path <span class="ans-code">{{ $script }}</span> in that repository, with the
                     SSH key of the devices (and the become key for "enable"). Its id goes in the plugin settings
                     @if($connection && $connection['inventory'])(now: #{{ $connection['inventory'] }})@else(Test connection lists the inventories with their ids)@endif.</li>
                 <li>Give each template the plugin may launch this inventory and the variable group, and under "Ansible prompts" tick "Limit" (not the
-                    "Limit" field under "Ansible options", which is a limit of the template's own).</li>
+                    "Limit" field under "Ansible options", which is a limit of the template's own). A repository with a Git URL (not a local path) lets
+                    the runner record the commit of each run, and the plugin apply a change with the commit its dry run ran.</li>
                 <li>Check it: the script fetches <span class="ans-code">{{ $endpoint }}</span>; the first run makes the runner fetch it (Test connection
                     does not), and the last fetch above shows it worked.</li>
             </ol>

@@ -16,8 +16,9 @@ IS-IS, MPLS and IPsec, forwarding, ARP and 802.1X tables, syslog, transceiver se
   that write to the eventlog
 * a **Topology** panel on the [device pages](#device-page)
 
-Change automation with Ansible (run reviewed templates of Semaphore UI on LibreNMS devices, with an audit log) is a
-separate plugin in this repository: see [ansible/README.md](ansible/README.md).
+Change automation with Ansible (changes made with reviewed templates of Semaphore UI on LibreNMS devices: a proven
+dry run with the diff per device, an approval, batches that stop at the first failures, Oxidized backups and
+maintenance windows, an audit log) is a separate plugin in this repository: see [ansible/README.md](ansible/README.md).
 
 ![Layer 2 map](docs/images/l2-map.png)
 

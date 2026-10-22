@@ -154,6 +154,10 @@ class ChangeRepositoryTest extends TestCase
         $lost = $record(['kind' => 'dry_run', 'change_id' => 6, 'status' => 'lost'], [512 => 'f']);
         $this->assertSame([511 => $unproven, 512 => $lost], $runs->changedSince([511, 512], $since, 7),
             'a dry run not proven to be one may have changed its devices');
+        $queued = $record(['status' => 'stopped'], [514 => 'h']);
+        $this->assertSame([], $runs->changedSince([514], $since, 7), 'a run stopped in the runner\'s queue never started: it changed nothing');
+        $this->sql->change('UPDATE `ansible_runs` SET `started_at` = ? WHERE `id` = ?', [Clock::store(time()), $queued]);
+        $this->assertSame([514 => $queued], $runs->changedSince([514], $since, 7), 'a stopped run that had started counts');
         $stray = $record([], [513 => 'g']);
         $this->sql->change('UPDATE `ansible_run_targets` SET `unexpected` = 1 WHERE `run_id` = ?', [$stray]);
         $this->assertSame([513 => $stray], $runs->changedSince([513], $since, 7), 'a run on a device that was not its target counts too');

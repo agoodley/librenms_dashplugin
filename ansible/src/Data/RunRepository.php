@@ -242,8 +242,9 @@ final class RunRepository implements RunStore
     /**
      * The devices among $deviceIds that a run may have changed since $since (launched then or later, and not refused
      * by the runner), not counting the runs of change $changeId: a dry run from before such a run no longer tells what
-     * an apply would do. Every run counts, also on a device it ran on without it being a target, except a dry run
-     * proven to be one, and a dry run that has not ended (it holds its devices: it is judged when it ends).
+     * an apply would do. Every run counts, also on a device it ran on without it being a target, except a run that
+     * never started (the runner refused it, or it was stopped in the runner's queue), a dry run proven to be one, and
+     * a dry run that has not ended (it holds its devices: it is judged when it ends).
      *
      * @param  int[]  $deviceIds
      * @return array<int, int> device_id => the latest such run
@@ -256,6 +257,7 @@ final class RunRepository implements RunStore
         $changed = [];
         foreach ($this->sql->select('SELECT t.`device_id`, r.`id` FROM ' . $this->sql->table('ansible_run_targets') . ' t JOIN ' . $this->sql->table('ansible_runs')
             . ' r ON r.`id` = t.`run_id` WHERE t.`device_id` IN (' . self::marks($deviceIds) . ') AND r.`created_at` >= ? AND r.`status` <> ?'
+            . " AND NOT (r.`status` = 'stopped' AND r.`started_at` IS NULL)"
             . " AND NOT (COALESCE(r.`kind`, '') = 'dry_run' AND (COALESCE(r.`proof`, '') = 'verified' OR r.`status` IN (" . self::marks(RunStatus::UNFINISHED) . ')))'
             . ' AND (r.`change_id` IS NULL OR r.`change_id` <> ?) ORDER BY r.`id`',
             array_merge(array_map('intval', $deviceIds), [Clock::store($since), RunStatus::NOT_LAUNCHED], RunStatus::UNFINISHED, [$changeId])) as $row) {

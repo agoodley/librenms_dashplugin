@@ -76,7 +76,9 @@ final class ApprovalRules
             return 'the settings need the approval of a second admin, and it was approved by its requester';
         }
         if ($approverProblem !== null) {
-            return 'its approver ' . $approverProblem;
+            $approver = \Agoodley\LibrenmsAnsible\Inventory\UntrustedText::line((string) ($change['approved_by'] ?? ''), 60);
+
+            return 'its approver ' . ($approver !== '' ? $approver . ' ' : '') . $approverProblem;
         }
 
         return null;

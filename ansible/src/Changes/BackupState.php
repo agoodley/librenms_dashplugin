@@ -34,9 +34,13 @@ final class BackupState
     public const LABELS = [self::REQUESTED => 'waiting for Oxidized', self::FRESH => 'backed up', self::FAILED => 'failed',
         self::UNAVAILABLE => 'Oxidized not reachable', self::NO_NODE => 'not in Oxidized', self::EXCLUDED => 'not backed up by Oxidized'];
 
+    /** How long after a failed attempt the plugin waits for Oxidized's retry (its "retries" setting retries at once). */
+    public const RETRY_SECONDS = 90;
+
     /**
      * A requested backup after Oxidized's answer about its node: fresh, still waiting (with the error of a failed
-     * attempt), or failed when the timeout passed.
+     * attempt: Oxidized may retry), or failed once no retry came within RETRY_SECONDS of the failed attempt, or when
+     * the timeout passed.
      *
      * @param  array{requested_at: int, error?: ?string}  $state
      * @param  array{start?: ?string, end?: ?string, status?: ?string}|null  $last  node/show's "last", null while a backup runs
@@ -53,6 +57,9 @@ final class BackupState
                 return ['status' => self::FRESH, 'at' => $end ?? $start, 'error' => null];
             }
             $error = 'Oxidized\'s backup ' . (is_string($last['status'] ?? null) ? 'ended with "' . mb_substr($last['status'], 0, 40) . '"' : 'failed');
+            if ($now - ($end ?? $start) > self::RETRY_SECONDS) {
+                return ['status' => self::FAILED, 'at' => null, 'error' => $error];
+            }
         }
         if ($now - $requested > $timeoutSeconds) {
             return ['status' => self::FAILED, 'at' => null, 'error' => $error ?? 'Oxidized took no backup within ' . intdiv($timeoutSeconds, 60) . ' minutes'];

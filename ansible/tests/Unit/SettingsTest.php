@@ -76,6 +76,41 @@ class SettingsTest extends TestCase
         $this->assertSame([], $after->changes($after, self::GROUPS, self::USERS));
     }
 
+    public function testTheSettingsOfChanges(): void
+    {
+        $defaults = (new PluginSettings())->changeSettings();
+        $this->assertSame(['required', 86400, 86400, true, true, 600, true, null, 3600, 600, 'plugin/ansible/changes/%d'], [$defaults->approval, $defaults->approvalSeconds,
+            $defaults->dryRunSeconds, $defaults->backups, $defaults->refuseWithoutBackup, $defaults->backupTimeoutSeconds, $defaults->maintenance,
+            $defaults->maintenanceBehavior, $defaults->expectedSeconds, $defaults->settleSeconds, $defaults->changeUrl], 'an approval, backups that refuse, windows');
+        $plan = (new PluginSettings())->batchPlan([1, 2, 3, 4, 5, 6, 7, 8]);
+        $this->assertSame([[1], [2, 3, 4, 5, 6], [7, 8]], $plan->batches);
+        $this->assertSame('3 batches: 1, then 5, then 2 devices; stops at 1 failed device in a batch; waits for an admin to continue after the first batch', $plan->describe());
+        $this->assertSame([[6], [1, 2, 3, 4, 5], [7, 8]], (new PluginSettings())->batchPlan([1, 2, 3, 4, 5, 6, 7, 8], [6])->batches, 'the devices ticked "first" form the first batch');
+
+        $settings = new PluginSettings(['approval' => 'second', 'approval_hours' => '2', 'dry_run_hours' => '9999', 'canary_size' => '0', 'batch_size' => '3', 'stop_at' => '2',
+            'wait_after_canary' => '0', 'batch_pause_minutes' => '5', 'backups' => '0', 'backup_policy' => 'warn', 'backup_timeout_minutes' => '1', 'maintenance' => '0',
+            'maintenance_behavior' => '2', 'maintenance_minutes' => '30', 'settle_minutes' => '0']);
+        $changes = $settings->changeSettings();
+        $this->assertSame(['second', 7200, 720 * 3600, false, false, 60, false, 2, 1800, 0], [$changes->approval, $changes->approvalSeconds, $changes->dryRunSeconds,
+            $changes->backups, $changes->refuseWithoutBackup, $changes->backupTimeoutSeconds, $changes->maintenance, $changes->maintenanceBehavior, $changes->expectedSeconds,
+            $changes->settleSeconds], 'stored values out of range are clamped');
+        $this->assertSame('3 batches: 1, then 3, then 1 devices; stops at 2 failed devices in a batch; 5 min between batches', $settings->batchPlan([1, 2, 3, 4, 5])->describe());
+        $this->assertSame('required', (new PluginSettings(['approval' => 'whatever']))->changeSettings()->approval, 'an unknown approval mode asks for an approval');
+
+        $result = PluginSettings::fromInput(['approval' => 'nobody', 'canary_size' => '0', 'batch_size' => '501', 'stop_at' => 'x', 'wait_after_canary' => 'maybe',
+            'backup_policy' => 'ignore', 'backup_timeout_minutes' => '0', 'maintenance_behavior' => '9', 'maintenance_minutes' => '1', 'settle_minutes' => '-1'],
+            new PluginSettings(), self::GROUPS, self::USERS);
+        $this->assertNull($result['settings']);
+        $this->assertSame(['approval', 'canary_size', 'batch_size', 'stop_at', 'wait_after_canary', 'backup_policy', 'backup_timeout_minutes', 'maintenance_behavior',
+            'maintenance_minutes', 'settle_minutes'], array_values(array_intersect(array_keys(PluginSettings::DEFAULTS), array_keys($result['errors']))), 'each wrong value is refused');
+        $this->assertSame('First batch (devices) is a whole number from 1 to 100.', $result['errors']['canary_size']);
+        $this->assertSame('Approval is one of: no approval, an approval, an approval from a second admin.', $result['errors']['approval']);
+
+        $result = PluginSettings::fromInput(['approval' => 'second', 'backups' => '0', 'settle_minutes' => '1'], new PluginSettings(), self::GROUPS, self::USERS);
+        $this->assertSame(['approval an approval → an approval from a second admin', 'Oxidized backups on → off', 'settle time (minutes) 10 → 1'],
+            $result['settings']->changes(new PluginSettings(), self::GROUPS, self::USERS));
+    }
+
     public function testUnreadableSettingsCarryTheirError(): void
     {
         $settings = new PluginSettings([], 'cannot be read');
