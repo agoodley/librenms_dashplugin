@@ -31,7 +31,7 @@ class DryRunProofTest extends TestCase
 
     public function testRealDryRunsAreVerified(): void
     {
-        foreach (['dry-run-desc', 'dry-run-intended', 'dry-run-loop-intended', 'dry-run-verbose', 'dry-run-unreachable', 'dry-run-counts', 'dry-run-roles'] as $log) {
+        foreach (['dry-run-desc', 'dry-run-intended', 'dry-run-loop-intended', 'dry-run-verbose', 'dry-run-interleaved', 'dry-run-unreachable', 'dry-run-counts', 'dry-run-roles'] as $log) {
             $proof = self::check(self::log($log));
             $this->assertTrue($proof['verified'], "$log: " . implode(' ', $proof['findings']));
         }

@@ -458,11 +458,14 @@ approved either. Each target's result comes from the PLAY RECAP: *would change* 
 
 With `--diff` Ansible prints, before a task's result line, what the task would change: a unified diff for modules
 that compute one (`template`, `copy`, `lineinfile`, network config modules with `diff_against`), and with `-v` a
-module's details, such as the `commands` of `cisco.ios.ios_config`. The plugin takes each block and gives it to the
-device whose result line follows it, only when nothing in the log contradicts that: the host is a target and the task
-names it once (once per loop item), the host has no more *changed* results in the log than its PLAY RECAP counts, and
-in a loop only unified diffs (whose every line starts with a prefix device text cannot avoid). Anything else is listed
-under the devices as *not attributed*, with the reason. A block keeps at most 400 lines of 1,000 characters, a device
+module's details below its result line, such as the `commands` of `cisco.ios.ios_config` (read from the details' first
+level, in YAML or JSON). The plugin takes each block and gives it to the device whose result line follows it, only when
+nothing in the log contradicts that: the host is a target and the task names it once (once per loop item), the host
+has no more *changed* results in the log than its PLAY RECAP counts, in a loop only unified diffs (whose every line
+starts with a prefix device text cannot avoid), and no raw text right after another result's details that a foreign
+line cut short (it may hold their rest). Ansible's warnings go to stderr, which Semaphore merges into the log line by
+line, so they can land inside a diff or a result's details: the plugin skips them there. Anything else is listed under
+the devices as *not attributed*, with the reason. A block keeps at most 400 lines of 1,000 characters, a device
 128 KB, a change 1 MB (cut parts are marked). Diffs are device text: the page shows them as text, never as HTML.
 
 ### What is approved, and what stays true until the last batch

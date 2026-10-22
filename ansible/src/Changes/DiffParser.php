@@ -6,19 +6,25 @@ namespace Agoodley\LibrenmsAnsible\Changes;
  * What a dry run would change on each device, from the log of Ansible's default callback run with --check --diff.
  *
  * The callback prints a result's diff right before the result's line ("changed: [host]", in a loop "changed: [host]
- * => (item=x)"), and with -v the result's details (e.g. the "commands" of cisco.ios.ios_config) indented below that
- * line. So a block of lines belongs to the "changed" line right after it, and the indented lines right after a result
- * line are its details. Diffs hold device text, which can imitate Ansible's lines where Ansible prints it as it is (a
- * loop item label with a newline, a module's "prepared" diff text): every line of a unified diff ("--- before", "+++
- * after", "@@", then " ", "+" or "-") starts with a prefix device text cannot avoid, the rest can. A block is
- * attributed to its device only when nothing in the log contradicts it:
+ * => (item=x)"), and the result's details (with -v, and always for a failure) below a line that ends with "=>":
+ * indented YAML lines (blank ones inside), or JSON lines up to a "}". So a block of lines belongs to the "changed" line
+ * right after it, and the lines right after a result line ending with "=>" are its details (where the "commands" of
+ * cisco.ios.ios_config are). Ansible's own messages (warnings, deprecations, errors) go to stderr, which the runner
+ * merges with stdout line by line: they can land anywhere, also between the lines of a result's details, and are
+ * skipped. Diffs hold device text, which can imitate Ansible's lines where Ansible prints it as it is (a loop item
+ * label with a newline, a module's "prepared" diff text): every line of a unified diff ("--- before", "+++ after",
+ * "@@", then " ", "+" or "-") starts with a prefix device text cannot avoid, the rest can. A block is attributed to its
+ * device only when nothing in the log contradicts it:
  *
  * - its host is a target of the run, and the task's log names that host once (once per loop item, and not both with
  *   and without an item);
  * - the host does not have more "changed" tasks in the log than the PLAY RECAP counts for it (a line imitated by
  *   device output adds one);
  * - in a loop, only unified diffs: an item label can hold a newline and imitate the next result line, which would take
- *   the details printed after it, and raw text could hide one.
+ *   the details printed after it, and raw text could hide one;
+ * - raw text right after a result's details that a line of another kind cut short (a message Ansible printed over
+ *   several lines, for example) is not attributed: it may hold the rest of those details, which belong to another
+ *   result (a unified diff there is: its lines cannot be details).
  *
  * Everything else is listed as not attributed, with the reason. The results themselves come from the PLAY RECAP, never
  * from here. Lines are plain text (ANSI codes and control characters removed), cut to sizes the pages can show.
@@ -121,6 +127,10 @@ final class DiffParser
                 ? 'it was printed after a loop item, whose label could imitate the next result line'
                 : 'it is text a module printed as it is, in a loop: it could imitate Ansible\'s result lines';
         }
+        if ($entry['cut'] && $block['kind'] === 'text') {
+            return 'it comes right after the details of another result, cut short by a line Ansible does not print with them: '
+                . 'it may hold the rest of those details';
+        }
 
         return null;
     }
@@ -130,7 +140,7 @@ final class DiffParser
      * and why its log is ambiguous.
      *
      * @param  string[]  $lines
-     * @return array{0: array<int, array{section: int, task: string, kind: string, host: string, item: ?string, block: string[], details: string[], rest: string}>,
+     * @return array{0: array<int, array{section: int, task: string, kind: string, host: string, item: ?string, block: string[], details: string[], rest: string, cut: bool}>,
      *               1: array<int, array{loop: bool, ambiguous: ?string}>}
      */
     private static function entries(array $lines): array
@@ -140,21 +150,32 @@ final class DiffParser
         $section = 0;
         $task = '';
         $pending = [];
-        $details = null; // index of the entry whose indented details follow
+        $details = null; // index of the entry whose details follow
+        $json = false; // they are JSON, up to a "}"
+        $cut = false; // the pending lines started where another line cut a result's details short
         $seen = []; // section => host => item key => true
         foreach ($lines as $line) {
             $plain = AnsibleLog::plain($line);
             if ($details !== null) {
-                if ($plain !== '' && ($plain[0] === ' ')) {
+                if ($plain === '' || $plain[0] === ' ' || ($json && $plain === '}')) {
                     $entries[$details]['details'][] = $plain;
+                    if ($json && $plain === '}') {
+                        $details = null;
+                    }
 
                     continue;
                 }
+                if (AnsibleLog::message($plain)) {
+                    continue; // stderr, merged line by line into the log
+                }
                 $details = null;
+                $cut = AnsibleLog::banner($plain) === null && AnsibleLog::result($plain) === null
+                    && ! AnsibleLog::ignoring($plain) && AnsibleLog::included($plain) === null;
             }
             $banner = AnsibleLog::banner($plain);
             if ($banner !== null) {
                 $pending = [];
+                $cut = false;
                 if (in_array($banner['kind'], AnsibleLog::MARKED_KINDS, true)) {
                     $section++;
                     $sections[$section] = ['loop' => false, 'ambiguous' => null];
@@ -180,9 +201,13 @@ final class DiffParser
                 }
                 $seen[$section][$host][$key] = true;
                 $entries[] = ['section' => $section, 'task' => $task, 'kind' => $result['kind'], 'host' => $host, 'item' => $result['item'],
-                    'block' => $pending, 'details' => [], 'rest' => $result['rest']];
+                    'block' => $pending, 'details' => [], 'rest' => $result['rest'], 'cut' => $cut];
                 $pending = [];
-                $details = rtrim($result['rest']) === ' =>' || rtrim($result['rest']) === '=>' ? count($entries) - 1 : null;
+                $cut = false;
+                // the details follow on the next lines when the line ends with "=>" (YAML) or "=> {" (JSON over several lines)
+                $tail = rtrim($result['rest']);
+                $json = str_ends_with($tail, '=> {');
+                $details = $json || str_ends_with($tail, '=>') ? count($entries) - 1 : null;
 
                 continue;
             }
@@ -243,7 +268,7 @@ final class DiffParser
 
     /**
      * The "commands" (else "updates") list of a result's details: YAML lines below the result line ("    commands:" then
-     * "    - interface Fa0/1"), or the JSON after "=> " on the same line.
+     * "    - interface Fa0/1"), or the JSON after "=> " (on the same line, or below it up to a "}").
      *
      * @param  string[]  $details
      * @return string[]
@@ -252,7 +277,11 @@ final class DiffParser
     {
         $rest = trim($rest);
         if (str_starts_with($rest, '=> {')) {
-            $json = json_decode(substr($rest, 3), true);
+            $text = substr($rest, 3);
+            if ($text === '{') {
+                $text .= "\n" . implode("\n", $details);
+            }
+            $json = json_decode($text, true);
             foreach (['commands', 'updates'] as $key) {
                 if (is_array($json) && is_array($json[$key] ?? null) && array_is_list($json[$key])) {
                     return array_values(array_map(fn ($c) => is_scalar($c) ? (string) $c : json_encode($c), $json[$key]));
@@ -272,31 +301,38 @@ final class DiffParser
     }
 
     /**
-     * A list of plain scalars under a key at the details' first level, as Ansible's YAML callback format prints them.
+     * A list of scalars under a key at the details' first level (the indentation of their first line), as Ansible's
+     * YAML callback format prints them: the items at the key's indentation ("- x"), a long one folded onto the next
+     * lines (indented two more). Deeper keys are not read: text a device returned sits there.
      *
      * @param  string[]  $details
      * @return string[]
      */
     private static function yamlList(array $details, string $key): array
     {
+        $first = current(array_filter($details, fn ($line) => $line !== ''));
+        if ($first === false) {
+            return [];
+        }
+        $indent = substr($first, 0, strlen($first) - strlen(ltrim($first, ' ')));
         $items = [];
-        $indent = null;
+        $inside = false;
         foreach ($details as $line) {
-            if ($indent === null) {
-                if (preg_match('/^( +)' . preg_quote($key, '/') . ':\s*$/D', $line, $m)) {
-                    $indent = $m[1];
-                }
+            if (! $inside) {
+                $inside = $line === $indent . $key . ':';
 
                 continue;
             }
-            if (preg_match('/^' . $indent . '- (.*)$/D', $line, $m)) {
-                $items[] = self::unquote($m[1]);
-            } elseif (! str_starts_with($line, $indent . '  ')) {
+            if (str_starts_with($line, $indent . '- ')) {
+                $items[] = substr($line, strlen($indent) + 2);
+            } elseif ($items && str_starts_with($line, $indent . '  ')) {
+                $items[count($items) - 1] .= ' ' . ltrim($line, ' ');
+            } else {
                 break;
             }
         }
 
-        return $items;
+        return array_map(fn ($item) => self::unquote($item), $items);
     }
 
     /**

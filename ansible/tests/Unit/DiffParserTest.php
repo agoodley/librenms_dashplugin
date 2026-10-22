@@ -78,6 +78,80 @@ class DiffParserTest extends TestCase
             'lines' => ['interface FastEthernet0/1', 'description verbose probe'], 'cut' => false]], $verbose['devices'][501]);
     }
 
+    public function testAnsiblesMessagesBetweenTheLinesOfDetailsLeaveThemWithTheirResult(): void
+    {
+        // a dry run of eight switches on the lab: the runner merged stderr's warnings into lab-sw3's details
+        $targets = [];
+        foreach (range(1, 8) as $n) {
+            $targets[500 + $n] = "lab-sw$n.netops.lab";
+        }
+        $lines = DryRunProofTest::log('dry-run-interleaved');
+        $this->assertStringContainsString('[WARNING]', implode("\n", array_slice($lines, 19, 3)), 'the warnings are inside lab-sw3\'s details');
+
+        $result = self::parse($lines, $targets);
+        foreach ($targets as $deviceId => $name) {
+            $this->assertSame([['task' => 'Set the description', 'item' => null, 'kind' => 'commands',
+                'lines' => ['interface FastEthernet0/10', 'description batch mvjbalij'], 'cut' => false]], $result['devices'][$deviceId], $name);
+        }
+        $this->assertSame([], $result['unattributed']);
+    }
+
+    public function testTheDetailsOfAFailureStayWithIt(): void
+    {
+        // lab-dead's error is printed below its "fatal" line; it is not text of lab-sw1, whose result comes next
+        $result = self::parse(DryRunProofTest::log('dry-run-unreachable'), [501 => 'lab-sw1.netops.lab', 504 => 'lab-dead.netops.lab']);
+
+        $this->assertSame([], $result['devices']);
+        $this->assertSame([], $result['unattributed']);
+        $this->assertSame([501 => 1, 504 => 0], $result['changed']);
+    }
+
+    public function testDetailsCutShortByAnotherLineLeaveTheTextAfterThemUnattributed(): void
+    {
+        // a message over several lines (its first line is skipped, not the others) cuts h1's details; what follows may be their rest
+        $lines = self::log(['changed: [h1] => ', '    banners: {}', 'Origin: /repos/play.yml:8:7', '    commands:', '    - interface Fa0/9',
+            'changed: [h2] => ', '    commands:', '    - interface Fa0/2']);
+        $result = self::parse($lines, [1 => 'h1', 2 => 'h2']);
+
+        $this->assertArrayNotHasKey(1, $result['devices']);
+        $this->assertSame([['task' => 'Set it', 'item' => null, 'kind' => 'commands', 'lines' => ['interface Fa0/2'], 'cut' => false]], $result['devices'][2]);
+        $this->assertCount(1, $result['unattributed']);
+        $this->assertSame('h2', $result['unattributed'][0]['host']);
+        $this->assertContains('    - interface Fa0/9', $result['unattributed'][0]['lines']);
+        $this->assertStringContainsString('may hold the rest of those details', $result['unattributed'][0]['reason']);
+
+        // a unified diff right after details is the next result's: its lines cannot be details
+        $lines = self::log(array_merge(['changed: [h1] => ', '    changed: true'], self::diff('two'), ['changed: [h2]']));
+        $result = self::parse($lines, [1 => 'h1', 2 => 'h2']);
+        $this->assertSame('diff', $result['devices'][2][0]['kind']);
+        $this->assertSame([], $result['unattributed']);
+    }
+
+    public function testDetailsWithBlankLinesFoldedItemsAndDeeperKeys(): void
+    {
+        // a block scalar keeps its blank lines unindented; a long command is folded; a deeper "commands:" is a device's text
+        $lines = self::log(['changed: [h1] => ', '    changed: true', '    commands:', '    - interface FastEthernet0/1',
+            '    - description a long description that PyYAML folds onto the next line once it is longer', '      than eighty characters',
+            '    stdout: |-', '        commands:', '        - evil', '', '        more', 'changed: [h2] => ', '    backup:', '      commands:', '      - evil', '    changed: true']);
+        $result = self::parse($lines, [1 => 'h1', 2 => 'h2']);
+
+        $this->assertSame(['interface FastEthernet0/1', 'description a long description that PyYAML folds onto the next line once it is longer than eighty characters'],
+            $result['devices'][1][0]['lines']);
+        $this->assertArrayNotHasKey(2, $result['devices'], 'h2 has no first-level commands');
+        $this->assertSame([], $result['unattributed']);
+    }
+
+    public function testCommandsFromJsonOverSeveralLines(): void
+    {
+        $lines = self::log(['changed: [h1] => {', '    "changed": true,', '    "commands": [', '        "interface Fa0/1",', '        "description x"', '    ]', '}',
+            'changed: [h2]']);
+        $result = self::parse($lines, [1 => 'h1', 2 => 'h2']);
+
+        $this->assertSame(['interface Fa0/1', 'description x'], $result['devices'][1][0]['lines']);
+        $this->assertArrayNotHasKey(2, $result['devices'], 'the closing brace is not text of the next result');
+        $this->assertSame([], $result['unattributed']);
+    }
+
     public function testCommandsFromJsonDetails(): void
     {
         $result = self::parse(self::log(['changed: [h1] => {"changed": true, "commands": ["interface Fa0/1", "description x"], "updates": ["y"]}',
