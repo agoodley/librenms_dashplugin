@@ -5,11 +5,15 @@ namespace Agoodley\LibrenmsAnsible\Inventory;
 /**
  * Which LibreNMS os is which Ansible network platform: ansible_network_os, ansible_connection and whether the
  * playbook enters privileged mode with "enable" (ansible_become). A device whose os has no entry is left out of
- * the inventory and cannot be a target. Written in the settings as one line per os:
+ * the inventory and cannot be a target. The defaults (DEFAULT) always apply; the setting's lines add to them, one
+ * line per os, replacing the default line of the same os:
  *
  *     iosxe  cisco.ios.ios  network_cli  become
+ *     asa    cisco.asa.asa  network_cli  become
+ *     vyos   -
  *
- * (os, network os, optionally the connection, short names meaning ansible.netcommon.*, and "become").
+ * (os, network os, optionally the connection, short names meaning ansible.netcommon.*, and "become"; "os -"
+ * switches the os off, a default one included).
  */
 final class PlatformMap
 {
@@ -41,24 +45,26 @@ final class PlatformMap
     /** @var string[] lines that could not be read, with why */
     private array $errors = [];
 
+    /** @var array<string, string> os => where its entry comes from: default, line (the setting's), off (switched off) */
+    private array $sources = [];
+
     private function __construct()
     {
     }
 
     /**
-     * The mapping of the settings text (the defaults when it is empty); unreadable lines are skipped and listed
-     * in errors(). A later line for the same os replaces an earlier one.
+     * The defaults with the settings text's lines over them; unreadable lines are skipped and listed in errors().
+     * A later line for the same os replaces an earlier one.
      */
     public static function parse(?string $text): self
     {
         $map = new self();
-        $text = trim((string) $text) === '' ? self::DEFAULT : (string) $text;
-        foreach (preg_split('/\R/', $text) ?: [] as $number => $line) {
-            $line = trim((string) preg_replace('/#.*$/', '', $line));
-            if ($line === '') {
-                continue;
-            }
-            $error = $map->add($line);
+        foreach (self::lines(self::DEFAULT) as $line) {
+            $map->add($line);
+        }
+        $map->sources = array_fill_keys(array_keys($map->entries), 'default');
+        foreach (self::lines((string) $text) as $number => $line) {
+            $error = $map->add($line, true);
             if ($error !== null) {
                 $map->errors[] = 'line ' . ($number + 1) . ' (' . UntrustedText::line($line, 80) . "): $error";
             }
@@ -68,15 +74,42 @@ final class PlatformMap
     }
 
     /**
+     * The lines of a mapping text without comments, by line number (from 0).
+     *
+     * @return array<int, string>
+     */
+    private static function lines(string $text): array
+    {
+        $lines = [];
+        foreach (preg_split('/\R/', $text) ?: [] as $number => $line) {
+            $line = trim((string) preg_replace('/#.*$/', '', $line));
+            if ($line !== '') {
+                $lines[$number] = $line;
+            }
+        }
+
+        return $lines;
+    }
+
+    /**
      * Read one line; null when it is valid.
      */
-    private function add(string $line): ?string
+    private function add(string $line, bool $typed = false): ?string
     {
         $tokens = preg_split('/\s+/', $line) ?: [];
         $os = strtolower((string) array_shift($tokens));
         $networkOs = strtolower((string) array_shift($tokens));
         if (! preg_match('/^[a-z0-9][a-z0-9_.-]*$/D', $os)) {
             return 'the LibreNMS os name may only have lowercase letters, digits, ".", "_" and "-"';
+        }
+        if ($networkOs === '-') {
+            if ($tokens) {
+                return '"' . $os . ' -" switches the os off and takes nothing after the "-"';
+            }
+            unset($this->entries[$os]);
+            $this->sources[$os] = 'off';
+
+            return null;
         }
         if (! self::isName($networkOs)) {
             return 'the network os must be a name like cisco.ios.ios';
@@ -96,8 +129,28 @@ final class PlatformMap
             }
         }
         $this->entries[$os] = ['network_os' => $networkOs, 'connection' => $connection, 'become' => $become];
+        if ($typed) {
+            $this->sources[$os] = 'line';
+        }
 
         return null;
+    }
+
+    /**
+     * Every os the defaults or the setting's lines name, with its platform (null when switched off) and where it
+     * comes from: "default", "line" (the setting's, added or replacing a default) or "off".
+     *
+     * @return array<string, array{platform: array{network_os: string, connection: string, become: bool}|null, source: string}>
+     */
+    public function rows(): array
+    {
+        $rows = [];
+        foreach ($this->sources as $os => $source) {
+            $rows[$os] = ['platform' => $this->entries[$os] ?? null, 'source' => $source];
+        }
+        ksort($rows);
+
+        return $rows;
     }
 
     /**

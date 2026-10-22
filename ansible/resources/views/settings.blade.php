@@ -171,12 +171,30 @@
             <div class="form-group row">
                 <label class="col-sm-4 control-label" for="ans-setting-platform_map" style="font-weight: normal">Platform mapping</label>
                 <div class="col-sm-8">
-                    <textarea id="ans-setting-platform_map" rows="11" class="form-control input-sm ans-code" name="platform_map" placeholder="{{ \Agoodley\LibrenmsAnsible\Inventory\PlatformMap::DEFAULT }}">{{ $setting('platform_map') }}</textarea>
-                    <span class="help-block" style="margin: 2px 0 0; font-size: 12px">one line per LibreNMS os: os, ansible_network_os, optionally the connection
-                        (network_cli, netconf, httpapi or a full name) and "become" (enable mode); empty: the defaults shown. A device whose os has no line cannot be a target.</span>
+                    <textarea id="ans-setting-platform_map" rows="5" class="form-control input-sm ans-code" name="platform_map" placeholder="asa   cisco.asa.asa   network_cli   become&#10;vyos  -">{{ $setting('platform_map') }}</textarea>
+                    <span class="help-block" style="margin: 2px 0 0; font-size: 12px">your lines add to the defaults below, one per LibreNMS os: os, ansible_network_os,
+                        optionally the connection (network_cli, netconf, httpapi or a full name) and "become" (enable mode). A line for an os of the defaults
+                        replaces its default; <span class="ans-code">os -</span> switches it off. A device whose os has no line cannot be a target.</span>
                     @foreach($a['mapErrors'] as $mapError)
                         <span class="help-block text-warning" style="margin: 2px 0 0; font-size: 12px"><i class="fa fa-exclamation-triangle"></i> skipped: {{ $mapError }}</span>
                     @endforeach
+                    <details style="margin-top: 4px" id="ans-platform-effective">
+                        <summary class="ans-muted" style="font-size: 12px">The mapping in effect: {{ \Agoodley\LibrenmsAnsible\Support\Format::count(count(array_filter($a['mapRows'], fn ($r) => $r['platform'] !== null)), 'platform') }}</summary>
+                        <table class="table table-condensed ans-table" style="margin: 4px 0 0; font-size: 12px">
+                            <thead><tr><th>LibreNMS os</th><th>ansible_network_os</th><th>Connection</th><th>Enable</th><th>From</th></tr></thead>
+                            <tbody>
+                            @foreach($a['mapRows'] as $os => $row)
+                                <tr data-os="{{ $os }}" @if(! $row['platform']) class="text-muted" @endif>
+                                    <td class="ans-code">{{ $os }}</td>
+                                    <td class="ans-code">{{ $row['platform']['network_os'] ?? '-' }}</td>
+                                    <td class="ans-code">{{ $row['platform'] ? \Illuminate\Support\Str::afterLast($row['platform']['connection'], '.') : '' }}</td>
+                                    <td>{{ ! empty($row['platform']['become']) ? 'yes' : '' }}</td>
+                                    <td>{{ ['default' => 'default', 'line' => 'your line', 'off' => 'switched off'][$row['source']] ?? $row['source'] }}</td>
+                                </tr>
+                            @endforeach
+                            </tbody>
+                        </table>
+                    </details>
                 </div>
             </div>
             <div class="form-group row">

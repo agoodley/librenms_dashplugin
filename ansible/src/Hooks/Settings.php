@@ -37,7 +37,7 @@ class Settings implements SettingsHook
     {
         // LibreNMS disables a plugin whose hook throws: nothing may escape
         $data = ['admin' => false, 'connection' => null, 'connectionError' => null, 'settings' => PluginSettings::DEFAULTS, 'settingsError' => null,
-            'mapErrors' => [], 'holders' => [], 'candidates' => [], 'groups' => [], 'users' => [], 'fetches' => [], 'lastCheck' => null];
+            'mapErrors' => [], 'holders' => [], 'candidates' => [], 'groups' => [], 'users' => [], 'fetches' => [], 'lastCheck' => null, 'mapRows' => []];
         try {
             $data['admin'] = Access::canView(auth()->user());
             if ($data['admin']) {
@@ -46,6 +46,7 @@ class Settings implements SettingsHook
                 $data['settings'] = $current->all();
                 $data['settingsError'] = $current->error;
                 $data['mapErrors'] = $current->platformMap()->errors();
+                $data['mapRows'] = $current->platformMap()->rows();
                 $data['connection'] = $plugin->connection()->forPage();
                 $data['connectionError'] = $plugin->connectionError();
                 $data['lastCheck'] = (new ConnectionChecks())->last();

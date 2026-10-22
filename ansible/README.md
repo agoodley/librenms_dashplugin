@@ -207,7 +207,7 @@ The runner connection is stored encrypted with LibreNMS' `APP_KEY`.
 | *Inventory user* | | |
 | Inventory user | not chosen | the LibreNMS user whose API token the runner uses; once chosen, only that user's tokens get the inventory, and targets are checked against what that user may see; until then nothing is launched |
 | *Targets and runs* | | |
-| Platform mapping | the defaults below | one line per LibreNMS os: `os ansible_network_os [connection] [become]`; a device whose os has no line cannot be a target |
+| Platform mapping | the defaults below | lines that add to the defaults: one per LibreNMS os, `os ansible_network_os [connection] [become]`; a line for an os of the defaults replaces its default, and `os -` switches it off. The settings page shows the mapping in effect. A device whose os has no line cannot be a target |
 | Allowed device group | every device | only the members of this LibreNMS device group are in the inventory and can be targets |
 | Max targets per run | 25 | 1–500 |
 | Output size | 1024 KB | the log kept per run (16–8192 KB): a longer log keeps its start and its end (the PLAY RECAP, the errors) with a line that counts the lines left out; the runner keeps the whole log |
@@ -238,7 +238,8 @@ The connection is `network_cli`, `netconf`, `httpapi` (short for `ansible.netcom
 plugin name; `become` sets `ansible_become: true` and `ansible_become_method: enable`. Junos uses `network_cli` because
 its `netconf` connection needs the `ncclient` Python library on the runner, which the Semaphore UI image does not
 have: with it installed, `junos junipernetworks.junos.junos netconf` lets the Junos resource modules work. Platforms
-not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the runner first, then a line here.
+not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the runner first, then a line of their own
+(e.g. `asa cisco.asa.asa network_cli become`), which keeps every default.
 
 ## Permissions
 

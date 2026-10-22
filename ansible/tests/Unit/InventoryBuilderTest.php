@@ -147,11 +147,11 @@ class InventoryBuilderTest extends TestCase
 
     public function testCustomMappingAndUnmappedOs(): void
     {
-        $inventory = $this->build(null, null, "linux community.general.none ssh\nios cisco.ios.ios");
+        $inventory = $this->build(null, null, "linux community.general.none ssh\nios cisco.ios.ios\niosxe -");
 
         $this->assertSame('srv1.example.net', $inventory->nameOf(8));
         $this->assertSame('ansible.builtin.ssh', $inventory->hosts()['srv1.example.net']['ansible_connection']);
-        $this->assertSame('no_mapping', $inventory->leftOut()[1]['reason'], 'iosxe has no line in this mapping');
+        $this->assertSame('no_mapping', $inventory->leftOut()[1]['reason'], 'iosxe is switched off in this mapping');
         $this->assertArrayNotHasKey('ansible_become', $inventory->hosts()['acc-sw1']);
     }
 

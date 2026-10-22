@@ -28,11 +28,29 @@ class PlatformMapTest extends TestCase
             'a later line for the same os wins');
         $this->assertSame('ansible.netcommon.httpapi', $map->for('nxos')['connection']);
         $this->assertSame('ansible.netcommon.network_cli', $map->for('eos')['connection']);
-        $this->assertNull($map->for('iosxe'), 'a custom mapping replaces the defaults');
+        $this->assertSame('cisco.ios.ios', $map->for('iosxe')['network_os'], 'the lines add to the defaults');
         $this->assertCount(3, $map->errors());
         $this->assertStringContainsString('line 5 (bad os here)', $map->errors()[0]);
         $this->assertStringContainsString('network os', $map->errors()[1]);
         $this->assertStringContainsString('"{{x}}"', $map->errors()[2]);
+    }
+
+    public function testLinesAddToTheDefaultsReplaceThemOrSwitchThemOff(): void
+    {
+        $map = PlatformMap::parse("asa cisco.asa.asa network_cli become\nnxos cisco.nxos.nxos httpapi\niosxe -\nfoo -");
+
+        $this->assertSame('cisco.asa.asa', $map->for('asa')['network_os'], 'added');
+        $this->assertSame('ansible.netcommon.httpapi', $map->for('nxos')['connection'], 'replaced');
+        $this->assertNull($map->for('iosxe'), 'switched off');
+        $this->assertSame('cisco.ios.ios', $map->for('ios')['network_os'], 'the other defaults stay');
+        $this->assertCount(10, $map->all());
+        $this->assertSame([], $map->errors());
+        $rows = $map->rows();
+        $this->assertSame('line', $rows['asa']['source']);
+        $this->assertSame('line', $rows['nxos']['source']);
+        $this->assertSame(['platform' => null, 'source' => 'off'], $rows['iosxe']);
+        $this->assertSame('default', $rows['ios']['source']);
+        $this->assertStringContainsString('takes nothing after', PlatformMap::parse('iosxe - become')->errors()[0]);
     }
 
     public function testDescribeWritesAPlatformAsALine(): void
