@@ -239,11 +239,6 @@ final class ChangeRepository implements ChangeStore
             $this->sql->select('SELECT * FROM ' . $this->sql->table('ansible_change_diffs') . ' WHERE `change_id` = ? ORDER BY `position`', [$changeId]));
     }
 
-    /**
-     * Devices reserved by a change being applied (from its first batch to its end): no other change may take them.
-     *
-     * @return array<int, int> device_id => change id
-     */
     public function reserved(?int $exceptChange = null): array
     {
         $reserved = [];

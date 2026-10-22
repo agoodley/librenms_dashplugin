@@ -112,7 +112,12 @@ class ChangeRepositoryTest extends TestCase
 
         $this->assertSame([501 => $applying, 502 => $applying, 503 => $applying], $this->changes->reserved());
         $this->assertSame([], $this->changes->reserved($applying), 'a change does not refuse its own devices');
-        $this->changes->updateAt($applying, 1, ['status' => ChangeStatus::APPLIED]);
+        $version = 1;
+        foreach ([ChangeStatus::PAUSED, ChangeStatus::STOPPING] as $status) {
+            $this->changes->updateAt($applying, $version++, ['status' => $status]);
+            $this->assertSame([501 => $applying, 502 => $applying, 503 => $applying], $this->changes->reserved(), "a $status change reserves its devices too");
+        }
+        $this->changes->updateAt($applying, $version, ['status' => ChangeStatus::APPLIED]);
         $this->assertSame([], $this->changes->reserved());
         $this->assertSame([$ready], $this->changes->pendingIds());
     }

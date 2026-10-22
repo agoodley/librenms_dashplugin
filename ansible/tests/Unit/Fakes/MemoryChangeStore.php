@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsAnsible\Tests\Unit\Fakes;
 
 use Agoodley\LibrenmsAnsible\Changes\BatchPlan;
+use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStore;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 
@@ -149,6 +150,20 @@ final class MemoryChangeStore implements ChangeStore
     public function updateWindow(int $id, array $values): void
     {
         $this->windows[$id] = array_merge($this->windows[$id], $values);
+    }
+
+    public function reserved(?int $exceptChange = null): array
+    {
+        $reserved = [];
+        foreach ($this->changes as $id => $change) {
+            if ($id !== $exceptChange && in_array($change['status'], ChangeStatus::RESERVING, true)) {
+                foreach (array_keys($this->targets[$id] ?? []) as $deviceId) {
+                    $reserved[$deviceId] = $id;
+                }
+            }
+        }
+
+        return $reserved;
     }
 
     public function replaceDiffs(int $changeId, int $runId, array $rows): void

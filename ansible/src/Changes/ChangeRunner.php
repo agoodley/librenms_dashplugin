@@ -36,6 +36,15 @@ interface ChangeRunner
     public function preflight(array $change, string $kind, int $number, array $deviceIds, \Closure $verify): ?string;
 
     /**
+     * Run $work under the lock every launch records its run under, so that no launch takes a device between what $work
+     * checks and what it writes (an apply checks that no other change reserves its devices, then switches the change to
+     * applying, which reserves them). $work's answer, or why the lock could not be taken.
+     *
+     * @param  \Closure(): ?string  $work
+     */
+    public function exclusive(\Closure $work): ?string;
+
+    /**
      * How the runner reaches these devices as the LibreNMS inventory is now (Connections::of()).
      *
      * @param  int[]  $deviceIds

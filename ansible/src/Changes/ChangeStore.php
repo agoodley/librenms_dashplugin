@@ -89,6 +89,14 @@ interface ChangeStore
     public function updateWindow(int $id, array $values): void;
 
     /**
+     * Devices reserved by a change being applied (ChangeStatus::RESERVING: from its first batch to its end, also while
+     * it pauses or stops): no other change may take them.
+     *
+     * @return array<int, int> device_id => change id
+     */
+    public function reserved(?int $exceptChange = null): array;
+
+    /**
      * Replace the diffs of the change's dry run.
      *
      * @param  array<int, array{device_id: ?int, task: string, item: ?string, kind: string, lines: string[], cut: bool, host: ?string, reason: ?string}>  $rows

@@ -12,6 +12,8 @@ use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
 use Agoodley\LibrenmsAnsible\Support\Access;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * The change lifecycle's actions on the plugin's services (Changes\ChangeRunner): a change's dry run and batches are
@@ -82,6 +84,21 @@ final class ChangeActions implements ChangeRunner
         }
 
         return $errors ? implode(' ', array_values(array_unique($errors))) : null;
+    }
+
+    public function exclusive(\Closure $work): ?string
+    {
+        $lock = Cache::lock(RunLauncher::LOCK, 30);
+        try {
+            $lock->block(10);
+        } catch (LockTimeoutException) {
+            return 'Another launch is being recorded: try again in a moment.';
+        }
+        try {
+            return $work();
+        } finally {
+            $lock->release();
+        }
     }
 
     public function connections(array $deviceIds): array

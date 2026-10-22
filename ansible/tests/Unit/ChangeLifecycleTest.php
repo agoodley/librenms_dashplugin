@@ -756,6 +756,46 @@ class ChangeLifecycleTest extends TestCase
         }
     }
 
+    public function testAnApplyIsRefusedWhileAnotherChangeReservesItsDevices(): void
+    {
+        // A: lab-sw1, then lab-sw2 (it waits after its canary); B: lab-sw3, then lab-sw2
+        $a = $this->changes->add([501 => self::TARGETS[501], 502 => self::TARGETS[502]], BatchPlan::make([501, 502], [], 1, 5, 1, true, 0));
+        $b = $this->changes->add([503 => self::TARGETS[503], 502 => self::TARGETS[502]], BatchPlan::make([503, 502], [], 1, 5, 1, true, 0));
+        $this->dryRun($a, [501 => 'changed', 502 => 'changed']);
+        $this->dryRun($b, [503 => 'changed', 502 => 'changed']);
+        $lifecycle = $this->lifecycle();
+        $this->assertNull($lifecycle->approve($a, self::BOB, true, '', $this->t0 + 40));
+        $this->assertNull($lifecycle->approve($b, self::BOB, true, '', $this->t0 + 40));
+        $this->backups->enabled = false;
+        $this->assertNull($lifecycle->apply($a, self::ALICE, [], $this->t0 + 50));
+        $this->endRun($this->batchRun($a, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        $lifecycle->advance($a, $this->t0 + 101);
+        $this->assertSame([ChangeStatus::PAUSED, 'canary'], [$this->changes->find($a)['status'], $this->changes->find($a)['waiting']]);
+
+        $refused = 'Another change being applied reserves a device of this one: lab-sw2 (change #' . $a . '). Its later batches will change it: '
+            . 'apply this change once that change has ended.';
+        $this->assertSame($refused, $lifecycle->apply($b, self::ALICE, [], $this->t0 + 110), 'A, paused after its canary, reserves lab-sw2');
+        $this->assertSame(ChangeStatus::READY, $this->changes->find($b)['status'], 'B stays ready: its dry run and approval still count');
+        $this->assertNull($this->changes->find($b)['applied_by']);
+        $this->assertNull($lifecycle->resume($a, self::ALICE, [], $this->t0 + 120));
+        $this->assertSame($refused, $lifecycle->apply($b, self::ALICE, [], $this->t0 + 130), 'and while it applies its later batch');
+        $this->assertNull($lifecycle->stop($a, 'alice', $this->t0 + 140));
+        $this->assertSame(ChangeStatus::STOPPING, $this->changes->find($a)['status']);
+        $this->assertSame($refused, $lifecycle->apply($b, self::ALICE, [], $this->t0 + 150), 'and while it stops');
+        $this->endRun($this->batchRun($a, 2), 'stopped', [502 => 'unknown'], [], $this->t0 + 160);
+        $lifecycle->advance($a, $this->t0 + 161);
+        $this->assertSame(ChangeStatus::STOPPED, $this->changes->find($a)['status']);
+        $this->assertSame(['dry_run', 'dry_run', 'batch', 'batch'], array_column($this->runner->launches, 'kind'), 'nothing of B launched meanwhile');
+
+        // the check and the switch to applying are made under the lock of the launches
+        $this->runner->lockRefusal = 'Another launch is being recorded: try again in a moment.';
+        $this->assertSame('Another launch is being recorded: try again in a moment.', $lifecycle->apply($b, self::ALICE, [], $this->t0 + 170));
+        $this->assertSame(ChangeStatus::READY, $this->changes->find($b)['status']);
+        $this->runner->lockRefusal = null;
+        $this->assertNull($lifecycle->apply($b, self::ALICE, [], $this->t0 + 180), 'once A ended');
+        $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($b)['status']);
+    }
+
     public function testATimedPauseContinuesOnItsOwn(): void
     {
         $id = $this->approved([], BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 15));

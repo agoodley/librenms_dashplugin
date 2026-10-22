@@ -457,7 +457,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 | Applied, Failed, Stopped, Rejected, Cancelled | it ended; failed: a batch went over *Stop at*, or the plugin stopped it because what was approved no longer holds (see below) |
 
 The devices of a change that is being applied, paused or stopping are **reserved** for it: another change cannot take
-them, as the change's later batches will change them.
+them, as the change's later batches will change them. A run cannot target them, nor can another change's dry run, and
+another change's **Apply** is refused (naming the devices and the change that reserves them) until that change has
+ended; its dry run and approval still count meanwhile. The check and the switch to *Applying* are made under the lock every launch takes, so
+two applies, or an apply and a run, cannot take the same device at once.
 
 ### The dry run and its proof
 

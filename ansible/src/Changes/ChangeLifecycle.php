@@ -240,17 +240,51 @@ final class ChangeLifecycle
 
             return 'The approval no longer counts (' . $approval . '): the change needs a new approval.';
         }
-        $started = $this->update($change, ['status' => ChangeStatus::APPLYING, 'applied_by' => mb_substr($user['username'], 0, 255),
-            'applied_user_id' => (int) $user['user_id'], 'apply_started_at' => Clock::store($now), 'current_batch' => 1, 'waiting' => null, 'resume_at' => null,
-            'error' => null]);
-        if ($started === null) {
-            return 'The change changed meanwhile: reload the page.';
+        // the switch to applying reserves the change's devices: checked and written under the lock of the launches, so
+        // neither another change's apply nor a run takes one of them in between
+        $targets = $this->changes->targets($id);
+        $started = null;
+        $refusal = $this->runner->exclusive(function () use ($id, $change, $user, $now, $targets, &$started): ?string {
+            $reserved = array_intersect_key($this->changes->reserved($id), $targets);
+            if ($reserved) {
+                return self::reservedText($reserved, $targets);
+            }
+            $started = $this->update($change, ['status' => ChangeStatus::APPLYING, 'applied_by' => mb_substr($user['username'], 0, 255),
+                'applied_user_id' => (int) $user['user_id'], 'apply_started_at' => Clock::store($now), 'current_batch' => 1, 'waiting' => null, 'resume_at' => null,
+                'error' => null]);
+
+            return $started === null ? 'The change changed meanwhile: reload the page.' : null;
+        });
+        if ($refusal !== null || $started === null) {
+            return $refusal ?? 'The change changed meanwhile: reload the page.';
         }
-        $this->timeline($started, 'apply', 'Apply started (' . self::planText($started, array_keys($this->changes->targets($id))) . ').', $user['username'], $now);
+        $this->timeline($started, 'apply', 'Apply started (' . self::planText($started, array_keys($targets)) . ').', $user['username'], $now);
         $this->eventAll($started, ChangeText::applyStarted($started, $user['username'], (int) $started['batch_count']), 'notice', $user['username']);
         $this->startBatch($started, 1, $user, $secrets, $now);
 
         return null;
+    }
+
+    /**
+     * Why an apply is refused: other changes being applied reserve some of its devices.
+     *
+     * @param  array<int, int>  $reserved  device_id => the change that reserves it
+     * @param  array<int, array>  $targets
+     */
+    private static function reservedText(array $reserved, array $targets): string
+    {
+        $byChange = [];
+        foreach ($reserved as $deviceId => $changeId) {
+            $byChange[$changeId][] = NextChange::name($targets[$deviceId] ?? []) ?: "#$deviceId";
+        }
+        $parts = [];
+        foreach ($byChange as $changeId => $names) {
+            $parts[] = UntrustedText::line(implode(', ', array_slice($names, 0, 5)) . (count($names) > 5 ? ' and ' . (count($names) - 5) . ' more' : ''), 300)
+                . " (change #$changeId)";
+        }
+
+        return 'Another change being applied reserves ' . (count($reserved) === 1 ? 'a device' : 'devices') . ' of this one: ' . implode('; ', $parts)
+            . '. Its later batches will change ' . (count($reserved) === 1 ? 'it' : 'them') . ': apply this change once that change has ended.';
     }
 
     /**

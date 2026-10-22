@@ -32,8 +32,8 @@ use Illuminate\Support\Facades\Log;
  */
 final class RunLauncher
 {
-    /** Lock around the busy check and the insert of a run. */
-    private const LOCK = 'ansible-plugin-launch';
+    /** Lock around the busy check and the insert of a run (and around the switch of a change to applying, which reserves its devices). */
+    public const LOCK = 'ansible-plugin-launch';
 
     public function __construct(
         private readonly Plugin $plugin,

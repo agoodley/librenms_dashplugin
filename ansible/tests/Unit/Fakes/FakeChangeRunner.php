@@ -117,6 +117,18 @@ final class FakeChangeRunner implements ChangeRunner
         return $refusal !== null ? "The launch was refused: $refusal." : null;
     }
 
+    /** Number of calls to exclusive(); a refusal it gives instead of running the work (the lock taken by another launch) */
+    public int $exclusive = 0;
+
+    public ?string $lockRefusal = null;
+
+    public function exclusive(\Closure $work): ?string
+    {
+        $this->exclusive++;
+
+        return $this->lockRefusal ?? $work();
+    }
+
     public function connections(array $deviceIds): array
     {
         $connections = [];
