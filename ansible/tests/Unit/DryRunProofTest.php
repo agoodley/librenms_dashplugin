@@ -150,16 +150,25 @@ class DryRunProofTest extends TestCase
         $this->assertTrue(self::check($lines)['verified'], implode(' ', self::check($lines)['findings']));
     }
 
-    public function testAnsiblesOwnNoHostsErrorBeforeThePlaybookMeansNothingRan(): void
+    public function testAnsiblesOwnNoHostsErrorBeforeThePlaybookMeansNothingRanOnlyWithTheGuardsRecord(): void
     {
         $refused = ['Started task #12 of template \'Interface description\'', "\e[1;35m[WARNING]: Could not match supplied host pattern, ignoring: lab-sw1.netops.lab\e[0m",
             "\e[0;31m[ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to target.\e[0m", 'Failed to run task: exit status 1'];
-        $proof = DryRunProof::check($refused, RecapParser::parse($refused));
+        // the guard's record: it left every target out of what it served during the dry run
+        $proof = DryRunProof::check($refused, RecapParser::parse($refused), true);
         $this->assertSame([false, true], [$proof['verified'], $proof['nothing_ran']]);
         $this->assertSame(['Ansible stopped before it started the playbook, as the limit left it no host to target: none of the targets was in the inventory the runner '
             . 'fetched, so the dry run did not run on any device.'], $proof['findings']);
         $old = ['ERROR! Specified inventory, host pattern and/or --limit leaves us with no hosts to target.'];
-        $this->assertTrue(DryRunProof::check($old, null)['nothing_ran'], 'as Ansible before 2.19 words it');
+        $this->assertTrue(DryRunProof::check($old, null, true)['nothing_ran'], 'as Ansible before 2.19 words it');
+
+        // without that record the log's word is not enough: unverified, as any log without a play
+        $proof = DryRunProof::check($refused, RecapParser::parse($refused));
+        $this->assertSame([false, false], [$proof['verified'], $proof['nothing_ran']]);
+        $this->assertSame('The log says that Ansible found no host to target, but the plugin did not leave every target out of the inventory it served during the '
+            . 'dry run: nothing proves that the dry run did not run on them.', $proof['findings'][0]);
+        $this->assertContains('The log shows no play: there is nothing that proves a dry run.', $proof['findings']);
+        $this->assertFalse(DryRunProof::check($refused, RecapParser::parse($refused), false)['nothing_ran']);
 
         // anything that ran, or could have, is not "nothing": a banner, a result line, a recap, the error not at the start of a line
         foreach ([
@@ -172,7 +181,7 @@ class DryRunProofTest extends TestCase
             'other text' => ['[ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to target. Or does it?'],
             'no error' => ['Started task #12 of template \'Interface description\'', 'Failed to run task: exit status 1'],
         ] as $case => $lines) {
-            $proof = DryRunProof::check($lines, RecapParser::parse($lines));
+            $proof = DryRunProof::check($lines, RecapParser::parse($lines), true);
             $this->assertSame([false, false], [$proof['verified'], $proof['nothing_ran']], $case);
         }
     }

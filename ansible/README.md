@@ -502,8 +502,10 @@ per device, the run page, the runs list, the device panel, the end entry of its 
 may have changed this device* shows instead. A proven dry run's results read *would change* and *no change* there. A dry
 run that never ran (the runner refused it, or it was stopped in the runner's queue) proves nothing and claims nothing:
 the change is back to a draft. Nor does one that Ansible stopped before the playbook because the limit left it no host
-to target (every target left out of the inventory it fetched, see below): its log shows Ansible's own error and no play,
-result or recap, so it did not run on any device; it does not count, and says why.
+to target, with every target left out of the inventory it fetched (see below): its log shows Ansible's own error and no
+play, result or recap, and the inventory guard's own record shows that it left every target out of what it served during
+the dry run, so it did not run on any device; it does not count, and says why. Without that record the log's word is not
+enough: such a dry run is not proven.
 
 A verified dry run with a failed, unreachable or unknown target, or a run on a host that was not a target, cannot be
 approved either. Each target's result comes from the PLAY RECAP: *would change* (changed), *no change*, *failed*, ...

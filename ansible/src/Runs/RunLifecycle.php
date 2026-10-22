@@ -71,6 +71,8 @@ final class RunLifecycle
      * @param  \Closure(string[]): array<string, array{device_id: int, hostname: string, display: string}>|null  $devices
      *                                                                                                          the devices of inventory names (for hosts the runner ran on that were not targets)
      * @param  int  $holdSeconds  how long a stopped run keeps its devices after the runner's stop (Hold after a stop)
+     * @param  (\Closure(array): bool)|null  $allLeftOut  did the inventory guard leave every target of this change's dry run
+     *                                                 out of what it served during it (its record)? Null: never known
      */
     public function __construct(
         private readonly RunStore $runs,
@@ -80,6 +82,7 @@ final class RunLifecycle
         private readonly int $stopAfterSeconds,
         private readonly ?\Closure $devices = null,
         private readonly int $holdSeconds = 1800,
+        private readonly ?\Closure $allLeftOut = null,
     ) {
     }
 
@@ -458,11 +461,12 @@ final class RunLifecycle
         $status = RunResults::status($task->status, $evaluation['results']);
         // the dry run of a change: does its log prove it was one (Changes\DryRunProof)? Not judged without the whole log
         // (the change asks the runner for it again), nor for a run stopped before the runner started it, nor for one Ansible
-        // stopped before the playbook, as the limit left it no host (nothing ran on a device: there is nothing to prove)
+        // stopped before the playbook, as the limit left it no host, when the inventory guard's record shows that it left
+        // every target out ($allLeftOut: nothing ran on a device, there is nothing to prove)
         $dryRun = ($run['kind'] ?? null) === 'dry_run';
         $proven = null;
         if ($dryRun && $complete && ($task->status !== RunStatus::STOPPED || $runsOn)) {
-            $proof = DryRunProof::check($lines, RecapParser::parse($lines));
+            $proof = DryRunProof::check($lines, RecapParser::parse($lines), $this->allLeftOut !== null && ($this->allLeftOut)($run));
             if (! $proof['nothing_ran']) {
                 $proven = $proof['verified'];
                 $values['proof'] = $proven ? 'verified' : 'unverified';

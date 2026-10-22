@@ -152,6 +152,27 @@ final class InventoryGuard
     }
 
     /**
+     * Did the guard leave every one of these targets out of what it served (each one's record says left out: by a
+     * fetch during their dry run or batch in progress)? A dry run whose log says nothing ran counts as one that ran
+     * nowhere only then (Changes\DryRunProof).
+     *
+     * @param  array<int, array>  $targets  ChangeStore::targets() (served_hash)
+     */
+    public static function everyTargetLeftOut(array $targets): bool
+    {
+        if (! $targets) {
+            return false;
+        }
+        foreach ($targets as $target) {
+            if (($target['served_hash'] ?? null) !== self::LEFT_OUT) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * "Change #12's batch 2", "Change #12's dry run".
      */
     private static function during(array $entry): string

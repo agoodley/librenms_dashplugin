@@ -602,7 +602,8 @@ final class ChangeLifecycle
             return; // the runner cannot give the whole log now: asked again later
         }
         $recap = $lines !== null ? RecapParser::parse($lines) : null;
-        $proof = $lines !== null ? DryRunProof::check($lines, $recap)
+        // a log that says nothing ran counts only with the guard's own record: it left every target out of what it served
+        $proof = $lines !== null ? DryRunProof::check($lines, $recap, InventoryGuard::everyTargetLeftOut($this->changes->targets($id)))
             : ['verified' => false, 'findings' => ['The plugin could not read the dry run\'s whole log from the runner, so nothing proves it was a dry run.'],
                 'nothing_ran' => false];
         if (! $proof['nothing_ran']) {

@@ -41,11 +41,14 @@ class RunLifecycleTest extends TestCase
         $this->runner->startedAt = $this->t0 + 1; // a task that left the queue has a start time
     }
 
+    /** The inventory guard's record for a dry run (RunFollower::allLeftOut()): did it leave every target out? */
+    private bool $allLeftOut = false;
+
     private function lifecycle(int $outputMax = 1048576, int $stopAfter = 86400): RunLifecycle
     {
         return new RunLifecycle($this->store, fn () => $this->runner, $this->events, $outputMax, $stopAfter,
             fn (array $names) => array_intersect_key(['lab-sw9.netops.lab' => ['device_id' => 509, 'hostname' => 'lab-sw9.netops.lab', 'display' => 'lab-sw9']],
-                array_flip($names)));
+                array_flip($names)), 1800, fn (array $run) => $this->allLeftOut);
     }
 
     /** A run of the three switches whose task the runner has. */
@@ -231,18 +234,33 @@ class RunLifecycleTest extends TestCase
             $this->assertSame('error', $this->events->of($deviceId)[0]['severity']);
         }
 
-        // one Ansible stopped before the playbook (the limit left it no host: every target withheld, say) ran on no device: it is
-        // not judged, and its end is not said as a dry run that may have changed its devices
-        $this->events->entries = [];
-        $id = $this->running('error', ['kind' => 'dry_run', 'context' => 'change #6, dry run']);
-        $this->runner->logs['90'] = ["\e[1;35m[WARNING]: Could not match supplied host pattern, ignoring: lab-sw1.netops.lab\e[0m",
+        // one Ansible stopped before the playbook (the limit left it no host), whose every target the inventory guard left out
+        // (its record), ran on no device: it is not judged, and its end is not said as a dry run that may have changed its devices
+        $noHosts = ["\e[1;35m[WARNING]: Could not match supplied host pattern, ignoring: lab-sw1.netops.lab\e[0m",
             "\e[0;31m[ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to target.\e[0m"];
+        $this->events->entries = [];
+        $this->allLeftOut = true;
+        $id = $this->running('error', ['kind' => 'dry_run', 'context' => 'change #6, dry run']);
+        $this->runner->logs['90'] = $noHosts;
         $this->lifecycle()->refresh($id, $this->t0 + 20);
         $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
         $this->assertNull($run['proof'] ?? null);
         foreach ([501, 502, 503] as $deviceId) {
             $this->assertStringNotContainsString('NOT PROVEN', $this->events->of($deviceId)[0]['message']);
             $this->assertNotSame('error', $this->events->of($deviceId)[0]['severity'], 'not run: a warning');
+        }
+
+        // the same log without that record: the log's word is not enough, the dry run is not proven to be one
+        $this->events->entries = [];
+        $this->allLeftOut = false;
+        $id = $this->running('error', ['kind' => 'dry_run', 'context' => 'change #7, dry run']);
+        $this->runner->logs['90'] = $noHosts;
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertSame('unverified', $run['proof'] ?? null);
+        foreach ([501, 502, 503] as $deviceId) {
+            $this->assertStringContainsString('NOT PROVEN to be a dry run', $this->events->of($deviceId)[0]['message']);
+            $this->assertSame('error', $this->events->of($deviceId)[0]['severity']);
         }
 
         // a run that is not a dry run keeps its words, and gets no proof

@@ -695,6 +695,22 @@ class ChangeLifecycleTest extends TestCase
             . '10.0.0.245 → 10.0.9.101; lab-sw2: ansible_host 10.0.0.247 → 10.0.9.102; lab-sw3: ansible_host 10.0.0.247 → 10.0.9.103): the plugin left hosts out of an '
             . 'inventory the runner fetched meanwhile.'], $change['dry_run_findings']);
         $this->assertStringNotContainsString('may have changed', implode(' ', $this->changes->messages($id)));
+
+        // the same log while the guard did not leave every target out (only lab-sw1 moved): the log's word is not enough, the dry
+        // run is not proven to be one (NOT PROVEN), its proof recorded so
+        $this->runner->connections = [];
+        $this->assertNull($this->lifecycle()->startDryRun($id, self::ALICE, [], $this->t0 + 200));
+        $this->runner->connections[501] = self::ELSEWHERE;
+        $this->assertSame(['lab-sw2.netops.lab', 'lab-sw3.netops.lab'], array_keys($this->fetched($this->t0 + 205)->hosts()));
+        $runId = (int) $this->changes->find($id)['dry_run_id'];
+        $this->endRun($runId, 'failed', [501 => 'not_run', 502 => 'not_run', 503 => 'not_run'], ['Started task #13 of template \'Interface description\'',
+            "\e[0;31m[ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to target.\e[0m", 'Failed to run task: exit status 1'], $this->t0 + 230);
+        $lifecycle->advance($id, $this->t0 + 235);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::DRAFT, 'unverified', 'The dry run is not proven to be one.'], [$change['status'], $change['dry_run_state'], $change['error']]);
+        $this->assertFalse($this->runner->proofs[$runId] ?? null, 'recorded: not proven');
+        $this->assertContains('The log says that Ansible found no host to target, but the plugin did not leave every target out of the inventory it served during the '
+            . 'dry run: nothing proves that the dry run did not run on them.', $change['dry_run_findings']);
     }
 
     public function testAFetchBeforeTheDryRunRecordedItsConnectionsIsCheckedWhenTheDryRunEnds(): void

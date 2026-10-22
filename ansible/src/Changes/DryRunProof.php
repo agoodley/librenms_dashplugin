@@ -21,8 +21,10 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
  *
  * The rule fails safe: anything it cannot read (no recap, a cut log) leaves the dry run unverified. One log says
  * that nothing ran: ansible-playbook's own error that the limit leaves it no host to target, which it raises before it
- * starts the playbook, with no banner, result or recap at all (the guard left every target out of the inventory the
- * runner fetched, say). Such a dry run did not run on any device: there is nothing to prove (nothing_ran).
+ * starts the playbook, with no banner, result or recap at all. The log's word is not enough: only when the inventory
+ * guard's own record shows that it left every target out of what it served during the dry run ($allLeftOut) does
+ * such a dry run count as one that did not run on any device, with nothing to prove (nothing_ran); otherwise it is
+ * unverified, as any log without a play.
  */
 final class DryRunProof
 {
@@ -34,9 +36,10 @@ final class DryRunProof
      *
      * @param  string[]  $lines  the runner's whole log (ANSI codes allowed)
      * @param  array<string, array<string, int>>|null  $recap  RecapParser::parse() of the same log
+     * @param  bool  $allLeftOut  the inventory guard left every target out of what it served during the dry run (its record)
      * @return array{verified: bool, findings: string[], unmarked: string[], nothing_ran: bool}
      */
-    public static function check(array $lines, ?array $recap): array
+    public static function check(array $lines, ?array $recap, bool $allLeftOut = false): array
     {
         $findings = [];
         $noHosts = false;
@@ -114,9 +117,14 @@ final class DryRunProof
             }
         }
 
-        if ($noHosts && $banners === 0 && $named === 0 && $recap === null) {
+        $saysNothingRan = $noHosts && $banners === 0 && $named === 0 && $recap === null;
+        if ($saysNothingRan && $allLeftOut) {
             return ['verified' => false, 'findings' => ['Ansible stopped before it started the playbook, as the limit left it no host to target: none of the '
                 . 'targets was in the inventory the runner fetched, so the dry run did not run on any device.'], 'unmarked' => [], 'nothing_ran' => true];
+        }
+        if ($saysNothingRan) {
+            $findings[] = 'The log says that Ansible found no host to target, but the plugin did not leave every target out of the inventory it served '
+                . 'during the dry run: nothing proves that the dry run did not run on them.';
         }
         if (! $dryRunBanner) {
             $findings[] = 'The log does not start with Ansible\'s DRY RUN banner, which Ansible prints only when it runs the playbook with --check: '

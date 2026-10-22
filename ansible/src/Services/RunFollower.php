@@ -2,6 +2,8 @@
 
 namespace Agoodley\LibrenmsAnsible\Services;
 
+use Agoodley\LibrenmsAnsible\Changes\InventoryGuard;
+use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runner\Runner;
 use Agoodley\LibrenmsAnsible\Runner\Semaphore\SemaphoreRunner;
@@ -49,7 +51,27 @@ final class RunFollower
 
         return new RunLifecycle($this->runs, fn () => $this->runner ?? $this->plugin->runner(), $this->eventlog, $this->settings->outputMaxBytes(),
             $this->settings->stopAfterSeconds(), $inventory === null ? null : fn (array $names) => $inventory->devicesNamed($names),
-            $this->settings->stopHoldSeconds());
+            $this->settings->stopHoldSeconds(), fn (array $run) => self::allLeftOut($run));
+    }
+
+    /**
+     * Did the inventory guard leave every target of a change's dry run out of what it served during that dry run (its
+     * record, Changes\InventoryGuard)? Only for the change's current dry run: false when it cannot tell.
+     */
+    public static function allLeftOut(array $run, ?ChangeRepository $changes = null): bool
+    {
+        $changeId = (int) ($run['change_id'] ?? 0);
+        if (($run['kind'] ?? null) !== 'dry_run' || $changeId <= 0) {
+            return false;
+        }
+        try {
+            $changes ??= new ChangeRepository();
+            $change = $changes->available() ? $changes->find($changeId) : null;
+
+            return $change !== null && (int) ($change['dry_run_id'] ?? 0) === (int) $run['id'] && InventoryGuard::everyTargetLeftOut($changes->targets($changeId));
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**
