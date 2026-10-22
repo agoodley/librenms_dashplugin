@@ -1,12 +1,16 @@
-{{-- Plugin settings (Hooks\Settings). Three parts: the runner connection (saved by the plugin, encrypted; LibreNMS
-     admins only; the token is write-only), the targets and runs (a form LibreNMS stores as posted, settings[...]),
-     and who holds the run permission (admins only). --}}
+{{-- Plugin settings (Hooks\Settings). LibreNMS opens this page to holders of its plugin.admin permission and stores
+     what a form posts to it, so the plugin keeps none of its settings there: every form here posts to the plugin's own
+     routes, for LibreNMS admins only (the runner connection, encrypted, with a write-only token; the targets and runs;
+     who holds the run permission). Anyone else sees a short note. --}}
 @php
     $a = $ansible;
     $c = $a['connection'] ?? [];
+    $s = $a['settings'] ?? [];
     $old = session('ansible_old', []);
+    $oldSettings = session('ansible_old_settings', []);
     $errors_ = session('ansible_errors', []);
     $value = fn (string $key, $default = '') => $old[$key] ?? ($c[$key] ?? $default);
+    $setting = fn (string $key) => (string) ($oldSettings[$key] ?? ($s[$key] ?? ''));
     $defaults = \Agoodley\LibrenmsAnsible\Support\PluginSettings::DEFAULTS;
     $limits = \Agoodley\LibrenmsAnsible\Support\PluginSettings::LIMITS;
     $numbers = [
@@ -23,7 +27,7 @@
 @endif
 
 <div class="ans-settings" style="margin: 15px; max-width: 980px;">
-    <h4>Ansible plugin settings <small><a href="{{ route('ansible.runs') }}">Runs</a> · <a href="{{ route('ansible.inventory') }}">Inventory</a></small></h4>
+    <h4>Ansible plugin settings @if($a['admin'])<small><a href="{{ route('ansible.runs') }}">Runs</a> · <a href="{{ route('ansible.inventory') }}">Inventory</a></small>@endif</h4>
 
     @if(session('ansible_status'))
         <div class="alert alert-success" id="ans-settings-status">{{ session('ansible_status') }}</div>
@@ -34,8 +38,15 @@
     @if($a['connectionError'])
         <div class="alert alert-danger"><i class="fa fa-exclamation-triangle"></i> {{ $a['connectionError'] }}</div>
     @endif
+    @if($a['settingsError'])
+        <div class="alert alert-danger" id="ans-settings-unreadable"><i class="fa fa-exclamation-triangle"></i> {{ $a['settingsError'] }} Until then the plugin launches nothing.</div>
+    @endif
 
-    @if($a['admin'])
+    @if(! $a['admin'])
+        <div class="alert alert-info" id="ans-settings-admins-only">Only LibreNMS admins can see and change the Ansible plugin's settings:
+            the runner connection, which devices runs can reach and how, and who may launch runs. The plugin keeps them itself,
+            not in LibreNMS' plugin settings.</div>
+    @else
         <form method="post" action="{{ route('ansible.settings.connection') }}" id="ans-connection-form" autocomplete="off">
             @csrf
             <fieldset>
@@ -89,18 +100,17 @@
                 <div id="ans-test-result" class="ans-test-result"></div>
             </fieldset>
         </form>
-    @else
-        <div class="alert alert-info">The runner connection and the run permission can only be changed by LibreNMS admins.</div>
-    @endif
 
-    <form method="post" id="ans-settings-form">
+    <form method="post" action="{{ route('ansible.settings.runs') }}" id="ans-settings-form">
         @csrf
         <fieldset>
             <legend>Targets and runs</legend>
+            <p class="help-block">Which devices runs can reach and how, and what the plugin keeps. Saved by the plugin; only LibreNMS admins change them,
+                and each change goes to the eventlog.</p>
             <div class="form-group row">
                 <label class="col-sm-4 control-label" for="ans-setting-platform_map" style="font-weight: normal">Platform mapping</label>
                 <div class="col-sm-8">
-                    <textarea id="ans-setting-platform_map" rows="11" class="form-control input-sm ans-code" name="settings[platform_map]" placeholder="{{ \Agoodley\LibrenmsAnsible\Inventory\PlatformMap::DEFAULT }}">{{ $settings['platform_map'] ?? '' }}</textarea>
+                    <textarea id="ans-setting-platform_map" rows="11" class="form-control input-sm ans-code" name="platform_map" placeholder="{{ \Agoodley\LibrenmsAnsible\Inventory\PlatformMap::DEFAULT }}">{{ $setting('platform_map') }}</textarea>
                     <span class="help-block" style="margin: 2px 0 0; font-size: 12px">one line per LibreNMS os: os, ansible_network_os, optionally the connection
                         (network_cli, netconf, httpapi or a full name) and "become" (enable mode); empty: the defaults shown. A device whose os has no line cannot be a target.</span>
                     @foreach($a['mapErrors'] as $mapError)
@@ -111,11 +121,11 @@
             <div class="form-group row">
                 <label class="col-sm-4 control-label" for="ans-setting-allowed_group" style="font-weight: normal">Allowed device group</label>
                 <div class="col-sm-8">
-                    <select id="ans-setting-allowed_group" class="form-control input-sm" style="max-width: 320px" name="settings[allowed_group]">
+                    <select id="ans-setting-allowed_group" class="form-control input-sm" style="max-width: 320px" name="allowed_group">
                         <option value="">Every device</option>
-                        @php($allowed = (string) ($settings['allowed_group'] ?? ''))
+                        @php($allowed = $setting('allowed_group'))
                         @if($allowed !== '' && ! isset($a['groups'][(int) $allowed]))
-                            <option value="{{ $allowed }}" selected>#{{ $allowed }}{{ $a['groupsVisible'] ? ' (no longer exists: no device can be a target)' : '' }}</option>
+                            <option value="{{ $allowed }}" selected>#{{ $allowed }} (no longer exists: no device can be a target)</option>
                         @endif
                         @foreach($a['groups'] as $groupId => $name)
                             <option value="{{ $groupId }}" @selected($allowed === (string) $groupId)>{{ $name }}</option>
@@ -129,7 +139,7 @@
                     <label class="col-sm-4 control-label" for="ans-setting-{{ $name }}" style="font-weight: normal">{{ $label }}</label>
                     <div class="col-sm-8">
                         <input id="ans-setting-{{ $name }}" type="number" min="{{ $limits[$name][0] }}" max="{{ $limits[$name][1] }}" class="form-control input-sm" style="max-width: 140px"
-                               name="settings[{{ $name }}]" value="{{ $settings[$name] ?? $defaults[$name] }}">
+                               name="{{ $name }}" value="{{ $setting($name) }}">
                         <span class="help-block" style="margin: 2px 0 0; font-size: 12px">{{ $help }} · {{ $limits[$name][0] }} to {{ $limits[$name][1] }} · default: {{ $defaults[$name] }}</span>
                     </div>
                 </div>
@@ -138,7 +148,6 @@
         </fieldset>
     </form>
 
-    @if($a['admin'])
         <fieldset id="ans-permission">
             <legend>Run permission</legend>
             <p class="help-block">LibreNMS admins see the runs and the inventory; to launch and stop runs they also need this permission

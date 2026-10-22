@@ -2,6 +2,8 @@
 
 namespace Agoodley\LibrenmsAnsible\Tests\Unit;
 
+use Agoodley\LibrenmsAnsible\Inventory\PlatformMap;
+use Agoodley\LibrenmsAnsible\Support\AuditText;
 use Agoodley\LibrenmsAnsible\Support\Connection;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
 use PHPUnit\Framework\TestCase;
@@ -21,6 +23,68 @@ class SettingsTest extends TestCase
         $this->assertSame(25, (new PluginSettings())->maxTargets());
         $this->assertNull((new PluginSettings(['allowed_group' => '0']))->allowedGroup());
         $this->assertNull((new PluginSettings(['allowed_group' => 'core']))->allowedGroup());
+    }
+
+    private const GROUPS = [3 => 'Ansible lab', 4 => 'Core'];
+
+    private const USERS = [1 => 'admin', 950 => 'ansinv'];
+
+    public function testSettingsFromInputAreCheckedNotClamped(): void
+    {
+        $result = PluginSettings::fromInput(['max_targets' => '900', 'output_max_kb' => 'lots', 'lost_after_hours' => '0', 'allowed_group' => '12',
+            'platform_map' => "ios cisco.ios.ios bogus\nnxos cisco.nxos.nxos", 'inventory_user' => '77'], new PluginSettings(), self::GROUPS, self::USERS);
+
+        $this->assertNull($result['settings']);
+        $this->assertSame(['platform_map', 'allowed_group', 'max_targets', 'output_max_kb', 'lost_after_hours', 'inventory_user'], array_keys($result['errors']));
+        $this->assertStringContainsString('line 1 (ios cisco.ios.ios bogus)', $result['errors']['platform_map']);
+        $this->assertSame('Max targets per run is a whole number from 1 to 500.', $result['errors']['max_targets']);
+    }
+
+    public function testSettingsLeftOutKeepTheirValueAndEmptyOnesTheirDefault(): void
+    {
+        $current = new PluginSettings(['allowed_group' => '3', 'max_targets' => '5', 'inventory_user' => '950']);
+
+        $saved = PluginSettings::fromInput(['max_targets' => ' 007 ', 'output_max_kb' => ''], $current, self::GROUPS, self::USERS)['settings'];
+        $this->assertSame(3, $saved->allowedGroup());
+        $this->assertSame(950, $saved->inventoryUser());
+        $this->assertSame('7', $saved->all()['max_targets']);
+        $this->assertSame('1024', $saved->all()['output_max_kb']);
+
+        $cleared = PluginSettings::fromInput(['allowed_group' => '', 'inventory_user' => ''], $current, self::GROUPS, self::USERS)['settings'];
+        $this->assertNull($cleared->allowedGroup());
+        $this->assertNull($cleared->inventoryUser());
+        $this->assertNull((new PluginSettings())->inventoryUser(), 'no inventory user until an admin chooses one');
+    }
+
+    public function testChangesForTheEventlog(): void
+    {
+        $before = new PluginSettings(['allowed_group' => '3', 'max_targets' => '25']);
+        $after = PluginSettings::fromInput(['allowed_group' => '', 'max_targets' => '2', 'inventory_user' => '950',
+            'platform_map' => PlatformMap::DEFAULT . "\nlinux community.general.linux ssh\nios cisco.ios.ios"], $before, self::GROUPS, self::USERS)['settings'];
+
+        $this->assertSame([
+            'platform mapping: added linux (community.general.linux ssh); changed ios (cisco.ios.ios network_cli)',
+            'allowed device group Ansible lab (#3) → every device',
+            'max targets per run 25 → 2',
+            'inventory user not chosen → ansinv (#950)',
+        ], $after->changes($before, self::GROUPS, self::USERS));
+        $this->assertSame([], $after->changes($after, self::GROUPS, self::USERS));
+    }
+
+    public function testUnreadableSettingsCarryTheirError(): void
+    {
+        $settings = new PluginSettings([], 'cannot be read');
+
+        $this->assertSame('cannot be read', $settings->error);
+        $this->assertNull((new PluginSettings())->error);
+    }
+
+    public function testAuditTexts(): void
+    {
+        $this->assertSame('Ansible plugin settings changed by admin: max targets per run 25 → 2; inventory user not chosen → ansinv (#950)',
+            AuditText::settingsChanged('admin', ['max targets per run 25 → 2', 'inventory user not chosen → ansinv (#950)']));
+        $this->assertSame('Ansible plugin run permission (ansible.run) granted to ansadmin2 by admin', AuditText::permissionGranted('admin', 'ansadmin2'));
+        $this->assertSame('Ansible plugin run permission (ansible.run) revoked from bob x by admin', AuditText::permissionRevoked("admin", "bob\nx"));
     }
 
     private static function input(array $changes = []): array

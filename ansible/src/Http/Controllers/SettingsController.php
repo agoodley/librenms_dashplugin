@@ -4,22 +4,61 @@ namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 
 use Agoodley\LibrenmsAnsible\AnsibleServiceProvider;
 use Agoodley\LibrenmsAnsible\Data\ConnectionRepository;
+use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
 use Agoodley\LibrenmsAnsible\Data\FetchRepository;
 use Agoodley\LibrenmsAnsible\Data\PermissionRepository;
+use Agoodley\LibrenmsAnsible\Data\SettingsRepository;
+use Agoodley\LibrenmsAnsible\Data\UserRepository;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runs\TemplateCheck;
+use Agoodley\LibrenmsAnsible\Services\Eventlog;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
+use Agoodley\LibrenmsAnsible\Support\AuditText;
 use Agoodley\LibrenmsAnsible\Support\Connection;
+use Agoodley\LibrenmsAnsible\Support\PluginSettings;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 
 /**
- * The settings LibreNMS does not store: the runner connection (encrypted, the token write-only), the connection
- * test, and the run permission. LibreNMS admins only.
+ * The plugin's settings, which it stores itself (LibreNMS' plugin settings form is open to plugin.admin, a
+ * permission non-admin roles can have): the runner connection (encrypted, the token write-only), the connection
+ * test, the targets and runs, and the run permission. LibreNMS admins only; every change is written to the
+ * eventlog.
  */
 class SettingsController extends Controller
 {
+    /**
+     * POST plugin/ansible/settings/runs: save the settings of the targets and runs (and the inventory user). A
+     * setting the form leaves out keeps its value; nothing is saved when one is wrong.
+     */
+    public function runs(Request $request): RedirectResponse
+    {
+        $repository = new SettingsRepository();
+        $before = $repository->get();
+        $groups = (new DeviceRepository())->deviceGroups();
+        $users = (new UserRepository())->names();
+        $input = [];
+        foreach (array_keys(PluginSettings::DEFAULTS) as $key) {
+            if ($request->has($key)) {
+                $input[$key] = is_scalar($request->input($key)) ? (string) $request->input($key) : '';
+            }
+        }
+        $result = PluginSettings::fromInput($input, $before, $groups, $users);
+        $anchor = array_key_exists('inventory_user', $input) && count($input) === 1 ? 'ans-inventory-user' : 'ans-settings-form';
+        if ($result['settings'] === null) {
+            return $this->back($anchor)->with('ansible_errors', $result['errors'])->with('ansible_old_settings', $input);
+        }
+        $changes = $result['settings']->changes($before, $groups, $users);
+        if (! $changes && $before->error === null) {
+            return $this->back($anchor)->with('ansible_status', 'Nothing changed.');
+        }
+        $repository->save($result['settings']);
+        $this->audit(AuditText::settingsChanged((string) $request->user()->username, $changes ?: ['saved again']));
+
+        return $this->back($anchor)->with('ansible_status', 'The settings were saved' . ($changes ? ': ' . implode('; ', $changes) : '') . '.');
+    }
+
     /**
      * POST plugin/ansible/settings/connection: save the runner connection. An empty token keeps the saved one.
      */
@@ -120,10 +159,18 @@ class SettingsController extends Controller
     }
 
     /**
-     * Back to the plugin's settings page.
+     * Back to the plugin's settings page, at the part that was saved.
      */
-    private function back(): RedirectResponse
+    private function back(string $anchor = ''): RedirectResponse
     {
-        return redirect()->to(url('plugin/settings/' . AnsibleServiceProvider::PLUGIN_NAME));
+        return redirect()->to(url('plugin/settings/' . AnsibleServiceProvider::PLUGIN_NAME) . ($anchor !== '' ? '#' . $anchor : ''));
+    }
+
+    /**
+     * A configuration change in the eventlog (who, what; never the token).
+     */
+    private function audit(string $message, string $severity = 'notice'): void
+    {
+        (new Eventlog())->write($message, null, $severity, AuditText::REFERENCE);
     }
 }

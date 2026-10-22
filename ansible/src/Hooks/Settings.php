@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Hooks;
 use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
 use Agoodley\LibrenmsAnsible\Data\FetchRepository;
 use Agoodley\LibrenmsAnsible\Data\PermissionRepository;
+use Agoodley\LibrenmsAnsible\Data\UserRepository;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Agoodley\LibrenmsAnsible\Support\Access;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
@@ -12,9 +13,10 @@ use Illuminate\Support\Facades\Log;
 use LibreNMS\Interfaces\Plugins\Hooks\SettingsHook;
 
 /**
- * Settings page in Plugin Admin (LibreNMS limits it to holders of plugin.admin). The settings LibreNMS stores
- * (what may be targeted, how much output is kept) are a form posted to LibreNMS; the runner connection, the
- * run permission and the connection test are forms of the plugin's own, for LibreNMS admins only.
+ * Settings page in Plugin Admin. LibreNMS opens it to holders of its plugin.admin permission, which non-admin roles
+ * can have, and stores what a form posts to it: so the plugin keeps none of its settings there. Its forms (the runner
+ * connection, the inventory user, the targets and runs, the run permission) post to the plugin's own routes, for
+ * LibreNMS admins only; anyone else sees a short note.
  */
 class Settings implements SettingsHook
 {
@@ -27,35 +29,36 @@ class Settings implements SettingsHook
     }
 
     /**
-     * @param  array  $settings  saved settings injected by LibreNMS; the form posts them back as settings[...]
-     * @return array{content_view: string, settings: array<string, string>, ansible: array}
+     * @param  array  $settings  what LibreNMS stores for the plugin: not used
+     * @return array{content_view: string, settings: array, ansible: array}
      */
     public function handle(string $pluginName, array $settings): array
     {
         // LibreNMS disables a plugin whose hook throws: nothing may escape
-        $merged = PluginSettings::merge($settings);
-        $data = ['admin' => false, 'connection' => null, 'connectionError' => null, 'holders' => [], 'candidates' => [], 'groups' => [], 'groupsVisible' => false,
-            'mapErrors' => [], 'fetch' => null];
+        $data = ['admin' => false, 'connection' => null, 'connectionError' => null, 'settings' => PluginSettings::DEFAULTS, 'settingsError' => null,
+            'mapErrors' => [], 'holders' => [], 'candidates' => [], 'groups' => [], 'users' => [], 'fetches' => []];
         try {
-            $plugin = new Plugin();
             $data['admin'] = Access::canView(auth()->user());
-            // the device group names, for those LibreNMS lets list device groups (plugin.admin alone does not)
-            $data['groupsVisible'] = \Illuminate\Support\Facades\Gate::allows('viewAny', \App\Models\DeviceGroup::class);
-            $data['groups'] = $data['groupsVisible'] ? (new DeviceRepository())->deviceGroups() : [];
-            $data['mapErrors'] = (new PluginSettings($settings))->platformMap()->errors();
             if ($data['admin']) {
+                $plugin = new Plugin();
+                $current = Plugin::settings();
+                $data['settings'] = $current->all();
+                $data['settingsError'] = $current->error;
+                $data['mapErrors'] = $current->platformMap()->errors();
                 $data['connection'] = $plugin->connection()->forPage();
                 $data['connectionError'] = $plugin->connectionError();
                 $permissions = new PermissionRepository();
                 $data['holders'] = $permissions->holders();
                 $data['candidates'] = $permissions->candidates();
-                $data['fetch'] = (new FetchRepository())->latest();
+                $data['groups'] = (new DeviceRepository())->deviceGroups();
+                $data['users'] = (new UserRepository())->all();
+                $data['fetches'] = (new FetchRepository())->all();
             }
         } catch (\Throwable $e) {
             Log::error('ansible plugin: settings page failed: ' . $e->getMessage());
             $data['connectionError'] = 'The plugin could not read its data: see logs/librenms.log (did ./lnms migrate run?).';
         }
 
-        return ['content_view' => "$pluginName::settings", 'settings' => $merged, 'ansible' => $data];
+        return ['content_view' => "$pluginName::settings", 'settings' => [], 'ansible' => $data];
     }
 }

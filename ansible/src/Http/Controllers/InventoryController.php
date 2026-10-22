@@ -73,6 +73,9 @@ class InventoryController extends Controller
     public function runner(Request $request): JsonResponse
     {
         $user = $request->user();
+        if ($this->settings()->error !== null) {
+            return response()->json(['error' => $this->settings()->error], 500, ['Cache-Control' => 'no-store']);
+        }
         try {
             $inventory = $this->inventoryService()->forUser($user);
         } catch (\Throwable $e) {

@@ -2,15 +2,14 @@
 
 namespace Agoodley\LibrenmsAnsible\Services;
 
-use Agoodley\LibrenmsAnsible\AnsibleServiceProvider;
 use Agoodley\LibrenmsAnsible\Data\ConnectionRepository;
+use Agoodley\LibrenmsAnsible\Data\SettingsRepository;
 use Agoodley\LibrenmsAnsible\Runner\Http\CurlTransport;
 use Agoodley\LibrenmsAnsible\Runner\Runner;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runner\Semaphore\SemaphoreRunner;
 use Agoodley\LibrenmsAnsible\Support\Connection;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
-use LibreNMS\Interfaces\Plugins\PluginManagerInterface;
 
 /**
  * The plugin's settings and its runner, as the controllers, hooks and the sync command need them.
@@ -22,15 +21,11 @@ final class Plugin
     }
 
     /**
-     * The settings LibreNMS stores for the plugin, merged with the defaults.
+     * The plugin's settings (its own storage, admins only), merged with the defaults.
      */
     public static function settings(): PluginSettings
     {
-        try {
-            return new PluginSettings(app(PluginManagerInterface::class)->getSettings(AnsibleServiceProvider::PLUGIN_NAME));
-        } catch (\Throwable) {
-            return new PluginSettings();
-        }
+        return (new SettingsRepository())->get();
     }
 
     /**
@@ -57,7 +52,7 @@ final class Plugin
         $connection ??= $this->connection();
         if (! $connection->complete()) {
             throw new RunnerError(RunnerError::NOT_CONFIGURED, $this->connections->error()
-                ?? 'The runner connection is not set up: enter the Semaphore UI URL, token, project and inventory in Plugin Admin → ansible.');
+                ?? 'The runner connection is not set up: enter the Semaphore UI URL, token, project and inventory on the plugin\'s settings page.');
         }
         if ($connection->verifyTls && $connection->caBundle !== '' && ! is_readable($connection->caBundle)) {
             throw new RunnerError(RunnerError::NOT_CONFIGURED, "LibreNMS cannot read the CA bundle {$connection->caBundle}: fix the path or its permissions.");

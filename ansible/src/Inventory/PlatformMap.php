@@ -135,6 +135,22 @@ final class PlatformMap
     }
 
     /**
+     * A platform as a line of the setting writes it, without the os: "cisco.ios.ios network_cli become".
+     *
+     * @param  array{network_os: string, connection: string, become: bool}  $platform
+     */
+    public static function describe(array $platform): string
+    {
+        $connection = $platform['connection'];
+        $short = substr($connection, strrpos($connection, '.') + 1);
+        if ((self::SHORT_CONNECTIONS[$short] ?? null) . '.' . $short === $connection) {
+            $connection = $short;
+        }
+
+        return $platform['network_os'] . ' ' . $connection . ($platform['become'] ? ' become' : '');
+    }
+
+    /**
      * Inventory variables of a platform.
      *
      * @param  array{network_os: string, connection: string, become: bool}  $platform

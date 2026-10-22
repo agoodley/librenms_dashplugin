@@ -166,13 +166,16 @@ The Inventory page shows when the runner last fetched the inventory, as which us
 
 ## Settings
 
-The runner connection is saved by the plugin itself (encrypted with LibreNMS' `APP_KEY`), and only LibreNMS admins can
-change it: these settings decide where the token is sent and which inventory counts as LibreNMS'. The other settings
-are saved by LibreNMS (holders of its `plugin.admin` permission can change them).
+All settings are on the plugin's settings page (*Plugin Admin → ansible*), and the plugin saves them itself: only
+LibreNMS admins can see or change them, and each change goes to the eventlog (type `ansible`: who changed what; never
+the token). They decide where the token is sent, which devices runs can reach and how. LibreNMS opens that page to
+holders of its `plugin.admin` permission, which roles other than admin can have, and stores whatever is posted to it,
+so the plugin keeps nothing in LibreNMS' own plugin settings: a `plugin.admin` holder who is not an admin sees a note.
+The runner connection is stored encrypted with LibreNMS' `APP_KEY`.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| *Runner connection (plugin, admins only)* | | |
+| *Runner connection* | | |
 | Runner URL | – | Semaphore UI's address, e.g. `https://semaphore.example.com` (http or https; without `/api`) |
 | API token | – | the Task Runner user's token; write-only: never shown again, never sent to a browser; an empty field keeps it |
 | Project id | – | the project of the plugin (the number in its address, `/project/<id>/...`) |
@@ -180,13 +183,18 @@ are saved by LibreNMS (holders of its `plugin.admin` permission can change them)
 | Verify TLS certificates | on | off only for a test lab: anyone between LibreNMS and the runner could read the token |
 | CA bundle | (system CAs) | a PEM file on the LibreNMS server to verify the runner's certificate with |
 | Timeout | 15 s | per call to the runner (1–120) |
-| *Targets and runs (LibreNMS)* | | |
+| *Targets and runs* | | |
 | Platform mapping | the defaults below | one line per LibreNMS os: `os ansible_network_os [connection] [become]`; a device whose os has no line cannot be a target |
 | Allowed device group | every device | only the members of this LibreNMS device group are in the inventory and can be targets |
 | Max targets per run | 25 | 1–500 |
 | Output size | 1024 KB | the log kept per run (16–65536 KB); the runner keeps the whole log |
 | Lost after | 24 h | a run still unfinished after this long ends as *lost* (1–720 h) |
-| *Run permission (plugin, admins only)* | | which admins may launch and stop runs ([Permissions](#permissions)) |
+| *Run permission* | | which admins may launch and stop runs ([Permissions](#permissions)) |
+
+A setting that cannot be used is refused with the reason, and nothing is saved: a platform mapping line that cannot
+be read, a device group or user that does not exist, a number out of its range. When the stored settings cannot be
+read, the plugin launches nothing and its inventory endpoint answers with an error, rather than fall back to defaults
+that may reach more devices.
 
 The default platform mapping, for platforms whose LibreNMS os names and Ansible collections were both checked:
 
@@ -225,8 +233,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   LibreNMS lets admins pass every permission check.
 * **The inventory endpoint** (`/plugin/ansible/api/inventory`) takes a LibreNMS API token (as `X-Auth-Token`, like
   LibreNMS' API, or as a Bearer token) instead of a session, and answers with the devices that token's user may see.
-* The **settings** of the runner connection and the run permission are for admins; LibreNMS limits the settings page
-  itself to holders of `plugin.admin`.
+* **Every setting** is for admins, on the plugin's own routes. LibreNMS opens the plugin's settings page to holders of
+  `plugin.admin` and stores what is posted to it; the plugin reads none of that, so a `plugin.admin` holder who is not
+  an admin cannot change what runs reach (the page shows them a note).
 
 ## Using it
 

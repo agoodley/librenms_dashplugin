@@ -35,6 +35,15 @@ class PlatformMapTest extends TestCase
         $this->assertStringContainsString('"{{x}}"', $map->errors()[2]);
     }
 
+    public function testDescribeWritesAPlatformAsALine(): void
+    {
+        $map = PlatformMap::parse("ios cisco.ios.ios become\nx a.b.c community.general.linux\ny a.b ssh");
+
+        $this->assertSame('cisco.ios.ios network_cli become', PlatformMap::describe($map->for('ios')));
+        $this->assertSame('a.b.c community.general.linux', PlatformMap::describe($map->for('x')));
+        $this->assertSame('a.b ssh', PlatformMap::describe($map->for('y')));
+    }
+
     public function testHostVars(): void
     {
         $this->assertSame(['ansible_network_os' => 'vyos.vyos.vyos', 'ansible_connection' => 'ansible.netcommon.network_cli'],

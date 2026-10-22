@@ -49,6 +49,12 @@ final class RunLauncher
     {
         $plan = new LaunchPlan();
         $plan->maxTargets = $this->settings->maxTargets();
+        if ($this->settings->error !== null) {
+            // the defaults could reach more devices than the settings an admin saved
+            $plan->errors[] = $this->settings->error;
+
+            return $plan;
+        }
         $connection = $this->plugin->connection();
         try {
             $plan->runner = $this->plugin->runner($connection);

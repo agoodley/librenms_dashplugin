@@ -25,6 +25,7 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
         Route::get('inventory/download', [InventoryController::class, 'download'])->name('inventory.download');
 
         Route::post('settings/connection', [SettingsController::class, 'connection'])->name('settings.connection');
+        Route::post('settings/runs', [SettingsController::class, 'runs'])->name('settings.runs');
         Route::post('settings/test', [SettingsController::class, 'test'])->name('settings.test');
         Route::post('settings/permission', [SettingsController::class, 'permission'])->name('settings.permission');
 
