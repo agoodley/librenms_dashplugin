@@ -49,7 +49,7 @@
         ['backup_timeout_minutes', 'Backup timeout (minutes)', 'how long the plugin waits for a fresh backup before it counts as failed'],
         ['maintenance', 'Maintenance windows', 'one LibreNMS maintenance window per batch, on its devices, from its start to the settle time after its end'],
         ['maintenance_behavior', 'Maintenance behavior', 'what LibreNMS does with the alerts of the devices in the window'],
-        ['maintenance_minutes', 'Expected batch time (minutes)', 'the window\'s end when it opens; the plugin moves it while the batch runs'],
+        ['maintenance_minutes', 'Expected batch time (minutes)', 'the window\'s end when it opens; the plugin moves it while the batch runs. Also how long a batch waits for the secret answers (at least 15 min)'],
         ['settle_minutes', 'Settle time (minutes)', 'the window closes this long after its batch ended (for polling and alerts to settle)'],
     ];
 @endphp

@@ -43,6 +43,12 @@ final class ChangeLifecycle
     /** Seconds after which a launch that recorded no run is taken as not launched (the request that launched it died). */
     public const LAUNCH_GRACE = 600;
 
+    /**
+     * Least seconds a prepared batch (its window open, its backups taken) waits for an admin to enter the secret answers;
+     * it waits the expected time of a batch (maintenance setting) when longer, then the change ends.
+     */
+    public const SECRETS_WAIT_MIN = 900;
+
     public function __construct(
         private readonly ChangeStore $changes,
         private readonly RunStore $runs,
@@ -246,7 +252,7 @@ final class ChangeLifecycle
         }
         $batch = (int) $change['current_batch'];
         if ($change['waiting'] === 'secrets') {
-            $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null]);
+            $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]);
             if ($resumed === null) {
                 return 'The change changed meanwhile: reload the page.';
             }
@@ -568,6 +574,12 @@ final class ChangeLifecycle
 
             return;
         }
+        if ($change['waiting'] === 'secrets' && $change['resume_at'] !== null && self::at($change['resume_at']) <= $now) {
+            $this->finish($change, ChangeStatus::FAILED, 'stopped while it waited before batch ' . (int) $change['current_batch']
+                . ': nobody entered the secret answers by ' . Clock::show(self::at($change['resume_at']), 'Y-m-d H:i T'), $now);
+
+            return;
+        }
         if ($change['waiting'] !== 'timer' || $change['resume_at'] === null || self::at($change['resume_at']) > $now) {
             return;
         }
@@ -702,9 +714,11 @@ final class ChangeLifecycle
     {
         $id = (int) $change['id'];
         if (! empty($change['has_secrets']) && $secrets === null) {
-            if ($this->update($change, ['status' => ChangeStatus::PAUSED, 'waiting' => 'secrets']) !== null) {
+            // its window is open and its backups taken: it waits at most the expected time of a batch, then the change ends
+            $deadline = $now + max(self::SECRETS_WAIT_MIN, $this->settings->expectedSeconds);
+            if ($this->update($change, ['status' => ChangeStatus::PAUSED, 'waiting' => 'secrets', 'resume_at' => Clock::store($deadline)]) !== null) {
                 $this->changes->updateBatch($id, $number, ['status' => 'prepared']);
-                $this->timeline($change, 'apply', ChangeText::waiting($change, $number, 'secrets'), null, $now);
+                $this->timeline($change, 'apply', ChangeText::waiting($change, $number, 'secrets', $deadline), null, $now);
             }
 
             return;

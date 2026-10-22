@@ -566,6 +566,35 @@ class ChangeLifecycleTest extends TestCase
             'a batch waiting for the secret answers was not launched');
     }
 
+    public function testAWaitForTheSecretAnswersEndsTheChangeAfterTheExpectedTimeOfABatch(): void
+    {
+        $id = $this->approved(['has_secrets' => true, 'variables' => [['name' => 'key', 'label' => 'Key', 'type' => 'secret', 'value' => '********', 'secret' => true]]]);
+        $lifecycle = $this->lifecycle(['expectedSeconds' => 1800]);
+        $this->backups->now = $this->t0 + 50;
+        $lifecycle->apply($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 50);
+        $lifecycle->advance($id, $this->t0 + 60); // the backups are fresh; the page that held the secrets was closed
+        $change = $this->changes->find($id);
+        $this->assertSame(['paused', 'secrets'], [$change['status'], $change['waiting']]);
+        $deadline = Clock::unix($change['resume_at']);
+        $this->assertSame($this->t0 + 50 + 1800, $deadline, 'it waits the expected time of a batch');
+        $this->assertSame('open', current($this->changes->windows($id))['status'], 'its window is open meanwhile');
+        $this->assertStringContainsString('Batch 1 waits for an admin to enter the secret answers again (the plugin never keeps them) until',
+            implode("\n", array_column($this->changes->events[$id], 'message')));
+
+        $lifecycle->advance($id, $deadline - 1);
+        $this->assertSame('paused', $this->changes->find($id)['status']);
+        $lifecycle->advance($id, $deadline);
+        $change = $this->changes->find($id);
+        $this->assertSame(ChangeStatus::FAILED, $change['status']);
+        $this->assertStringStartsWith('stopped while it waited before batch 1: nobody entered the secret answers by ', $change['error']);
+        $this->assertSame('cancelled', $this->changes->batches[$id][1]['status']);
+        $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'), 'no batch was launched');
+        $window = current($this->changes->windows($id));
+        $this->assertTrue((bool) $window['closing'], 'its window ends now');
+        $this->assertSame($deadline, Clock::unix($window['ends_at']));
+        $this->assertSame('Only a paused change can be continued.', $lifecycle->resume($id, self::ALICE, ['key' => 's3cret'], $deadline + 1));
+    }
+
     public function testWithoutAFreshBackupTheBatchIsRefusedOrGoesWithAWarning(): void
     {
         $id = $this->approved();

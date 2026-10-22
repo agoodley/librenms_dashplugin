@@ -309,7 +309,7 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | Backup timeout | 10 min | how long the plugin waits for Oxidized (1–120) |
 | Maintenance windows | on | one LibreNMS maintenance window per batch, on its devices |
 | Maintenance behavior | LibreNMS' default | skip, mute or run alerts in the window |
-| Expected batch time | 60 min | the end of a window when it opens; the plugin moves it while the batch runs (5–1440) |
+| Expected batch time | 60 min | the end of a window when it opens; the plugin moves it while the batch runs; also how long a batch waits for the secret answers, at least 15 min (5–1440) |
 | Settle time | 10 min | a window ends this long after its batch (0–1440) |
 | *Run permission*, *Approve permission* | | who may prepare and apply changes, and who may approve them ([Permissions](#permissions)) |
 
@@ -510,7 +510,9 @@ except where it waits for an admin.
 **Secret answers** are never stored, so they are not part of the fingerprint or the approval, and the plugin cannot
 launch a batch that needs them on its own. They are asked at the dry run and at *Apply*; the change page keeps them in
 its memory (not in the browser's storage) and launches each next batch with them while it stays open. When it was
-closed, a batch that needs them waits (*waits for the secret answers*) for an admin to continue with them.
+closed, a batch that needs them waits (*waits for the secret answers*) for an admin to continue with them, with its
+maintenance window open and its backups taken: for the *Expected batch time* (maintenance setting, at least 15
+minutes), after which the change ends as failed and the window closes.
 
 ## How runs work
 
@@ -708,7 +710,7 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
 * **A repository with a local path** records no commit: a change is then applied with what the path holds at each
   batch, and the plugin cannot tell. Use a Git URL.
 * **Secret answers** are not part of what was dry-run and approved, and a batch that needs them waits for an admin when
-  the change page that holds them is closed.
+  the change page that holds them is closed (for the *Expected batch time*, then the change ends).
 * **Backups** depend on Oxidized knowing the device and on its clock (see [Oxidized and maintenance
   windows](#oxidized-and-maintenance-windows)); a device LibreNMS excludes from Oxidized has none, which counts as no
   fresh backup.

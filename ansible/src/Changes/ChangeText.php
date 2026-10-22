@@ -143,7 +143,8 @@ final class ChangeText
     {
         return self::name($change) . ": batch $next waits " . match ($why) {
             'canary' => 'for an admin to continue after the first batch',
-            'secrets' => 'for an admin to enter the secret answers again (the plugin never keeps them)',
+            'secrets' => 'for an admin to enter the secret answers again (the plugin never keeps them)'
+                . ($until !== null ? ' until ' . Clock::show($until, 'Y-m-d H:i T') . ', then the change ends' : ''),
             default => 'until ' . ($until !== null ? Clock::show($until, 'Y-m-d H:i T') : 'the pause ends') . ' (pause between batches)',
         };
     }

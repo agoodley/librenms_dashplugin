@@ -31,7 +31,8 @@
         'failed' => 'danger', 'stopped' => 'warning', 'cancelled' => 'default'];
     $batchLabels = ['pending' => 'to do', 'preparing' => 'window and backups', 'prepared' => 'waits for the secret answers', 'launching' => 'launching',
         'running' => 'running', 'done' => 'done', 'failed' => 'failed', 'stopped' => 'stopped', 'cancelled' => 'not run'];
-    $waitText = ['canary' => 'waits for an admin to continue after the first batch', 'secrets' => 'waits for the secret answers (the plugin never keeps them)',
+    $waitText = ['canary' => 'waits for an admin to continue after the first batch',
+        'secrets' => 'waits for the secret answers until ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?') . ' (the plugin never keeps them), then the change ends',
         'timer' => 'pause between batches until ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?')];
     $counters = ['ok', 'changed', 'unreachable', 'failed', 'skipped'];
     $variables = (array) ($change['variables'] ?? []);
