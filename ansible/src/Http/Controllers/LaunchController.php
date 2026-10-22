@@ -42,11 +42,12 @@ class LaunchController extends Controller
             // what refuses every launch, said up front (the preview and the launch check it again)
             $data['blocked'] = array_values(array_filter([$this->settings()->error, $service->inventoryUserProblem()]));
             $runner = $plugin->runner($connection);
-            $block = $runner->health()->launchBlock();
+            $health = $runner->health();
+            $block = $health->launchBlock();
             if ($block !== null) {
                 array_unshift($data['blocked'], $block);
             }
-            $review = new TemplateReview($runner, (string) $connection->inventory);
+            $review = new TemplateReview($runner, (string) $connection->inventory, $health);
             foreach ($runner->templates() as $template) {
                 $reasons = $review->reasons($template);
                 if ($reasons) {

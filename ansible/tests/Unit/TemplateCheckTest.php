@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsAnsible\Tests\Unit;
 
 use Agoodley\LibrenmsAnsible\Runner\RunnerEnvironment;
+use Agoodley\LibrenmsAnsible\Runner\RunnerHealth;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
 use Agoodley\LibrenmsAnsible\Runner\SurveyVar;
 use Agoodley\LibrenmsAnsible\Runs\TemplateCheck;
@@ -75,6 +76,10 @@ class TemplateCheckTest extends TestCase
         $this->assertSame([], $review->reasons(self::template()));
         $this->assertSame([], $review->reasons(self::template(['id' => '8'])));
         $this->assertStringStartsWith('it has no variable group', $review->reasons(self::template(['id' => '9', 'environmentId' => null]))[0]);
+
+        // a Guest token: every template is unusable up front, with the fix
+        $guest = new TemplateReview($runner, '4', new RunnerHealth('v2', 'p', 'guest', false));
+        $this->assertSame(["the token's user may not run tasks in the project (the Guest role): give it the Task Runner role"], $guest->reasons(self::template()));
     }
 
     public function testKindAndPermission(): void

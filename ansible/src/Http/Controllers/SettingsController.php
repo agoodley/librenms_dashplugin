@@ -145,7 +145,7 @@ class SettingsController extends Controller
             }
         }
         $list = [];
-        $review = new TemplateReview($runner, $chosen);
+        $review = new TemplateReview($runner, $chosen, $health);
         foreach ($templates as $template) {
             $reasons = $review->reasons($template);
             $list[] = ['id' => $template->id, 'name' => $template->name, 'playbook' => $template->playbook, 'usable' => ! $reasons,
