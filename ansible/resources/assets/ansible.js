@@ -900,6 +900,14 @@
             } else if (note) {
                 note.parentNode.removeChild(note);
             }
+            // while this page holds the answers, a batch that waits for them is launched from here within seconds: its wait is not
+            // shown (the deadline and the end of the change that follows it), what the page does is
+            Array.prototype.forEach.call(document.querySelectorAll('#ans-change [data-held-text]'), function (node) {
+                if (!node.hasAttribute('data-wait-text')) {
+                    node.setAttribute('data-wait-text', node.textContent);
+                }
+                node.textContent = heldSecrets && !state.final ? node.getAttribute('data-held-text') : node.getAttribute('data-wait-text');
+            });
             // an answer the page holds needs no typing again: its field says so (a Continue with it empty uses the held one)
             Array.prototype.forEach.call(document.querySelectorAll('#ans-secret-fields .ans-secret-mark'), function (mark) {
                 var held = heldSecrets && !state.final && Object.prototype.hasOwnProperty.call(heldSecrets, mark.getAttribute('data-name'));

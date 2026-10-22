@@ -70,7 +70,7 @@
             <h4>Status</h4>
             <div class="ans-card-value"><span id="ans-change-status" class="label label-{{ ChangeStatus::css($status) }}">{{ ChangeStatus::label($status) }}</span></div>
             <p>@if(in_array($status, ChangeStatus::RESERVING, true) || $status === ChangeStatus::APPLIED)batch {{ $change['current_batch'] }} of {{ $change['batch_count'] }}@else{{ $change['batch_count'] }} {{ (int) $change['batch_count'] === 1 ? 'batch' : 'batches' }}@endif
-                @if($change['waiting']) · {{ $waitText[$change['waiting']] ?? '' }}@endif
+                @if($change['waiting'])<span id="ans-change-waiting" @if($change['waiting'] === 'secrets') data-held-text=" · batch {{ (int) $change['current_batch'] }} is launched with the secret answers this page holds"@endif> · {{ $waitText[$change['waiting']] ?? '' }}</span>@endif
                 @if($change['finished_at']) · ended {{ $local($change['finished_at']) }}@endif</p>
         </div>
         <div class="ans-card ans-info">
@@ -256,7 +256,7 @@
                         <tr data-batch="{{ $number }}">
                             <td data-label="Batch">{{ $number }}{{ $number === 1 && count($batches) > 1 ? ' (canary)' : '' }}</td>
                             <td class="ans-wrap" data-label="Devices">{{ implode(', ', array_map(fn ($d) => $targets[$d]['display'] ?: $targets[$d]['hostname'], $byBatch[$number] ?? [])) }}</td>
-                            <td data-label="State"><span class="label label-{{ $batchCss[$batch['status']] ?? 'default' }} ans-batch-state">{{ $batchLabels[$batch['status']] ?? $batch['status'] }}</span>
+                            <td data-label="State"><span class="label label-{{ $batchCss[$batch['status']] ?? 'default' }} ans-batch-state" @if($batch['status'] === 'prepared' && ! $final) data-held-text="launching" @endif>{{ $batchLabels[$batch['status']] ?? $batch['status'] }}</span>
                                 @if($batch['note'])<div class="ans-help ans-wrap">{{ Clock::localize($batch['note']) }}</div>@endif</td>
                             <td data-label="Run">@if($batchRun)<a href="{{ route('ansible.runs.show', $batchRun['id']) }}">#{{ $batchRun['id'] }}</a> <span class="label label-{{ RunStatus::css($batchRun['status']) }}">{{ RunStatus::label($batchRun['status']) }}</span>@endif</td>
                             <td data-label="Results">@if($batchRun)@include('ansible::partials.results', ['resultSummary' => $batchRun['summary'] ?? [], 'resultDryRun' => false, 'resultUnproven' => false])@endif</td>
@@ -411,7 +411,7 @@
 
     <div class="panel panel-default" id="ans-change-log-panel">
         <div class="panel-heading"><strong>Log</strong>
-            <span class="text-muted" id="ans-change-log-title">@if($run){{ $run['kind'] === 'dry_run' ? 'dry run' : 'batch ' . $run['batch'] }}, <a href="{{ route('ansible.runs.show', $run['id']) }}">run #{{ $run['id'] }}</a> ({{ RunStatus::label($run['status']) }})@elseif($logNote){{ $logNote }}@else nothing runs now @endif</span>
+            <span class="text-muted" id="ans-change-log-title">@if($run){{ $run['kind'] === 'dry_run' ? 'dry run' : 'batch ' . $run['batch'] }}, <a href="{{ route('ansible.runs.show', $run['id']) }}">run #{{ $run['id'] }}</a> ({{ RunStatus::label($run['status']) }})@elseif($logNote)<span @if(($currentBatch['status'] ?? null) === 'prepared' && ! $final) data-held-text="batch {{ (int) $change['current_batch'] }}: being launched with the secret answers this page holds" @endif>{{ $logNote }}</span>@else nothing runs now @endif</span>
             <span class="text-muted" id="ans-log-state">{{ ! $final || $pending ? '(live: refreshed every 2 seconds)' : '' }}</span></div>
         <div class="panel-body" style="padding: 6px">
             <div class="ans-log-bar">
