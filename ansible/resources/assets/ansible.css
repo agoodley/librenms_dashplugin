@@ -93,6 +93,12 @@
 .ans-log .ans-bold { font-weight: 700; }
 .ans-log-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 6px; font-size: 12px; }
 
+/* inside an alert, help texts and links take the alert's colour: the greys and the link blue fall below 4.5:1 on its background */
+.ans-page .alert .ans-muted, .ans-page .alert .ans-help, .ans-page .alert .text-muted,
+.ans-settings .alert .ans-muted, .ans-settings .alert .ans-help, .ans-settings .alert .text-muted,
+.ans-device-panel .alert .ans-muted, .ans-device-panel .alert .ans-help, .ans-device-panel .alert .text-muted { color: inherit; }
+.ans-page .alert a:not(.btn), .ans-settings .alert a:not(.btn), .ans-device-panel .alert a:not(.btn) { color: inherit; text-decoration: underline; font-weight: 600; }
+
 /* dark mode (LibreNMS toggles html.dark) */
 html.dark .ans-filterbar { background: #24272c; border-color: #3a3f45; }
 html.dark .ans-filterbar label, html.dark .ans-card h4 { color: #b0b8be; }
@@ -109,6 +115,14 @@ html.dark .ans-targets tr.ans-selected td { background: rgba(110, 168, 222, 0.16
 html.dark .ans-warning-loud { background: #3a1f1c; border-color: #f08a80; color: #f6d5d1; }
 html.dark .ans-log { background: #111214; color: #d8dade; }
 html.dark .ans-page .alert-warning, html.dark .ans-settings .alert-warning { color: #2b1a00; }
+/* LibreNMS' dark alerts are saturated colours with white text (2.1-3.3:1): dark text on all of them, as on the warning */
+html.dark .ans-page .alert-success, html.dark .ans-settings .alert-success, html.dark .ans-device-panel .alert-success { color: #0d2a0d; }
+html.dark .ans-page .alert-info, html.dark .ans-settings .alert-info, html.dark .ans-device-panel .alert-info { color: #062733; }
+html.dark .ans-device-panel .alert-warning { color: #2b1a00; }
+html.dark .ans-page .alert-danger, html.dark .ans-settings .alert-danger, html.dark .ans-device-panel .alert-danger { color: #2b0606; }
+html.dark .ans-page .alert .ans-muted, html.dark .ans-page .alert .ans-help, html.dark .ans-page .alert .text-muted,
+html.dark .ans-settings .alert .ans-muted, html.dark .ans-settings .alert .ans-help, html.dark .ans-settings .alert .text-muted,
+html.dark .ans-device-panel .alert .ans-muted, html.dark .ans-device-panel .alert .ans-help, html.dark .ans-device-panel .alert .text-muted { opacity: .85; }
 
 /* changes: diffs per device (text only; + green, - red, @@ blue) */
 .ans-diff-cell { min-width: 260px; }
