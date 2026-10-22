@@ -11,12 +11,18 @@ use Illuminate\Support\Facades\Schema;
 /**
  * The audit log: runs (ansible_runs) and their targets (ansible_run_targets). Only LibreNMS admins see it, and
  * every admin sees every run, so queries are not scoped by device. Rows are returned as arrays with their JSON
- * columns decoded. The run lifecycle changes runs only through updateAt(), a compare-and-set on their version.
+ * columns decoded. The run lifecycle changes runs only through updateAt(), a compare-and-set on their version. Its
+ * statements go through an Sql executor (LibreNMS' connection; SQLite in the tests); the runs list and the device
+ * panel use Laravel's query builder.
  */
 final class RunRepository implements RunStore
 {
     /** JSON columns of a run. */
     private const JSON = ['variables', 'summary', 'unexpected_hosts'];
+
+    public function __construct(private readonly Sql $sql = new LaravelSql())
+    {
+    }
 
     /**
      * Do the plugin's tables exist (./lnms migrate ran)?
@@ -32,18 +38,19 @@ final class RunRepository implements RunStore
 
     /**
      * Devices that are targets of an unfinished run, or of a stopped run that still holds them (the step in progress
-     * at the stop may still run on the runner).
+     * at the stop may still run on the runner). A host the runner ran on that was not a target does not count.
      *
+     * @param  int|null  $now  the time to compare holds with (now)
      * @return array<int, array{run: int, held_until: ?string}> device_id => the run (the newest when several), and until when a stopped one holds it
      */
-    public function busy(): array
+    public function busy(?int $now = null): array
     {
         $busy = [];
-        foreach (DB::table('ansible_run_targets as t')->join('ansible_runs as r', 'r.id', '=', 't.run_id')->where('t.unexpected', false)
-            ->where(fn ($q) => $q->whereIn('r.status', RunStatus::UNFINISHED)
-                ->orWhere(fn ($q) => $q->where('r.status', RunStatus::STOPPED)->where('r.held_until', '>', date('Y-m-d H:i:s'))))
-            ->orderBy('r.id')->get(['t.device_id', 't.run_id', 'r.status', 'r.held_until']) as $row) {
-            $busy[(int) $row->device_id] = ['run' => (int) $row->run_id, 'held_until' => $row->status === RunStatus::STOPPED ? (string) $row->held_until : null];
+        foreach ($this->sql->select('SELECT t.`device_id`, t.`run_id`, r.`status`, r.`held_until` FROM ' . $this->sql->table('ansible_run_targets') . ' t JOIN '
+            . $this->sql->table('ansible_runs') . ' r ON r.`id` = t.`run_id` WHERE t.`unexpected` = 0 AND (r.`status` IN (' . self::marks(RunStatus::UNFINISHED)
+            . ') OR (r.`status` = ? AND r.`held_until` > ?)) ORDER BY r.`id`',
+            array_merge(RunStatus::UNFINISHED, [RunStatus::STOPPED, date('Y-m-d H:i:s', $now ?? time())])) as $row) {
+            $busy[(int) $row['device_id']] = ['run' => (int) $row['run_id'], 'held_until' => $row['status'] === RunStatus::STOPPED ? (string) $row['held_until'] : null];
         }
 
         return $busy;
@@ -54,9 +61,9 @@ final class RunRepository implements RunStore
      */
     public function byRequestToken(string $token): ?int
     {
-        $id = DB::table('ansible_runs')->where('request_token', $token)->value('id');
+        $rows = $this->sql->select('SELECT `id` FROM ' . $this->sql->table('ansible_runs') . ' WHERE `request_token` = ?', [$token]);
 
-        return $id === null ? null : (int) $id;
+        return $rows ? (int) $rows[0]['id'] : null;
     }
 
     /**
@@ -67,16 +74,18 @@ final class RunRepository implements RunStore
      */
     public function create(array $run, array $targets): int
     {
-        return DB::transaction(function () use ($run, $targets): int {
-            $now = now();
-            $id = (int) DB::table('ansible_runs')->insertGetId(self::encode($run) + ['created_at' => $now, 'updated_at' => $now]);
+        return $this->sql->transaction(function () use ($run, $targets): int {
+            $now = date('Y-m-d H:i:s');
+            $values = self::encode($run) + ['created_at' => $now, 'updated_at' => $now];
+            $id = $this->sql->insert('INSERT INTO ' . $this->sql->table('ansible_runs') . ' (' . self::columns(array_keys($values)) . ') VALUES ('
+                . self::marks($values) . ')', self::bindings($values));
             $rows = [];
             foreach ($targets as $deviceId => $target) {
-                $rows[] = ['run_id' => $id, 'device_id' => $deviceId, 'inventory_name' => $target['inventory_name'],
-                    'hostname' => mb_substr($target['hostname'], 0, 255), 'display' => mb_substr($target['display'], 0, 255)];
+                $rows[] = [$id, (int) $deviceId, $target['inventory_name'], mb_substr($target['hostname'], 0, 255), mb_substr($target['display'], 0, 255)];
             }
             foreach (array_chunk($rows, 500) as $chunk) {
-                DB::table('ansible_run_targets')->insert($chunk);
+                $this->sql->change('INSERT INTO ' . $this->sql->table('ansible_run_targets') . ' (`run_id`, `device_id`, `inventory_name`, `hostname`, `display`) VALUES '
+                    . implode(', ', array_fill(0, count($chunk), '(?, ?, ?, ?, ?)')), array_merge(...$chunk));
             }
 
             return $id;
@@ -88,9 +97,9 @@ final class RunRepository implements RunStore
      */
     public function find(int $id): ?array
     {
-        $row = DB::table('ansible_runs')->where('id', $id)->first();
+        $rows = $this->sql->select('SELECT * FROM ' . $this->sql->table('ansible_runs') . ' WHERE `id` = ?', [$id]);
 
-        return $row === null ? null : self::decode((array) $row);
+        return $rows ? self::decode($rows[0]) : null;
     }
 
     /**
@@ -101,8 +110,8 @@ final class RunRepository implements RunStore
     public function targets(int $runId): array
     {
         $targets = [];
-        foreach (DB::table('ansible_run_targets')->where('run_id', $runId)->orderBy('unexpected')->orderBy('inventory_name')->get() as $row) {
-            $row = (array) $row;
+        foreach ($this->sql->select('SELECT * FROM ' . $this->sql->table('ansible_run_targets') . ' WHERE `run_id` = ? ORDER BY `unexpected`, `inventory_name`, `id`',
+            [$runId]) as $row) {
             $row['counts'] = $row['counts'] !== null ? json_decode((string) $row['counts'], true) : null;
             $row['unexpected'] = (bool) ($row['unexpected'] ?? false);
             $targets[(int) $row['device_id']] = $row;
@@ -132,11 +141,8 @@ final class RunRepository implements RunStore
         $sets = [];
         $bindings = [];
         foreach ($values as $column => $value) {
-            if (! preg_match('/^[a-z_]+$/D', (string) $column)) {
-                throw new \InvalidArgumentException("not a column of ansible_runs: $column");
-            }
-            $sets[] = "`$column` = ?";
-            $bindings[] = $value;
+            $sets[] = self::column((string) $column) . ' = ?';
+            $bindings[] = self::bindable($value);
         }
         if ($appendOutput !== '') {
             $pieces = OutputBuffer::pieces($appendOutput);
@@ -150,14 +156,14 @@ final class RunRepository implements RunStore
         }
         $sets[] = '`version` = `version` + 1';
         $sets[] = '`updated_at` = ?';
-        $bindings[] = now()->format('Y-m-d H:i:s');
-        $table = DB::getTablePrefix() . 'ansible_runs';
-        if (DB::update("UPDATE `$table` SET " . implode(', ', $sets) . ' WHERE `id` = ? AND `version` = ?', array_merge($bindings, [$id, $version])) < 1) {
+        $bindings[] = date('Y-m-d H:i:s');
+        $table = $this->sql->table('ansible_runs');
+        if ($this->sql->change("UPDATE $table SET " . implode(', ', $sets) . ' WHERE `id` = ? AND `version` = ?', array_merge($bindings, [$id, $version])) < 1) {
             return false;
         }
         foreach ($later as $column => $pieces) {
             foreach ($pieces as $piece) {
-                DB::update("UPDATE `$table` SET `$column` = CONCAT(COALESCE(`$column`, ''), ?) WHERE `id` = ? AND `version` = ?", [$piece, $id, $version + 1]);
+                $this->sql->change("UPDATE $table SET `$column` = CONCAT(COALESCE(`$column`, ''), ?) WHERE `id` = ? AND `version` = ?", [$piece, $id, $version + 1]);
             }
         }
 
@@ -169,10 +175,12 @@ final class RunRepository implements RunStore
      */
     public function setResults(int $runId, array $results): void
     {
-        foreach ($results as $deviceId => $result) {
-            DB::table('ansible_run_targets')->where('run_id', $runId)->where('device_id', $deviceId)
-                ->update(['result' => $result['result'], 'counts' => $result['counts'] !== null ? json_encode($result['counts']) : null]);
-        }
+        $this->sql->transaction(function () use ($runId, $results): void {
+            foreach ($results as $deviceId => $result) {
+                $this->sql->change('UPDATE ' . $this->sql->table('ansible_run_targets') . ' SET `result` = ?, `counts` = ? WHERE `run_id` = ? AND `device_id` = ?',
+                    [$result['result'], $result['counts'] !== null ? json_encode($result['counts']) : null, $runId, (int) $deviceId]);
+            }
+        });
     }
 
     /**
@@ -180,17 +188,18 @@ final class RunRepository implements RunStore
      */
     public function addUnexpected(int $runId, array $rows): void
     {
-        $known = DB::table('ansible_run_targets')->where('run_id', $runId)->pluck('device_id')->map(fn ($id) => (int) $id)->all();
+        $table = $this->sql->table('ansible_run_targets');
+        $known = array_map(fn ($row) => (int) $row['device_id'], $this->sql->select("SELECT `device_id` FROM $table WHERE `run_id` = ?", [$runId]));
         $insert = [];
         foreach ($rows as $deviceId => $row) {
             if (! in_array((int) $deviceId, $known, true)) {
-                $insert[] = ['run_id' => $runId, 'device_id' => (int) $deviceId, 'inventory_name' => mb_substr($row['inventory_name'], 0, 255),
-                    'hostname' => mb_substr($row['hostname'], 0, 255), 'display' => mb_substr($row['display'], 0, 255), 'result' => $row['result'],
-                    'counts' => $row['counts'] !== null ? json_encode($row['counts']) : null, 'unexpected' => true];
+                $insert[] = [$runId, (int) $deviceId, mb_substr($row['inventory_name'], 0, 255), mb_substr($row['hostname'], 0, 255), mb_substr($row['display'], 0, 255),
+                    $row['result'], $row['counts'] !== null ? json_encode($row['counts']) : null, 1];
             }
         }
         foreach (array_chunk($insert, 500) as $chunk) {
-            DB::table('ansible_run_targets')->insert($chunk);
+            $this->sql->change("INSERT INTO $table (`run_id`, `device_id`, `inventory_name`, `hostname`, `display`, `result`, `counts`, `unexpected`) VALUES "
+                . implode(', ', array_fill(0, count($chunk), '(?, ?, ?, ?, ?, ?, ?, ?)')), array_merge(...$chunk));
         }
     }
 
@@ -207,10 +216,10 @@ final class RunRepository implements RunStore
             return [];
         }
         $stops = [];
-        foreach (DB::table('ansible_run_targets as t')->join('ansible_runs as r', 'r.id', '=', 't.run_id')->whereIn('t.device_id', $deviceIds)
-            ->where('r.status', RunStatus::STOPPED)->where('r.finished_at', '>=', now()->subSeconds($seconds))->orderBy('r.id')
-            ->get(['t.device_id', 'r.id', 'r.runner_task_id', 'r.finished_at']) as $row) {
-            $stops[(int) $row->device_id] = ['run_id' => (int) $row->id, 'runner_task_id' => $row->runner_task_id, 'finished_at' => (string) $row->finished_at];
+        foreach ($this->sql->select('SELECT t.`device_id`, r.`id`, r.`runner_task_id`, r.`finished_at` FROM ' . $this->sql->table('ansible_run_targets') . ' t JOIN '
+            . $this->sql->table('ansible_runs') . ' r ON r.`id` = t.`run_id` WHERE t.`device_id` IN (' . self::marks($deviceIds) . ') AND r.`status` = ? AND r.`finished_at` >= ? ORDER BY r.`id`',
+            array_merge(array_map('intval', $deviceIds), [RunStatus::STOPPED, date('Y-m-d H:i:s', time() - $seconds)])) as $row) {
+            $stops[(int) $row['device_id']] = ['run_id' => (int) $row['id'], 'runner_task_id' => $row['runner_task_id'], 'finished_at' => (string) $row['finished_at']];
         }
 
         return $stops;
@@ -223,7 +232,8 @@ final class RunRepository implements RunStore
      */
     public function unfinished(): array
     {
-        return array_map('intval', DB::table('ansible_runs')->whereIn('status', RunStatus::UNFINISHED)->orderBy('id')->pluck('id')->all());
+        return array_map(fn ($row) => (int) $row['id'], $this->sql->select('SELECT `id` FROM ' . $this->sql->table('ansible_runs') . ' WHERE `status` IN ('
+            . self::marks(RunStatus::UNFINISHED) . ') ORDER BY `id`', RunStatus::UNFINISHED));
     }
 
     /**
@@ -231,10 +241,11 @@ final class RunRepository implements RunStore
      *
      * @return int[]
      */
-    public function watched(): array
+    public function watched(?int $now = null): array
     {
-        return array_map('intval', DB::table('ansible_runs')->whereIn('status', RunStatus::WATCHED)->whereNotNull('watch_until')
-            ->where('watch_until', '>', now())->orderBy('id')->pluck('id')->all());
+        return array_map(fn ($row) => (int) $row['id'], $this->sql->select('SELECT `id` FROM ' . $this->sql->table('ansible_runs') . ' WHERE `status` IN ('
+            . self::marks(RunStatus::WATCHED) . ') AND `watch_until` IS NOT NULL AND `watch_until` > ? ORDER BY `id`',
+            array_merge(RunStatus::WATCHED, [date('Y-m-d H:i:s', $now ?? time())])));
     }
 
     /**
@@ -323,6 +334,50 @@ final class RunRepository implements RunStore
             ->orderByDesc('r.id')->limit($limit)
             ->get(['r.id', 'r.username', 'r.template_name', 'r.status', 'r.created_at', 'r.finished_at', 't.result', 't.unexpected'])
             ->map(fn ($r) => (array) $r)->all();
+    }
+
+    /**
+     * A column name, backquoted (only lowercase names with underscores: the names come from the code).
+     */
+    private static function column(string $name): string
+    {
+        if (! preg_match('/^[a-z_]+$/D', $name)) {
+            throw new \InvalidArgumentException("not a column of the plugin's tables: $name");
+        }
+
+        return "`$name`";
+    }
+
+    /**
+     * @param  string[]  $names
+     */
+    private static function columns(array $names): string
+    {
+        return implode(', ', array_map(fn ($name) => self::column((string) $name), $names));
+    }
+
+    /**
+     * As many placeholders as values.
+     */
+    private static function marks(array $values): string
+    {
+        return implode(', ', array_fill(0, count($values), '?'));
+    }
+
+    /**
+     * A value as a statement binds it: booleans as 0 and 1.
+     */
+    private static function bindable(mixed $value): mixed
+    {
+        return is_bool($value) ? (int) $value : $value;
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private static function bindings(array $values): array
+    {
+        return array_map(fn ($value) => self::bindable($value), array_values($values));
     }
 
     /**

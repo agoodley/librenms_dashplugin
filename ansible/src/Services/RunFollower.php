@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsAnsible\Services;
 
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runner\Runner;
+use Agoodley\LibrenmsAnsible\Runner\Semaphore\SemaphoreRunner;
 use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Support\ErrorText;
@@ -22,8 +23,11 @@ final class RunFollower
     /** Least seconds between two refreshes of a run from the runner. */
     public const INTERVAL = 2;
 
-    /** Most runner calls one refresh makes (task, output, role or stop, the whole log at the end). */
-    private const CALLS = 5;
+    /**
+     * Most runner calls one refresh makes: task, output, role or stop, and the whole log at the end; or a search for
+     * a launch's task (SEARCH_PAGES pages) and the log of the task it found.
+     */
+    public const CALLS = SemaphoreRunner::SEARCH_PAGES + 2;
 
     public function __construct(
         private readonly Plugin $plugin,
@@ -76,12 +80,20 @@ final class RunFollower
     }
 
     /**
-     * How long the lock of a refresh is held at most: longer than the slowest refresh (each runner call may take the
-     * connection's whole timeout).
+     * How long the lock of a refresh is held at most.
      */
     private function lockSeconds(): int
     {
-        return max(60, self::CALLS * $this->plugin->connection()->timeout + 60);
+        return self::lockSecondsFor($this->plugin->connection()->timeout);
+    }
+
+    /**
+     * The lock's time for a connection timeout: longer than the slowest refresh, in which each runner call may take
+     * the whole timeout, so a second request never asks the runner about the same run at once.
+     */
+    public static function lockSecondsFor(int $timeout): int
+    {
+        return max(60, self::CALLS * $timeout + 60);
     }
 
     /**
