@@ -155,6 +155,17 @@ class InventoryBuilderTest extends TestCase
         $this->assertArrayNotHasKey('ansible_become', $inventory->hosts()['acc-sw1']);
     }
 
+    public function testTheRefusalOfOneDevice(): void
+    {
+        $builder = new InventoryBuilder(PlatformMap::parse(''), 3);
+        $groups = [3 => 'Ansible lab'];
+
+        $this->assertNull($builder->refusal(['hostname' => 'sw1', 'overwrite_ip' => null, 'os' => 'ios', 'disabled' => 0], [3], $groups));
+        $this->assertSame('no_mapping', $builder->refusal(['hostname' => 'srv', 'os' => 'linux', 'disabled' => 0], [3], $groups)['reason']);
+        $this->assertSame('outside_group', $builder->refusal(['hostname' => 'sw2', 'os' => 'ios', 'disabled' => 0], [], $groups)['reason']);
+        $this->assertSame('disabled', $builder->refusal(['hostname' => 'sw3', 'os' => 'ios', 'disabled' => 1], [3], $groups)['reason']);
+    }
+
     public function testAddress(): void
     {
         $this->assertSame('10.1.1.1', InventoryBuilder::address(['hostname' => 'x', 'overwrite_ip' => ' 10.1.1.1 ']));

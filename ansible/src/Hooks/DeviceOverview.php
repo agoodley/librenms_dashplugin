@@ -2,7 +2,10 @@
 
 namespace Agoodley\LibrenmsAnsible\Hooks;
 
+use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
+use Agoodley\LibrenmsAnsible\Inventory\InventoryBuilder;
+use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Agoodley\LibrenmsAnsible\Support\Access;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Log;
@@ -32,11 +35,18 @@ class DeviceOverview implements DeviceOverviewHook
     {
         // LibreNMS disables a plugin whose hook throws, and the view is rendered later inside the device page:
         // render it here so no error can escape
-        $data = ['device' => $device, 'runs' => [], 'canRun' => false, 'error' => null];
+        $data = ['device' => $device, 'runs' => [], 'canRun' => false, 'refusal' => null, 'error' => null];
         try {
             $runs = new RunRepository();
             $data['canRun'] = Access::canRun(auth()->user());
             $data['runs'] = $runs->available() ? $runs->deviceRuns((int) $device->device_id) : [];
+            if ($data['canRun']) {
+                // offer a run only to a device that can be a target, else say why not
+                $settings = Plugin::settings();
+                $data['refusal'] = (new InventoryBuilder($settings->platformMap(), $settings->allowedGroup()))->refusal(
+                    ['hostname' => (string) $device->hostname, 'overwrite_ip' => $device->overwrite_ip, 'os' => (string) $device->os, 'disabled' => (int) $device->disabled],
+                    $device->groups()->pluck('device_groups.id')->map(fn ($id) => (int) $id)->all(), (new DeviceRepository())->deviceGroups());
+            }
             $view = view("$pluginName::device-overview", $data);
             $view->render();
 
@@ -44,7 +54,7 @@ class DeviceOverview implements DeviceOverviewHook
         } catch (\Throwable $e) {
             Log::error('ansible plugin: device overview failed: ' . \Agoodley\LibrenmsAnsible\Support\ErrorText::forLog($e));
 
-            return view("$pluginName::device-overview", ['device' => $device, 'runs' => [], 'canRun' => false, 'error' => 'The Ansible runs cannot be shown: see logs/librenms.log.']);
+            return view("$pluginName::device-overview", ['device' => $device, 'runs' => [], 'canRun' => false, 'refusal' => null, 'error' => 'The Ansible runs cannot be shown: see logs/librenms.log.']);
         }
     }
 }

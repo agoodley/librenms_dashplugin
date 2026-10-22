@@ -96,7 +96,7 @@
         <p class="ans-muted" id="ans-targets-status">Loading the devices…</p>
         <div class="ans-targets-wrap">
             <table class="table table-condensed table-hover ans-table ans-targets" id="ans-targets">
-                <thead><tr><th style="width: 28px"></th><th>Device</th><th>Inventory name</th><th>OS</th><th>Platform</th><th>Status</th><th>Location</th><th>Can it be a target?</th></tr></thead>
+                <thead><tr><th style="width: 28px"></th><th>Device</th><th>Can it be a target?</th><th>Inventory name</th><th class="hidden-xs">OS</th><th>Platform</th><th class="hidden-xs">Status</th><th class="hidden-xs">Location</th></tr></thead>
                 <tbody></tbody>
             </table>
         </div>

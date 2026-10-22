@@ -6,7 +6,9 @@
         <strong>Ansible</strong>
         <span class="pull-right">
             <a class="btn btn-xs btn-default" href="{{ route('ansible.runs', ['device' => $device->device_id]) }}">All runs</a>
-            @if($canRun)
+            @if($canRun && $refusal)
+                <span class="ans-muted" id="ans-device-cannot" style="font-size: 12px">cannot be a target: {{ $refusal['text'] }}</span>
+            @elseif($canRun)
                 <a class="btn btn-xs btn-success" href="{{ route('ansible.runs.new', ['device' => $device->device_id]) }}" id="ans-device-run"><i class="fa fa-play"></i> Run a template on this device</a>
             @endif
         </span>

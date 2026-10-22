@@ -22,8 +22,9 @@
 
 .ans-table td, .ans-table th { vertical-align: middle !important; }
 .ans-table .ans-num { text-align: right; white-space: nowrap; }
-.ans-wrap { overflow-wrap: anywhere; }
+.ans-wrap { overflow-wrap: break-word; }
 .ans-pre { white-space: pre-wrap; }
+#ans-setup .ans-code, .ans-settings .help-block .ans-code { overflow-wrap: anywhere; }
 .ans-muted { color: #6c757d; }
 .ans-result { display: inline-block; min-width: 76px; text-align: center; }
 .ans-results .label { margin-right: 3px; display: inline-block; }

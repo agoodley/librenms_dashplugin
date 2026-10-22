@@ -78,6 +78,7 @@
             <div class="panel panel-default">
                 <div class="panel-heading"><strong>Targets</strong> <span class="text-muted">({{ count($targets) }})</span>
                     <span id="ans-run-summary">@include('ansible::partials.results', ['summary' => $run['summary'] ?? []])</span></div>
+                <div class="table-responsive">
                 <table class="table table-condensed ans-table" id="ans-run-targets">
                     <thead><tr><th>Device</th><th>Inventory name</th><th>Result</th>@foreach($counters as $c)<th class="ans-num">{{ $c }}</th>@endforeach</tr></thead>
                     <tbody>
@@ -100,6 +101,7 @@
                     @endforeach
                     </tbody>
                 </table>
+                </div>
             </div>
         </div>
         <div class="col-md-5">

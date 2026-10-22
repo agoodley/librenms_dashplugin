@@ -91,6 +91,20 @@ final class InventoryBuilder
     }
 
     /**
+     * Why one device cannot be a host (and so a target), null when it can: disabled, outside the allowed group, no
+     * platform mapping, no usable address.
+     *
+     * @param  array<string, mixed>  $device  hostname, overwrite_ip, os, disabled
+     * @param  int[]  $groupIds  the device groups it is a member of
+     * @param  array<int, string>  $deviceGroups  every device group (id => name)
+     * @return array{reason: string, text: string}|null
+     */
+    public function refusal(array $device, array $groupIds, array $deviceGroups): ?array
+    {
+        return $this->leftOutReason($device, $groupIds, $this->map->for((string) ($device['os'] ?? '')), $deviceGroups);
+    }
+
+    /**
      * Why a device is not a host, null when it is one.
      *
      * @param  int[]  $groupIds

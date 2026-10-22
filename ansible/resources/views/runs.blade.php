@@ -38,7 +38,7 @@
             <select name="template" class="form-control" style="max-width: 240px">
                 <option value="">All</option>
                 @foreach($options['templates'] as $templateId => $name)
-                    <option value="{{ $templateId }}" @selected($filters['template'] === (string) $templateId)>{{ $name }}</option>
+                    <option value="{{ $templateId }}" @selected($filters['template'] === (string) $templateId)>{{ $name }} (#{{ $templateId }})</option>
                 @endforeach
             </select>
         </label>
@@ -66,6 +66,7 @@
 
     <div class="panel panel-default">
         <div class="panel-heading"><strong>Runs</strong> <span class="text-muted">({{ $total }}{{ $total > $perPage ? ', page ' . $page . ' of ' . $pages : '' }})</span></div>
+        <div class="table-responsive">
         <table class="table table-condensed table-hover ans-table" id="ans-runs">
             <thead>
             <tr><th>#</th><th>Started</th><th>User</th><th>Template</th><th>Targets</th><th>Status</th><th class="ans-num">Duration</th></tr>
@@ -90,10 +91,15 @@
                     <td class="ans-num">{{ \Agoodley\LibrenmsAnsible\Support\Format::duration(\Agoodley\LibrenmsAnsible\Support\Format::runDuration($run)) }}</td>
                 </tr>
             @empty
-                <tr><td colspan="7" class="text-muted">No runs{{ array_filter($filters) ? ' match these filters' : ' yet' }}.</td></tr>
+                @if($total > 0)
+                    <tr><td colspan="7" class="text-muted">No runs on page {{ $page }}: <a href="{{ $pageUrl(1) }}">back to the first page</a>.</td></tr>
+                @else
+                    <tr><td colspan="7" class="text-muted">No runs{{ array_filter($filters) ? ' match these filters' : ' yet' }}.</td></tr>
+                @endif
             @endforelse
             </tbody>
         </table>
+        </div>
     </div>
 
     @if($pages > 1)

@@ -394,12 +394,12 @@
                 append(row, [
                     el('td', null, box),
                     el('td', 'ans-wrap', link),
+                    el('td', device.refusal ? 'ans-refusal' : 'text-success', device.refusal ? device.refusal.text : 'yes'),
                     el('td', 'ans-code', device.name || '-'),
-                    el('td', null, device.os),
+                    el('td', 'hidden-xs', device.os),
                     el('td', 'ans-code', device.platform || el('span', 'text-muted', 'no mapping')),
-                    el('td', null, el('span', (device.status === 'up' ? 'text-success' : (device.status === 'down' ? 'text-danger' : 'text-muted')), device.status)),
-                    el('td', 'ans-wrap', device.location || ''),
-                    el('td', device.refusal ? 'ans-refusal' : 'text-success', device.refusal ? device.refusal.text : 'yes')
+                    el('td', 'hidden-xs', el('span', (device.status === 'up' ? 'text-success' : (device.status === 'down' ? 'text-danger' : 'text-muted')), device.status)),
+                    el('td', 'ans-wrap hidden-xs', device.location || '')
                 ]);
                 tbody.appendChild(row);
             });
@@ -692,7 +692,7 @@
                         append(rows, row);
                     });
                     append(inventories, rows);
-                    box.appendChild(inventories);
+                    box.appendChild(el('div', 'table-responsive', inventories));
                 }
                 var t = el('table', 'table table-condensed ans-table');
                 t.id = 'ans-test-templates';
@@ -719,7 +719,7 @@
                     append(body, row);
                 });
                 append(t, body);
-                box.appendChild(t);
+                box.appendChild(el('div', 'table-responsive', t));
             });
         });
     }

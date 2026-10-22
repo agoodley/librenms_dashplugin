@@ -180,6 +180,7 @@
                     @endforeach
                     <details style="margin-top: 4px" id="ans-platform-effective">
                         <summary class="ans-muted" style="font-size: 12px">The mapping in effect: {{ \Agoodley\LibrenmsAnsible\Support\Format::count(count(array_filter($a['mapRows'], fn ($r) => $r['platform'] !== null)), 'platform') }}</summary>
+                        <div class="table-responsive">
                         <table class="table table-condensed ans-table" style="margin: 4px 0 0; font-size: 12px">
                             <thead><tr><th>LibreNMS os</th><th>ansible_network_os</th><th>Connection</th><th>Enable</th><th>From</th></tr></thead>
                             <tbody>
@@ -194,6 +195,7 @@
                             @endforeach
                             </tbody>
                         </table>
+                        </div>
                     </details>
                 </div>
             </div>
