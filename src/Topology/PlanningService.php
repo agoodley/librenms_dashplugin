@@ -78,6 +78,49 @@ class PlanningService
     }
 
     /**
+     * The map's failure simulation (api/simulate) on this service's redundancy analysis, which is built
+     * once per service: what the given failures cut off the core now (RedundancyAnalyzer::simulate()).
+     *
+     * @param  string[]  $refs  d:<device_id>, u:<neighbour>, p:<port_id> or l:<node>|<node>
+     */
+    public function simulate(array $refs): array
+    {
+        return $this->analyzer()->simulate($refs);
+    }
+
+    /**
+     * Why each of these devices cannot be planned now (the rollout planner's reasons:
+     * RolloutPlanner::UNKNOWN, DOWN, ISOLATED or UNCONNECTED); the devices it can plan are not listed.
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, string> device_id => reason
+     */
+    public function unplannable(array $deviceIds): array
+    {
+        $deviceIds = self::ids($deviceIds);
+        if (! $deviceIds) {
+            return [];
+        }
+        $reasons = [];
+        foreach ((new RolloutPlanner($this->analyzer()))->plan($deviceIds)['skipped'] as $skipped) {
+            $reasons[(int) $skipped['device_id']] = (string) $skipped['reason'];
+        }
+
+        return $reasons;
+    }
+
+    /**
+     * Name, hostname and location of the devices the user may see; the others are left out.
+     *
+     * @param  int[]  $ids
+     * @return array<int, array{name: string, hostname: string, location: ?string}>
+     */
+    public function names(array $ids): array
+    {
+        return $this->deviceInfo($ids);
+    }
+
+    /**
      * Devices to plan: the picked ones as they are (the planner lists the ones it cannot plan), else
      * the devices of the filter, only switches, routers and firewalls with $networkOnly.
      *
