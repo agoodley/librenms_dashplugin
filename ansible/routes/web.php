@@ -47,3 +47,8 @@ Route::middleware([AuthTokenHeader::class, 'auth:sanctum'])
     ->group(function (): void {
         Route::get('api/inventory', [InventoryController::class, 'runner'])->name('api.inventory');
     });
+
+// Any other method on the inventory endpoint is answered 405 here, without a session or a token: otherwise LibreNMS'
+// catch-all page route (in its web group) would take it and answer 419 for the missing CSRF token.
+Route::match(['POST', 'PUT', 'PATCH', 'DELETE'], AnsibleServiceProvider::URI_PREFIX . '/api/inventory', [InventoryController::class, 'readOnly'])
+    ->name('ansible.api.inventory.read-only');

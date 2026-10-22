@@ -86,4 +86,12 @@ class InventoryController extends Controller
 
         return response()->json($inventory->toAnsible(), 200, ['Cache-Control' => 'no-store'], self::JSON);
     }
+
+    /**
+     * POST, PUT, PATCH or DELETE plugin/ansible/api/inventory: the endpoint is read only.
+     */
+    public function readOnly(): JsonResponse
+    {
+        return response()->json(['error' => 'The inventory endpoint is read only: fetch it with GET.'], 405, ['Allow' => 'GET, HEAD']);
+    }
 }
