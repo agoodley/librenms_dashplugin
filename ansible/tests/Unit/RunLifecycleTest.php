@@ -247,6 +247,10 @@ class RunLifecycleTest extends TestCase
         $this->assertStringContainsString('The devices stay held until 2026-10-22 10:30 because that step can still run on the runner: check the runner for the '
             . 'ansible-playbook processes of this run (task #205), end them, and release the devices when it is done.', $note);
         $this->assertStringContainsString('The plugin held its devices until 2026-10-22 10:30', RunDiagnosis::afterStop($run, 'Wait', $this->t0 + 1900));
+        $this->assertSame("ps -eo pid,args | grep '\"id\":205,'", RunDiagnosis::leftoverCommand($run), 'the page shows how to find what runs on');
+        $this->assertNull(RunDiagnosis::leftoverCommand(['status' => 'success', 'runner_task_id' => '205', 'started_at' => '2026-10-22 10:00:01']));
+        $this->assertNull(RunDiagnosis::leftoverCommand(['status' => 'stopped', 'runner_task_id' => '205', 'started_at' => null, 'held_until' => null]),
+            'stopped in the queue: nothing runs on');
     }
 
     public function testASuccessfulTaskWithOneTargetMissingIsIncomplete(): void

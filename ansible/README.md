@@ -466,10 +466,10 @@ Checked against Semaphore UI 2.19.17:
   with all its loop items, and a `pause` leaves its process waiting for ever. So a stopped run keeps its devices for
   *Hold after a stop* (30 minutes by default) after the runner's stop, its targets whose step was in progress are
   *unknown*, and its page says which task it was in and until when the devices are held. Look on the runner for the
-  processes of the run's task, e.g. `ps -eo pid,args | grep '"id":<task id>,'` (the task id is on the run page), end
-  them (`kill <pid>`), then **Release the devices**; set *Hold after a stop* longer than the longest step of your
-  playbooks. A launch on these devices within the hour after a stop also warns. Avoid `pause` in playbooks the plugin
-  runs (a `wait_for` with a timeout ends on its own).
+  processes of the run's task with `ps -eo pid,args | grep '"id":<task id>,'` (the run page shows this command with
+  its task id), end them (`kill <pid>`), then **Release the devices**; set *Hold after a stop* longer than the longest
+  step of your playbooks. A launch on these devices within the hour after a stop also warns. Avoid `pause` in
+  playbooks the plugin runs (a `wait_for` with a timeout ends on its own).
 * The results come from the PLAY RECAP: a playbook that runs several plays shows the totals per host. A device that
   fails on its connection after an earlier task succeeded counts as failed, not unreachable.
 * A run page shows at most *Output size* of the log (its start and its end); the runner keeps all of it.

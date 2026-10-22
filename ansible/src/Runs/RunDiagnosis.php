@@ -89,6 +89,21 @@ final class RunDiagnosis
     }
 
     /**
+     * For a stopped run whose step may still run on the runner: the command that lists its ansible-playbook processes
+     * there (Semaphore UI puts the task's id in their command line); null when it never started or its task is unknown.
+     */
+    public static function leftoverCommand(array $run): ?string
+    {
+        $taskId = (string) ($run['runner_task_id'] ?? '');
+        if (($run['status'] ?? '') !== RunStatus::STOPPED || ! preg_match('/^\d{1,12}$/D', $taskId)
+            || (($run['started_at'] ?? null) === null && ($run['held_until'] ?? null) === null)) {
+            return null;
+        }
+
+        return "ps -eo pid,args | grep '\"id\":$taskId,'";
+    }
+
+    /**
      * A kept time to the minute, in LibreNMS' time zone.
      */
     private static function minute(string $time): string

@@ -62,6 +62,10 @@
         @endif
         @if($stoppedNote)
             <div class="alert alert-warning" id="ans-run-stopped-note"><i class="fa fa-exclamation-triangle"></i> {{ $stoppedNote }}
+                @if($stoppedCommand)
+                    <div style="margin-top: 6px">On the runner, <code class="ans-code" id="ans-run-leftover-command">{{ $stoppedCommand }}</code> lists them
+                        (besides the grep itself); end each with <code class="ans-code">kill PID</code>.</div>
+                @endif
                 @if($held && $canRun)
                     <div style="margin-top: 6px"><button type="button" class="btn btn-sm btn-warning" id="ans-run-release-hold"><i class="fa fa-unlock"></i> Release the devices</button>
                         <span class="ans-muted">once that step no longer runs on the runner (written to the eventlog)</span></div>

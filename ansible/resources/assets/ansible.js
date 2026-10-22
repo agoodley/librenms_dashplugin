@@ -229,6 +229,13 @@
                 var stoppedNote = alertBox('warning', null, null);
                 stoppedNote.id = 'ans-run-stopped-note';
                 append(stoppedNote, data.stopped_note);
+                if (data.stopped_command) {
+                    var command = el('code', 'ans-code', data.stopped_command);
+                    command.id = 'ans-run-leftover-command';
+                    var commandLine = el('div', null, ['On the runner, ', command, ' lists them (besides the grep itself); end each with ', el('code', 'ans-code', 'kill PID'), '.']);
+                    commandLine.style.marginTop = '6px';
+                    stoppedNote.appendChild(commandLine);
+                }
                 if (data.held && config.release) {
                     stoppedNote.appendChild(holdRelease());
                 }
