@@ -37,6 +37,9 @@ final class LaunchPlan
     /** @var array<string, string> secret answers, for the runner only */
     public array $secrets = [];
 
+    /** @var array<string, string> answers that were refused (not secret ones), as given: the preview shows them with their error */
+    public array $rejected = [];
+
     public int $maxTargets = 0;
 
     /**
@@ -76,6 +79,26 @@ final class LaunchPlan
     }
 
     /**
+     * The answers as the preview shows them: like variables(), with each refused answer as it was given and its
+     * error (a secret one stays masked).
+     *
+     * @return array<int, array{name: string, label: string, type: string, value: string|int|null, secret: bool, error: ?string}>
+     */
+    public function previewVariables(): array
+    {
+        $variables = [];
+        foreach ($this->variables() as $variable) {
+            $error = $this->variableErrors[$variable['name']] ?? null;
+            if ($error !== null && ! $variable['secret'] && array_key_exists($variable['name'], $this->rejected)) {
+                $variable['value'] = $this->rejected[$variable['name']];
+            }
+            $variables[] = $variable + ['error' => $error];
+        }
+
+        return $variables;
+    }
+
+    /**
      * The preview: everything but the secret answers.
      *
      * @return array<string, mixed>
@@ -91,7 +114,7 @@ final class LaunchPlan
                 'playbook' => $this->template->playbook, 'description' => $this->template->description],
             'targets' => array_values($this->targets),
             'refused' => array_values($this->refused),
-            'variables' => $this->variables(),
+            'variables' => $this->previewVariables(),
             'limit' => implode(',', $this->limit()),
             'max_targets' => $this->maxTargets,
         ];

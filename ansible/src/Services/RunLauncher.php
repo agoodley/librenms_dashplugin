@@ -80,8 +80,14 @@ final class RunLauncher
         if ($reasons) {
             $plan->errors[] = 'The template "' . $plan->template->name . '" cannot be launched safely: ' . implode('; ', $reasons) . '.';
         }
-        $answers = VariableValidator::validate($plan->template->surveyVars, $answers);
-        [$plan->values, $plan->secrets, $plan->variableErrors] = [$answers['values'], $answers['secrets'], $answers['errors']];
+        $checked = VariableValidator::validate($plan->template->surveyVars, $answers);
+        [$plan->values, $plan->secrets, $plan->variableErrors] = [$checked['values'], $checked['secrets'], $checked['errors']];
+        foreach (array_keys($plan->variableErrors) as $name) {
+            $var = $plan->template->surveyVar((string) $name);
+            if ($var !== null && ! $var->isSecret() && isset($answers[$name]) && is_scalar($answers[$name])) {
+                $plan->rejected[$name] = mb_substr((string) $answers[$name], 0, 2000);
+            }
+        }
         $this->targets($plan, $deviceIds);
 
         return $plan;

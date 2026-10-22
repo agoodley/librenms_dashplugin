@@ -23,6 +23,7 @@
 .ans-table td, .ans-table th { vertical-align: middle !important; }
 .ans-table .ans-num { text-align: right; white-space: nowrap; }
 .ans-wrap { overflow-wrap: anywhere; }
+.ans-pre { white-space: pre-wrap; }
 .ans-muted { color: #6c757d; }
 .ans-result { display: inline-block; min-width: 76px; text-align: center; }
 .ans-results .label { margin-right: 3px; display: inline-block; }

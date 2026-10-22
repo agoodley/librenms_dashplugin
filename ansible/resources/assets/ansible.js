@@ -510,7 +510,10 @@
             }
             if (plan.variables.length) {
                 append(body, table(['Survey variable', 'Answer'], plan.variables.map(function (v) {
-                    return [v.label + ' (' + v.name + ')', v.value === null ? '(not given)' : {text: String(v.value), cls: v.secret ? 'text-muted' : 'ans-code ans-wrap'}];
+                    // exactly as given: several lines stay several lines, a refused answer shows with its error
+                    var answer = v.value === null ? el('span', 'text-muted', '(not given)')
+                        : el('span', v.secret ? 'text-muted' : 'ans-code ans-pre', String(v.value));
+                    return [v.label + ' (' + v.name + ')', {text: [answer, v.error ? el('div', 'text-danger ans-preview-error', 'This answer ' + v.error + '.') : null], cls: 'ans-wrap'}];
                 }), 'ans-preview-variables'));
             }
             append(panel, body);
