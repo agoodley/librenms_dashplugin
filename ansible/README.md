@@ -593,8 +593,8 @@ then: an edit set back before the batch ended is still caught, and one made afte
 caught by the batch's end unless the inventory is fetched again (the next batch's checks see it; without any fetch
 recorded, the devices are compared as LibreNMS has them at the end). The plugin cannot tell which task fetched the
 inventory: another task (a plain run, another change's) that fetches it while the batch is in progress counts as well,
-so the texts say the batch *may* not have run on a device left out, and the change stops all the same. The Inventory
-page shows such a device as left out meanwhile.
+so the texts say the batch *may* not have run on a device left out, and the change stops all the same. The change page
+(from before the runner fetches the inventory) and the Inventory page show such a device as withheld meanwhile.
 
 ### Batches
 

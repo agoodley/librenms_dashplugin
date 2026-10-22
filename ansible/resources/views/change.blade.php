@@ -132,6 +132,38 @@
                 @endif
             </div>
         @endif
+        @php
+            // the targets of the dry run or batch in progress that the runner does not get: left out of a fetch already (recorded), or
+            // withheld from it now (an edit since the dry run, as the Inventory page lists them)
+            $phaseBatch = $batches[(int) $change['current_batch']] ?? null;
+            $inProgress = $status === ChangeStatus::DRY_RUN || (in_array($status, [ChangeStatus::APPLYING, ChangeStatus::STOPPING], true)
+                && in_array($phaseBatch['status'] ?? null, ['launching', 'running'], true));
+            $phase = $status === ChangeStatus::DRY_RUN ? 'the dry run' : 'batch ' . (int) $change['current_batch'];
+            $fetchedWithout = [];
+            foreach ($inProgress ? ($status === ChangeStatus::DRY_RUN ? array_keys($targets) : ($byBatch[(int) $change['current_batch']] ?? [])) : [] as $deviceId) {
+                if (($targets[$deviceId]['served_hash'] ?? null) === \Agoodley\LibrenmsAnsible\Changes\InventoryGuard::LEFT_OUT) {
+                    $fetchedWithout[$deviceId] = (string) (($targets[$deviceId]['served_note'] ?? '') ?: \Agoodley\LibrenmsAnsible\Changes\NextChange::name($targets[$deviceId]));
+                }
+            }
+            $withheldNow = $inProgress ? array_diff_key($withheld, $fetchedWithout) : [];
+            $outcome = $status === ChangeStatus::DRY_RUN ? 'it does not count' : 'the change stops when the batch ends';
+        @endphp
+        @if($fetchedWithout || $withheldNow)
+            <div class="alert alert-warning" id="ans-change-withheld"><i class="fa fa-eye-slash"></i>
+                @if($fetchedWithout)
+                    <span id="ans-change-fetched-without"><strong>Left out of an inventory the runner fetched during {{ $phase }}:</strong>
+                        {{ implode('; ', $fetchedWithout) }}. The runner no longer reaches {{ count($fetchedWithout) === 1 ? 'it' : 'them' }} as at the dry run, so {{ $phase }}
+                        may not have run on {{ count($fetchedWithout) === 1 ? 'it' : 'them' }}, and {{ $outcome }}.</span>
+                @endif
+                @if($withheldNow)
+                    <span id="ans-change-withheld-now"><strong>Withheld from the runner while {{ $phase }} is in progress:</strong> {{ implode('; ', $withheldNow) }}.
+                        The runner no longer reaches {{ count($withheldNow) === 1 ? 'it' : 'them' }} as at the dry run, so the inventory endpoint leaves
+                        {{ count($withheldNow) === 1 ? 'it' : 'them' }} out: if the runner fetches the inventory before that is set back, {{ $phase }} does not run on
+                        {{ count($withheldNow) === 1 ? 'it' : 'them' }}, and {{ $outcome }}.</span>
+                @endif
+                <a href="{{ route('ansible.inventory') }}">Inventory</a>
+            </div>
+        @endif
         @if($backupWarning)
             <div class="alert alert-warning" id="ans-backup-check"><i class="fa fa-archive"></i> {{ $backupWarning }}</div>
         @endif

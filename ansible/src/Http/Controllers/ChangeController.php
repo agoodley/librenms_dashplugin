@@ -8,6 +8,7 @@ use Agoodley\LibrenmsAnsible\Changes\BackupState;
 use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\ChangeText;
+use Agoodley\LibrenmsAnsible\Changes\InventoryGuard;
 use Agoodley\LibrenmsAnsible\Changes\NextChange;
 use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
@@ -29,6 +30,7 @@ use Agoodley\LibrenmsAnsible\Support\Format;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Changes: the list (the plugin's main page), a new change, a change's page with its live state, and the actions on
@@ -44,6 +46,9 @@ class ChangeController extends Controller
 
     /** Most timeline entries the page shows. */
     private const TIMELINE = 500;
+
+    /** Seconds the page's view of the hosts withheld from the runner is kept (asking builds the inventory). */
+    private const WITHHELD_SECONDS = 10;
 
     // ------------------------------------------------------------------ list
 
@@ -402,7 +407,7 @@ class ChangeController extends Controller
         $changes = new ChangeRepository();
         $runs = new RunRepository();
         ['run' => $run, 'batches' => $batches, 'batchRuns' => $batchRuns, 'windows' => $windows, 'targets' => $targets, 'approvals' => $approvals,
-            'signature' => $signature, 'pending' => $pending] = $this->live($change);
+            'signature' => $signature, 'pending' => $pending, 'withheld' => $withheld] = $this->live($change);
         ['actions' => $actions, 'approvalRefusal' => $approvalRefusal, 'canRun' => $canRun, 'canApprove' => $canApprove] = $this->actions($request, $change);
         $dryRun = $change['dry_run_id'] !== null ? ['id' => (int) $change['dry_run_id']] : null;
         $settings = $this->settings()->changeSettings();
@@ -444,7 +449,7 @@ class ChangeController extends Controller
             'change' => $change, 'targets' => $targets, 'batches' => $batches, 'batchRuns' => $batchRuns, 'run' => $run, 'dryRun' => $dryRun,
             'approvals' => $approvals, 'windows' => $windows, 'events' => $events, 'signature' => $signature,
             'diffs' => $diffs, 'unattributed' => $unattributed, 'secretVars' => $secretVars, 'settings' => $settings, 'canRun' => $canRun, 'canApprove' => $canApprove,
-            'approvalRefusal' => $approvalRefusal, 'actions' => $actions, 'pending' => $pending,
+            'approvalRefusal' => $approvalRefusal, 'actions' => $actions, 'pending' => $pending, 'withheld' => $withheld,
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
             'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($settings->approval, $change) : null,
             // before the apply: the targets Oxidized cannot back up (asked at the dry run), whose batches the setting would refuse
@@ -464,7 +469,8 @@ class ChangeController extends Controller
      * log), the batches and their runs (without their logs), the windows, the targets, the approvals, whether the
      * change still needs the sync command, and the signature the page compares to know when to fetch itself again.
      *
-     * @return array{run: ?array, batches: array, batchRuns: array<int, array>, windows: array, targets: array, approvals: array, pending: bool, signature: string}
+     * @return array{run: ?array, batches: array, batchRuns: array<int, array>, windows: array, targets: array, approvals: array, pending: bool, signature: string,
+     *     withheld: array<int, string>}
      */
     private function live(array $change): array
     {
@@ -484,14 +490,50 @@ class ChangeController extends Controller
         $windows = $changes->windows($id);
         $targets = $changes->targets($id);
         $approvals = $changes->approvals($id);
+        $withheld = $this->withheld($change, $batches);
         // what the page shows changed: it fetches itself again (the log is followed apart)
         $signature = md5((string) json_encode([(int) $change['version'], $run['id'] ?? null, $run['status'] ?? null,
-            array_map(fn ($b) => [$b['status'], $b['run_id']], $batches), array_map(fn ($r) => $r['status'], $batchRuns),
+            array_map(fn ($b) => [$b['status'], $b['run_id'], $b['note']], $batches), array_map(fn ($r) => $r['status'], $batchRuns),
             array_map(fn ($w) => [$w['status'], $w['closing'], $w['ends_at']], $windows),
-            array_map(fn ($t) => [$t['dry_result'], $t['result'], $t['before_status'], $t['after_status']], $targets), $changes->eventCount($id), count($approvals)]));
+            array_map(fn ($t) => [$t['dry_result'], $t['result'], $t['before_status'], $t['after_status'], ($t['served_hash'] ?? null) === InventoryGuard::LEFT_OUT], $targets),
+            $changes->eventCount($id), count($approvals), $withheld]));
 
         return ['run' => $run, 'batches' => $batches, 'batchRuns' => $batchRuns, 'windows' => $windows, 'targets' => $targets, 'approvals' => $approvals,
-            'pending' => ChangeLifecycle::pendingOf($change, $windows, $targets), 'signature' => $signature];
+            'pending' => ChangeLifecycle::pendingOf($change, $windows, $targets), 'signature' => $signature, 'withheld' => $withheld];
+    }
+
+    /**
+     * The targets of the change's dry run or batch in progress that the inventory endpoint withholds from the runner
+     * now (Changes\InventoryGuard: edited since the dry run), with why, as the Inventory page lists them: device_id =>
+     * why. Asked only while one is in progress, and at most every WITHHELD_SECONDS (it builds the inventory).
+     *
+     * @return array<int, string>
+     */
+    private function withheld(array $change, array $batches): array
+    {
+        $id = (int) $change['id'];
+        $batch = $batches[(int) $change['current_batch']] ?? null;
+        if ($change['status'] !== ChangeStatus::DRY_RUN && ! (in_array($change['status'], [ChangeStatus::APPLYING, ChangeStatus::STOPPING], true)
+            && in_array($batch['status'] ?? null, ['launching', 'running'], true))) {
+            return [];
+        }
+
+        return Cache::remember("ansible-plugin-withheld-$id", self::WITHHELD_SECONDS, function () use ($id): array {
+            $changes = new ChangeRepository();
+            if (! $changes->available()) {
+                return [];
+            }
+            $service = $this->inventoryService();
+            $found = [];
+            foreach ((new InventoryGuard($changes))->check($service->build($service->inventoryUser()['visible'] ?? null)) as $entry) {
+                if ((int) $entry['change']['id'] === $id && $entry['note'] !== null) {
+                    $found[(int) $entry['device_id']] = (string) $entry['note'];
+                }
+            }
+            ksort($found);
+
+            return $found;
+        });
     }
 
     /**
