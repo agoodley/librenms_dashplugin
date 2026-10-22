@@ -29,7 +29,7 @@
                     <td><a href="{{ route('ansible.changes.show', $change['id']) }}">#{{ $change['id'] }}</a>
                         <div class="ans-device-result"><span class="label label-{{ \Agoodley\LibrenmsAnsible\Changes\ChangeStatus::css($change['status']) }}">{{ \Agoodley\LibrenmsAnsible\Changes\ChangeStatus::label($change['status']) }}</span></div></td>
                     <td class="ans-wrap">{{ $change['template_name'] }}@if($change['reference'] !== '') <span class="ans-code ans-muted">{{ $change['reference'] }}</span>@endif
-                        <div class="ans-muted">{{ $change['username'] }}, batch {{ $change['batch'] }} · @foreach(explode(' ', (string) \Agoodley\LibrenmsAnsible\Support\Clock::local($change['created_at'])) as $part)<span class="ans-nowrap">{{ $part }}</span> @endforeach</div></td>
+                        <div class="ans-muted">{{ $change['username'] }}, in batch {{ $change['batch'] }} · @foreach(explode(' ', (string) \Agoodley\LibrenmsAnsible\Support\Clock::local($change['created_at'])) as $part)<span class="ans-nowrap">{{ $part }}</span> @endforeach</div></td>
                     <td class="ans-device-result">
                         @if(($change['dry_run_state'] ?? null) === 'unverified')
                             {{-- not proven to be a dry run: whatever its result says, it may have changed the device --}}
@@ -37,7 +37,11 @@
                         @elseif($change['dry_result'])
                             <span class="label label-{{ in_array($change['dry_result'], ['failed', 'unreachable'], true) ? 'danger' : ($change['dry_result'] === 'changed' ? 'warning' : 'default') }}">dry run: {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::DRY_RESULTS[$change['dry_result']] ?? $change['dry_result'] }}</span>
                         @endif
-                        @if($change['result'])
+                        @if(($change['batch_status'] ?? null) === 'cancelled' && in_array($change['result'], [null, 'not_run'], true)
+                            && \Agoodley\LibrenmsAnsible\Changes\ChangeStatus::isFinal($change['status']))
+                            {{-- its batch never ran (the change was stopped or ended before it): said so, not as a batch that ran without it --}}
+                            <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css('not_run') }} ans-not-run">applied: not run ({{ $change['status'] === \Agoodley\LibrenmsAnsible\Changes\ChangeStatus::STOPPED ? 'stopped before its batch' : 'its batch was not launched' }})</span>
+                        @elseif($change['result'])
                             <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($change['result']) }}">applied: {{ strtolower(\Agoodley\LibrenmsAnsible\Runs\RunResults::LABELS[$change['result']] ?? $change['result']) }}</span>
                         @endif
                     </td>
