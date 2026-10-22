@@ -18,6 +18,8 @@
     @elseif(! $runs)
         <div class="panel-body text-muted">No Ansible run had this device as a target yet.</div>
     @else
+        {{-- fits a phone: the date and the time, and the labels of the result, wrap; at worst the table scrolls in the panel --}}
+        <div class="table-responsive ans-device-runs">
         <table class="table table-condensed table-hover" style="margin-bottom: 0">
             <thead><tr><th>Run</th><th>Template</th><th>When</th><th>Who</th><th>Result</th></tr></thead>
             <tbody>
@@ -25,9 +27,9 @@
                 <tr>
                     <td><a href="{{ route('ansible.runs.show', $run['id']) }}">#{{ $run['id'] }}</a></td>
                     <td class="ans-wrap">{{ $run['template_name'] }}</td>
-                    <td style="white-space: nowrap">{{ $run['created_at'] }}</td>
-                    <td>{{ $run['username'] }}</td>
-                    <td>
+                    <td>@foreach(explode(' ', (string) $run['created_at']) as $part)<span class="ans-nowrap">{{ $part }}</span> @endforeach</td>
+                    <td class="ans-wrap">{{ $run['username'] }}</td>
+                    <td class="ans-device-result">
                         @if($run['result'])
                             <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($run['result']) }}">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::LABELS[$run['result']] ?? $run['result'] }}</span>
                         @endif
@@ -43,5 +45,6 @@
             @endforeach
             </tbody>
         </table>
+        </div>
     @endif
 </div>

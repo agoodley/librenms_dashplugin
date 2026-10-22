@@ -163,10 +163,19 @@
             }
         }
 
-        function update(data) {
+        // the status label and its card's colour (as the page renders them)
+        function showStatus(css, text) {
             var status = byId('ans-run-status');
-            status.className = label(data.css);
-            status.textContent = data.label;
+            status.className = label(css);
+            status.textContent = text;
+            var card = byId('ans-run-status-card');
+            if (card) {
+                card.className = 'ans-card ans-' + ({ success: 'ok', danger: 'critical', warning: 'warning' }[css] || 'info');
+            }
+        }
+
+        function update(data) {
+            showStatus(data.css, data.label);
             setText('ans-run-runner-status', data.runner_status);
             setText('ans-run-duration', data.duration);
             setText('ans-run-started', data.started_at);
@@ -275,9 +284,7 @@
                 request('POST', config.stop, {}).then(function (result) {
                     if (result.status === 200) {
                         byId('ans-run-stop-note').textContent = 'the runner was asked to stop the task';
-                        var status = byId('ans-run-status');
-                        status.className = label('warning');
-                        status.textContent = 'Stopping';
+                        showStatus('warning', 'Stopping');
                     } else {
                         stopButton.disabled = false;
                         byId('ans-run-stop-note').textContent = result.body.error || 'the stop failed';

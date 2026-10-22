@@ -54,6 +54,14 @@
 .ans-test-result { margin-top: 10px; }
 .ans-warning-loud { border: 2px solid #c0392b; background: #fbeeec; color: #5a1a13; padding: 8px 10px; border-radius: 4px; font-weight: 600; margin: 8px 0; }
 .ans-device-panel .panel-heading .pull-right .btn { margin-left: 4px; }
+.ans-device-panel .ans-device-runs { margin-bottom: 0; border: 0; }
+.ans-device-panel .ans-device-runs.table-responsive > .table > thead > tr > th,
+.ans-device-panel .ans-device-runs.table-responsive > .table > tbody > tr > td { white-space: normal; }
+.ans-device-panel .ans-device-result .label { display: inline-block; margin: 1px 3px 1px 0; }
+@media (max-width: 480px) {
+    .ans-device-panel .ans-device-runs .table > thead > tr > th, .ans-device-panel .ans-device-runs .table > tbody > tr > td { padding-left: 4px; padding-right: 4px; }
+}
+.ans-nowrap { white-space: nowrap; }
 
 /* the run's log: text only, colours from ANSI codes as classes */
 .ans-log {
