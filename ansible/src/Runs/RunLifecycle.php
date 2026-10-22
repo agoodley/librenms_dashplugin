@@ -17,9 +17,12 @@ use Agoodley\LibrenmsAnsible\Runner\RunnerTask;
  * that covered every task since the launch found none; as lost when the runner keeps not finding the task for
  * minutes while the token still sees the project; as released when an admin releases the devices of a run the
  * runner could not be asked about for a while. A run still unfinished after the Stop after setting is stopped, and
- * keeps its devices until the runner confirms the stop. Lost and released runs are still watched for a week, so a
- * later real end is recorded (and a task that runs again takes its devices back). Anything else (a timeout, a server
- * error, a token without access for a moment) is noted on the run, which keeps its devices and is followed on.
+ * keeps its devices until the runner confirms the stop. A stopped run keeps them longer: Semaphore UI's stop ends only
+ * Ansible's main process, and the step each target was in runs on (with all its loop items), so the devices stay
+ * held for the Hold after a stop setting unless an admin releases them, and a target whose step was in progress gets
+ * the result unknown. Lost and released runs are still watched for a week, so a later real end is recorded (and a
+ * task that runs again takes its devices back). Anything else (a timeout, a server error, a token without access for
+ * a moment) is noted on the run, which keeps its devices and is followed on.
  *
  * Every change is a compare-and-set on the run's version: a refresh that took long never writes over a newer one,
  * and only the refresh that records the end writes the results and the eventlog of the targets.
@@ -59,6 +62,7 @@ final class RunLifecycle
      * @param  \Closure(): Runner  $runner  the runner, asked for when needed (RunnerError when it is not set up)
      * @param  \Closure(string[]): array<string, array{device_id: int, hostname: string, display: string}>|null  $devices
      *                                                                                                          the devices of inventory names (for hosts the runner ran on that were not targets)
+     * @param  int  $holdSeconds  how long a stopped run keeps its devices after the runner's stop (Hold after a stop)
      */
     public function __construct(
         private readonly RunStore $runs,
@@ -67,6 +71,7 @@ final class RunLifecycle
         private readonly int $outputMaxBytes,
         private readonly int $stopAfterSeconds,
         private readonly ?\Closure $devices = null,
+        private readonly int $holdSeconds = 1800,
     ) {
     }
 
@@ -104,12 +109,20 @@ final class RunLifecycle
 
     /**
      * May an admin release the devices of this run: unfinished, and the runner could not be asked about it for
-     * RELEASE_AFTER seconds?
+     * RELEASE_AFTER seconds? (The devices of a held stopped run can be released at any time: held().)
      */
     public static function releasable(array $run, int $now): bool
     {
         return ! RunStatus::isFinal($run['status']) && $run['poll_error'] !== null
             && $now - strtotime((string) ($run['runner_seen_at'] ?? $run['created_at'])) >= self::RELEASE_AFTER;
+    }
+
+    /**
+     * Does a stopped run still hold its devices (the step in progress at the stop may still run on the runner)?
+     */
+    public static function held(array $run, int $now): bool
+    {
+        return $run['status'] === RunStatus::STOPPED && ($run['held_until'] ?? null) !== null && strtotime((string) $run['held_until']) > $now;
     }
 
     // ------------------------------------------------------------------ launch
@@ -377,10 +390,17 @@ final class RunLifecycle
         }
         $targets = $this->targetNames($id);
         $evaluation = RunResults::evaluate($targets, $lines, $complete);
+        $heldUntil = null;
+        if ($task->status === RunStatus::STOPPED) {
+            // the step each target was in runs on: its result is unknown, and the devices stay held for a while
+            $evaluation = RunResults::afterStop($evaluation, $targets, TaskLines::inProgress($lines, array_values($targets))['hosts']);
+            $heldUntil = ($task->ended ?? $now) + $this->holdSeconds;
+        }
         $status = RunResults::status($task->status, $evaluation['results']);
         $unexpected = $this->unexpectedDevices($evaluation['unexpected']);
         $values += ['status' => $status, 'summary' => $evaluation['summary'], 'unexpected_hosts' => array_keys($evaluation['unexpected']) ?: null,
             'finished_at' => $task->ended !== null ? self::time($task->ended) : self::time($now), 'watch_until' => null, 'polled_at' => self::time($now),
+            'held_until' => $heldUntil !== null ? self::time($heldUntil) : null,
             'error' => $status === RunStatus::INCOMPLETE ? RunDiagnosis::incomplete($lines, $evaluation['results'], $targets) : ($late ? null : $run['error'])];
         if (! $this->runs->updateAt($id, (int) $run['version'], $values, $append)) {
             return; // another refresh got there first
@@ -392,7 +412,7 @@ final class RunLifecycle
         $user = (string) $run['username'];
         $note = $late ? 'the runner reported this end after the plugin had given the run up as ' . strtolower(RunStatus::label((string) $run['status']))
             : ($task->status === RunStatus::STOPPED ? ($run['stop_reason'] ?? ($run['stopped_by'] ? 'stopped by ' . $run['stopped_by'] : 'stopped in the runner'))
-                . '; the task in progress may still run on the runner' : null);
+                . '; the step in progress may still run on the runner' . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . date('Y-m-d H:i', $heldUntil) : '') : null);
         foreach ($evaluation['results'] as $deviceId => $result) {
             $this->events->write(RunText::finished($id, $status, $result['result'], $result['counts'], (string) $run['template_name'], $user, $note), $deviceId,
                 RunResults::SEVERITY[$result['result']] ?? 'info', RunText::reference($id), $user);
@@ -503,13 +523,17 @@ final class RunLifecycle
     /**
      * An admin releases the devices of a run the runner could not be asked about for RELEASE_AFTER seconds: the run
      * ends as released, its results from the log as far as the plugin read it (unknown where it says nothing), and
-     * it is watched for a late end. Null when released, else why not.
+     * it is watched for a late end. Or the devices a stopped run still holds, at any time (the admin checked that the
+     * step in progress at the stop no longer runs). Null when released, else why not.
      */
     public function release(int $id, string $username, int $now): ?string
     {
         $run = $this->runs->find($id);
         if ($run === null) {
             return 'There is no such run.';
+        }
+        if ($run['status'] === RunStatus::STOPPED) {
+            return $this->releaseHold($run, $username, $now);
         }
         if (RunStatus::isFinal($run['status'])) {
             return 'The run has already ended.';
@@ -530,6 +554,26 @@ final class RunLifecycle
         foreach ($evaluation['results'] as $deviceId => $result) {
             $this->events->write(RunText::finished($id, RunStatus::RELEASED, $result['result'], null, (string) $run['template_name'], (string) $run['username'],
                 'devices released by ' . $username . ' while the runner could not be asked'), $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
+        }
+
+        return null;
+    }
+
+    /**
+     * The devices a stopped run holds become free now; written to the eventlog of each target.
+     */
+    private function releaseHold(array $run, string $username, int $now): ?string
+    {
+        if (! self::held($run, $now)) {
+            return 'The devices of this run are not held any more.';
+        }
+        $id = (int) $run['id'];
+        if (! $this->runs->updateAt($id, (int) $run['version'], ['held_until' => self::time($now), 'released_by' => mb_substr($username, 0, 255)])) {
+            return 'The run changed meanwhile: reload the page.';
+        }
+        foreach (array_keys($this->targetNames($id)) as $deviceId) {
+            $this->events->write(RunText::holdReleased($id, $username, (string) $run['held_until'], (string) $run['template_name'], (string) $run['username']),
+                $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
         }
 
         return null;

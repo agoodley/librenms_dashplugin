@@ -31,16 +31,19 @@ final class RunRepository implements RunStore
     }
 
     /**
-     * Devices that are targets of an unfinished run.
+     * Devices that are targets of an unfinished run, or of a stopped run that still holds them (the step in progress
+     * at the stop may still run on the runner).
      *
-     * @return array<int, int> device_id => run id (the newest when several)
+     * @return array<int, array{run: int, held_until: ?string}> device_id => the run (the newest when several), and until when a stopped one holds it
      */
     public function busy(): array
     {
         $busy = [];
-        foreach (DB::table('ansible_run_targets as t')->join('ansible_runs as r', 'r.id', '=', 't.run_id')
-            ->whereIn('r.status', RunStatus::UNFINISHED)->where('t.unexpected', false)->orderBy('r.id')->get(['t.device_id', 't.run_id']) as $row) {
-            $busy[(int) $row->device_id] = (int) $row->run_id;
+        foreach (DB::table('ansible_run_targets as t')->join('ansible_runs as r', 'r.id', '=', 't.run_id')->where('t.unexpected', false)
+            ->where(fn ($q) => $q->whereIn('r.status', RunStatus::UNFINISHED)
+                ->orWhere(fn ($q) => $q->where('r.status', RunStatus::STOPPED)->where('r.held_until', '>', date('Y-m-d H:i:s'))))
+            ->orderBy('r.id')->get(['t.device_id', 't.run_id', 'r.status', 'r.held_until']) as $row) {
+            $busy[(int) $row->device_id] = ['run' => (int) $row->run_id, 'held_until' => $row->status === RunStatus::STOPPED ? (string) $row->held_until : null];
         }
 
         return $busy;

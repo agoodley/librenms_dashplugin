@@ -59,7 +59,12 @@
             </div>
         @endif
         @if($stoppedNote)
-            <div class="alert alert-warning" id="ans-run-stopped-note"><i class="fa fa-exclamation-triangle"></i> {{ $stoppedNote }}</div>
+            <div class="alert alert-warning" id="ans-run-stopped-note"><i class="fa fa-exclamation-triangle"></i> {{ $stoppedNote }}
+                @if($held && $canRun)
+                    <div style="margin-top: 6px"><button type="button" class="btn btn-sm btn-warning" id="ans-run-release-hold"><i class="fa fa-unlock"></i> Release the devices</button>
+                        <span class="ans-muted">once that step no longer runs on the runner (written to the eventlog)</span></div>
+                @endif
+            </div>
         @endif
         @if($run['poll_error'] && ! $final)
             <div class="alert alert-warning" id="ans-run-poll-error"><i class="fa fa-plug"></i> {{ $run['poll_error'] }}
@@ -69,7 +74,7 @@
 
     @if($canRun && ! $final)
         <p><button type="button" class="btn btn-sm btn-danger" id="ans-run-stop"><i class="fa fa-stop"></i> Stop</button>
-            <span class="ans-muted" id="ans-run-stop-note">asks the runner to stop the task: no further task starts, but the task in progress may still run on the runner</span>
+            <span class="ans-muted" id="ans-run-stop-note">asks the runner to stop the task: no further task starts, but the step in progress runs on, so the devices stay held for a while</span>
             <span id="ans-run-release-box" @if(! $releasable) style="display: none" @endif>
                 <button type="button" class="btn btn-sm btn-warning" id="ans-run-release" style="margin-left: 12px"><i class="fa fa-unlock"></i> Release the devices</button>
                 <span class="ans-muted">the runner could not be asked about this run for a while: end it as released, its results unknown (written to the eventlog)</span>

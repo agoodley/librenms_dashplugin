@@ -33,7 +33,7 @@ final class MemoryRunStore implements RunStore
             'version' => 0, 'runner_task_id' => null, 'runner_status' => null, 'output' => null, 'output_tail' => null, 'output_lines' => 0,
             'output_truncated' => false, 'output_omitted' => 0, 'summary' => null, 'unexpected_hosts' => null, 'error' => null, 'poll_error' => null,
             'stopped_by' => null, 'stop_requested_at' => null, 'stop_reason' => null, 'released_by' => null, 'started_at' => null, 'finished_at' => null,
-            'polled_at' => null, 'runner_final_at' => null, 'runner_seen_at' => null, 'missing_since' => null, 'missing_checks' => 0, 'watch_until' => null,
+            'polled_at' => null, 'runner_final_at' => null, 'runner_seen_at' => null, 'missing_since' => null, 'missing_checks' => 0, 'watch_until' => null, 'held_until' => null,
             'launch_nonce' => 'abcdef123456', 'created_at' => $createdAt];
         foreach ($targets as $deviceId => $name) {
             $this->targets[$id][$deviceId] = ['device_id' => $deviceId, 'inventory_name' => $name, 'hostname' => $name, 'display' => $name,

@@ -7,8 +7,8 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 
 /**
  * What runs may reach and how: the platform mapping, the allowed device group, the max targets per run, the
- * output kept, when an unfinished run is stopped, and the inventory user (the LibreNMS user whose API token the
- * runner fetches the inventory with). The plugin stores them itself (Data\SettingsRepository) and only LibreNMS
+ * output kept, when an unfinished run is stopped, how long a stopped run keeps its devices, and the inventory user
+ * (the LibreNMS user whose API token the runner fetches the inventory with). The plugin stores them itself (Data\SettingsRepository) and only LibreNMS
  * admins change them, like the runner connection: LibreNMS' own plugin settings form can be saved by any holder of
  * its plugin.admin permission, which non-admin roles can have, so the plugin keeps nothing there.
  */
@@ -20,6 +20,7 @@ final class PluginSettings
         'max_targets' => '25',
         'output_max_kb' => '1024',
         'stop_after_hours' => '24',
+        'stop_hold_minutes' => '30',
         'inventory_user' => '',
     ];
 
@@ -28,6 +29,7 @@ final class PluginSettings
         'max_targets' => [1, 500],
         'output_max_kb' => [16, 8192],
         'stop_after_hours' => [1, 720],
+        'stop_hold_minutes' => [1, 1440],
     ];
 
     /** Names of the settings in messages and the eventlog. */
@@ -37,6 +39,7 @@ final class PluginSettings
         'max_targets' => 'max targets per run',
         'output_max_kb' => 'output size (KB)',
         'stop_after_hours' => 'stop after (hours)',
+        'stop_hold_minutes' => 'hold after a stop (minutes)',
         'inventory_user' => 'inventory user',
     ];
 
@@ -77,7 +80,7 @@ final class PluginSettings
      * The settings posted by an admin over the current ones, or what is wrong with them. A setting left out of
      * $input keeps its current value; an empty one takes its default.
      *
-     * @param  array<string, mixed>  $input  platform_map, allowed_group, max_targets, output_max_kb, stop_after_hours, inventory_user
+     * @param  array<string, mixed>  $input  platform_map, allowed_group, max_targets, output_max_kb, stop_after_hours, stop_hold_minutes, inventory_user
      * @param  array<int, string>  $groups  the device groups (id => name)
      * @param  array<int, string>  $users  the LibreNMS users (id => username)
      * @return array{settings: self|null, errors: array<string, string>}
@@ -240,6 +243,15 @@ final class PluginSettings
     public function stopAfterSeconds(): int
     {
         return $this->int('stop_after_hours') * 3600;
+    }
+
+    /**
+     * How long a stopped run keeps its devices after the runner reported the stop, in seconds: Semaphore UI ends only
+     * Ansible's main process, and the step each device was in runs on in a process of its own.
+     */
+    public function stopHoldSeconds(): int
+    {
+        return $this->int('stop_hold_minutes') * 60;
     }
 
     /**

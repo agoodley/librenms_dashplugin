@@ -186,7 +186,7 @@ final class RunLauncher
             }
             $busy = array_intersect_key($this->runs->busy(), $plan->targets);
             if ($busy) {
-                return self::refused($plan, array_map(fn ($deviceId, $runId) => $plan->targets[$deviceId]['display'] . " became busy in run #$runId: preview again.",
+                return self::refused($plan, array_map(fn ($deviceId, $entry) => $plan->targets[$deviceId]['display'] . " became busy in run #{$entry['run']}: preview again.",
                     array_keys($busy), $busy));
             }
             $nonce = bin2hex(random_bytes(6));

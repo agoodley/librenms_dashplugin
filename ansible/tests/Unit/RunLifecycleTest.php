@@ -8,6 +8,7 @@ use Agoodley\LibrenmsAnsible\Runner\RunnerTaskSearch;
 use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
 use Agoodley\LibrenmsAnsible\Runs\RunDiagnosis;
 use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
+use Agoodley\LibrenmsAnsible\Runs\TaskLines;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeRunner;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\MemoryRunStore;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\RecordingEvents;
@@ -219,23 +220,30 @@ class RunLifecycleTest extends TestCase
         $this->assertStringStartsWith("Ansible run #$id was incomplete: not run", $this->events->of(501)[0]['message']);
     }
 
-    public function testAStoppedRunNamesTheTaskItWasInAndWhatTheStopDoesNotEnd(): void
+    public function testAStoppedRunNamesTheTaskItWasInAndHowLongItsDevicesAreHeld(): void
     {
         $lines = ['PLAY [Long run] ****', '', 'TASK [Set the description] ****', 'changed: [lab-sw3.netops.lab]', '', "\e[0;33mTASK [Wait] ****\e[0m"];
+        $id = $this->store->add(['runner_task_id' => '205', 'status' => 'stopping', 'stopped_by' => 'bob', 'runner_final_at' => '2026-10-22 10:00:30'],
+            [503 => 'lab-sw3.netops.lab']);
+        $this->runner->tasks['205'] = 'stopped';
+        $this->runner->logs['205'] = $lines;
+        $this->runner->endedAt = $this->t0 + 30;
 
-        $this->assertSame('Wait', RunDiagnosis::taskInProgress($lines));
-        $this->assertNull(RunDiagnosis::taskInProgress(array_merge($lines, ['ok: [lab-sw3.netops.lab]'])), 'the last task has a result');
-        $this->assertNull(RunDiagnosis::taskInProgress(array_merge($lines, ['PLAY RECAP ****'])));
-        $note = RunDiagnosis::afterStop('205', 'Wait');
-        $this->assertStringStartsWith('The run was stopped during the task "Wait". Semaphore UI stopped Ansible\'s main process', $note);
-        $this->assertStringContainsString('a pause task keeps waiting there until it is killed', $note);
-        $this->assertStringContainsString('(task #205)', $note);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 100);
+        $this->assertSame('stopped', $run['status']);
+        $this->assertSame('2026-10-22 10:30:30', $run['held_until'], 'held for the Hold after a stop setting after the runner\'s stop');
+        $this->assertTrue(RunLifecycle::held($run, $this->t0 + 1000));
+        $this->assertFalse(RunLifecycle::held($run, $this->t0 + 1830));
+        $this->assertSame('Wait', TaskLines::inProgress(OutputBuffer::display($run), ['lab-sw3.netops.lab'])['task']);
+        $this->assertStringEndsWith('(stopped by bob; the step in progress may still run on the runner: the devices are held until 2026-10-22 10:30)',
+            $this->events->of(503)[0]['message']);
 
-        $id = $this->store->add(['runner_task_id' => '90', 'status' => 'stopping', 'stopped_by' => 'bob', 'runner_final_at' => '2026-10-22 10:00:30'], self::TARGETS);
-        $this->runner->tasks['90'] = 'stopped';
-        $this->runner->logs['90'] = $lines;
-        $this->lifecycle()->refresh($id, $this->t0 + 100);
-        $this->assertStringEndsWith('(stopped by bob; the task in progress may still run on the runner)', $this->events->of(503)[0]['message']);
+        $note = RunDiagnosis::afterStop($run, 'Wait', $this->t0 + 1000);
+        $this->assertStringStartsWith('The run was stopped during the task "Wait". Semaphore UI stops only Ansible\'s main process: the step each target was in runs on', $note);
+        $this->assertStringContainsString('with all its loop items, and a pause keeps waiting until that process is killed', $note);
+        $this->assertStringContainsString('The devices stay held until 2026-10-22 10:30 because that step can still run on the runner: check the runner for the '
+            . 'ansible-playbook processes of this run (task #205), end them, and release the devices when it is done.', $note);
+        $this->assertStringContainsString('The plugin held its devices until 2026-10-22 10:30', RunDiagnosis::afterStop($run, 'Wait', $this->t0 + 1900));
     }
 
     public function testASuccessfulTaskWithOneTargetMissingIsIncomplete(): void
@@ -250,9 +258,10 @@ class RunLifecycleTest extends TestCase
         $this->assertStringContainsString("The runner's inventory did not have lab-sw3.netops.lab", $run['error']);
     }
 
-    public function testAStoppedRunWithoutARecapTakesItsResultsFromTheTaskLines(): void
+    public function testAStoppedRunWithoutARecapTakesItsResultsFromTheTaskLinesUnknownWhereAStepWasInProgress(): void
     {
-        // stopped during a pause after the change: the log names lab-sw3 changed, lab-sw1 ok so far, lab-sw2 never
+        // stopped during a pause after the change: lab-sw3 changed and lab-sw1 was ok in the task before, both are in the
+        // pause, which runs on; lab-sw2 was never named (the runner did not find it), so it did not run
         $id = $this->store->add(['runner_task_id' => '90', 'status' => 'stopping', 'stopped_by' => 'bob', 'runner_final_at' => '2026-10-22 10:00:30'],
             self::TARGETS);
         $this->runner->tasks['90'] = 'stopped';
@@ -262,9 +271,78 @@ class RunLifecycleTest extends TestCase
         $run = $this->lifecycle()->refresh($id, $this->t0 + 100);
         $this->assertSame('stopped', $run['status']);
         $results = array_map(fn ($t) => $t['result'], $this->store->targets[$id]);
-        $this->assertSame([501 => 'unknown', 502 => 'not_run', 503 => 'changed'], $results);
-        $this->assertStringContainsString('was stopped: changed', $this->events->of(503)[0]['message']);
-        $this->assertStringContainsString('(stopped by bob; the task in progress may still run on the runner)', $this->events->of(503)[0]['message']);
+        $this->assertSame([501 => 'unknown', 502 => 'not_run', 503 => 'unknown'], $results);
+        $this->assertSame(['unknown' => 2, 'not_run' => 1], $run['summary']);
+        $this->assertStringContainsString('was stopped: unknown', $this->events->of(503)[0]['message']);
+        $this->assertStringContainsString('(stopped by bob; the step in progress may still run on the runner: the devices are held until',
+            $this->events->of(503)[0]['message']);
+    }
+
+    public function testALoopStoppedAfterItsFirstItemIsUnknownAndHoldsItsDevicesUntilReleased(): void
+    {
+        // Semaphore reports "stopped" after the first of six loop items: the worker goes on with the others, in neither log
+        $id = $this->running('running', ['stopped_by' => 'bob', 'status' => 'stopping']);
+        $this->runner->logs['90'] = ['PLAY [Loop change] ****', '', 'TASK [Set the description, six times] ****', 'changed: [lab-sw2.netops.lab] => (item=0)'];
+        $lifecycle = $this->lifecycle();
+        $this->assertSame('stopping', $lifecycle->refresh($id, $this->t0 + 10)['status']);
+        $this->runner->tasks['90'] = 'stopped';
+        $this->runner->endedAt = $this->t0 + 14;
+
+        $run = $this->settle($lifecycle, $id, $this->t0 + 15);
+        $this->assertSame('stopped', $run['status']);
+        $this->assertSame('unknown', $this->store->targets[$id][502]['result'], 'not "changed": the loop goes on after the stop');
+        $this->assertSame(['unknown' => 3], $run['summary'], 'the other targets were in that step too');
+        $this->assertSame(date('Y-m-d H:i:s', $this->t0 + 14 + 1800), $run['held_until']);
+        $this->assertTrue(RunLifecycle::held($run, $this->t0 + 60), 'the devices stay busy after the runner said "stopped"');
+        $this->assertSame([], $this->runner->stops, 'a run stopping on the runner is not asked to stop again');
+
+        // more refreshes change nothing: the run has ended, the hold stays
+        $this->assertSame($run, $lifecycle->refresh($id, $this->t0 + 120));
+
+        // an admin checked the runner: the devices are released at once, and it is logged
+        $events = count($this->events->entries);
+        $this->assertNull($lifecycle->release($id, 'carol', $this->t0 + 300));
+        $run = $this->store->find($id);
+        $this->assertSame('stopped', $run['status']);
+        $this->assertFalse(RunLifecycle::held($run, $this->t0 + 301));
+        $this->assertSame(date('Y-m-d H:i:s', $this->t0 + 300), $run['held_until']);
+        $this->assertSame('carol', $run['released_by']);
+        $released = array_slice($this->events->entries, $events);
+        $this->assertCount(3, $released);
+        $this->assertSame('warning', $released[0]['severity']);
+        $this->assertStringStartsWith("Ansible run #$id: the devices held after its stop were released by carol (held until " . date('Y-m-d H:i', $this->t0 + 14 + 1800)
+            . '; the step in progress at the stop may still run on the runner)', $released[0]['message']);
+        $this->assertSame('The devices of this run are not held any more.', $lifecycle->release($id, 'carol', $this->t0 + 310));
+        $this->assertStringContainsString('Its devices were released by carol at ' . date('Y-m-d H:i', $this->t0 + 300), RunDiagnosis::afterStop($run, null, $this->t0 + 400));
+    }
+
+    public function testAStopBetweenTwoTasksKeepsTheResultsOfTheLog(): void
+    {
+        $id = $this->running('stopped', ['stopped_by' => 'bob', 'status' => 'stopping', 'runner_final_at' => '2026-10-22 10:00:30']);
+        $this->runner->logs['90'] = ['TASK [Set the description] ****', 'changed: [lab-sw1.netops.lab]', 'ok: [lab-sw2.netops.lab]', 'changed: [lab-sw3.netops.lab]'];
+
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 100);
+        $this->assertSame(['unknown' => 1, 'changed' => 2], $run['summary'], 'every step had its result: nothing runs on');
+        $this->assertNotNull($run['held_until'], 'a stopped run holds its devices all the same');
+    }
+
+    public function testStepsInProgressAtTheEndOfALog(): void
+    {
+        $hosts = ['a', 'b', 'c'];
+        $this->assertSame(['task' => 'one', 'hosts' => ['a', 'b', 'c']], TaskLines::inProgress(['PLAY [p] ****', 'TASK [one] ****'], $hosts),
+            'the first task of the play, no result yet');
+        $this->assertSame(['task' => 'two', 'hosts' => ['a']], TaskLines::inProgress(['TASK [one] ****', 'ok: [a]', 'ok: [b]', 'TASK [two] ****', "\e[0;33mchanged: [a] => (item=1)\e[0m",
+            'failed: [a] (item=2) => {"msg": "x"}', 'skipping: [b]'], $hosts), 'a loop partly done; c was never named');
+        $this->assertSame(['task' => 'two', 'hosts' => ['b']], TaskLines::inProgress(['TASK [one] ****', 'ok: [a]', 'ok: [b]', 'TASK [two] ****',
+            'FAILED - RETRYING: [b]: two (3 retries left).', 'ok: [a -> localhost]'], $hosts), 'retries are not a result; delegation is');
+        $this->assertSame(['task' => null, 'hosts' => []], TaskLines::inProgress(['TASK [one] ****', 'included: /x/y.yml for a, b, c'], $hosts));
+        $this->assertSame(['task' => null, 'hosts' => []], TaskLines::inProgress(['TASK [one] ****', 'ok: [a]', '', 'PLAY RECAP ****', 'a : ok=1 changed=0 unreachable=0 failed=0'],
+            $hosts), 'a log with a PLAY RECAP has none');
+        $this->assertSame(['task' => null, 'hosts' => []], TaskLines::inProgress(['PLAY [one] ****', 'TASK [x] ****', 'ok: [a]', 'PLAY [two] ****'], $hosts),
+            'a play that has not started a task yet');
+        $this->assertSame(['task' => 'restart', 'hosts' => ['a']], TaskLines::inProgress(['TASK [one] ****', 'changed: [a]', 'RUNNING HANDLER [restart] ****'], $hosts),
+            'a handler is a step too');
+        $this->assertSame(['task' => null, 'hosts' => []], TaskLines::inProgress([], $hosts));
     }
 
     public function testAStaleRefreshNeverWritesOverANewerOne(): void

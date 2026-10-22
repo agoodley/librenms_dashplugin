@@ -55,41 +55,41 @@ final class RunDiagnosis
     }
 
     /**
-     * The task a run was in when its log ends, when no result of it was logged (the run was stopped or killed in
-     * the middle of it); null when the last task has results or there is none.
+     * The run page's note on a stopped run. Semaphore UI (2.19) ends only Ansible's main process: the step each target
+     * was in runs on in a process of its own, with all its loop items (a pause waits for ever), so the plugin holds the
+     * devices of a stopped run until held_until (the Hold after a stop setting), unless an admin releases them.
      *
-     * @param  string[]  $lines
+     * @param  string|null  $task  the task the run was in (TaskLines::inProgress()), null when none was
      */
-    public static function taskInProgress(array $lines): ?string
+    public static function afterStop(array $run, ?string $task, int $now): string
     {
-        $task = null;
-        foreach ($lines as $line) {
-            $line = rtrim(Ansi::strip($line));
-            if (preg_match('/^TASK \[(.+)\] \**$/', $line, $m)) {
-                $task = $m[1];
-            } elseif ($task !== null && preg_match('/^(ok|changed|failed|fatal|skipping|included|unreachable): \[/', $line)) {
-                $task = null;
-            } elseif (str_starts_with($line, 'PLAY RECAP')) {
-                return null;
-            }
+        $taskId = (string) ($run['runner_task_id'] ?? '');
+        $processes = 'the ansible-playbook processes of this run' . ($taskId !== '' ? ' (task #' . UntrustedText::line($taskId, 20) . ')' : '');
+        $text = ($task !== null ? 'The run was stopped during the task "' . UntrustedText::line($task, 120) . '". ' : '')
+            . 'Semaphore UI stops only Ansible\'s main process: the step each target was in runs on in a process of its own on the runner, with all '
+            . 'its loop items, and a pause keeps waiting until that process is killed. ';
+        $held = isset($run['held_until']) ? (string) $run['held_until'] : null;
+        if ($held !== null && strtotime($held) > $now) {
+            return $text . 'The devices stay held until ' . self::minute($held) . " because that step can still run on the runner: check the runner for $processes, "
+                . 'end them, and release the devices when it is done.';
+        }
+        if ($held !== null && ! empty($run['released_by'])) {
+            return $text . 'Its devices were released by ' . UntrustedText::line((string) $run['released_by'], 60) . ' at ' . self::minute($held)
+                . ", before the end of the hold: if that step still runs, end $processes.";
+        }
+        if ($held !== null) {
+            return $text . 'The plugin held its devices until ' . self::minute($held) . ": if that step still runs, end $processes.";
         }
 
-        return $task === null ? null : UntrustedText::line($task, 120);
+        return $text . "Before you change these devices again, look on the runner for $processes and end them.";
     }
 
     /**
-     * What a stop does not end: Semaphore UI (2.19) stops Ansible's main process, but Ansible runs each host's task in
-     * a process of its own, in its own session, which Semaphore's Stop and Force stop leave running: it finishes the
-     * task it is in, and a pause task waits for ever.
+     * A stored time to the minute.
      */
-    public static function afterStop(?string $taskId, ?string $inProgress): string
+    private static function minute(string $time): string
     {
-        $where = $taskId !== null && $taskId !== '' ? " (task #$taskId)" : '';
-
-        return ($inProgress !== null ? 'The run was stopped during the task "' . $inProgress . '". ' : '')
-            . 'Semaphore UI stopped Ansible\'s main process, so no further task started, but the task each target was in runs in a process of its own '
-            . 'that a stop does not end: it may still finish on the runner, and a pause task keeps waiting there until it is killed. Before you change '
-            . "these devices again, look on the runner for the ansible-playbook processes of this run$where and end them.";
+        return substr($time, 0, 16);
     }
 
     /**

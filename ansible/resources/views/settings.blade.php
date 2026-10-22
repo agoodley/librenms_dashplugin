@@ -25,6 +25,8 @@
         'max_targets' => ['Max targets per run', 'devices one run may change'],
         'output_max_kb' => ['Output size (KB)', 'the log the plugin keeps per run; the runner keeps the whole log'],
         'stop_after_hours' => ['Stop after (hours)', 'a run still unfinished after this long is stopped by the plugin (it keeps its devices until the runner confirms the stop)'],
+        'stop_hold_minutes' => ['Hold after a stop (minutes)', 'a stopped run keeps its devices this long after the runner stopped it, because the step in progress runs on: '
+            . 'an admin with the run permission can release them on the run page once it no longer runs'],
     ];
 @endphp
 

@@ -229,6 +229,9 @@
                 var stoppedNote = alertBox('warning', null, null);
                 stoppedNote.id = 'ans-run-stopped-note';
                 append(stoppedNote, data.stopped_note);
+                if (data.held && config.release) {
+                    stoppedNote.appendChild(holdRelease());
+                }
                 alerts.appendChild(stoppedNote);
             }
             if (data.poll_error && !data.final) {
@@ -274,10 +277,47 @@
             });
         }
 
+        // "Release the devices" of a stopped run that holds them: the step in progress at the stop may still run
+        function releaseHold(button) {
+            if (!window.confirm('Release the devices of this stopped run? Do it once the step it was in no longer runs on the runner: '
+                + 'a new run on these devices could otherwise meet the changes it still makes. This is written to the eventlog.')) {
+                return;
+            }
+            button.disabled = true;
+            request('POST', config.release, {}).then(function (result) {
+                if (result.status === 200) {
+                    window.location.reload();
+                } else {
+                    button.disabled = false;
+                    window.alert(result.body.error || 'The release failed.');
+                }
+            });
+        }
+
+        function holdRelease() {
+            var button = el('button', 'btn btn-sm btn-warning', [el('i', 'fa fa-unlock'), ' Release the devices']);
+            button.type = 'button';
+            button.id = 'ans-run-release-hold';
+            button.addEventListener('click', function () {
+                releaseHold(button);
+            });
+            var box = el('div', null, [button, ' ', el('span', 'ans-muted', 'once that step no longer runs on the runner (written to the eventlog)')]);
+            box.style.marginTop = '6px';
+            return box;
+        }
+
+        var holdButton = byId('ans-run-release-hold');
+        if (holdButton && config.release) {
+            holdButton.addEventListener('click', function () {
+                releaseHold(holdButton);
+            });
+        }
+
         if (stopButton) {
             stopButton.addEventListener('click', function () {
-                if (!window.confirm('Stop this run? Semaphore UI stops Ansible\'s main process, so no further task starts. The task each device is in runs in a '
-                    + 'process of its own that a stop does not end: it may still finish on the runner, and a pause task keeps waiting there until it is killed.')) {
+                if (!window.confirm('Stop this run? Semaphore UI stops Ansible\'s main process, so no further task starts. The step each device is in runs in a '
+                    + 'process of its own that a stop does not end: it runs on with all its loop items, and a pause keeps waiting there until it is killed. '
+                    + 'The devices stay held for a while after the stop.')) {
                     return;
                 }
                 stopButton.disabled = true;

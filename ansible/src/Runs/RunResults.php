@@ -68,6 +68,31 @@ final class RunResults
     }
 
     /**
+     * A stopped run's results, where the step a target was in may still run on the runner (TaskLines::inProgress()):
+     * unknown for those targets rather than changed, ok or not run, as nobody can tell what that step does; a failure
+     * stays a failure.
+     *
+     * @param  array{results: array<int, array{result: string, counts: array<string, int>|null}>, summary: array<string, int>}  $evaluation  evaluate()
+     * @param  array<int, string>  $targets  device_id => inventory name
+     * @param  string[]  $inProgress  inventory names
+     * @return array{results: array<int, array{result: string, counts: array<string, int>|null}>, summary: array<string, int>}
+     */
+    public static function afterStop(array $evaluation, array $targets, array $inProgress): array
+    {
+        $running = array_flip($inProgress);
+        $summary = array_fill_keys(self::ORDER, 0);
+        foreach ($evaluation['results'] as $deviceId => $result) {
+            if (isset($running[$targets[$deviceId] ?? '']) && ! in_array($result['result'], ['failed', 'unreachable'], true)) {
+                $result = $evaluation['results'][$deviceId] = ['result' => self::UNKNOWN, 'counts' => $result['counts']];
+            }
+            $summary[$result['result']]++;
+        }
+        $evaluation['summary'] = array_filter($summary);
+
+        return $evaluation;
+    }
+
+    /**
      * The run's status when the runner ended its task: success only when every target did what it was asked
      * (in the PLAY RECAP, without a failure); a task the runner reports successful while targets did not run or
      * failed is incomplete.

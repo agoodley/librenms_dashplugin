@@ -215,7 +215,8 @@ The runner connection is stored encrypted with LibreNMS' `APP_KEY`.
 | Max targets per run | 25 | 1–500 |
 | Output size | 1024 KB | the log kept per run (16–8192 KB): a longer log keeps its start and its end (the PLAY RECAP, the errors) with a line that counts the lines left out; the runner keeps the whole log |
 | Stop after | 24 h | a run still unfinished after this long is stopped by the plugin (1–720 h); it keeps its devices until the runner confirms the stop |
-| *Run permission* | | which admins may launch and stop runs, and release the devices of a stuck run ([Permissions](#permissions)) |
+| Hold after a stop | 30 min | a stopped run keeps its devices this long after the runner reported the stop (1–1440 min), because the step each device was in runs on; holders of the run permission can release them earlier on the run page |
+| *Run permission* | | which admins may launch and stop runs, and release the devices of a stuck or stopped run ([Permissions](#permissions)) |
 
 A setting that cannot be used is refused with the reason, and nothing is saved: a platform mapping line that cannot
 be read, a device group or user that does not exist, a number out of its range. When the stored settings cannot be
@@ -248,10 +249,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 
 * **Viewing** the runs, a run, the inventory, the JSON and the device panel is for LibreNMS **admins**. Everyone else
   gets HTTP 403 on every route of the plugin and sees no menu entry, panel or button.
-* **Launching and stopping** runs (and releasing the devices of a run the runner could not be asked about) also needs
-  the plugin's own permission, `ansible.run`, which an admin grants on the settings page (*Run permission*). Admins do
-  not get it automatically: an admin without it sees everything, but no *New run*, *Stop* or *Release the devices*,
-  and the plugin answers 403 to such requests.
+* **Launching and stopping** runs (and releasing the devices of a run the runner could not be asked about, or of a
+  stopped run) also needs the plugin's own permission, `ansible.run`, which an admin grants on the settings page (*Run
+  permission*). Admins do not get it automatically: an admin without it sees everything, but no *New run*, *Stop* or
+  *Release the devices*, and the plugin answers 403 to such requests.
 * Any LibreNMS admin can grant the run permission, also to themselves: it is an explicit, logged opt-in (each grant
   and revoke goes to the eventlog, with who did it), not a separation of duties between admins. Each change of the
   runner connection or of the other settings is logged the same way (never the token).
@@ -279,10 +280,12 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   the limit. **Launch** checks everything again against the runner and opens the run.
 * **Run:** the status, the template, who launched it and when, each target's result with the PLAY RECAP counters, the
   answers, and the log with Ansible's colours, followed every 2 seconds while the run is unfinished. **Stop** asks the
-  runner to stop the task: no further task starts, but the task in progress may still run on the runner (see
-  [Limitations](#limitations)). When the plugin could not ask the runner about an unfinished run for 15 minutes,
-  **Release the devices** (for holders of the run permission) ends it as *released* so its devices can be targets
-  again; see [Run states](#run-states).
+  runner to stop the task: no further task starts, but the step each device is in runs on, with all its loop items
+  (see [Limitations](#limitations)), so a stopped run keeps its devices for *Hold after a stop* (30 minutes by
+  default) and its page says until when; **Release the devices** frees them earlier, once that step no longer runs on
+  the runner. When the plugin could not ask the runner about an unfinished run for 15 minutes, **Release the
+  devices** ends it as *released* so its devices can be targets again; see [Run states](#run-states). Both are for
+  holders of the run permission, and written to the eventlog of each device.
 * **Runs:** filter by device, user, template, status and dates; each run lists its targets and their results. The
   *JSON* button gives the same list.
 * **Inventory:** the hosts with their variables and groups, the groups, the devices left out and why, the runner's
@@ -334,7 +337,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   failed, changed, ok, skipped, or *not run* for a target the recap does not name. Without a recap (a stopped or
   killed run) the result comes from Ansible's task result lines (`ok:`, `changed:`, `failed:`, `fatal:`,
   `skipping:` for the host): changed, failed or unreachable when a line says so, *unknown* when the host only had ok
-  or skipped results before the run ended, *not run* when the log never names it. A target whose connection failed
+  or skipped results before the run ended, *not run* when the log never names it. After a stop, a target whose step
+  was still in progress (its task started without a result for it, or a loop partly done) is *unknown*, unless it
+  failed: that step runs on after the stop. A target whose connection failed
   (the message of its first failure starts with an SSH or network error) without any task succeeding counts as
   unreachable (network connections report an unreachable device as a failed task). A host the runner ran on that is
   not a target flags the run: it is listed with its result on the run page, its device (found by its inventory name)
@@ -348,7 +353,7 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 | Success | the runner ended the task with success, and every target is in the PLAY RECAP without a failure | free |
 | Incomplete | the runner ended the task with success, but targets did not run (or failed): the run page says how many and the likely cause, quoting the inventory script's error when there is one (a template without the LibreNMS variable group, a revoked token) | free |
 | Failed | the runner ended the task with an error | free |
-| Stopped | the runner stopped the task (a user's Stop, or the plugin's after *Stop after*); the task in progress may still run on the runner (see [Limitations](#limitations)) | free |
+| Stopped | the runner stopped the task (a user's Stop, the plugin's after *Stop after*, or a stop in Semaphore UI); a target whose step was in progress is *unknown*, as that step runs on (see [Limitations](#limitations)) | held for *Hold after a stop* after the runner's stop, unless released earlier |
 | Not launched | the runner refused the launch, or a launch whose answer never came has no task 10 minutes later, according to a search of the runner's tasks that reached back to the launch | free |
 | Lost | the runner did not find the task at least 3 times over 5 minutes while the token still saw the project (the task was deleted); results from the log as far as the plugin read it, *unknown* where it says nothing | free; watched for a week |
 | Released | an admin with the run permission released the devices after the plugin could not ask the runner about the run for 15 minutes; results *unknown* where the log says nothing | free; watched for a week |
@@ -356,9 +361,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 The plugin never ends a run, nor frees its devices, on ambiguous evidence: a timeout, a server error, a "not found"
 while the token cannot see the project, a search that failed, are noted on the run page and the run keeps its devices
 while the plugin keeps asking. A run unfinished after *Stop after* is stopped, and is forced if the runner has not
-stopped it 5 minutes later; it stays *Stopping* until the runner confirms. A lost or released run is still asked about
-every few minutes for a week: a later end is recorded with its real results ("the runner reported this end after the
-plugin had given the run up"), and a task that runs again makes the run unfinished again, its devices busy.
+stopped it 5 minutes later; it stays *Stopping* until the runner confirms, and then holds its devices for *Hold after
+a stop* like any stopped run. A lost or released run is still asked about every few minutes for a week: a later end
+is recorded with its real results ("the runner reported this end after the plugin had given the run up"), and a task
+that runs again makes the run unfinished again, its devices busy.
 
 ## Safety
 
@@ -377,7 +383,7 @@ plugin had given the run up"), and a task that runs again makes the run unfinish
   behind the plugin's project must hold only reviewed playbooks, the project only the plugin's templates, and the
   token must be guarded like the device credentials. Semaphore Enterprise's per-template permissions and custom roles
   narrow it further.
-* **Who:** admins only, and only those holding `ansible.run` may launch, stop, and release the devices of a stuck run.
+* **Who:** admins only, and only those holding `ansible.run` may launch, stop, and release the devices of a stuck or stopped run.
 * **Targets:** only devices that exist, are enabled, in the allowed group, mapped, not busy, visible to the
   inventory user, at most the max; the limit is made only of the plugin's own inventory names, which cannot be
   Ansible patterns (no `,` `:` `!` `&` `*` `?` `[` `]` `~` `@`) or group names. Ansible applies the limit to every
@@ -421,11 +427,13 @@ Checked against Semaphore UI 2.19.17:
   tasks of one template run one after the other: a second launch of a template waits in the queue. A stopped queued
   task stays `stopping` until it would have started.
 * **A stop does not end the task in progress.** Stop (`{"force": false}`) and force stop (`{"force": true}`) both end
-  the main `ansible-playbook` process within seconds and record the task as `stopped`, so no further task starts. But
-  Ansible runs the task each host is in in a worker process of its own session, which neither ends: it finishes its
-  task on the runner (a module call, a `wait_for` up to its timeout), and a `pause` task waits for ever. A stop sent to
-  a task already stopped answers 204 and does nothing. (Checked with Semaphore UI 2.19.17 and ansible-core 2.20: a
-  stopped pause was still waiting 12 minutes later.)
+  only the main `ansible-playbook` process, within seconds, and record the task as `stopped`, so no further task
+  starts. But Ansible runs the step each host is in in a worker process of its own session, which neither ends: it
+  finishes its task on the runner with all its loop items (a module call, a `wait_for` up to its timeout), and a
+  `pause` task waits for ever. Nothing of it reaches the log any more. A stop sent to a task already stopped answers
+  204 and does nothing. (Checked with Semaphore UI 2.19.17 and ansible-core 2.20: a stopped pause was still waiting
+  12 minutes later; a looped `ios_config` stopped after its first item applied the five others over the next
+  minute.)
 * `GET .../tasks/{id}/output` returns the whole log at every call, one record per line with ANSI colour codes; the
   task is reported finished before its last lines can be read. `POST .../tasks/{id}/stop` needs the body
   `{"force": false}` (an empty body is refused). `GET .../tasks/{id}` answers HTTP 400 for a task it does not have.
@@ -442,12 +450,16 @@ Checked against Semaphore UI 2.19.17:
   in Git, not by the plugin.
 * Between the check of a template and the launch, someone with Semaphore rights could change the template; the
   plugin checks again at every launch, but cannot close that window.
-* **Stop** cannot end the task a run is in on the runner (see [Semaphore UI behaviour](#semaphore-ui-behaviour-the-plugin-relies-on)),
-  and the plugin, which only talks to Semaphore's API, cannot either: after Semaphore reports the task stopped, the
-  plugin frees the devices, but the run page of a stopped run says which task it was in and that it may still run, and
-  a launch on these devices within the hour warns. Avoid `pause` in playbooks the plugin runs (a `wait_for` with a
-  timeout ends on its own); after a stop, look on the runner for the processes of the run's task and end them, e.g.
-  `ps -eo pid,args | grep '"id":<task id>,'` (the task id is on the run page).
+* **Stop** cannot end the step a run is in on the runner: Semaphore UI (2.19.17) stops a task by ending only its main
+  `ansible-playbook` process (see [Semaphore UI behaviour](#semaphore-ui-behaviour-the-plugin-relies-on)), and the
+  plugin, which only talks to Semaphore's API, cannot do more. The step each device was in runs on after "stopped",
+  with all its loop items, and a `pause` leaves its process waiting for ever. So a stopped run keeps its devices for
+  *Hold after a stop* (30 minutes by default) after the runner's stop, its targets whose step was in progress are
+  *unknown*, and its page says which task it was in and until when the devices are held. Look on the runner for the
+  processes of the run's task, e.g. `ps -eo pid,args | grep '"id":<task id>,'` (the task id is on the run page), end
+  them (`kill <pid>`), then **Release the devices**; set *Hold after a stop* longer than the longest step of your
+  playbooks. A launch on these devices within the hour after a stop also warns. Avoid `pause` in playbooks the plugin
+  runs (a `wait_for` with a timeout ends on its own).
 * The results come from the PLAY RECAP: a playbook that runs several plays shows the totals per host. A device that
   fails on its connection after an earlier task succeeded counts as failed, not unreachable.
 * A run page shows at most *Output size* of the log (its start and its end); the runner keeps all of it.

@@ -9,6 +9,7 @@ use Agoodley\LibrenmsAnsible\Runs\RunDiagnosis;
 use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
 use Agoodley\LibrenmsAnsible\Runs\RunResults;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
+use Agoodley\LibrenmsAnsible\Runs\TaskLines;
 use Agoodley\LibrenmsAnsible\Support\Access;
 use Agoodley\LibrenmsAnsible\Support\Format;
 use Illuminate\Contracts\View\View;
@@ -78,12 +79,14 @@ class RunController extends Controller
         if ($run === null) {
             abort(404, "There is no Ansible run #$id.");
         }
+        $targets = (new RunRepository())->targets($id);
 
         return view('ansible::run', [
             'run' => $run,
-            'targets' => (new RunRepository())->targets($id),
+            'targets' => $targets,
             'lines' => OutputBuffer::display($run),
-            'stoppedNote' => self::stoppedNote($run),
+            'stoppedNote' => self::stoppedNote($run, $targets),
+            'held' => RunLifecycle::held($run, time()),
             'next' => OutputBuffer::since($run, 0)['next'],
             'canRun' => Access::canRun($request->user()),
             'releasable' => RunLifecycle::releasable($run, time()),
@@ -106,8 +109,9 @@ class RunController extends Controller
             return response()->json(['error' => "There is no Ansible run #$id."], 404);
         }
         $log = OutputBuffer::since($run, max(0, (int) $request->query('after', '0')));
+        $rows = (new RunRepository())->targets($id);
         $targets = [];
-        foreach ((new RunRepository())->targets($id) as $deviceId => $target) {
+        foreach ($rows as $deviceId => $target) {
             $targets[] = ['device_id' => $deviceId, 'name' => $target['inventory_name'], 'display' => $target['display'], 'result' => $target['result'],
                 'label' => $target['result'] !== null ? RunResults::LABELS[$target['result']] ?? $target['result'] : null,
                 'css' => RunResults::css($target['result']), 'counts' => $target['counts'], 'unexpected' => $target['unexpected']];
@@ -132,7 +136,9 @@ class RunController extends Controller
             'stop_reason' => $run['stop_reason'],
             'released_by' => $run['released_by'],
             'releasable' => RunLifecycle::releasable($run, time()),
-            'stopped_note' => self::stoppedNote($run),
+            'held' => RunLifecycle::held($run, time()),
+            'held_until' => $run['held_until'] ?? null,
+            'stopped_note' => self::stoppedNote($run, $rows),
             'targets' => $targets,
             'lines' => array_map(fn ($line) => Ansi::segments($line), $log['lines']),
             'next' => $log['next'],
@@ -152,7 +158,7 @@ class RunController extends Controller
 
     /**
      * POST plugin/ansible/runs/{id}/release: release the devices of a run the runner could not be asked about for
-     * a while (Runs\RunLifecycle::release()); written to the eventlog of its targets.
+     * a while, or those a stopped run holds (Runs\RunLifecycle::release()); written to the eventlog of its targets.
      */
     public function release(Request $request, int $id): JsonResponse
     {
@@ -162,15 +168,19 @@ class RunController extends Controller
     }
 
     /**
-     * For a stopped run: what the stop did not end on the runner (the task in progress), null otherwise.
+     * For a stopped run: what the stop did not end on the runner (the task in progress) and how long the devices are
+     * held, null otherwise.
+     *
+     * @param  array<int, array>  $targets  RunRepository::targets()
      */
-    private static function stoppedNote(array $run): ?string
+    private static function stoppedNote(array $run, array $targets): ?string
     {
         if ($run['status'] !== RunStatus::STOPPED) {
             return null;
         }
+        $names = array_values(array_map(fn ($target) => (string) $target['inventory_name'], array_filter($targets, fn ($target) => empty($target['unexpected']))));
 
-        return RunDiagnosis::afterStop($run['runner_task_id'], RunDiagnosis::taskInProgress(OutputBuffer::display($run)));
+        return RunDiagnosis::afterStop($run, TaskLines::inProgress(OutputBuffer::display($run), $names)['task'], time());
     }
 
     /**

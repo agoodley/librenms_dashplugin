@@ -21,7 +21,7 @@ class RunsTest extends TestCase
 
     public function testTargetsAndRefusals(): void
     {
-        $result = $this->selection([2 => 41])->select([1, '3', 3, 4, 2, 7, 8, 11, 999]);
+        $result = $this->selection([2 => ['run' => 41, 'held_until' => null]])->select([1, '3', 3, 4, 2, 7, 8, 11, 999]);
 
         $this->assertSame([1 => 'core1.example.net', 3 => 'acc-sw1', 4 => 'device4'], $result['targets']);
         $this->assertSame([2, 7, 8, 11, 999], array_keys($result['refused']));
@@ -45,8 +45,17 @@ class RunsTest extends TestCase
 
     public function testARunDoesNotBlockItself(): void
     {
-        $this->assertNull($this->selection([1 => 5])->refusal(1, 5));
-        $this->assertSame('busy', $this->selection([1 => 5])->refusal(1, 6)['reason']);
+        $this->assertNull($this->selection([1 => ['run' => 5, 'held_until' => null]])->refusal(1, 5));
+        $this->assertSame('busy', $this->selection([1 => ['run' => 5, 'held_until' => null]])->refusal(1, 6)['reason']);
+    }
+
+    public function testADeviceHeldByAStoppedRunIsRefusedWithWhyAndUntilWhen(): void
+    {
+        $refusal = $this->selection([1 => ['run' => 7, 'held_until' => '2026-10-22 10:35:00']])->refusal(1);
+
+        $this->assertSame('busy', $refusal['reason']);
+        $this->assertSame('held by run #7 until 2026-10-22 10:35: it was stopped, and the step in progress may still run on the runner '
+            . '(an admin can release the devices on the run page)', $refusal['text']);
     }
 
     public function testStatuses(): void

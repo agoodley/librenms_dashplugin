@@ -43,7 +43,8 @@ final class RunFollower
         $inventory = $this->inventory;
 
         return new RunLifecycle($this->runs, fn () => $this->runner ?? $this->plugin->runner(), $this->eventlog, $this->settings->outputMaxBytes(),
-            $this->settings->stopAfterSeconds(), $inventory === null ? null : fn (array $names) => $inventory->devicesNamed($names));
+            $this->settings->stopAfterSeconds(), $inventory === null ? null : fn (array $names) => $inventory->devicesNamed($names),
+            $this->settings->stopHoldSeconds());
     }
 
     /**
@@ -100,7 +101,8 @@ final class RunFollower
     }
 
     /**
-     * Release the devices of a run the runner could not be asked about for a while; null when released, else why not.
+     * Release the devices of a run the runner could not be asked about for a while, or those a stopped run holds;
+     * null when released, else why not.
      */
     public function release(int $runId, string $username): ?string
     {

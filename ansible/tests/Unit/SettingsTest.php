@@ -12,11 +12,14 @@ class SettingsTest extends TestCase
 {
     public function testDefaultsAndClamping(): void
     {
-        $settings = new PluginSettings(['max_targets' => '900', 'output_max_kb' => 'lots', 'stop_after_hours' => '0', 'allowed_group' => '12', 'extra' => 'x']);
+        $settings = new PluginSettings(['max_targets' => '900', 'output_max_kb' => 'lots', 'stop_after_hours' => '0', 'allowed_group' => '12', 'extra' => 'x',
+            'stop_hold_minutes' => '99999']);
 
         $this->assertSame(500, $settings->maxTargets());
         $this->assertSame(1024 * 1024, $settings->outputMaxBytes());
         $this->assertSame(3600, $settings->stopAfterSeconds());
+        $this->assertSame(1440 * 60, $settings->stopHoldSeconds());
+        $this->assertSame(30 * 60, (new PluginSettings())->stopHoldSeconds(), 'a stopped run holds its devices for 30 minutes by default');
         $this->assertSame(12, $settings->allowedGroup());
         $this->assertArrayNotHasKey('extra', $settings->all());
         $this->assertNotNull($settings->platformMap()->for('iosxe'));
@@ -32,10 +35,12 @@ class SettingsTest extends TestCase
     public function testSettingsFromInputAreCheckedNotClamped(): void
     {
         $result = PluginSettings::fromInput(['max_targets' => '900', 'output_max_kb' => 'lots', 'stop_after_hours' => '0', 'allowed_group' => '12',
-            'platform_map' => "ios cisco.ios.ios bogus\nnxos cisco.nxos.nxos", 'inventory_user' => '77'], new PluginSettings(), self::GROUPS, self::USERS);
+            'platform_map' => "ios cisco.ios.ios bogus\nnxos cisco.nxos.nxos", 'inventory_user' => '77', 'stop_hold_minutes' => '0'], new PluginSettings(), self::GROUPS, self::USERS);
 
         $this->assertNull($result['settings']);
-        $this->assertSame(['platform_map', 'allowed_group', 'max_targets', 'output_max_kb', 'stop_after_hours', 'inventory_user'], array_keys($result['errors']));
+        $this->assertSame(['platform_map', 'allowed_group', 'max_targets', 'output_max_kb', 'stop_after_hours', 'stop_hold_minutes', 'inventory_user'],
+            array_keys($result['errors']));
+        $this->assertSame('Hold after a stop (minutes) is a whole number from 1 to 1440.', $result['errors']['stop_hold_minutes']);
         $this->assertStringContainsString('line 1 (ios cisco.ios.ios bogus)', $result['errors']['platform_map']);
         $this->assertSame('Max targets per run is a whole number from 1 to 500.', $result['errors']['max_targets']);
     }
