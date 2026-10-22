@@ -523,22 +523,29 @@ class ChangeController extends Controller
             return [];
         }
 
-        return Cache::remember("ansible-plugin-withheld-$id", self::WITHHELD_SECONDS, function () use ($id): array {
-            $changes = new ChangeRepository();
-            if (! $changes->available()) {
-                return [];
-            }
-            $service = $this->inventoryService();
-            $found = [];
-            foreach ((new InventoryGuard($changes))->check($service->build($service->inventoryUser()['visible'] ?? null)) as $entry) {
-                if ((int) $entry['change']['id'] === $id && $entry['note'] !== null) {
-                    $found[(int) $entry['device_id']] = (string) $entry['note'];
+        try {
+            return Cache::remember("ansible-plugin-withheld-$id", self::WITHHELD_SECONDS, function () use ($id): array {
+                $changes = new ChangeRepository();
+                if (! $changes->available()) {
+                    return [];
                 }
-            }
-            ksort($found);
+                $service = $this->inventoryService();
+                $found = [];
+                foreach ((new InventoryGuard($changes))->check($service->build($service->inventoryUser()['visible'] ?? null)) as $entry) {
+                    if ((int) $entry['change']['id'] === $id && $entry['note'] !== null) {
+                        $found[(int) $entry['device_id']] = (string) $entry['note'];
+                    }
+                }
+                ksort($found);
 
-            return $found;
-        });
+                return $found;
+            });
+        } catch (\Throwable $e) {
+            // the page still shows the change (the Inventory page says what it cannot build)
+            $this->failure('change page: hosts withheld from the runner', $e);
+
+            return [];
+        }
     }
 
     /**
