@@ -150,6 +150,33 @@ class DryRunProofTest extends TestCase
         $this->assertTrue(self::check($lines)['verified'], implode(' ', self::check($lines)['findings']));
     }
 
+    public function testAnsiblesOwnNoHostsErrorBeforeThePlaybookMeansNothingRan(): void
+    {
+        $refused = ['Started task #12 of template \'Interface description\'', "\e[1;35m[WARNING]: Could not match supplied host pattern, ignoring: lab-sw1.netops.lab\e[0m",
+            "\e[0;31m[ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to target.\e[0m", 'Failed to run task: exit status 1'];
+        $proof = DryRunProof::check($refused, RecapParser::parse($refused));
+        $this->assertSame([false, true], [$proof['verified'], $proof['nothing_ran']]);
+        $this->assertSame(['Ansible stopped before it started the playbook, as the limit left it no host to target: none of the targets was in the inventory the runner '
+            . 'fetched, so the dry run did not run on any device.'], $proof['findings']);
+        $old = ['ERROR! Specified inventory, host pattern and/or --limit leaves us with no hosts to target.'];
+        $this->assertTrue(DryRunProof::check($old, null)['nothing_ran'], 'as Ansible before 2.19 words it');
+
+        // anything that ran, or could have, is not "nothing": a banner, a result line, a recap, the error not at the start of a line
+        foreach ([
+            'a play' => ['PLAY [x] **********', ...$refused],
+            'a task result' => [...$refused, 'changed: [lab-sw1.netops.lab]'],
+            'an include' => [...$refused, 'included: /x.yml for lab-sw1.netops.lab'],
+            'a recap' => [...$refused, 'PLAY RECAP *********', 'lab-sw1.netops.lab : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0'],
+            'quoted' => ['ok: [h] => {"msg": "[ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to target."}'],
+            'indented' => ['    [ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to target.'],
+            'other text' => ['[ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to target. Or does it?'],
+            'no error' => ['Started task #12 of template \'Interface description\'', 'Failed to run task: exit status 1'],
+        ] as $case => $lines) {
+            $proof = DryRunProof::check($lines, RecapParser::parse($lines));
+            $this->assertSame([false, false], [$proof['verified'], $proof['nothing_ran']], $case);
+        }
+    }
+
     public function testWithoutARecapItIsUnverified(): void
     {
         $lines = array_slice(self::log('dry-run-desc'), 0, 25); // stopped before the end

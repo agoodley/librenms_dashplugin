@@ -600,27 +600,33 @@ final class ChangeLifecycle
         }
         $recap = $lines !== null ? RecapParser::parse($lines) : null;
         $proof = $lines !== null ? DryRunProof::check($lines, $recap)
-            : ['verified' => false, 'findings' => ['The plugin could not read the dry run\'s whole log from the runner, so nothing proves it was a dry run.']];
-        $this->runner->recordProof((int) $run['id'], (bool) $proof['verified']);
+            : ['verified' => false, 'findings' => ['The plugin could not read the dry run\'s whole log from the runner, so nothing proves it was a dry run.'],
+                'nothing_ran' => false];
+        if (! $proof['nothing_ran']) {
+            // a dry run that did not run on any device has nothing to prove: no proof is recorded, so its run is not shown as one
+            // that may have changed its devices
+            $this->runner->recordProof((int) $run['id'], (bool) $proof['verified']);
+        }
         $targets = [];
         foreach ($this->runs->targets((int) $run['id']) as $deviceId => $target) {
             if (empty($target['unexpected'])) {
                 $targets[(int) $deviceId] = $target;
             }
         }
-        // what the runner got for the targets from the inventory endpoint during the dry run: one left out did not run, one served
+        // what the runner got for the targets from the inventory endpoint during the dry run: one left out may not have run, one served
         // another connection than the one recorded at its launch may have been another device
         $served = $this->servedTo($change, array_keys($this->changes->targets($id)));
         $ranClean = $run['status'] === RunStatus::SUCCESS && empty($run['unexpected_hosts']);
-        $state = ! $proof['verified'] ? 'unverified' : ($ranClean && ! $served['left'] && ! $served['other'] ? 'verified' : 'failed');
+        $state = $proof['nothing_ran'] ? 'failed'
+            : (! $proof['verified'] ? 'unverified' : ($ranClean && ! $served['left'] && ! $served['other'] ? 'verified' : 'failed'));
         $next = $state === 'verified' ? (ApprovalRules::needed($this->settings->approval) ? ChangeStatus::AWAITING : ChangeStatus::READY) : ChangeStatus::DRAFT;
         $findings = $proof['findings'];
         if ($served['left'] || $served['other']) {
             $findings[] = 'The runner did not get every target as recorded when the dry run was launched (' . implode('; ', [...$served['left'], ...$served['other']])
-                . ($served['left'] ? '): the plugin left ' . (count($served['left']) === 1 ? 'a host' : 'hosts') . ' out of the inventory the runner fetched, so the dry run '
-                    . 'did not run there.' : ').');
+                . ($served['left'] ? '): the plugin left ' . (count($served['left']) === 1 ? 'a host' : 'hosts') . ' out of an inventory the runner fetched meanwhile'
+                    . ($proof['nothing_ran'] ? '.' : ', so the dry run may not have run there.') : ').');
         }
-        if ($state === 'failed' && ! $ranClean) {
+        if ($state === 'failed' && ! $ranClean && ! $proof['nothing_ran']) {
             // the devices it did not succeed on, by name
             $bad = [];
             foreach ($this->changes->targets($id) as $deviceId => $row) {
@@ -636,8 +642,9 @@ final class ChangeLifecycle
         }
         $ended = $this->update($change, ['status' => $next, 'dry_run_state' => $state, 'dry_run_ended_at' => Clock::store($now),
             'dry_run_commit' => $run['commit_hash'] ?? null, 'dry_run_findings' => $findings,
-            'error' => $state === 'verified' ? null : ($state === 'unverified' ? 'The dry run is not proven to be one.' : ($ranClean
-                ? 'The runner did not get every target as recorded when the dry run was launched.' : 'The dry run did not succeed on every target.'))]);
+            'error' => $state === 'verified' ? null : ($state === 'unverified' ? 'The dry run is not proven to be one.' : ($proof['nothing_ran']
+                ? 'The dry run did not run on any device: none of the targets was in the inventory the runner fetched.' : ($ranClean
+                ? 'The runner did not get every target as recorded when the dry run was launched.' : 'The dry run did not succeed on every target.')))]);
         if ($ended === null) {
             return;
         }
@@ -1142,8 +1149,8 @@ final class ChangeLifecycle
             $stop = self::movedText([...$served['left'], ...$served['other']], "during batch $number") . ': the batch may have run on other devices than the ones dry-run';
         } elseif ($served['left']) {
             $one = count($served['left']) === 1;
-            $stop = self::movedText($served['left'], "during batch $number") . ': the plugin left ' . ($one ? 'it' : 'them') . ' out of the inventory the runner fetched, '
-                . 'so the batch did not run on ' . ($one ? 'it' : 'them');
+            $stop = self::movedText($served['left'], "during batch $number") . ': the plugin left ' . ($one ? 'it' : 'them') . ' out of an inventory the runner fetched '
+                . 'meanwhile, so the batch may not have run on ' . ($one ? 'it' : 'them');
         } elseif ($stop === null && $served['unserved']) {
             // no fetch was recorded for them while the batch was in progress: as the inventory reaches them now
             $moved = Connections::differences(self::recorded($change), $this->runner->connections($served['unserved']), self::displays($this->changes->targets($id)));

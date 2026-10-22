@@ -19,7 +19,10 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
  *   prints a task's banner only with a result it shows, so a task outside check mode whose result is hidden would
  *   leave no banner; ok results, ignored failures and includes are counted as Ansible's statistics count them.
  *
- * The rule fails safe: anything it cannot read (no recap, a cut log) leaves the dry run unverified.
+ * The rule fails safe: anything it cannot read (no recap, a cut log) leaves the dry run unverified. One log says
+ * that nothing ran: ansible-playbook's own error that the limit leaves it no host to target, which it raises before it
+ * starts the playbook, with no banner, result or recap at all (the guard left every target out of the inventory the
+ * runner fetched, say). Such a dry run did not run on any device: there is nothing to prove (nothing_ran).
  */
 final class DryRunProof
 {
@@ -31,11 +34,14 @@ final class DryRunProof
      *
      * @param  string[]  $lines  the runner's whole log (ANSI codes allowed)
      * @param  array<string, array<string, int>>|null  $recap  RecapParser::parse() of the same log
-     * @return array{verified: bool, findings: string[], unmarked: string[]}
+     * @return array{verified: bool, findings: string[], unmarked: string[], nothing_ran: bool}
      */
     public static function check(array $lines, ?array $recap): array
     {
         $findings = [];
+        $noHosts = false;
+        $banners = 0;
+        $named = 0;
         $unmarked = [];
         $unmarkedCount = 0;
         $dryRunBanner = false;
@@ -50,8 +56,14 @@ final class DryRunProof
         $credited = [];
         foreach ($lines as $line) {
             $plain = AnsibleLog::plain($line);
+            if (AnsibleLog::noHosts($plain)) {
+                $noHosts = true;
+
+                continue;
+            }
             $banner = AnsibleLog::banner($plain);
             if ($banner !== null) {
+                $banners++;
                 if ($banner['kind'] === 'dry_run' && $plays === 0) {
                     $dryRunBanner = true;
                 } elseif (in_array($banner['kind'], AnsibleLog::MARKED_KINDS, true)) {
@@ -69,6 +81,7 @@ final class DryRunProof
                 continue;
             }
             if (AnsibleLog::ignoring($plain)) {
+                $named++;
                 foreach ($failed as $host) {
                     if (! isset($credited[$host])) {
                         $credited[$host] = true;
@@ -81,6 +94,7 @@ final class DryRunProof
             }
             $hosts = AnsibleLog::included($plain);
             if ($hosts !== null) {
+                $named++;
                 foreach ($hosts as $host) {
                     $includes[$host] = ($includes[$host] ?? 0) + 1;
                 }
@@ -91,6 +105,7 @@ final class DryRunProof
             if ($result === null) {
                 continue;
             }
+            $named++;
             if ($result['kind'] === 'ok' || $result['kind'] === 'changed') {
                 $okSections[$result['host']][$section] = true;
             } elseif ($result['kind'] === 'failed' || $result['kind'] === 'fatal') {
@@ -99,6 +114,10 @@ final class DryRunProof
             }
         }
 
+        if ($noHosts && $banners === 0 && $named === 0 && $recap === null) {
+            return ['verified' => false, 'findings' => ['Ansible stopped before it started the playbook, as the limit left it no host to target: none of the '
+                . 'targets was in the inventory the runner fetched, so the dry run did not run on any device.'], 'unmarked' => [], 'nothing_ran' => true];
+        }
         if (! $dryRunBanner) {
             $findings[] = 'The log does not start with Ansible\'s DRY RUN banner, which Ansible prints only when it runs the playbook with --check: '
                 . 'the runner may have run it for real.';
@@ -128,6 +147,6 @@ final class DryRunProof
             }
         }
 
-        return ['verified' => ! $findings, 'findings' => $findings, 'unmarked' => $unmarked];
+        return ['verified' => ! $findings, 'findings' => $findings, 'unmarked' => $unmarked, 'nothing_ran' => false];
     }
 }

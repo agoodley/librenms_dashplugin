@@ -492,12 +492,14 @@ when:
   banner); ok results, ignored failures and includes are counted as Ansible counts them.
 
 Anything it cannot read (no PLAY RECAP, as after a stop; a log the runner cannot give) leaves the dry run **not
-proven**: the change page says so in red with the findings, each target's eventlog gets an error ("may have changed
-this device"), and the change can be neither approved nor applied. Wherever the dry run's result would show (the
-change page per device, the run page, the runs list, the device panel, the end entry of its run in the eventlog), a
-red *NOT PROVEN: may have changed this device* shows instead. A proven dry run's results read *would change* and *no
-change* there. A dry run that never ran (the runner refused it,
-or it was stopped in the runner's queue) proves nothing and claims nothing: the change is back to a draft.
+proven**: the change page says so in red with the findings, each target's eventlog gets an error ("may have changed this
+device"), and the change can be neither approved nor applied. Wherever the dry run's result would show (the change page
+per device, the run page, the runs list, the device panel, the end entry of its run in the eventlog), a red *NOT PROVEN:
+may have changed this device* shows instead. A proven dry run's results read *would change* and *no change* there. A dry
+run that never ran (the runner refused it, or it was stopped in the runner's queue) proves nothing and claims nothing:
+the change is back to a draft. Nor does one that Ansible stopped before the playbook because the limit left it no host
+to target (every target left out of the inventory the runner fetched, see below): its log shows Ansible's own error and
+no play, result or recap, so it did not run on any device; it does not count, and says why.
 
 A verified dry run with a failed, unreachable or unknown target, or a run on a host that was not a target, cannot be
 approved either. Each target's result comes from the PLAY RECAP: *would change* (changed), *no change*, *failed*, ...
@@ -581,12 +583,15 @@ host) is **left out** of what the runner gets: neither its new address (it may b
 Names count too, as the run's limit holds each device's inventory name at the launch: a device renamed meanwhile is left
 out, and so is another device that now carries a device's launch-time name (one renamed into it, or added under the
 hostname of a device deleted or renamed meanwhile), which the limit would reach instead. The change's timeline, the
-batch and the device's eventlog say so at the fetch, the batch does not run there, and the change stops when the batch
-ends (a dry run with a device left out does not count). Each fetch records what it served each device of a dry run or
-batch in progress (a hash of its connection, or that it was left out), and the end of the batch or dry run checks that
-record, not LibreNMS as it is by then: an edit set back before the batch ended is still caught, and one made after the
-runner had the inventory does not blame the batch (the next batch's checks see it; without any fetch recorded, the
-devices are compared as LibreNMS has them at the end). The Inventory page shows such a device as left out meanwhile.
+batch and the device's eventlog say so at the fetch, and the change stops when the batch ends (a dry run with a device
+left out does not count). Each fetch records what it served each device of a dry run or batch in progress (a hash of its
+connection, or that it was left out), and the end of the batch or dry run checks that record, not LibreNMS as it is by
+then: an edit set back before the batch ended is still caught, and one made after the runner had the inventory is not
+caught by the batch's end unless the inventory is fetched again (the next batch's checks see it; without any fetch
+recorded, the devices are compared as LibreNMS has them at the end). The plugin cannot tell which task fetched the
+inventory: another task (a plain run, another change's) that fetches it while the batch is in progress counts as well,
+so the texts say the batch *may* not have run on a device left out, and the change stops all the same. The Inventory
+page shows such a device as left out meanwhile.
 
 ### Batches
 

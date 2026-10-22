@@ -135,16 +135,17 @@ final class InventoryGuard
         $display = UntrustedText::line((string) (($entry['target']['display'] ?? '') ?: ($entry['target']['hostname'] ?? '')), 80);
         if ($entry['phase'] === 'batch') {
             $number = (int) $entry['batch']['number'];
-            $this->changes->addEvent($changeId, 'batch', "The runner fetched the inventory during batch $number without $display: the runner no longer reaches it as at "
-                . "the dry run ($note). The batch cannot run on it, and the change stops when the batch ends.", null, $now);
-            $this->changes->updateBatch($changeId, $number, ['note' => UntrustedText::line("$display left out of the inventory the runner fetched ($note)", 500)]);
-            $text = ChangeText::name($change) . ", batch $number: left out of the inventory the runner fetched, as the runner no longer reaches it as at the dry run ($note)";
+            // the plugin cannot tell which task fetched the inventory: the batch's own task, or another one meanwhile
+            $this->changes->addEvent($changeId, 'batch', "The plugin left $display out of an inventory the runner fetched during batch $number: the runner no "
+                . "longer reaches it as at the dry run ($note). The batch may not run on it, and the change stops when the batch ends.", null, $now);
+            $this->changes->updateBatch($changeId, $number, ['note' => UntrustedText::line("$display left out of an inventory the runner fetched ($note)", 500)]);
+            $text = ChangeText::name($change) . ", batch $number: left out of an inventory the runner fetched, as the runner no longer reaches it as at the dry run ($note)";
             $user = (string) (($entry['batch']['username'] ?? null) ?: (($change['applied_by'] ?? null) ?: $change['username']));
         } else {
-            $this->changes->addEvent($changeId, 'dry_run', "The runner fetched the inventory during the dry run without $display: the runner no longer reaches it as when "
-                . "the dry run was launched ($note). The dry run cannot run on it, so it will not count.", null, $now);
-            $text = ChangeText::name($change) . ': left out of the inventory the runner fetched for its dry run, as the runner no longer reaches it as when the dry run '
-                . "was launched ($note)";
+            $this->changes->addEvent($changeId, 'dry_run', "The plugin left $display out of an inventory the runner fetched during the dry run: the runner no longer "
+                . "reaches it as when the dry run was launched ($note). The dry run may not run on it, so it will not count.", null, $now);
+            $text = ChangeText::name($change) . ': left out of an inventory the runner fetched during its dry run, as the runner no longer reaches it as when the dry '
+                . "run was launched ($note)";
             $user = (string) $change['username'];
         }
         $this->events?->write($text, $entry['device_id'], 'warning', ChangeText::reference($changeId), $user);

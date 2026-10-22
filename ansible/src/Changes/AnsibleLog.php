@@ -102,6 +102,16 @@ final class AnsibleLog
     }
 
     /**
+     * Is it the error ansible-playbook stops with, before it starts the playbook, when the limit leaves no host of the
+     * inventory to target ("[ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to
+     * target.", "ERROR! ..." before Ansible 2.19)?
+     */
+    public static function noHosts(string $plain): bool
+    {
+        return (bool) preg_match('#^(?:\[ERROR\]: |ERROR! )Specified inventory, host pattern and/or --limit leaves us with no hosts to target\.$#', $plain);
+    }
+
+    /**
      * Is it a message of Ansible itself (a warning, an error, a retry, an async poll, a pause), never part of a diff?
      */
     public static function message(string $plain): bool

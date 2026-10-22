@@ -592,25 +592,25 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame([InventoryGuard::LEFT_OUT, 'lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246', '2026-10-22 10:00:55'],
             [$target['served_hash'], $target['served_note'], $target['served_at']], 'recorded: left out, why, when');
         $this->assertNull($this->changes->targets[$id][502]['served_hash'], 'nothing is recorded for a device whose batch is not in progress');
-        $said = preg_grep('/^The runner fetched the inventory during batch 1 without lab-sw1/', $this->changes->messages($id));
-        $this->assertSame(['The runner fetched the inventory during batch 1 without lab-sw1: the runner no longer reaches it as at the dry run (lab-sw1: ansible_host '
-            . '10.0.0.245 → 10.0.0.246). The batch cannot run on it, and the change stops when the batch ends.'], array_values($said), 'once in the timeline');
+        $said = preg_grep('/^The plugin left lab-sw1 out of an inventory the runner fetched during batch 1/', $this->changes->messages($id));
+        $this->assertSame(['The plugin left lab-sw1 out of an inventory the runner fetched during batch 1: the runner no longer reaches it as at the dry run (lab-sw1: '
+            . 'ansible_host 10.0.0.245 → 10.0.0.246). The batch may not run on it, and the change stops when the batch ends.'], array_values($said), 'once in the timeline');
         $warning = array_values(array_filter($this->events->of(501), fn ($e) => $e['severity'] === 'warning'));
-        $this->assertSame('Ansible change #1 (CHG-1), batch 1: left out of the inventory the runner fetched, as the runner no longer reaches it as at the dry run '
+        $this->assertSame('Ansible change #1 (CHG-1), batch 1: left out of an inventory the runner fetched, as the runner no longer reaches it as at the dry run '
             . '(lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246)', $warning[0]['message'] ?? null, 'and in its eventlog');
-        $this->assertSame('lab-sw1 left out of the inventory the runner fetched (lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246)', $this->changes->batches[$id][1]['note']);
+        $this->assertSame('lab-sw1 left out of an inventory the runner fetched (lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246)', $this->changes->batches[$id][1]['note']);
 
         // set back before the batch ends: served again, but the batch already went without it; the end of the batch says so,
         // though LibreNMS reaches it as at the dry run by then
         unset($this->runner->connections[501]);
         $this->assertNotNull($this->fetched($this->t0 + 60)->nameOf(501));
         $this->assertSame(InventoryGuard::LEFT_OUT, $this->changes->targets[$id][501]['served_hash'], 'it stays left out for this batch');
-        $this->assertCount(1, preg_grep('/without lab-sw1/', $this->changes->messages($id)), 'said once');
+        $this->assertCount(1, preg_grep('/left lab-sw1 out/', $this->changes->messages($id)), 'said once');
         $this->endRun($this->batchRun($id, 1), 'incomplete', [501 => 'not_run'], [], $this->t0 + 100);
         $lifecycle->advance($id, $this->t0 + 101);
         $change = $this->changes->find($id);
         $this->assertSame([ChangeStatus::FAILED, 'how the runner reaches a device changed during batch 1 (lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246): the plugin left it '
-            . 'out of the inventory the runner fetched, so the batch did not run on it'], [$change['status'], $change['error']]);
+            . 'out of an inventory the runner fetched meanwhile, so the batch may not have run on it'], [$change['status'], $change['error']]);
         $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'), 'no further batch');
     }
 
@@ -657,8 +657,8 @@ class ChangeLifecycleTest extends TestCase
 
         $served = $this->fetched($this->t0 + 5);
         $this->assertSame(['lab-sw1.netops.lab', 'lab-sw3.netops.lab'], array_keys($served->hosts()));
-        $this->assertContains('The runner fetched the inventory during the dry run without lab-sw2: the runner no longer reaches it as when the dry run was launched '
-            . '(lab-sw2: ansible_host 10.0.0.246 → 10.0.0.247). The dry run cannot run on it, so it will not count.', $this->changes->messages($id));
+        $this->assertContains('The plugin left lab-sw2 out of an inventory the runner fetched during the dry run: the runner no longer reaches it as when the dry run '
+            . 'was launched (lab-sw2: ansible_host 10.0.0.246 → 10.0.0.247). The dry run may not run on it, so it will not count.', $this->changes->messages($id));
         $runId = (int) $this->changes->find($id)['dry_run_id'];
         $this->endRun($runId, 'incomplete', [501 => 'changed', 502 => 'not_run', 503 => 'changed'],
             self::dryRunLog(['lab-sw1.netops.lab' => 'changed', 'lab-sw3.netops.lab' => 'changed']), $this->t0 + 30);
@@ -667,12 +667,34 @@ class ChangeLifecycleTest extends TestCase
         $change = $this->changes->find($id);
         $this->assertSame([ChangeStatus::DRAFT, 'failed'], [$change['status'], $change['dry_run_state']]);
         $this->assertContains('The runner did not get every target as recorded when the dry run was launched (lab-sw2: ansible_host 10.0.0.246 → 10.0.0.247): the plugin '
-            . 'left a host out of the inventory the runner fetched, so the dry run did not run there.', $change['dry_run_findings']);
+            . 'left a host out of an inventory the runner fetched meanwhile, so the dry run may not have run there.', $change['dry_run_findings']);
         $this->assertSame('not_run', $this->changes->targets[$id][502]['dry_result']);
+        $this->assertTrue($this->runner->proofs[$runId] ?? null, 'it ran on the others: its proof is recorded (verified: its log proves a dry run)');
 
         // a new dry run records anew
         $this->assertNull($this->lifecycle()->startDryRun($id, self::ALICE, [], $this->t0 + 100));
         $this->assertNull($this->changes->targets[$id][502]['served_hash']);
+
+        // every target left out: Ansible had no host to target and stopped before the playbook, so nothing ran on a device: no proof
+        // is recorded (the run is not one that may have changed its devices), the dry run does not count, and the findings say why
+        foreach (array_keys(self::TARGETS) as $deviceId) {
+            $this->runner->connections[$deviceId] = ['ansible_host' => '10.0.9.' . ($deviceId - 400)] + self::ELSEWHERE;
+        }
+        $this->assertSame([], $this->fetched($this->t0 + 105)->hosts());
+        $runId = (int) $this->changes->find($id)['dry_run_id'];
+        $this->endRun($runId, 'failed', [501 => 'not_run', 502 => 'not_run', 503 => 'not_run'], ['Started task #12 of template \'Interface description\'',
+            "\e[1;35m[WARNING]: Could not match supplied host pattern, ignoring: lab-sw1.netops.lab\e[0m",
+            "\e[0;31m[ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to target.\e[0m", 'Failed to run task: exit status 1'], $this->t0 + 130);
+        $lifecycle->advance($id, $this->t0 + 135);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::DRAFT, 'failed', 'The dry run did not run on any device: none of the targets was in the inventory the runner fetched.'],
+            [$change['status'], $change['dry_run_state'], $change['error']]);
+        $this->assertArrayNotHasKey($runId, $this->runner->proofs, 'no proof: nothing ran on a device');
+        $this->assertSame(['Ansible stopped before it started the playbook, as the limit left it no host to target: none of the targets was in the inventory the runner '
+            . 'fetched, so the dry run did not run on any device.', 'The runner did not get every target as recorded when the dry run was launched (lab-sw1: ansible_host '
+            . '10.0.0.245 → 10.0.9.101; lab-sw2: ansible_host 10.0.0.247 → 10.0.9.102; lab-sw3: ansible_host 10.0.0.247 → 10.0.9.103): the plugin left hosts out of an '
+            . 'inventory the runner fetched meanwhile.'], $change['dry_run_findings']);
+        $this->assertStringNotContainsString('may have changed', implode(' ', $this->changes->messages($id)));
     }
 
     public function testAFetchBeforeTheDryRunRecordedItsConnectionsIsCheckedWhenTheDryRunEnds(): void
