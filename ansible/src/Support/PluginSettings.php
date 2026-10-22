@@ -9,7 +9,9 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
  * What runs may reach and how: the platform mapping, the allowed device group, the max targets per change (and run), the
  * output kept, when an unfinished run is stopped, how long a stopped run keeps its devices, and the inventory user
  * (the LibreNMS user whose API token the runner fetches the inventory with); and how changes go (phase 2): approvals,
- * how long a dry run and an approval count, the batches, the Oxidized backups and the maintenance windows. The plugin
+ * how long a dry run and an approval count, the batches, the Oxidized backups and the maintenance windows; and (phase 3)
+ * whether the topology plugin plans the batches and what a batch does when its blast radius grew since the approval or
+ * cannot be computed. The plugin
  * stores them itself (Data\SettingsRepository) and only LibreNMS admins change them, like the runner connection:
  * LibreNMS' own plugin settings form can be saved by any holder of its plugin.admin permission, which non-admin roles
  * can have, so the plugin keeps nothing there.
@@ -39,6 +41,9 @@ final class PluginSettings
         'maintenance_behavior' => '',
         'maintenance_minutes' => '60',
         'settle_minutes' => '10',
+        'topology_plan' => '1',
+        'blast_grew' => 'pause',
+        'blast_unknown' => 'pause',
     ];
 
     /** Settings with a fixed set of values: key => value => label. */
@@ -49,6 +54,9 @@ final class PluginSettings
         'wait_after_canary' => ['1' => 'on', '0' => 'off'],
         'backups' => ['1' => 'on', '0' => 'off'],
         'maintenance' => ['1' => 'on', '0' => 'off'],
+        'topology_plan' => ['1' => 'on', '0' => 'off'],
+        'blast_grew' => ['pause' => 'pause for an approver', 'refuse' => 'refuse the batch'],
+        'blast_unknown' => ['pause' => 'pause for an admin', 'refuse' => 'refuse the batch'],
     ];
 
     /** Ranges of the numbers: [minimum, maximum]. */
@@ -92,6 +100,9 @@ final class PluginSettings
         'maintenance_behavior' => 'maintenance behavior',
         'maintenance_minutes' => 'expected batch time (minutes)',
         'settle_minutes' => 'settle time (minutes)',
+        'topology_plan' => 'plan with the topology plugin',
+        'blast_grew' => 'when the blast radius grew',
+        'blast_unknown' => 'when the blast radius cannot be computed',
     ];
 
     /** Most characters of the platform mapping. */
@@ -329,7 +340,18 @@ final class PluginSettings
             $this->int('maintenance_minutes') * 60,
             $this->int('settle_minutes') * 60,
             $changeUrl,
+            $this->values['blast_grew'] === 'refuse',
+            $this->values['blast_unknown'] === 'refuse',
         );
+    }
+
+    /**
+     * Does a new change plan its batches with the topology plugin (when it is installed, enabled and offers a planning
+     * API the plugin speaks)?
+     */
+    public function topologyPlan(): bool
+    {
+        return $this->values['topology_plan'] !== '0';
     }
 
     /**

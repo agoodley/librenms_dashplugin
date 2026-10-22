@@ -6,12 +6,19 @@ namespace Agoodley\LibrenmsAnsible\Changes;
  * Which device of a change goes in which batch, and when a change stops or waits between batches. Every apply goes in
  * batches: the first (the canary) alone, the rest in batches of the batch size, each one launched only when the one
  * before ended well. The plan is plain data (toArray(), fromArray()), shown before the dry run and part of what is
- * approved, so another component can produce it later, e.g. a rollout plan from the topology plugin (its "source").
+ * approved. Its "source" says who made it: the plugin's settings (make()), or the topology plugin's rollout planner
+ * (RolloutPlan), whose plan carries what the topology plugin said about each batch (TopologyPlan: its tier and its
+ * blast radius), approved with it.
  */
 final class BatchPlan
 {
-    /** Version of the plan's data. */
-    public const VERSION = 1;
+    /** Version of the plan's data: 1 for a plan of the plugin's settings (as phase 2 made them), 2 with a topology part. */
+    public const VERSION = 2;
+
+    /** Who made the plan: the plugin's settings, or the topology plugin's rollout planner. */
+    public const PLUGIN = 'plugin';
+
+    public const TOPOLOGY = 'topology';
 
     /** Most batches of one change. */
     public const MAX_BATCHES = 100;
@@ -21,14 +28,16 @@ final class BatchPlan
      * @param  int  $stopAt  failed devices in one batch that stop the change (failed, unreachable, unknown and not run count)
      * @param  bool  $waitAfterFirst  wait for an admin to continue after the first batch
      * @param  int  $pauseMinutes  pause between two batches
-     * @param  string  $source  who made the plan ("plugin": the plugin's settings)
+     * @param  string  $source  who made the plan (PLUGIN: the plugin's settings, TOPOLOGY: the topology plugin's rollout planner)
+     * @param  TopologyPlan|null  $topology  what the topology plugin said about each batch (a plan of the planner's)
      */
     public function __construct(
         public readonly array $batches,
         public readonly int $stopAt,
         public readonly bool $waitAfterFirst,
         public readonly int $pauseMinutes,
-        public readonly string $source = 'plugin',
+        public readonly string $source = self::PLUGIN,
+        public readonly ?TopologyPlan $topology = null,
     ) {
     }
 
@@ -64,8 +73,11 @@ final class BatchPlan
      */
     public static function fromArray(mixed $data, array $targetIds): self
     {
-        if (! is_array($data) || ($data['version'] ?? null) !== self::VERSION || ! is_array($data['batches'] ?? null) || ! array_is_list($data['batches'])) {
-            throw new \InvalidArgumentException('the batch plan is not a plan of version ' . self::VERSION);
+        if (! is_array($data) || ! in_array($data['version'] ?? null, [1, self::VERSION], true) || ! is_array($data['batches'] ?? null) || ! array_is_list($data['batches'])) {
+            throw new \InvalidArgumentException('the batch plan is not a plan of version 1 or ' . self::VERSION);
+        }
+        if (($data['version'] === self::VERSION) !== array_key_exists('topology', $data)) {
+            throw new \InvalidArgumentException('the batch plan of version ' . $data['version'] . ($data['version'] === 1 ? ' has' : ' has no') . ' topology part');
         }
         $batches = [];
         foreach ($data['batches'] as $index => $batch) {
@@ -81,8 +93,10 @@ final class BatchPlan
             }
             $batches[] = $ids;
         }
+        $topology = $data['version'] === self::VERSION ? TopologyPlan::fromArray($data['topology'], count($batches)) : null;
         $plan = new self($batches, is_int($data['stop_at'] ?? null) ? $data['stop_at'] : 0, ($data['wait_after_first'] ?? null) === true,
-            is_int($data['pause_minutes'] ?? null) ? $data['pause_minutes'] : -1, is_string($data['source'] ?? null) ? mb_substr($data['source'], 0, 40) : 'plugin');
+            is_int($data['pause_minutes'] ?? null) ? $data['pause_minutes'] : -1, is_string($data['source'] ?? null) ? mb_substr($data['source'], 0, 40) : self::PLUGIN,
+            $topology);
         $problem = $plan->problem($targetIds);
         if ($problem !== null) {
             throw new \InvalidArgumentException($problem);
@@ -107,6 +121,9 @@ final class BatchPlan
         if ($this->stopAt < 1 || $this->pauseMinutes < 0) {
             return 'the batch plan has no failure threshold or a negative pause';
         }
+        if ($this->topology !== null && count($this->topology->batches) !== count($this->batches)) {
+            return 'the topology part of the batch plan does not have one entry per batch';
+        }
         $all = array_merge(...$this->batches);
         if (count($all) !== count(array_unique($all))) {
             return 'a device is in more than one batch';
@@ -123,14 +140,57 @@ final class BatchPlan
     }
 
     /**
-     * The plan as data (stored with the change, part of its fingerprint).
+     * The plan as data (stored with the change, part of its fingerprint): a plan of the plugin's settings as phase 2
+     * stored it (version 1), one with a topology part as version 2.
      *
-     * @return array{version: int, source: string, batches: array<int, int[]>, stop_at: int, wait_after_first: bool, pause_minutes: int}
+     * @return array{version: int, source: string, batches: array<int, int[]>, stop_at: int, wait_after_first: bool, pause_minutes: int, topology?: array}
      */
     public function toArray(): array
     {
-        return ['version' => self::VERSION, 'source' => $this->source, 'batches' => $this->batches, 'stop_at' => $this->stopAt,
+        $data = ['version' => $this->topology !== null ? self::VERSION : 1, 'source' => $this->source, 'batches' => $this->batches, 'stop_at' => $this->stopAt,
             'wait_after_first' => $this->waitAfterFirst, 'pause_minutes' => $this->pauseMinutes];
+        if ($this->topology !== null) {
+            $data['topology'] = $this->topology->toArray();
+        }
+
+        return $data;
+    }
+
+    /**
+     * What the topology plugin said about a stored plan's batch $number (its tier and the blast radius approved with
+     * it), null for a plan without one (made by the plugin's settings) or one that cannot be read.
+     *
+     * @return array{tier: int|string|null, hand: bool, lost: int[], network: int, unmanaged: int, reference: string,
+     *     skipped: list<array{device_id: int, reason: string}>, simulate: ?string}|null
+     */
+    public static function topologyOf(mixed $plan, int $number): ?array
+    {
+        return self::topologyPart($plan)?->batch($number);
+    }
+
+    /**
+     * The topology part of a stored plan, null for a plan without one or one that cannot be read.
+     */
+    public static function topologyPart(mixed $plan): ?TopologyPlan
+    {
+        if (! is_array($plan) || ($plan['version'] ?? null) !== self::VERSION || ! is_array($plan['batches'] ?? null)) {
+            return null;
+        }
+        try {
+            return TopologyPlan::fromArray($plan['topology'] ?? null, count($plan['batches']));
+        } catch (\InvalidArgumentException) {
+            return null;
+        }
+    }
+
+    /**
+     * Was the stored plan made by the topology plugin (version 2)? Its batches are then checked against their approved
+     * blast radius before they start, and a plan whose topology part cannot be read is refused rather than taken for
+     * one without (BatchPlan::fromArray()).
+     */
+    public static function isTopology(mixed $plan): bool
+    {
+        return is_array($plan) && (($plan['version'] ?? null) === self::VERSION || array_key_exists('topology', $plan));
     }
 
     /**
@@ -166,10 +226,6 @@ final class BatchPlan
     }
 
     /**
-     * The plan in words: "3 batches: 1, then 5, then 2 devices; stops at 1 failed device in a batch; waits for an admin
-     * after the first batch".
-     */
-    /**
      * The rule the settings give for any change, in words: "a canary batch of 1 device, then batches of up to 5 devices;
      * stops at 1 failed device in a batch; waits for an admin to continue after the first batch".
      */
@@ -190,12 +246,20 @@ final class BatchPlan
         return $text;
     }
 
+    /**
+     * The plan in words: "3 batches: 1, then 5, then 2 devices; stops at 1 failed device in a batch; waits for an admin
+     * after the first batch"; a plan of the topology plugin's says so, and how many of its batches are planned by hand.
+     */
     public function describe(): string
     {
         $sizes = array_map('count', $this->batches);
         // "1, then 5, then 2 devices", "1, then 1 device": the word goes with the last number
-        $text = count($sizes) . (count($sizes) === 1 ? ' batch' : ' batches') . ': ' . implode(', then ', $sizes) . ' ' . (end($sizes) === 1 ? 'device' : 'devices')
-            . '; stops at ' . $this->stopAt . ' failed ' . ($this->stopAt === 1 ? 'device' : 'devices') . ' in a batch';
+        $text = count($sizes) . (count($sizes) === 1 ? ' batch' : ' batches') . ': ' . implode(', then ', $sizes) . ' ' . (end($sizes) === 1 ? 'device' : 'devices');
+        if ($this->topology !== null) {
+            $hand = count(array_filter($this->topology->batches, fn (array $batch) => $batch['hand']));
+            $text .= ', planned by the topology plugin' . ($hand ? " (the last $hand by hand)" : '');
+        }
+        $text .= '; stops at ' . $this->stopAt . ' failed ' . ($this->stopAt === 1 ? 'device' : 'devices') . ' in a batch';
         if ($this->waitAfterFirst && count($sizes) > 1) {
             $text .= '; waits for an admin to continue after the first batch';
         }

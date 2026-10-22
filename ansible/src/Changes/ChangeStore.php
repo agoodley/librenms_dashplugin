@@ -37,7 +37,7 @@ interface ChangeStore
     public function updateTargets(int $changeId, array $values): void;
 
     /**
-     * The change's batches.
+     * The change's batches, their JSON columns decoded (blast, blast_accepted, blast_override).
      *
      * @return array<int, array> number (1 is the first) => row
      */
@@ -77,7 +77,8 @@ interface ChangeStore
     /**
      * Record a maintenance window the plugin opened; its id.
      *
-     * @param  array{change_id: int, batch: int, schedule_id: int, status: string, opened_at: int, ends_at: int}  $row
+     * @param  array{change_id: int, batch: int, schedule_id: int, status: string, opened_at: int, ends_at: int, cut_off?: int[]}  $row  cut_off: the
+     *     monitored devices it covers besides the batch's own (those the batch cuts off)
      */
     public function addWindow(array $row): int;
 

@@ -26,7 +26,8 @@ class RunFollowerTest extends TestCase
     {
         // what the run lifecycle asks before it takes a log that says nothing ran for a dry run that ran nowhere
         SchemaCheck::useCatalogue(fn (string $what, string $table) => $what === 'table' ? true
-            : ['change_id', 'kind', 'batch', 'context', 'commit_hash', 'proof', 'backup_check', 'served_hash', 'served_at', 'served_note']);
+            : ['change_id', 'kind', 'batch', 'context', 'commit_hash', 'proof', 'backup_check', 'served_hash', 'served_at', 'served_note', 'blast', 'blast_accepted',
+                'blast_override', 'cut_off']);
         try {
             $changes = new ChangeRepository(new SqliteSql());
             $plan = BatchPlan::make([501, 502], [], 1, 5, 1, true, 0);

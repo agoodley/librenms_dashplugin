@@ -152,8 +152,84 @@ final class ChangeText
             'canary' => 'for an admin to continue after the first batch',
             'secrets' => 'for an admin to enter the secret answers again (the plugin never keeps them)'
                 . ($until !== null ? ' until ' . Clock::text($until) . ', then the change ends' : ''),
+            'blast' => 'for an approver to accept its new blast radius (it grew since the approval)',
+            'blast_unknown' => 'for an admin to continue it without a blast radius (it cannot be computed now)',
             default => 'until ' . ($until !== null ? Clock::text($until) : 'the pause ends') . ' (pause between batches)',
         };
+    }
+
+    /**
+     * A batch's blast radius grew since the approval (or the acceptance): it does not start.
+     *
+     * @param  string  $added  the devices it cuts off now that were not approved, in words
+     * @param  string  $held  what it was approved (or accepted) to cut off, in words
+     * @param  bool  $accepted  the blast radius it is held to was accepted by an approver since the approval
+     */
+    public static function blastGrew(array $change, int $batch, string $added, string $held, bool $refused, bool $accepted = false): string
+    {
+        return self::name($change) . ", batch $batch: its blast radius grew since " . ($accepted ? 'it was accepted' : 'the approval') . ': it would now also cut off '
+            . UntrustedText::line($added, 400) . ' (' . ($accepted ? 'accepted' : 'approved') . ': ' . UntrustedText::line($held, 300) . '). '
+            . ($refused ? 'The batch is refused (setting When the blast radius grew: refuse the batch).'
+                : 'The batch does not start until an admin with the approve permission accepts the new blast radius.');
+    }
+
+    /**
+     * A batch's blast radius cannot be computed now: it does not start.
+     */
+    public static function blastUnknown(array $change, int $batch, string $why, bool $refused): string
+    {
+        return self::name($change) . ", batch $batch: its blast radius cannot be computed now (" . UntrustedText::line($why, 300) . '). '
+            . ($refused ? 'The batch is refused (setting When the blast radius cannot be computed: refuse the batch).'
+                : 'The batch does not start until an admin continues it without a blast radius.');
+    }
+
+    /**
+     * A batch's blast radius shrank since the approval: it goes on.
+     */
+    public static function blastShrank(array $change, int $batch, string $removed): string
+    {
+        return self::name($change) . ", batch $batch: its blast radius shrank since the approval: it no longer cuts off " . UntrustedText::line($removed, 400);
+    }
+
+    /**
+     * An approver accepted a batch's new blast radius.
+     *
+     * @param  string  $lost  what it cuts off now, in words
+     */
+    public static function blastAccepted(array $change, int $batch, string $by, string $lost, string $comment): string
+    {
+        return self::name($change) . ", batch $batch: its new blast radius accepted by " . self::user($by) . ': it cuts off ' . UntrustedText::line($lost, 400)
+            . self::comment($comment);
+    }
+
+    /**
+     * An admin continued a batch whose blast radius cannot be computed.
+     *
+     * @param  string  $covered  the devices approved as cut off, which its window covers, in words
+     */
+    public static function blastOverride(array $change, int $batch, string $by, string $why, string $covered): string
+    {
+        return self::name($change) . ", batch $batch: continued by " . self::user($by) . ' without a blast radius (it cannot be computed: ' . UntrustedText::line($why, 300)
+            . '); its maintenance window covers its devices and the devices approved as cut off: ' . UntrustedText::line($covered, 300);
+    }
+
+    /**
+     * Eventlog entry of a device a batch cuts off, when the batch's maintenance window starts to cover it.
+     *
+     * @param  string  $batchDevices  the batch's devices, in words
+     */
+    public static function windowCutOff(array $change, int $batch, int $scheduleId, int $until, string $batchDevices): string
+    {
+        return self::name($change) . ", batch $batch: maintenance window #$scheduleId covers this device until " . Clock::text($until) . ': it loses its path to the core '
+            . 'while batch ' . $batch . ' (' . UntrustedText::line($batchDevices, 300) . ') runs';
+    }
+
+    /**
+     * Eventlog entry of a device a batch no longer cuts off, taken out of its window before the batch's launch.
+     */
+    public static function windowUncovered(array $change, int $batch, int $scheduleId): string
+    {
+        return self::name($change) . ", batch $batch: maintenance window #$scheduleId no longer covers this device: the batch no longer cuts it off";
     }
 
     /**
@@ -260,15 +336,19 @@ final class ChangeText
     }
 
     /**
-     * The notes of a batch's maintenance window: who opened it, why, and where to look.
+     * The notes of a batch's maintenance window: who opened it, why, the batch's devices and those it cuts off, and
+     * where to look.
      *
      * @param  string[]  $devices  the batch's devices (display names)
+     * @param  string[]  $cutOff  the monitored devices the batch cuts off, which the window covers too (display names)
      */
-    public static function windowNotes(array $change, int $batch, int $batches, array $devices, string $url): string
+    public static function windowNotes(array $change, int $batch, int $batches, array $devices, string $url, array $cutOff = []): string
     {
         return 'Opened by the LibreNMS Ansible plugin for ' . self::name($change) . ", batch $batch of $batches (template "
             . self::quote($change['template_name']) . ', requested by ' . self::user($change['username']) . '): '
             . UntrustedText::line(implode(', ', array_slice($devices, 0, 20)), 600) . (count($devices) > 20 ? ', ...' : '')
+            . ($cutOff ? '. Also the devices the batch cuts off (no path to the core while it runs): '
+                . UntrustedText::line(implode(', ', array_slice($cutOff, 0, 20)), 600) . (count($cutOff) > 20 ? ', ...' : '') : '')
             . ". The plugin closes it after the batch. $url";
     }
 

@@ -64,6 +64,29 @@ final class ApprovalRules
     }
 
     /**
+     * Why the user may not accept the new blast radius of a change's batch now (it grew since the approval, so the batch
+     * does not start); null when they may: an admin with the approve permission, and not the requester when the settings
+     * ask for a second admin. With no approval asked for, an admin with the approve permission still accepts it: nobody
+     * approved what the batch now cuts off.
+     *
+     * @param  array{status: string, waiting?: ?string, user_id: int|string|null}  $change
+     */
+    public static function acceptRefusal(string $mode, array $change, int $userId, bool $holds): ?string
+    {
+        if (! $holds) {
+            return 'Accepting a new blast radius needs the Ansible plugin\'s approve permission (ansible.approve): an admin grants it on the plugin\'s settings page.';
+        }
+        if ($change['status'] !== ChangeStatus::PAUSED || ($change['waiting'] ?? null) !== 'blast') {
+            return 'Only a change whose batch waits because its blast radius grew can have the new blast radius accepted.';
+        }
+        if ($mode === self::SECOND && $change['user_id'] !== null && (int) $change['user_id'] === $userId) {
+            return 'The settings need a second admin: you requested this change, so another admin with the approve permission accepts its new blast radius.';
+        }
+
+        return null;
+    }
+
+    /**
      * Why the change's approval does not count now; null when it does (or none is needed).
      *
      * @param  array{user_id: int|string|null, approved_user_id: int|string|null, approved_at: ?string}  $change
