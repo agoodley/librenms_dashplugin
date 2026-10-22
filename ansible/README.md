@@ -636,7 +636,9 @@ and the window closes.
   them), at most *Max targets per change*; then, under a lock (LibreNMS' cache), the plugin checks that no target is
   busy in another unfinished run or reserved by another change and records the run before it asks the runner: two
   launches cannot take the same device, and a form that is submitted twice makes one change (each form has a one-time
-  token), a dry run or batch launched twice one run. The runner gets the template id, the limit (the targets' inventory
+  token), a dry run or batch launched twice one run (a run of a change has a token made of the change's id and its own
+  random one, and a run found by it counts only for the same change, dry run or batch: a change that gets the id of an
+  earlier one, after the change tables were rolled back and made again, never takes over its runs). The runner gets the template id, the limit (the targets' inventory
   names), the answers that are not secret as extra variables, the secret ones in Semaphore's write-only secret field,
   for a dry run the dry-run and diff options, for a batch the dry run's commit, and a message "LibreNMS Ansible run #N
   by user [nonce]"; nothing else. The nonce is random per run: a launch whose answer never came (a timeout) is found

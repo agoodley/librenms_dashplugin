@@ -74,7 +74,8 @@ final class ChangeActions implements ChangeRunner
         $context = $kind === RunSpec::DRY_RUN ? 'change #' . (int) $change['id'] . ', dry run'
             : 'change #' . (int) $change['id'] . ", batch $number of " . (int) $change['batch_count'];
 
-        return new RunSpec((int) $change['id'], $kind, $number, $context, $kind === RunSpec::BATCH ? ($change['dry_run_commit'] ?? null) : null, $check, $halt);
+        return new RunSpec((int) $change['id'], $kind, $number, $context, $kind === RunSpec::BATCH ? ($change['dry_run_commit'] ?? null) : null, $check, $halt,
+            RunSpec::saltOf($change));
     }
 
     public function preflight(array $change, string $kind, int $number, array $deviceIds, \Closure $verify): ?string
@@ -121,7 +122,14 @@ final class ChangeActions implements ChangeRunner
 
     public function findRun(int $changeId, string $kind, int $number): ?int
     {
-        return $this->runs->byRequestToken(RunSpec::tokenOf($changeId, $kind, $number));
+        $change = $this->changes->find($changeId);
+        if ($change === null) {
+            return null;
+        }
+        $runId = $this->runs->byRequestToken(RunSpec::tokenOf($changeId, $kind, $number, RunSpec::saltOf($change)));
+        $spec = new RunSpec($changeId, $kind, $number, '');
+
+        return $runId !== null && $spec->belongs($this->runs->find($runId)) ? $runId : null;
     }
 
     public function snapshot(array $change): array

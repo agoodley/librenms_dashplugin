@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -204,6 +205,11 @@ return new class extends Migration
         }
         if (Schema::hasTable('ansible_runs')) {
             $present = array_values(array_filter(self::RUN_COLUMNS, fn ($column) => Schema::hasColumn('ansible_runs', $column)));
+            if (in_array('change_id', $present, true)) {
+                // the runs of changes stay (phase 1 lists them), without their one-time tokens: changes made after a new
+                // migration start again at id 1, and must never meet an earlier change's run under its token
+                DB::table('ansible_runs')->whereNotNull('change_id')->update(['request_token' => null]);
+            }
             if ($present) {
                 Schema::table('ansible_runs', function (Blueprint $table) use ($present): void {
                     if (in_array('change_id', $present, true)) {

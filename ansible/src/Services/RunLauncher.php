@@ -204,14 +204,14 @@ final class RunLauncher
         }
         $existing = $this->runs->byRequestToken($requestToken);
         if ($existing !== null) {
-            return ['run_id' => $existing, 'plan' => $plan, 'errors' => [], 'existing' => true];
+            return $this->existing($existing, $plan, $spec);
         }
         $plan = $this->plan($templateId, $deviceIds, $answers, $spec);
         if (! $plan->ok() || $plan->refused) {
             // a second submit of the same form sees the targets busy in the run the first one just recorded
             $existing = $this->runs->byRequestToken($requestToken);
             if ($existing !== null) {
-                return ['run_id' => $existing, 'plan' => $plan, 'errors' => [], 'existing' => true];
+                return $this->existing($existing, $plan, $spec);
             }
             $errors = $plan->errors;
             if ($plan->variableErrors) {
@@ -234,7 +234,7 @@ final class RunLauncher
         try {
             $existing = $this->runs->byRequestToken($requestToken);
             if ($existing !== null) {
-                return ['run_id' => $existing, 'plan' => $plan, 'errors' => [], 'existing' => true];
+                return $this->existing($existing, $plan, $spec);
             }
             $busy = array_intersect_key($this->runs->busy(), $plan->targets);
             if ($busy) {
@@ -259,6 +259,22 @@ final class RunLauncher
         $this->start($runId, $plan, (string) $user->username, $nonce, $spec);
 
         return ['run_id' => $runId, 'plan' => $plan, 'errors' => [], 'existing' => false];
+    }
+
+    /**
+     * The run an earlier launch with the same one-time token recorded: this launch's, as it is; but a change's run only
+     * when it is a run of the same change, kind and batch (RunSpec::belongs()): a run of something else that holds the
+     * token (a change of an earlier installation with the same id) is never taken for it, and nothing is launched.
+     *
+     * @return array{run_id: int|null, plan: LaunchPlan, errors: string[], existing: bool}
+     */
+    private function existing(int $runId, LaunchPlan $plan, ?RunSpec $spec): array
+    {
+        if ($spec !== null && ! $spec->belongs($this->runs->find($runId))) {
+            return self::refused($plan, ["Run #$runId, which is not a run of this change, holds this launch's one-time token: nothing was launched."]);
+        }
+
+        return ['run_id' => $runId, 'plan' => $plan, 'errors' => [], 'existing' => true];
     }
 
     /**
