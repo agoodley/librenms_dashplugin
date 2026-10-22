@@ -169,6 +169,10 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertNotEmpty(preg_grep('/^Ansible change #1 \(CHG-1\), batch 3: maintenance window #102 covers this device until .*: it loses its path to the core while batch 3 \(lab-sw2\) runs$/', $sw6),
             'the eventlog of a device cut off says why it is under maintenance');
         $this->assertStringContainsString('Maintenance window #102 opened for batch 3 until', $this->messages($id));
+        $this->assertMatchesRegularExpression('/^Batch 3 of 5 launched by alice \(run #\d+\): while it runs it cuts off lab-sw6 and 2 unmanaged neighbors\.$/m', $this->messages($id),
+            'the timeline says what each batch cuts off while it runs');
+        $this->assertMatchesRegularExpression('/^Batch 1 of 5 launched by alice \(run #\d+\): while it runs it cuts off no other monitored device, and 1 unmanaged neighbor\.$/m',
+            $this->messages($id));
         $this->assertStringContainsString(', also on the devices it cuts off: lab-sw6.', $this->messages($id));
 
         // the blast radius was computed before each batch and right before its launch, as the admin who started it sees the network
@@ -365,6 +369,7 @@ class ChangeBlastRadiusTest extends TestCase
             [$this->changes->batches[$id][3]['blast_override']['by'], $this->changes->batches[$id][3]['blast_override']['why']]);
         $this->assertSame('override', $this->changes->batches[$id][3]['blast']['state']);
         $this->assertStringContainsString('Batch 3: continued by alice without a blast radius (it cannot be computed: the topology plugin is disabled', $this->messages($id));
+        $this->assertCount(1, preg_grep('/without a blast radius \(it cannot be computed|goes on without a blast radius/', $this->changes->messages($id)), 'said once');
         $this->assertNotEmpty(array_filter($this->events->entries, fn ($e) => $e['severity'] === 'warning' && str_contains($e['message'], 'continued by alice without a blast radius')),
             'recorded in the eventlog');
 

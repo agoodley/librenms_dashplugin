@@ -280,6 +280,11 @@ final class ChangeService
         $change['id'] = $id;
         $this->changes->addEvent($id, 'created', 'Created (' . $batches->describe() . ').', (string) $user->username, time());
         $planner = $preview['planner'] ?? [];
+        if ($batches->topology !== null) {
+            $displays = array_map(fn (array $target) => (string) (($target['display'] ?? '') ?: ($target['name'] ?? '')), $plan->targets);
+            $this->changes->addEvent($id, 'created', 'What each batch cuts off while it runs, as the topology plugin computed it (approved with the change): '
+                . $batches->topology->summary($batches->batches, array_filter($displays)) . '.', (string) $user->username, time());
+        }
         if ($batches->topology !== null && $batches->topology->leftOut) {
             $this->changes->addEvent($id, 'created', 'Left out, as the topology plugin cannot plan them (nothing tells what depends on them): '
                 . RolloutPlan::reasonsText($batches->topology->leftOut, $batches->topology->names) . '.', (string) $user->username, time());

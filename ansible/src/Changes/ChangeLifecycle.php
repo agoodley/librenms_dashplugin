@@ -1136,8 +1136,8 @@ final class ChangeLifecycle
         if ($run !== null && $run['status'] === RunStatus::NOT_LAUNCHED) {
             return; // recorded, then kept from the runner (a stop came at the last moment): its end is taken in at the next step
         }
-        $this->timeline($change, 'batch', ChangeText::batchLaunched($change, $number, (int) $change['batch_count'], (int) $result['run_id'], $user['username']),
-            $user['username'], $now);
+        $this->timeline($change, 'batch', ChangeText::batchLaunched($change, $number, (int) $change['batch_count'], (int) $result['run_id'], $user['username'])
+            . $this->launchedBlast($change, $number), $user['username'], $now);
         // a stop recorded while the runner was asked (after the last check): the task it just got is stopped at once
         $current = $this->changes->find($id);
         if ($current !== null && self::stopAsked($current)) {
@@ -1779,12 +1779,9 @@ final class ChangeLifecycle
             $record = ['state' => 'unknown', 'error' => $why, 'at' => Clock::store($now), 'lost' => $held, 'window' => $held];
             $override = $batch['blast_override'] ?? null;
             if (is_array($override)) {
-                // an admin continued it without a blast radius: its window covers what was approved (or accepted) as cut off
+                // an admin continued it without a blast radius (the timeline and the eventlog have the decision): its window
+                // covers what was approved (or accepted) as cut off
                 $this->changes->updateBatch($id, $number, ['blast' => ['state' => 'override'] + $record]);
-                if (! $atLaunch) {
-                    $this->timeline($change, 'blast', "Batch $number goes on without a blast radius ($why), as " . UntrustedText::line((string) ($override['by'] ?? 'an admin'), 60)
-                        . ' decided: its maintenance window covers its devices and ' . BlastRadius::listText($held, $this->blastNames($change, $number), 10, 'no other device') . '.', null, $now);
-                }
 
                 return $held;
             }
@@ -1815,6 +1812,30 @@ final class ChangeLifecycle
         }
 
         return $blast['lost'];
+    }
+
+    /**
+     * What a batch launched now cuts off while it runs, for its line in the timeline ("" for a plan of the settings).
+     */
+    private function launchedBlast(array $change, int $number): string
+    {
+        $approved = BatchPlan::topologyOf($change['plan'] ?? null, $number);
+        if ($approved === null) {
+            return '';
+        }
+        if ($approved['hand']) {
+            return ': planned by hand, nothing tells what depends on its devices';
+        }
+        $record = $this->changes->batches((int) $change['id'])[$number]['blast'] ?? null;
+        if (! is_array($record)) {
+            return '';
+        }
+        $names = $this->blastNames($change, $number);
+        if (($record['state'] ?? null) === 'override') {
+            return ': its blast radius unknown (continued without one), its window covers ' . BlastRadius::listText(array_map('intval', (array) ($record['window'] ?? [])), $names, 10, 'its devices only');
+        }
+
+        return ': while it runs it cuts off ' . BlastRadius::text(['lost' => array_map('intval', (array) ($record['lost'] ?? [])), 'unmanaged' => (int) ($record['unmanaged'] ?? 0)], $names);
     }
 
     /**

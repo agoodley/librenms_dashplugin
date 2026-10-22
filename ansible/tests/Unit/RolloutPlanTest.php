@@ -319,6 +319,17 @@ class RolloutPlanTest extends TestCase
         $this->assertSame('device #777', BlastRadius::listText([777], self::NAMES));
     }
 
+    public function testWhatEachBatchCutsOffInWordsForTheTimeline(): void
+    {
+        $plan = self::make([...self::ALL, 504], [], 1, 5, RolloutPlan::HAND)['plan'];
+
+        $this->assertSame('batch 1 (lab-sw4): no other monitored device, and 1 unmanaged neighbor; batch 2 (lab-sw5, lab-sw6, lab-sw7, lab-sw8): no other monitored '
+            . 'device, and 6 unmanaged neighbors; batch 3 (lab-sw2): lab-sw6 and 2 unmanaged neighbors; batch 4 (lab-sw3): lab-sw7, lab-sw8 and 3 unmanaged neighbors; '
+            . 'batch 5 (lab-sw1): no other monitored device; batch 6 (lab-dead): planned by hand, unknown', $plan->topology->summary($plan->batches, self::NAMES));
+        $this->assertStringEndsWith('batch 2 (lab-sw5, lab-sw6, lab-sw7, lab-sw8): no other monitored device, and 6 unmanaged neighbors; and 4 more batches (on the change page)',
+            $plan->topology->summary($plan->batches, self::NAMES, 2));
+    }
+
     public function testTiersAndReasonsInWords(): void
     {
         $this->assertSame(['2 hops from the core', '1 hop from the core', 'the core', 'planned by hand'],

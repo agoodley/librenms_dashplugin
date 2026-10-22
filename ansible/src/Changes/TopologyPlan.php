@@ -48,6 +48,26 @@ final class TopologyPlan
     }
 
     /**
+     * What each batch cuts off while it runs, in words, for the timeline: "batch 3 (lab-sw2): lab-sw6 and 2 unmanaged
+     * neighbors; ...", the first $max batches.
+     *
+     * @param  int[][]  $batches  the plan's batches (device ids)
+     * @param  array<int, string>  $displays  device_id => the name the change shows, for a batch's devices
+     */
+    public function summary(array $batches, array $displays, int $max = 10): string
+    {
+        $parts = [];
+        foreach (array_slice($batches, 0, $max) as $index => $devices) {
+            $entry = $this->batches[$index] ?? null;
+            $names = BlastRadius::listText(array_map('intval', $devices), $displays + $this->names, 5, '');
+            $parts[] = 'batch ' . ($index + 1) . " ($names): " . ($entry === null ? 'unknown'
+                : ($entry['hand'] ? 'planned by hand, unknown' : BlastRadius::text(['lost' => $entry['lost'], 'unmanaged' => $entry['unmanaged']], $this->names)));
+        }
+
+        return implode('; ', $parts) . (count($batches) > $max ? '; and ' . (count($batches) - $max) . ' more batches (on the change page)' : '');
+    }
+
+    /**
      * As stored with the change.
      *
      * @return array{api: string, batches: array, left_out: array, names: array<string, string>}
