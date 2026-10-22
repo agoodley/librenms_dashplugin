@@ -61,7 +61,7 @@
             @else
                 <h4>Last fetch by the runner</h4>
                 @if($fetch)
-                    <div class="ans-card-value" style="font-size: 16px">{{ $fetch['fetched_at'] }}</div>
+                    <div class="ans-card-value" style="font-size: 16px">{{ \Agoodley\LibrenmsAnsible\Support\Clock::local($fetch['fetched_at']) }}</div>
                     <p>with the token of the inventory user {{ $inventoryUser['username'] }}, {{ \Agoodley\LibrenmsAnsible\Support\Format::count($fetch['hosts'], 'host') }}{{ $fetch['address'] ? ', from ' . $fetch['address'] : '' }},
                         <span id="ans-script-version">{{ ($fetch['script_version'] ?? null) !== null ? 'inventory script version ' . $fetch['script_version'] : 'not by the plugin\'s inventory script (or an old one)' }}</span></p>
                 @else
@@ -188,7 +188,7 @@
             <table class="table table-condensed ans-table">
                 <thead><tr><th>User</th><th>Last fetch</th><th class="ans-num">Hosts</th><th>From</th></tr></thead>
                 @foreach($fetches as $row)
-                    <tr><td>{{ $row['username'] }}</td><td>{{ $row['fetched_at'] }}</td><td class="ans-num">{{ $row['hosts'] }}</td><td>{{ $row['address'] }}</td></tr>
+                    <tr><td>{{ $row['username'] }}</td><td>{{ \Agoodley\LibrenmsAnsible\Support\Clock::local($row['fetched_at']) }}</td><td class="ans-num">{{ $row['hosts'] }}</td><td>{{ $row['address'] }}</td></tr>
                 @endforeach
             </table>
             <div class="panel-footer ans-muted" style="font-size: 12px">

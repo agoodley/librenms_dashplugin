@@ -156,7 +156,7 @@
                             <optgroup label="Fetched the inventory">
                                 @foreach($fetchedBy as $userId => $fetched)
                                     @if(isset($a['users'][$userId]))
-                                        <option value="{{ $userId }}" @selected($chosen === (string) $userId)>{{ $fetched['username'] }} · last fetch {{ $fetched['fetched_at'] }}, {{ \Agoodley\LibrenmsAnsible\Support\Format::count($fetched['hosts'], 'host') }}</option>
+                                        <option value="{{ $userId }}" @selected($chosen === (string) $userId)>{{ $fetched['username'] }} · last fetch {{ \Agoodley\LibrenmsAnsible\Support\Clock::local($fetched['fetched_at']) }}, {{ \Agoodley\LibrenmsAnsible\Support\Format::count($fetched['hosts'], 'host') }}</option>
                                     @endif
                                 @endforeach
                             </optgroup>
