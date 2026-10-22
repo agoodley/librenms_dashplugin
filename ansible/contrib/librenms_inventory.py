@@ -28,9 +28,11 @@ import urllib.parse
 import urllib.request
 
 ENDPOINT = '/plugin/ansible/api/inventory'
-VERSION = '1'
+VERSION = '2'
 # most characters of LibreNMS' error text printed
 DETAIL_MAX = 240
+# terminal escape sequences: CSI (also as one 8-bit character), OSC (up to BEL or ST) and the two-character ones
+ESCAPES = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-Z\\-_]')
 
 
 class InventoryError(Exception):
@@ -112,13 +114,26 @@ def answer_error(e, token):
 
 
 def clean(text, token):
-    """One line of printable text without the token (nor its secret part), at most DETAIL_MAX characters."""
+    """One line of printable text, at most DETAIL_MAX characters, without the token nor its secret part: also when
+    escape sequences, control, zero-width or blank characters split them (cleaned first, then looked for without the
+    blanks)."""
+    text = ESCAPES.sub('', text)
+    text = ' '.join(''.join(ch if ch.isprintable() else ' ' for ch in text).split())
     for secret in (token, token.partition('|')[2]):  # the whole token first
         if len(secret) >= 8:
-            text = text.replace(secret, '[the token]')
-    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
-    text = ' '.join(''.join(ch if ch.isprintable() else ' ' for ch in text).split())
+            text = redact(text, secret)
     return text if len(text) <= DETAIL_MAX else text[:DETAIL_MAX - 3].rstrip() + '...'
+
+
+def redact(text, secret):
+    """The text without any run of characters that holds the secret once its blanks are left out."""
+    for _ in range(100):
+        kept = [i for i, ch in enumerate(text) if not ch.isspace()]
+        at = ''.join(text[i] for i in kept).find(secret)
+        if at < 0:
+            return text
+        text = text[:kept[at]] + '[the token]' + text[kept[at + len(secret) - 1] + 1:]
+    return '[the token]'
 
 
 def http_error(code, url, detail=None):
@@ -127,13 +142,12 @@ def http_error(code, url, detail=None):
     if code == 401:
         return 'LibreNMS refused the API token (HTTP 401): check LIBRENMS_TOKEN (it may have been deleted or have expired)' + said
     if code == 403:
-        return f'LibreNMS refused the request (HTTP 403): {detail}' if detail else \
-            'LibreNMS refused the request (HTTP 403): the token\'s user may not use this'
+        return 'LibreNMS refused the request (HTTP 403)' + (said or ': the token\'s user may not use this')
     if code == 404:
         return (f'no inventory at {url}{ENDPOINT} (HTTP 404): is the Ansible plugin installed and enabled in LibreNMS, '
                 'and is LIBRENMS_URL right?') + said
     if 400 <= code < 500 and detail:
-        return f'LibreNMS refused the request (HTTP {code}): {detail}'
+        return f'LibreNMS refused the request (HTTP {code}){said}'
     return f'LibreNMS answered HTTP {code}: see its logs/librenms.log'
 
 

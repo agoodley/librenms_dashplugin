@@ -42,6 +42,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(403, json.dumps({'error': '\x1b[31mRefused\x1b[0m\r\nfor ' + TOKEN + ' and ' + TOKEN.partition('|')[2]
                                         + ' \u202eevil\x00 ' + 'x' * 400}).encode())
             return
+        if self.path.startswith('/split-'):
+            # the token, or its secret part, split by an escape sequence or by a control, zero-width or blank character
+            separator = {'ansi': '\x1b[0m', 'osc': '\x1b]0;title\x07', 'csi8': '\x9b1m', 'esc': '\x1b', 'zero-width': '\u200b', 'newline': '\n',
+                         'tab': '\t', 'spaces': '  '}[self.path.split('/')[1][6:]]
+            secret = TOKEN.partition('|')[2]
+            self.reply(403, json.dumps({'error': 'x ' + TOKEN[:5] + separator + TOKEN[5:] + ' and x ' + secret[:9] + separator + secret[9:]}).encode())
+            return
         if self.path.startswith('/forbidden-html'):
             self.reply(403, b'<html>Forbidden</html>', 'text/html')
             return
@@ -108,9 +115,10 @@ class InventoryScriptTest(unittest.TestCase):
         code, out, err = self.run_script(['--list'], {'LIBRENMS_URL': self.url + '/other-user', 'LIBRENMS_TOKEN': TOKEN})
         self.assertEqual(1, code)
         self.assertEqual('', out)
-        self.assertEqual('librenms_inventory: LibreNMS refused the request (HTTP 403): ' + FORBIDDEN + '\n', err)
+        self.assertEqual('librenms_inventory: LibreNMS refused the request (HTTP 403); LibreNMS said: "' + FORBIDDEN + '"\n', err,
+                         "the server's text is quoted as such")
         code, _, err = self.run_script(['--list'], {'LIBRENMS_URL': self.url + '/read-only', 'LIBRENMS_TOKEN': TOKEN})
-        self.assertIn('LibreNMS refused the request (HTTP 405): The inventory endpoint is read only: fetch it with GET.', err)
+        self.assertIn('LibreNMS refused the request (HTTP 405); LibreNMS said: "The inventory endpoint is read only: fetch it with GET."', err)
 
     def test_refusal_without_a_reason(self):
         code, _, err = self.run_script(['--list'], {'LIBRENMS_URL': self.url + '/forbidden-html', 'LIBRENMS_TOKEN': TOKEN})
@@ -124,9 +132,20 @@ class InventoryScriptTest(unittest.TestCase):
         self.assertNotIn('\n', line)
         self.assertTrue(line.isprintable(), repr(line))
         self.assertNotIn('test-token-0123456789', line)
-        self.assertIn('HTTP 403): Refused for [the token] and [the token] evil x', line)
-        self.assertTrue(line.endswith('...'))
-        self.assertLessEqual(len(line), len('librenms_inventory: LibreNMS refused the request (HTTP 403): ') + librenms_inventory.DETAIL_MAX)
+        self.assertIn('HTTP 403); LibreNMS said: "Refused for [the token] and [the token] evil x', line)
+        self.assertTrue(line.endswith('..."'), 'cut, inside the quotes')
+        self.assertLessEqual(len(line), len('librenms_inventory: LibreNMS refused the request (HTTP 403); LibreNMS said: ""') + librenms_inventory.DETAIL_MAX)
+
+    def test_a_token_split_by_the_server_is_not_printed(self):
+        secret = TOKEN.partition('|')[2]
+        for kind in ('ansi', 'osc', 'csi8', 'esc', 'zero-width', 'newline', 'tab', 'spaces'):
+            with self.subTest(kind):
+                code, _, err = self.run_script(['--list'], {'LIBRENMS_URL': self.url + '/split-' + kind, 'LIBRENMS_TOKEN': TOKEN})
+                self.assertEqual(1, code)
+                squeezed = ''.join(err.split())
+                self.assertNotIn(secret, squeezed)
+                self.assertNotIn(secret[:9], err, 'not even its parts around the split')
+                self.assertIn('LibreNMS said: "x [the token] and x [the token]"', err)
 
     def test_server_errors_are_not_quoted(self):
         code, _, err = self.run_script(['--list'], {'LIBRENMS_URL': self.url + '/broken', 'LIBRENMS_TOKEN': TOKEN})
