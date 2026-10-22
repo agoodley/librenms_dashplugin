@@ -18,6 +18,7 @@ use Agoodley\LibrenmsAnsible\Runs\Ansi;
 use Agoodley\LibrenmsAnsible\Runs\OutputBuffer;
 use Agoodley\LibrenmsAnsible\Runs\RunResults;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
+use Agoodley\LibrenmsAnsible\Runs\TargetSelection;
 use Agoodley\LibrenmsAnsible\Runs\TemplateCheck;
 use Agoodley\LibrenmsAnsible\Runs\TemplateReview;
 use Agoodley\LibrenmsAnsible\Services\ChangeFollower;
@@ -437,6 +438,8 @@ class ChangeController extends Controller
         $approvedAt = Clock::unix($change['approved_at']);
         // after a failure or a stop: a new change with the remaining devices; after a failed dry run: one without the devices it failed on
         $busy = in_array($status, [ChangeStatus::FAILED, ChangeStatus::STOPPED], true) || $change['dry_run_state'] === 'failed' ? $runs->busy() : [];
+        // the devices of the batches still to come that are busy in other runs now: a foreseeable wait, or the end of the change
+        $laterBusy = in_array($status, [ChangeStatus::APPLYING, ChangeStatus::PAUSED], true) ? self::laterBusy($change, $batches, $targets, $runs->busy()) : null;
         $remaining = in_array($status, [ChangeStatus::FAILED, ChangeStatus::STOPPED], true) ? NextChange::prefill($change, $targets, NextChange::REMAINING, $busy) : null;
         $passed = $change['dry_run_state'] === 'failed' && ! ChangeStatus::isFinal($status) ? NextChange::prefill($change, $targets, NextChange::PASSED, $busy) : null;
         // a stopped batch: the step in progress may still run on the runner, its devices held a while (as on the run page)
@@ -459,7 +462,7 @@ class ChangeController extends Controller
             'change' => $change, 'targets' => $targets, 'batches' => $batches, 'batchRuns' => $batchRuns, 'run' => $run, 'dryRun' => $dryRun,
             'approvals' => $approvals, 'windows' => $windows, 'events' => $events, 'signature' => $signature,
             'diffs' => $diffs, 'unattributed' => $unattributed, 'secretVars' => $secretVars, 'settings' => $settings, 'canRun' => $canRun, 'canApprove' => $canApprove,
-            'approvalRefusal' => $approvalRefusal, 'actions' => $actions, 'pending' => $pending, 'withheld' => $withheld,
+            'approvalRefusal' => $approvalRefusal, 'actions' => $actions, 'pending' => $pending, 'withheld' => $withheld, 'laterBusy' => $laterBusy,
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
             'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($settings->approval, $change) : null,
             // before the apply: the targets Oxidized cannot back up (asked at the dry run), whose batches the setting would refuse
@@ -510,6 +513,27 @@ class ChangeController extends Controller
 
         return ['run' => $run, 'batches' => $batches, 'batchRuns' => $batchRuns, 'windows' => $windows, 'targets' => $targets, 'approvals' => $approvals,
             'pending' => ChangeLifecycle::pendingOf($change, $windows, $targets), 'signature' => $signature, 'withheld' => $withheld];
+    }
+
+    /**
+     * The devices of the batches after the current one, still to start, that are busy in other runs now, in words with
+     * their batch ("lab-sw3 (batch 2) is busy in run #92 (...), which has not finished"); null when none is.
+     *
+     * @param  array<int, array>  $batches
+     * @param  array<int, array>  $targets
+     * @param  array<int, array>  $busy  RunRepository::busy()
+     */
+    private static function laterBusy(array $change, array $batches, array $targets, array $busy): ?string
+    {
+        $what = [];
+        foreach ($targets as $deviceId => $target) {
+            $number = (int) $target['batch'];
+            if ($number > (int) $change['current_batch'] && ($batches[$number]['status'] ?? null) === 'pending' && isset($busy[$deviceId])) {
+                $what[] = NextChange::name($target) . " (batch $number) is " . TargetSelection::busyRefusal($busy[$deviceId])['text'];
+            }
+        }
+
+        return $what ? implode('; ', array_slice($what, 0, 5)) . (count($what) > 5 ? '; ' . (count($what) - 5) . ' more' : '') : null;
     }
 
     /**

@@ -1469,6 +1469,29 @@ class ChangeLifecycleTest extends TestCase
             $this->changes->batches[$id][2]['status']]);
     }
 
+    public function testAnApplySaysWhichDevicesOfLaterBatchesAreBusy(): void
+    {
+        // lab-sw3, of batch 2, is busy in a run that began before the apply: batch 1 goes, and the timeline says before it runs
+        // that batch 2 will wait for lab-sw3 (or end the change)
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $this->backups->enabled = false;
+        $this->runner->busy = [503 => 'busy in run #92 (the dry run of change #61), which has not finished'];
+        $this->assertNull($this->lifecycle()->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->assertSame([501], end($this->runner->launches)['devices'], 'batch 1 is launched');
+        $messages = $this->changes->messages($id);
+        $this->assertSame(['Devices of later batches are busy now: lab-sw3 (batch 2) is busy in run #92 (the dry run of change #61), which has not finished. A batch '
+            . 'waits for its devices when it starts, at most 60 minutes; then the change ends.'], array_values(preg_grep('/^Devices of later batches/', $messages)));
+        $this->assertLessThan(array_key_first(preg_grep('/^Batch 1 of 2 launched/', $messages)), array_key_first(preg_grep('/^Devices of later batches/', $messages)),
+            'said before batch 1 is launched');
+
+        // nothing busy: nothing said
+        $this->setUp();
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $this->backups->enabled = false;
+        $this->assertNull($this->lifecycle()->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->assertSame([], preg_grep('/^Devices of later batches/', $this->changes->messages($id)));
+    }
+
     public function testABatchThePluginStartsOnItsOwnWaitsForABusyDeviceAWhile(): void
     {
         // batch 2 starts right after batch 1, but lab-sw3 is busy in a run that began before the apply: batch 2 waits for it, pending

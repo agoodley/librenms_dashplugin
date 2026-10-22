@@ -165,6 +165,11 @@
                 <a href="{{ route('ansible.inventory') }}">Inventory</a>
             </div>
         @endif
+        @if($laterBusy)
+            <div class="alert alert-warning" id="ans-change-later-busy"><i class="fa fa-clock-o"></i> <strong>Busy devices of later batches:</strong> {{ $laterBusy }}.
+                A batch waits for its devices when it starts, at most {{ intdiv(\Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::waitSeconds($settings), 60) }} minutes;
+                then the change ends.</div>
+        @endif
         @if($backupWarning)
             <div class="alert alert-warning" id="ans-backup-check"><i class="fa fa-archive"></i> {{ $backupWarning }}</div>
         @endif

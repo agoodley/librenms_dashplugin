@@ -418,9 +418,11 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   held after a stop) is refused and changes nothing: the change stays ready, or waiting (checked under the lock of the
   launches, so a run launched meanwhile is seen). A batch the plugin starts on its own (after the previous one, after a
   pause) whose device is busy in a run that began before the apply waits for it, pending, at most the *Expected batch
-  time* (at least 15 minutes), said in the timeline; then the change ends as failed. **Stop** stops the running batch
-  (as a run's stop: the step in progress runs on) and launches nothing more. It never waits, even while another request
-  is busy with the change (or died while at it): the stop is recorded at once, the runner is asked at once to stop the
+  time* (at least 15 minutes), said in the timeline; then the change ends as
+  failed. An Apply says in the timeline, and the change page while the batch has not started, which devices of later
+  batches are busy now, so such a wait is known before the first batch runs. **Stop** stops the running batch (as a
+  run's stop: the step in progress runs on) and launches nothing more. It never waits, even while another request is
+  busy with the change (or died while at it): the stop is recorded at once, the runner is asked at once to stop the
   batch's task, no batch launches afterwards (a launch under way looks for the stop again right before it records its
   run and right before it asks the runner, and then launches nothing; a stop that comes while the runner is being asked
   stops the task it just got at once; a launch whose request died after asking the runner has its task looked for at

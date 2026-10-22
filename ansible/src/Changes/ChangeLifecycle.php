@@ -304,6 +304,13 @@ final class ChangeLifecycle
             return $refusal ?? 'The change changed meanwhile: reload the page.';
         }
         $this->timeline($started, 'apply', 'Apply started (' . self::planText($started, array_keys($targets)) . ').', $user['username'], $now);
+        // a device of a later batch busy in another run now: that batch will wait for it (busyWaits()), or end the change; said
+        // before the first batch runs
+        $later = $this->laterBusyText($started, 1);
+        if ($later !== null) {
+            $this->timeline($started, 'apply', "Devices of later batches are busy now: $later. A batch waits for its devices when it starts, at most "
+                . intdiv($this->secretsWait(), 60) . ' minutes; then the change ends.', null, $now);
+        }
         $this->eventAll($started, ChangeText::applyStarted($started, $user['username'], (int) $started['batch_count']), 'notice', $user['username']);
         $this->startBatch($started, 1, $user, $secrets, $now);
 
@@ -1075,7 +1082,16 @@ final class ChangeLifecycle
      */
     private function secretsWait(): int
     {
-        return max(self::SECRETS_WAIT_MIN, $this->settings->expectedSeconds);
+        return self::waitSeconds($this->settings);
+    }
+
+    /**
+     * Seconds a batch waits, at most, for what it needs to start or launch (the secret answers, a device busy in another
+     * run): the expected time of a batch, at least SECRETS_WAIT_MIN.
+     */
+    public static function waitSeconds(ChangeSettings $settings): int
+    {
+        return max(self::SECRETS_WAIT_MIN, $settings->expectedSeconds);
     }
 
     /**
@@ -1507,6 +1523,30 @@ final class ChangeLifecycle
         $this->finish($change, ChangeStatus::FAILED, "batch $number was not started: $what, still after a wait of " . intdiv($this->secretsWait(), 60) . ' minutes', $now);
 
         return true;
+    }
+
+    /**
+     * The devices of the batches after batch $after that are busy in other runs now, in words with their batch
+     * ("lab-sw3 (batch 2) is busy in run #92 (...), which has not finished"); null when none is.
+     */
+    private function laterBusyText(array $change, int $after): ?string
+    {
+        $targets = $this->changes->targets((int) $change['id']);
+        $later = [];
+        foreach ($targets as $deviceId => $target) {
+            if ((int) $target['batch'] > $after) {
+                $later[(int) $deviceId] = (int) $target['batch'];
+            }
+        }
+        $busy = $later ? $this->runner->busy(array_keys($later)) : [];
+        if (! $busy) {
+            return null;
+        }
+        $names = self::displays($targets);
+        $what = array_map(fn ($deviceId, $why) => UntrustedText::line((string) ($names[$deviceId] ?? "device #$deviceId"), 80) . ' (batch ' . $later[$deviceId] . ') is '
+            . UntrustedText::line($why, 300), array_keys($busy), $busy);
+
+        return implode('; ', array_slice($what, 0, 5)) . (count($what) > 5 ? '; ' . (count($what) - 5) . ' more' : '');
     }
 
     /**
