@@ -54,6 +54,20 @@ class RunRepositoryTest extends TestCase
         $this->assertNull($this->runs->find($id + 1));
     }
 
+    public function testSummariesAreRunsWithoutTheirLog(): void
+    {
+        $first = $this->record();
+        $second = $this->record([503 => 'lab-sw3.netops.lab']);
+        $this->runs->updateAt($first, 0, ['status' => 'success', 'summary' => ['ok' => 2], 'output' => str_repeat("line\n", 1000)]);
+
+        $summaries = $this->runs->summaries([$second, $first, $first, 999]);
+        $this->assertEqualsCanonicalizing([$first, $second], array_keys($summaries), 'by id, each once, unknown ones left out');
+        $this->assertSame(['success', ['ok' => 2]], [$summaries[$first]['status'], $summaries[$first]['summary']], 'what a list shows, JSON decoded');
+        $this->assertArrayNotHasKey('output', $summaries[$first], 'never the log');
+        $this->assertArrayNotHasKey('output_tail', $summaries[$first]);
+        $this->assertSame([], $this->runs->summaries([]));
+    }
+
     public function testAChangeIsACompareAndSetOnTheVersion(): void
     {
         $id = $this->record();

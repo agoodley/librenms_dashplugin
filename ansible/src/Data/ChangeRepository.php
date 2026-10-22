@@ -160,14 +160,27 @@ final class ChangeRepository implements ChangeStore
     }
 
     /**
-     * The change's timeline, oldest first.
+     * The change's timeline, oldest first: all of it, or its latest $latest entries.
      *
      * @return array<int, array{at: string, username: ?string, kind: string, message: string}>
      */
-    public function events(int $changeId): array
+    public function events(int $changeId, ?int $latest = null): array
     {
-        return $this->sql->select('SELECT `at`, `username`, `kind`, `message` FROM ' . $this->sql->table('ansible_change_events') . ' WHERE `change_id` = ? ORDER BY `id`',
-            [$changeId]);
+        if ($latest === null) {
+            return $this->sql->select('SELECT `at`, `username`, `kind`, `message` FROM ' . $this->sql->table('ansible_change_events') . ' WHERE `change_id` = ? ORDER BY `id`',
+                [$changeId]);
+        }
+
+        return array_reverse($this->sql->select('SELECT `at`, `username`, `kind`, `message` FROM ' . $this->sql->table('ansible_change_events')
+            . ' WHERE `change_id` = ? ORDER BY `id` DESC LIMIT ' . max(1, $latest), [$changeId]));
+    }
+
+    /**
+     * How many entries the change's timeline has.
+     */
+    public function eventCount(int $changeId): int
+    {
+        return (int) ($this->sql->select('SELECT COUNT(*) AS `n` FROM ' . $this->sql->table('ansible_change_events') . ' WHERE `change_id` = ?', [$changeId])[0]['n'] ?? 0);
     }
 
     public function addApproval(array $row): void

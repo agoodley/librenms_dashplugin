@@ -498,18 +498,27 @@ final class ChangeLifecycle
     public function pending(int $id): bool
     {
         $change = $this->changes->find($id);
-        if ($change === null) {
-            return false;
-        }
+
+        return $change !== null && (ChangeStatus::isFinal($change['status']) ? self::pendingOf($change, $this->changes->windows($id), $this->changes->targets($id)) : true);
+    }
+
+    /**
+     * pending() with the change's windows and targets at hand (the change page has them).
+     *
+     * @param  array<int, array>  $windows
+     * @param  array<int, array>  $targets
+     */
+    public static function pendingOf(array $change, array $windows, array $targets): bool
+    {
         if (! ChangeStatus::isFinal($change['status'])) {
             return true;
         }
-        foreach ($this->changes->windows($id) as $window) {
+        foreach ($windows as $window) {
             if ($window['status'] === 'open') {
                 return true;
             }
         }
-        foreach ($this->changes->targets($id) as $target) {
+        foreach ($targets as $target) {
             if (($target['before_status'] ?? null) === BackupState::REQUESTED || ($target['after_status'] ?? null) === BackupState::REQUESTED) {
                 return true;
             }

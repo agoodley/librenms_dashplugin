@@ -250,7 +250,9 @@ class ChangeController extends Controller
             if ($change === null) {
                 return response()->json(['error' => "There is no Ansible change #$id."], 404);
             }
-            $state = $this->state($request, $change);
+            // light: the change's batches, windows and targets, no run's log but the one the page shows
+            $state = $this->live($change);
+            $state['actions'] = $this->actions($request, $change)['actions'];
         } catch (\Throwable $e) {
             return response()->json(['error' => $this->failure('change refresh', $e)], 500);
         }
@@ -395,22 +397,11 @@ class ChangeController extends Controller
         $id = (int) $change['id'];
         $changes = new ChangeRepository();
         $runs = new RunRepository();
-        $follower = $this->changeFollower();
-        $targets = $changes->targets($id);
-        $batches = $changes->batches($id);
-        $runId = $follower->currentRun($change);
-        $run = $runId !== null ? $runs->find($runId) : null;
-        $batchRuns = [];
-        foreach ($batches as $number => $batch) {
-            if ($batch['run_id'] !== null && ($batchRun = $runs->find((int) $batch['run_id'])) !== null) {
-                $batchRuns[$number] = $batchRun;
-            }
-        }
-        $dryRun = $change['dry_run_id'] !== null ? $runs->find((int) $change['dry_run_id']) : null;
+        ['run' => $run, 'batches' => $batches, 'batchRuns' => $batchRuns, 'windows' => $windows, 'targets' => $targets, 'approvals' => $approvals,
+            'signature' => $signature, 'pending' => $pending] = $this->live($change);
+        ['actions' => $actions, 'approvalRefusal' => $approvalRefusal, 'canRun' => $canRun, 'canApprove' => $canApprove] = $this->actions($request, $change);
+        $dryRun = $change['dry_run_id'] !== null ? ['id' => (int) $change['dry_run_id']] : null;
         $settings = $this->settings()->changeSettings();
-        $user = $request->user();
-        $canRun = Access::canRun($user);
-        $canApprove = Access::canApprove($user);
         $status = $change['status'];
         $diffs = [];
         $unattributed = [];
@@ -422,15 +413,7 @@ class ChangeController extends Controller
             }
         }
         $secretVars = array_values(array_filter((array) ($change['variables'] ?? []), fn ($v) => is_array($v) && ! empty($v['secret'])));
-        $approvalRefusal = $canApprove ? ApprovalRules::refusal($settings->approval, $change, (int) $user->user_id, true) : null;
-        $approvals = $changes->approvals($id);
-        $windows = $changes->windows($id);
-        $events = $changes->events($id);
-        // what the page shows changed: it fetches itself again (the log is followed apart)
-        $signature = md5((string) json_encode([(int) $change['version'], $run['id'] ?? null, $run['status'] ?? null,
-            array_map(fn ($b) => [$b['status'], $b['run_id']], $batches), array_map(fn ($r) => $r['status'], $batchRuns),
-            array_map(fn ($w) => [$w['status'], $w['closing'], $w['ends_at']], $windows),
-            array_map(fn ($t) => [$t['dry_result'], $t['result'], $t['before_status'], $t['after_status']], $targets), count($events), count($approvals)]));
+        $events = $changes->events($id, self::TIMELINE);
         $dryRunAt = Clock::unix($change['dry_run_at']);
         $approvedAt = Clock::unix($change['approved_at']);
         // after a failure or a stop: a new change with the remaining devices; after a failed dry run: one without the devices it failed on
@@ -441,7 +424,7 @@ class ChangeController extends Controller
         $stoppedRun = null;
         foreach (array_reverse($batchRuns, true) as $batchRun) {
             if ($batchRun['status'] === RunStatus::STOPPED) {
-                $stoppedRun = $batchRun;
+                $stoppedRun = $runs->find((int) $batchRun['id']); // its log: the step in progress at the stop
                 break;
             }
         }
@@ -452,21 +435,12 @@ class ChangeController extends Controller
                 array_values(array_map(fn ($t) => (string) $t['inventory_name'], $runs->targets((int) $stoppedRun['id']))))['task'], time()),
             'command' => \Agoodley\LibrenmsAnsible\Runs\RunDiagnosis::leftoverCommand($stoppedRun),
         ];
-        $actions = [
-            'dry_run' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
-            'approve' => $canApprove && $status === ChangeStatus::AWAITING && $approvalRefusal === null,
-            'reject' => $canApprove && $status === ChangeStatus::AWAITING,
-            'apply' => $canRun && $status === ChangeStatus::READY,
-            'continue' => $canRun && $status === ChangeStatus::PAUSED,
-            'stop' => $canRun && in_array($status, [ChangeStatus::APPLYING, ChangeStatus::PAUSED, ChangeStatus::DRY_RUN], true),
-            'cancel' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
-        ];
 
         return [
             'change' => $change, 'targets' => $targets, 'batches' => $batches, 'batchRuns' => $batchRuns, 'run' => $run, 'dryRun' => $dryRun,
-            'approvals' => $approvals, 'windows' => $windows, 'events' => array_slice($events, -self::TIMELINE), 'signature' => $signature,
+            'approvals' => $approvals, 'windows' => $windows, 'events' => $events, 'signature' => $signature,
             'diffs' => $diffs, 'unattributed' => $unattributed, 'secretVars' => $secretVars, 'settings' => $settings, 'canRun' => $canRun, 'canApprove' => $canApprove,
-            'approvalRefusal' => $approvalRefusal, 'actions' => $actions, 'pending' => $follower->pending($id),
+            'approvalRefusal' => $approvalRefusal, 'actions' => $actions, 'pending' => $pending,
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
             'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($settings->approval, $change) : null,
             // before the apply: the targets Oxidized cannot back up (asked at the dry run), whose batches the setting would refuse
@@ -479,6 +453,65 @@ class ChangeController extends Controller
             'lines' => $run !== null ? OutputBuffer::display($run) : [],
             'oxidized' => (new \Agoodley\LibrenmsAnsible\Services\OxidizedBackups())->enabled(),
         ];
+    }
+
+    /**
+     * What the page shows that moves while it is open, light enough for each poll: the run in its Log panel (with its
+     * log), the batches and their runs (without their logs), the windows, the targets, the approvals, whether the
+     * change still needs the sync command, and the signature the page compares to know when to fetch itself again.
+     *
+     * @return array{run: ?array, batches: array, batchRuns: array<int, array>, windows: array, targets: array, approvals: array, pending: bool, signature: string}
+     */
+    private function live(array $change): array
+    {
+        $id = (int) $change['id'];
+        $changes = new ChangeRepository();
+        $runs = new RunRepository();
+        $batches = $changes->batches($id);
+        $runId = $this->changeFollower()->currentRun($change);
+        $run = $runId !== null ? $runs->find($runId) : null;
+        $summaries = $runs->summaries(array_values(array_filter(array_map(fn ($batch) => $batch['run_id'] !== null ? (int) $batch['run_id'] : null, $batches))));
+        $batchRuns = [];
+        foreach ($batches as $number => $batch) {
+            if ($batch['run_id'] !== null && isset($summaries[(int) $batch['run_id']])) {
+                $batchRuns[$number] = $summaries[(int) $batch['run_id']];
+            }
+        }
+        $windows = $changes->windows($id);
+        $targets = $changes->targets($id);
+        $approvals = $changes->approvals($id);
+        // what the page shows changed: it fetches itself again (the log is followed apart)
+        $signature = md5((string) json_encode([(int) $change['version'], $run['id'] ?? null, $run['status'] ?? null,
+            array_map(fn ($b) => [$b['status'], $b['run_id']], $batches), array_map(fn ($r) => $r['status'], $batchRuns),
+            array_map(fn ($w) => [$w['status'], $w['closing'], $w['ends_at']], $windows),
+            array_map(fn ($t) => [$t['dry_result'], $t['result'], $t['before_status'], $t['after_status']], $targets), $changes->eventCount($id), count($approvals)]));
+
+        return ['run' => $run, 'batches' => $batches, 'batchRuns' => $batchRuns, 'windows' => $windows, 'targets' => $targets, 'approvals' => $approvals,
+            'pending' => ChangeLifecycle::pendingOf($change, $windows, $targets), 'signature' => $signature];
+    }
+
+    /**
+     * The actions the user may take on the change now (the lifecycle checks each again).
+     *
+     * @return array{actions: array<string, bool>, approvalRefusal: ?string, canRun: bool, canApprove: bool}
+     */
+    private function actions(Request $request, array $change): array
+    {
+        $user = $request->user();
+        $canRun = Access::canRun($user);
+        $canApprove = Access::canApprove($user);
+        $status = $change['status'];
+        $approvalRefusal = $canApprove ? ApprovalRules::refusal($this->settings()->changeSettings()->approval, $change, (int) $user->user_id, true) : null;
+
+        return ['canRun' => $canRun, 'canApprove' => $canApprove, 'approvalRefusal' => $approvalRefusal, 'actions' => [
+            'dry_run' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
+            'approve' => $canApprove && $status === ChangeStatus::AWAITING && $approvalRefusal === null,
+            'reject' => $canApprove && $status === ChangeStatus::AWAITING,
+            'apply' => $canRun && $status === ChangeStatus::READY,
+            'continue' => $canRun && $status === ChangeStatus::PAUSED,
+            'stop' => $canRun && in_array($status, [ChangeStatus::APPLYING, ChangeStatus::PAUSED, ChangeStatus::DRY_RUN], true),
+            'cancel' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
+        ]];
     }
 
     /**

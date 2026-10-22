@@ -102,6 +102,10 @@ class ChangeRepositoryTest extends TestCase
 
         $this->changes->addEvent($id, 'dry_run', 'Dry run launched.', 'alice', 1000);
         $this->assertSame([['at' => Clock::store(1000), 'username' => 'alice', 'kind' => 'dry_run', 'message' => 'Dry run launched.']], $this->changes->events($id));
+        $this->changes->addEvent($id, 'approval', 'Approved.', 'bob', 1100);
+        $this->changes->addEvent($id, 'apply', 'Apply started.', 'alice', 1200);
+        $this->assertSame(['Approved.', 'Apply started.'], array_column($this->changes->events($id, 2), 'message'), 'the latest entries, oldest first');
+        $this->assertSame(3, $this->changes->eventCount($id));
     }
 
     public function testDevicesAreReservedWhileAChangeIsApplied(): void

@@ -106,6 +106,33 @@ final class RunRepository implements RunStore
         return $rows ? self::decode($rows[0]) : null;
     }
 
+    /** The columns of a run but its log (output, output_tail): what a page that lists runs needs. */
+    private const SUMMARY_COLUMNS = ['id', 'user_id', 'username', 'template_id', 'template_name', 'playbook', 'limit', 'runner_task_id', 'status', 'runner_status',
+        'output_lines', 'output_truncated', 'output_omitted', 'summary', 'unexpected_hosts', 'error', 'poll_error', 'stopped_by', 'started_at', 'finished_at',
+        'created_at', 'held_until', 'change_id', 'kind', 'batch', 'context', 'commit_hash', 'proof', 'version', 'stop_requested_at', 'stop_reason', 'released_by',
+        'polled_at', 'watch_until', 'runner_final_at'];
+
+    /**
+     * Runs without their log, by id (one query): a change's batches on its page.
+     *
+     * @param  int[]  $ids
+     * @return array<int, array> id => row (JSON columns decoded)
+     */
+    public function summaries(array $ids): array
+    {
+        $ids = array_values(array_unique(array_map('intval', $ids)));
+        if (! $ids) {
+            return [];
+        }
+        $runs = [];
+        foreach ($this->sql->select('SELECT ' . self::columns(self::SUMMARY_COLUMNS) . ' FROM ' . $this->sql->table('ansible_runs') . ' WHERE `id` IN ('
+            . self::marks($ids) . ')', $ids) as $row) {
+            $runs[(int) $row['id']] = self::decode($row);
+        }
+
+        return $runs;
+    }
+
     /**
      * The targets of a run.
      *

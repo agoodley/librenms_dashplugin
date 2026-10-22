@@ -8,6 +8,8 @@ use Agoodley\LibrenmsAnsible\Changes\ConfigBackups;
 use Agoodley\LibrenmsAnsible\Changes\MaintenanceWindows;
 use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
+use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
+use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Support\ErrorText;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
 use Illuminate\Contracts\Cache\LockTimeoutException;
@@ -67,7 +69,9 @@ final class ChangeFollower
             return $change;
         }
         $runId = $this->currentRun($change);
-        if ($runId !== null) {
+        // a run that ended (and is not watched for a late end) needs nothing from the runner: its log is not read for that
+        $light = $runId !== null ? ($this->runs->summaries([$runId])[$runId] ?? null) : null;
+        if ($light !== null && (! RunStatus::isFinal($light['status']) || RunLifecycle::watched($light, time()))) {
             (new RunFollower($this->plugin, $this->runs, $this->settings, $this->eventlog, null, $this->inventory))->refresh($runId, $throttle);
         }
         $lock = Cache::lock("ansible-plugin-change-$id", $this->lockSeconds());
