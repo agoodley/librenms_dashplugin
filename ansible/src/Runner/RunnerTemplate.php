@@ -18,6 +18,9 @@ final class RunnerTemplate
      * @param  bool|null  $canRun  may the token's user run it (null: unknown)
      * @param  string[]  $taskOverrides  what else a task may override (arguments, inventory, branch, ...)
      * @param  string|null  $environmentId  the template's variable group (null: none)
+     * @param  string|null  $repositoryId  the repository its playbook comes from
+     * @param  string[]  $environmentIds  every variable group of the template, in the order the runner merges them (later ones win)
+     * @param  string|null  $gitBranch  the template's own branch of the repository (null: the repository's)
      */
     public function __construct(
         public readonly string $id,
@@ -35,7 +38,20 @@ final class RunnerTemplate
         public readonly ?bool $canRun = null,
         public readonly array $taskOverrides = [],
         public readonly ?string $environmentId = null,
+        public readonly ?string $repositoryId = null,
+        public readonly array $environmentIds = [],
+        public readonly ?string $gitBranch = null,
     ) {
+    }
+
+    /**
+     * Every variable group of the template: those it lists, else its one group (older runners).
+     *
+     * @return string[]
+     */
+    public function variableGroups(): array
+    {
+        return $this->environmentIds ?: ($this->environmentId !== null ? [$this->environmentId] : []);
     }
 
     /**

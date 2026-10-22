@@ -13,6 +13,7 @@ use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runner\RunnerHealth;
 use Agoodley\LibrenmsAnsible\Runner\RunnerInventory;
 use Agoodley\LibrenmsAnsible\Runner\RunnerOutput;
+use Agoodley\LibrenmsAnsible\Runner\RunnerRepository;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTask;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTaskSearch;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
@@ -134,25 +135,43 @@ final class SemaphoreRunner implements Runner
     }
 
     /**
-     * GET /api/project/{p}/environment/{id}: the names of the variable group's environment variables (its "env"
-     * JSON) and secret environment variables; Semaphore never returns the secrets' values.
+     * GET /api/project/{p}/environment/{id}: the variable group's environment variables (its "env" JSON, names and the
+     * values, which are not secret), a hash of its extra variables ("json"), and the names of its secrets; Semaphore
+     * never returns the secrets' values.
      */
     public function environment(string $id): RunnerEnvironment
     {
         $environment = $this->get($this->projectPath('/environment/' . rawurlencode($id)), "variable group $id");
         $env = is_string($environment['env'] ?? null) && trim($environment['env']) !== '' ? json_decode($environment['env'], true) : [];
-        if (! is_array($env)) {
+        $extra = is_string($environment['json'] ?? null) && trim($environment['json']) !== '' ? json_decode($environment['json'], true) : [];
+        if (! is_array($env) || ! is_array($extra)) {
             throw $this->badResponse('/environment/{id}');
         }
-        $secrets = [];
+        $secrets = ['env' => [], 'var' => []];
         foreach (is_array($environment['secrets'] ?? null) ? $environment['secrets'] : [] as $secret) {
-            if (is_array($secret) && ($secret['type'] ?? '') === 'env' && is_string($secret['name'] ?? null)) {
-                $secrets[] = $secret['name'];
+            if (is_array($secret) && in_array($secret['type'] ?? '', ['env', 'var'], true) && is_string($secret['name'] ?? null)) {
+                $secrets[$secret['type']][] = $secret['name'];
             }
+        }
+        $values = [];
+        foreach ($env as $name => $value) {
+            $values[(string) $name] = is_scalar($value) ? (is_bool($value) ? ($value ? 'true' : 'false') : (string) $value) : (string) json_encode($value);
         }
 
         return new RunnerEnvironment((string) ($environment['id'] ?? $id), UntrustedText::line($environment['name'] ?? '', 120),
-            array_values(array_map('strval', array_keys($env))), array_values(array_unique($secrets)));
+            array_keys($values), array_values(array_unique($secrets['env'])), $values,
+            $extra ? hash('sha256', (string) json_encode($extra)) : '', array_values(array_unique($secrets['var'])));
+    }
+
+    /**
+     * GET /api/project/{p}/repositories/{id}: the repository's address and branch.
+     */
+    public function repository(string $id): RunnerRepository
+    {
+        $repository = $this->get($this->projectPath('/repositories/' . rawurlencode($id)), "repository $id");
+
+        return new RunnerRepository((string) ($repository['id'] ?? $id), UntrustedText::line($repository['name'] ?? '', 120),
+            UntrustedText::line($repository['git_url'] ?? '', 500), UntrustedText::line($repository['git_branch'] ?? '', 200));
     }
 
     /**
@@ -177,8 +196,10 @@ final class SemaphoreRunner implements Runner
     }
 
     /**
-     * POST /api/project/{p}/tasks with the limit in params.limit (the top-level "limit" is a legacy alias) and the
-     * answers in "environment" and "secret"; never an inventory, playbook, branch or arguments.
+     * POST /api/project/{p}/tasks with the limit in params.limit (the top-level "limit" is a legacy alias), a dry run
+     * in params.dry_run and params.diff (Semaphore ignores them at the top level), the answers in "environment" and
+     * "secret", and a commit in "commit_hash" (Semaphore checks it out instead of the branch's latest); never an
+     * inventory, playbook, branch or arguments.
      */
     public function launch(LaunchRequest $request): RunnerTask
     {
@@ -197,6 +218,12 @@ final class SemaphoreRunner implements Runner
         ];
         if ($request->secrets) {
             $body['secret'] = json_encode((object) $request->secrets, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        }
+        if ($request->commit !== null) {
+            if (! preg_match('/^[0-9a-f]{7,64}$/D', $request->commit)) {
+                throw new RunnerError(RunnerError::REFUSED, 'The commit to run is not a Git commit hash.');
+            }
+            $body['commit_hash'] = $request->commit;
         }
         $task = $this->call('POST', $this->projectPath('/tasks'), "a task of template {$request->templateId}", $body);
         try {
@@ -327,6 +354,10 @@ final class SemaphoreRunner implements Runner
             is_int($t['permissions'] ?? null) ? ($t['permissions'] & self::PERMISSION_RUN) === self::PERMISSION_RUN : null,
             $overrides,
             isset($t['environment_id']) && is_numeric($t['environment_id']) && (int) $t['environment_id'] > 0 ? (string) (int) $t['environment_id'] : null,
+            isset($t['repository_id']) && is_numeric($t['repository_id']) && (int) $t['repository_id'] > 0 ? (string) (int) $t['repository_id'] : null,
+            array_values(array_map(fn ($id) => (string) (int) $id, array_filter(is_array($t['environment_ids'] ?? null) ? $t['environment_ids'] : [],
+                fn ($id) => is_numeric($id) && (int) $id > 0))),
+            is_string($t['git_branch'] ?? null) && trim($t['git_branch']) !== '' ? UntrustedText::line($t['git_branch'], 200) : null,
         );
     }
 
@@ -365,8 +396,10 @@ final class SemaphoreRunner implements Runner
             throw $this->badResponse('/tasks');
         }
 
+        $commit = is_string($t['commit_hash'] ?? null) && preg_match('/^[0-9a-f]{7,64}$/D', $t['commit_hash']) ? $t['commit_hash'] : null;
+
         return new RunnerTask((string) $t['id'], RunStatus::fromSemaphore($t['status']), UntrustedText::line($t['status'], 32),
-            self::time($t['start'] ?? null), self::time($t['end'] ?? null), self::time($t['created'] ?? null));
+            self::time($t['start'] ?? null), self::time($t['end'] ?? null), self::time($t['created'] ?? null), $commit);
     }
 
     /**

@@ -9,6 +9,7 @@ use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runner\RunnerHealth;
 use Agoodley\LibrenmsAnsible\Runner\RunnerInventory;
 use Agoodley\LibrenmsAnsible\Runner\RunnerOutput;
+use Agoodley\LibrenmsAnsible\Runner\RunnerRepository;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTask;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTaskSearch;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
@@ -81,6 +82,11 @@ final class FakeRunner implements Runner
     public function environment(string $id): RunnerEnvironment
     {
         return new RunnerEnvironment($id, 'LibreNMS', ['LIBRENMS_URL'], ['LIBRENMS_TOKEN']);
+    }
+
+    public function repository(string $id): RunnerRepository
+    {
+        return new RunnerRepository($id, 'playbooks', 'file:///repos/playbooks.git', 'main');
     }
 
     public function role(): string

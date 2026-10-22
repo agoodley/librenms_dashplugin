@@ -1,0 +1,34 @@
+Task X desc added to queue
+Started task #497 of template 'X desc'
+Preparing: 497
+No /repos/netops-playbooks/collections/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/collections/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/roles/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/roles/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+
+DRY RUN ************************************************************************
+
+PLAY [Interface description] [CHECK MODE] **************************************
+
+TASK [Set the description] [CHECK MODE] ****************************************
+[1;35m[WARNING]: ansible-pylibssh not installed, falling back to paramiko[0m
+[1;35m[WARNING]: To ensure idempotency and correct diff the input configuration lines should be similar to how they appear if present in the running configuration on device[0m
+[1;35m[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.[0m
+[0;35m[DEPRECATION WARNING]: Importing 'to_bytes' from 'ansible.module_utils._text' is deprecated. This feature will be removed from ansible-core version 2.24. Use ansible.module_utils.common.text.converters instead.[0m
+[0;35m[DEPRECATION WARNING]: Importing 'to_text' from 'ansible.module_utils._text' is deprecated. This feature will be removed from ansible-core version 2.24. Use ansible.module_utils.common.text.converters instead.[0m
+[0;35m[DEPRECATION WARNING]: The `ansible.module_utils.common._collections_compat` module is deprecated. This feature will be removed from ansible-core version 2.24. Use `collections.abc` from the Python standard library instead.[0m
+[0;35m[DEPRECATION WARNING]: The paramiko connection plugin is deprecated. This feature will be removed from ansible-core version 2.21.[0m
+[0;35m[DEPRECATION WARNING]: Passing `warnings` to `exit_json` or `fail_json` is deprecated. This feature will be removed from ansible-core version 2.23. Use `AnsibleModule.warn` instead.[0m
+[0;33mchanged: [lab-sw1.netops.lab][0m
+[0;33mchanged: [lab-sw2.netops.lab][0m
+
+PLAY RECAP *********************************************************************
+[0;33mlab-sw1.netops.lab[0m         : [0;32mok=1   [0m [0;33mchanged=1   [0m unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+[0;33mlab-sw2.netops.lab[0m         : [0;32mok=1   [0m [0;33mchanged=1   [0m unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+
+DRY RUN ************************************************************************

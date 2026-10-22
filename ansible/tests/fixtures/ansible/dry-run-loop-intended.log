@@ -1,0 +1,84 @@
+Task X desc loop intended added to queue
+Started task #504 of template 'X desc loop intended'
+Preparing: 504
+No /repos/netops-playbooks/collections/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/collections/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/roles/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/roles/requirements.yml file found. Skip galaxy install process.
+No /repos/netops-playbooks/requirements.yml file found. Skip galaxy install process.
+
+DRY RUN ************************************************************************
+
+PLAY [Two descriptions with intended diffs] [CHECK MODE] ***********************
+
+TASK [Read the running configuration] [CHECK MODE] *****************************
+[1;35m[WARNING]: ansible-pylibssh not installed, falling back to paramiko[0m
+[1;35m[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.[0m
+[0;35m[DEPRECATION WARNING]: Importing 'to_bytes' from 'ansible.module_utils._text' is deprecated. This feature will be removed from ansible-core version 2.24. Use ansible.module_utils.common.text.converters instead.[0m
+[0;35m[DEPRECATION WARNING]: Importing 'to_text' from 'ansible.module_utils._text' is deprecated. This feature will be removed from ansible-core version 2.24. Use ansible.module_utils.common.text.converters instead.[0m
+[0;35m[DEPRECATION WARNING]: The `ansible.module_utils.common._collections_compat` module is deprecated. This feature will be removed from ansible-core version 2.24. Use `collections.abc` from the Python standard library instead.[0m
+[0;35m[DEPRECATION WARNING]: The paramiko connection plugin is deprecated. This feature will be removed from ansible-core version 2.21.[0m
+[0;35m[DEPRECATION WARNING]: Passing `warnings` to `exit_json` or `fail_json` is deprecated. This feature will be removed from ansible-core version 2.23. Use `AnsibleModule.warn` instead.[0m
+[0;32mok: [lab-sw1.netops.lab][0m
+[0;32mok: [lab-sw2.netops.lab][0m
+
+TASK [Set two descriptions] [CHECK MODE] ***************************************
+[0;31m--- before[0m
+[0;31m[0m[0;32m+++ after[0m
+[0;32m[0m[0;36m@@ -4,6 +4,7 @@[0m
+[0;36m[0m interface FastEthernet0/1
+ interface FastEthernet0/2
+ interface FastEthernet0/3
+[0;32m+ description loop probe[0m
+[0;32m[0m interface FastEthernet0/4
+ interface FastEthernet0/5
+ interface FastEthernet0/6
+
+[1;35m[WARNING]: To ensure idempotency and correct diff the input configuration lines should be similar to how they appear if present in the running configuration on device[0m
+[0;33mchanged: [lab-sw2.netops.lab] => (item=FastEthernet0/3)[0m
+[0;31m--- before[0m
+[0;31m[0m[0;32m+++ after[0m
+[0;32m[0m[0;36m@@ -4,6 +4,7 @@[0m
+[0;36m[0m interface FastEthernet0/1
+ interface FastEthernet0/2
+ interface FastEthernet0/3
+[0;32m+ description loop probe[0m
+[0;32m[0m interface FastEthernet0/4
+ interface FastEthernet0/5
+  description oxidized-check
+
+[0;33mchanged: [lab-sw1.netops.lab] => (item=FastEthernet0/3)[0m
+[0;31m--- before[0m
+[0;31m[0m[0;32m+++ after[0m
+[0;32m[0m[0;36m@@ -5,6 +5,7 @@[0m
+[0;36m[0m interface FastEthernet0/2
+ interface FastEthernet0/3
+ interface FastEthernet0/4
+[0;32m+ description loop probe[0m
+[0;32m[0m interface FastEthernet0/5
+  description oxidized-check
+ interface FastEthernet0/6
+
+[0;33mchanged: [lab-sw1.netops.lab] => (item=FastEthernet0/4)[0m
+[0;31m--- before[0m
+[0;31m[0m[0;32m+++ after[0m
+[0;32m[0m[0;36m@@ -5,6 +5,7 @@[0m
+[0;36m[0m interface FastEthernet0/2
+ interface FastEthernet0/3
+ interface FastEthernet0/4
+[0;32m+ description loop probe[0m
+[0;32m[0m interface FastEthernet0/5
+ interface FastEthernet0/6
+ interface FastEthernet0/7
+
+[0;33mchanged: [lab-sw2.netops.lab] => (item=FastEthernet0/4)[0m
+
+PLAY RECAP *********************************************************************
+[0;33mlab-sw1.netops.lab[0m         : [0;32mok=2   [0m [0;33mchanged=1   [0m unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+[0;33mlab-sw2.netops.lab[0m         : [0;32mok=2   [0m [0;33mchanged=1   [0m unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+
+DRY RUN ************************************************************************
