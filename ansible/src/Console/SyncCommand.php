@@ -30,7 +30,7 @@ class SyncCommand extends Command
     {
         $runs = new RunRepository();
         if (! $runs->available()) {
-            $this->warn('The Ansible plugin\'s tables are missing: run ./lnms migrate.');
+            $this->warn('The Ansible plugin\'s tables are missing or out of date: run ./lnms migrate.');
 
             return self::SUCCESS;
         }

@@ -21,12 +21,14 @@ interface RunStore
     public function targets(int $runId): array;
 
     /**
-     * Change a run that is still at $version, bumping the version; $appendOutput is added to the end of its stored
-     * log in the same change. False when the run changed meanwhile: nothing was written.
+     * Change a run that is still at $version, bumping the version, in one transaction; $append adds text to the end of
+     * a stored log column (output, output_tail) in the same change. False when the run changed meanwhile: nothing was
+     * written.
      *
      * @param  array<string, mixed>  $values  column => value (JSON columns as arrays)
+     * @param  array<string, string>  $append  column => text to add at its end
      */
-    public function updateAt(int $id, int $version, array $values, string $appendOutput = ''): bool;
+    public function updateAt(int $id, int $version, array $values, array $append = []): bool;
 
     /**
      * Store each target's result.

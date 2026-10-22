@@ -331,7 +331,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   `ansible:sync` command does the same every minute for every unfinished run, and every few minutes for a lost or
   released run (through the LibreNMS scheduler, one at a time, on one server, while the plugin is enabled and its
   connection set up; output in `logs/ansible-sync.log`), so the audit log is complete when nobody watches. The log is
-  stored as it comes, in pieces of at most 512 KB per statement, up to *Output size*.
+  stored as it comes, only the new lines at each refresh, in pieces of at most 512 KB per statement and one
+  transaction per change, up to *Output size*; past it the new lines go to the end kept (the tail), which is cut to
+  three quarters of its size when it is full. After an update of the plugin, `./lnms migrate` adds what its tables
+  lack; until then the run pages and launches answer 503 and say so.
 * **Results:** when the runner reports the task finished, the plugin reads the output once more (Semaphore reports
   the end before the last lines are readable) and takes each target's result from the last `PLAY RECAP`: unreachable,
   failed, changed, ok, skipped, or *not run* for a target the recap does not name. Without a recap (a stopped or
@@ -434,10 +437,6 @@ Checked against Semaphore UI 2.19.17:
   204 and does nothing. (Checked with Semaphore UI 2.19.17 and ansible-core 2.20: a stopped pause was still waiting
   12 minutes later; a looped `ios_config` stopped after its first item applied the five others over the next
   minute.)
-* `GET .../tasks/last?count=N` answers at most 200 tasks, newest first, whatever N asks (with an `X-Has-Next` header),
-  and `&before=<task id>` the older ones: to find the task of a launch whose answer never came, the plugin pages back
-  until it reaches a task created before the launch or the end of the list (at most 1000 tasks); a search that does
-  not reach back so far is not taken as proof that nothing was launched.
 * `GET .../tasks/{id}/output` returns the whole log at every call, one record per line with ANSI colour codes; the
   task is reported finished before its last lines can be read. `POST .../tasks/{id}/stop` needs the body
   `{"force": false}` (an empty body is refused). `GET .../tasks/{id}` answers HTTP 400 for a task it does not have.

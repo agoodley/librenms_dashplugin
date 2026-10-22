@@ -374,11 +374,12 @@ final class RunLifecycle
      * when the stored one was cut.
      *
      * @param  array<string, mixed>  $values  the columns this refresh writes
+     * @param  array<string, string>  $append  the text it adds to the stored log (OutputBuffer::add())
      */
-    private function finish(array $run, array $values, string $append, RunnerTask $task, Runner $runner, int $now, bool $late = false): void
+    private function finish(array $run, array $values, array $append, RunnerTask $task, Runner $runner, int $now, bool $late = false): void
     {
         $id = (int) $run['id'];
-        $stored = array_merge($run, $values, ['output' => array_key_exists('output', $values) ? $values['output'] : (string) $run['output'] . $append]);
+        $stored = OutputBuffer::applied($run, $values, $append);
         $lines = OutputBuffer::display($stored);
         $complete = true;
         if (! empty($stored['output_truncated'])) {
@@ -484,7 +485,7 @@ final class RunLifecycle
         }
         $values = OutputBuffer::replace($output->lines, $this->outputMaxBytes) + ['output_lines' => $output->next, 'runner_status' => $task->rawStatus,
             'poll_error' => null, 'runner_seen_at' => self::time($now)];
-        $this->finish($run, $values, '', $task, $runner, $now, true);
+        $this->finish($run, $values, [], $task, $runner, $now, true);
     }
 
     // ------------------------------------------------------------------ users' actions

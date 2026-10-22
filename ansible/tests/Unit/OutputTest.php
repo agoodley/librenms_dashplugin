@@ -45,12 +45,14 @@ class OutputTest extends TestCase
     public function testTheLogIsAppendedWhileItFits(): void
     {
         $first = OutputBuffer::add([], ['one', 'two'], 40);
-        $this->assertSame(['append' => "one\ntwo", 'values' => []], $first);
+        $this->assertSame(['append' => ['output' => "one\ntwo"], 'values' => []], $first);
         $second = OutputBuffer::add(['output' => "one\ntwo"], ['three'], 40);
-        $this->assertSame("\nthree", $second['append'], 'only the new text goes to the database');
-        $this->assertSame(['append' => '', 'values' => []], OutputBuffer::add(['output' => 'x'], [], 40));
+        $this->assertSame(['output' => "\nthree"], $second['append'], 'only the new text goes to the database');
+        $this->assertSame(['append' => [], 'values' => []], OutputBuffer::add(['output' => 'x'], [], 40));
         $this->assertSame(['one', 'two'], OutputBuffer::lines("one\ntwo"));
         $this->assertSame([], OutputBuffer::lines(''));
+        $this->assertSame(['output' => "a\nb", 'status' => 'x', 'output_tail' => 'c'],
+            OutputBuffer::applied(['output' => 'a', 'status' => 'y'], ['status' => 'x'], ['output' => "\nb", 'output_tail' => 'c']));
     }
 
     public function testALongLogKeepsItsHeadAndItsTail(): void
@@ -58,31 +60,38 @@ class OutputTest extends TestCase
         $lines = array_map(fn ($i) => sprintf('line %02d', $i), range(1, 20)); // 7 bytes each
         $cut = OutputBuffer::add(['output' => ''], $lines, 64);
 
-        $this->assertSame('', $cut['append']);
+        $this->assertSame([], $cut['append']);
         $this->assertSame(implode("\n", array_slice($lines, 0, 4)), $cut['values']['output'], 'the head: the first half');
-        $this->assertSame(implode("\n", array_slice($lines, 16)), $cut['values']['output_tail'], 'the tail: the last half');
-        $this->assertSame(12, $cut['values']['output_omitted']);
+        $this->assertSame(implode("\n", array_slice($lines, 17)), $cut['values']['output_tail'], 'the tail: three quarters of the last half, room for the next lines');
+        $this->assertSame(13, $cut['values']['output_omitted']);
         $this->assertTrue($cut['values']['output_truncated']);
 
+        // the tail is full: cut to its last three quarters at once
         $run = $cut['values'] + ['output_lines' => 20];
         $more = OutputBuffer::add($run, ['line 21', 'line 22'], 64);
-        $this->assertSame('line 19' . "\n" . 'line 20' . "\n" . 'line 21' . "\n" . 'line 22', $more['values']['output_tail']);
-        $this->assertSame(14, $more['values']['output_omitted']);
+        $this->assertSame([], $more['append']);
+        $this->assertSame('line 20' . "\n" . 'line 21' . "\n" . 'line 22', $more['values']['output_tail']);
+        $this->assertSame(15, $more['values']['output_omitted']);
 
+        // while it has room, only the new lines are written
         $run = $more['values'] + $run;
-        $run['output_lines'] = 22;
+        $next = OutputBuffer::add($run, ['line 23'], 64);
+        $this->assertSame(['append' => ['output_tail' => "\nline 23"], 'values' => []], $next);
+        $run = OutputBuffer::applied($run, $next['values'], $next['append']);
+        $run['output_lines'] = 23;
         $display = OutputBuffer::display($run);
         $this->assertSame(['line 01', 'line 02', 'line 03', 'line 04'], array_slice($display, 0, 4));
-        $this->assertStringContainsString('14 lines left out here', $display[4]);
-        $this->assertSame(['line 19', 'line 20', 'line 21', 'line 22'], array_slice($display, 5));
+        $this->assertStringContainsString('15 lines left out here', $display[4]);
+        $this->assertSame(['line 20', 'line 21', 'line 22', 'line 23'], array_slice($display, 5));
+        $this->assertLessThanOrEqual(64, strlen($run['output']) + strlen($run['output_tail']), 'never more than the Output size');
 
         // a page that showed 10 lines gets a marker for the lines it never saw, then the tail
         $since = OutputBuffer::since($run, 10);
-        $this->assertSame(22, $since['next']);
-        $this->assertStringContainsString('8 lines left out here', $since['lines'][0]);
-        $this->assertSame(['line 19', 'line 20', 'line 21', 'line 22'], array_slice($since['lines'], 1));
-        $this->assertSame(['line 22'], OutputBuffer::since($run, 21)['lines']);
-        $this->assertSame([], OutputBuffer::since($run, 22)['lines']);
+        $this->assertSame(23, $since['next']);
+        $this->assertStringContainsString('9 lines left out here', $since['lines'][0]);
+        $this->assertSame(['line 20', 'line 21', 'line 22', 'line 23'], array_slice($since['lines'], 1));
+        $this->assertSame(['line 23'], OutputBuffer::since($run, 22)['lines']);
+        $this->assertSame([], OutputBuffer::since($run, 23)['lines']);
     }
 
     public function testLongValuesAreWrittenInPiecesBetweenCharacters(): void
@@ -96,7 +105,7 @@ class OutputTest extends TestCase
             $this->assertTrue(mb_check_encoding($piece, 'UTF-8'));
             $this->assertLessThanOrEqual(OutputBuffer::CHUNK, strlen($piece));
         }
-        $long = OutputBuffer::add([], [str_repeat('x', 200000)], 8 * 1024 * 1024)['append'];
+        $long = OutputBuffer::add([], [str_repeat('x', 200000)], 8 * 1024 * 1024)['append']['output'];
         $this->assertLessThan(70000, strlen($long), 'a very long line is cut');
         $this->assertStringEndsWith('(line cut by the plugin)', $long);
     }

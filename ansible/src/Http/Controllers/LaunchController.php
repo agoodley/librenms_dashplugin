@@ -40,7 +40,7 @@ class LaunchController extends Controller
             $devices = $service->devices();
             [$data['groups'], $data['locations']] = [$devices->deviceGroups(), $devices->locations()];
             // what refuses every launch, said up front (the preview and the launch check it again)
-            $data['blocked'] = array_values(array_filter([$this->settings()->error, $service->inventoryUserProblem()]));
+            $data['blocked'] = array_values(array_filter([self::tablesProblem(), $this->settings()->error, $service->inventoryUserProblem()]));
             $runner = $plugin->runner($connection);
             $health = $runner->health();
             $block = $health->launchBlock();
@@ -86,6 +86,9 @@ class LaunchController extends Controller
      */
     public function targets(): JsonResponse
     {
+        if (($problem = self::tablesProblem()) !== null) {
+            return response()->json(['error' => $problem], 503);
+        }
         try {
             $service = $this->inventoryService();
             $inventory = $service->build();
@@ -128,6 +131,9 @@ class LaunchController extends Controller
     public function preview(Request $request): JsonResponse
     {
         [$templateId, $devices, $answers] = self::input($request);
+        if (($problem = self::tablesProblem()) !== null) {
+            return response()->json(['error' => $problem], 503);
+        }
         try {
             return response()->json($this->launcher()->plan($templateId, $devices, $answers)->forPage());
         } catch (\Throwable $e) {
@@ -143,6 +149,9 @@ class LaunchController extends Controller
     {
         [$templateId, $devices, $answers] = self::input($request);
         $token = is_string($request->input('request_token')) ? $request->input('request_token') : '';
+        if (($problem = self::tablesProblem()) !== null) {
+            return response()->json(['errors' => [$problem]], 503);
+        }
         try {
             $result = $this->launcher()->launch($request->user(), $templateId, $devices, $answers, $token);
         } catch (\Throwable $e) {
@@ -154,6 +163,15 @@ class LaunchController extends Controller
 
         return response()->json(['run_id' => $result['run_id'], 'existing' => $result['existing'],
             'url' => route('ansible.runs.show', $result['run_id'])], $result['existing'] ? 200 : 201);
+    }
+
+    /**
+     * Why nothing can be launched: the plugin's tables are missing, or older than its code (an update without
+     * ./lnms migrate); null when they are there.
+     */
+    private static function tablesProblem(): ?string
+    {
+        return (new RunRepository())->available() ? null : 'The Ansible plugin\'s tables are missing or out of date: run ./lnms migrate.';
     }
 
     /**

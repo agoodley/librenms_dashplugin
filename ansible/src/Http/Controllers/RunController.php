@@ -36,7 +36,7 @@ class RunController extends Controller
             'assetVersion' => self::assetVersion()];
         try {
             if (! $runs->available()) {
-                $data['error'] = 'The plugin\'s tables are missing: run ./lnms migrate.';
+                $data['error'] = 'The plugin\'s tables are missing or out of date: run ./lnms migrate.';
             } else {
                 $data = array_merge($data, $runs->page($filters, $page, self::PER_PAGE));
                 $data['options'] = $runs->filterOptions();
@@ -73,7 +73,7 @@ class RunController extends Controller
     public function show(Request $request, int $id): View
     {
         if (! (new RunRepository())->available()) {
-            abort(503, 'The Ansible plugin\'s tables are missing: run ./lnms migrate.');
+            abort(503, 'The Ansible plugin\'s tables are missing or out of date: run ./lnms migrate.');
         }
         $run = $this->follower()->refresh($id);
         if ($run === null) {
@@ -102,7 +102,7 @@ class RunController extends Controller
     public function poll(Request $request, int $id): JsonResponse
     {
         if (! (new RunRepository())->available()) {
-            return response()->json(['error' => 'The Ansible plugin\'s tables are missing: run ./lnms migrate.'], 503);
+            return response()->json(['error' => 'The Ansible plugin\'s tables are missing or out of date: run ./lnms migrate.'], 503);
         }
         $run = $this->follower()->refresh($id);
         if ($run === null) {

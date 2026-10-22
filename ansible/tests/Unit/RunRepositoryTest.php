@@ -100,10 +100,33 @@ class RunRepositoryTest extends TestCase
 
         // new lines appended to a long log: in pieces too
         $this->sql->statements = [];
-        $this->assertTrue($this->runs->updateAt($id, 1, ['output_lines' => 9000], "\n" . $log));
+        $this->assertTrue($this->runs->updateAt($id, 1, ['output_lines' => 9000], ['output' => "\n" . $log, 'output_tail' => "\nthe end"]));
         $this->assertLessThanOrEqual(OutputBuffer::CHUNK, $largest($this->sql->statements));
         $this->assertSame($log . "\n" . $log, $this->runs->find($id)['output']);
+        $this->assertSame($log . "\nthe end", $this->runs->find($id)['output_tail'], 'only the new lines are sent for the tail too');
         $this->assertSame(2, (int) $this->runs->find($id)['version'], 'the pieces belong to one change');
+    }
+
+    public function testAChangeInPiecesIsAllOrNothing(): void
+    {
+        $id = $this->record();
+        $log = str_repeat("ok: [lab-sw1.netops.lab] " . str_repeat('x', 300) . "\n", 4000);
+        $this->sql->onChange = function (string $query, int $before): void {
+            if ($before === 2) {
+                throw new \RuntimeException('the database went away between two pieces');
+            }
+        };
+
+        try {
+            $this->runs->updateAt($id, 0, ['status' => 'running', 'output' => $log]);
+            $this->fail('no error');
+        } catch (\RuntimeException) {
+        }
+        $run = $this->runs->find($id);
+        $this->assertSame([0, 'pending', null], [(int) $run['version'], $run['status'], $run['output']], 'nothing of the change was kept');
+        $this->sql->onChange = null;
+        $this->assertTrue($this->runs->updateAt($id, 0, ['status' => 'running', 'output' => $log]));
+        $this->assertSame($log, $this->runs->find($id)['output']);
     }
 
     public function testBusyDevicesAreTheTargetsOfUnfinishedRunsAndOfStoppedRunsThatHoldThem(): void

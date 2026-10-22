@@ -24,13 +24,18 @@ final class RunRepository implements RunStore
     {
     }
 
+    /** Columns of the later migrations that the runs need: without one of them the plugin asks for ./lnms migrate. */
+    private const LATER_COLUMNS = ['version', 'launch_nonce', 'missing_since', 'missing_checks', 'stop_requested_at', 'stop_reason', 'released_by',
+        'runner_seen_at', 'watch_until', 'output_tail', 'output_omitted', 'held_until'];
+
     /**
-     * Do the plugin's tables exist (./lnms migrate ran)?
+     * Do the plugin's tables exist with all their columns (./lnms migrate ran, also after an update)?
      */
     public function available(): bool
     {
         try {
-            return Schema::hasTable('ansible_runs') && Schema::hasTable('ansible_run_targets');
+            return Schema::hasTable('ansible_runs') && Schema::hasTable('ansible_run_targets') && Schema::hasColumns('ansible_runs', self::LATER_COLUMNS)
+                && Schema::hasColumn('ansible_run_targets', 'unexpected');
         } catch (\Throwable) {
             return false;
         }
@@ -123,11 +128,12 @@ final class RunRepository implements RunStore
     /**
      * {@inheritdoc}
      *
-     * One UPDATE ... WHERE id = ? AND version = ? that bumps the version. A log value bigger than
+     * One UPDATE ... WHERE id = ? AND version = ? that bumps the version. A log value or text bigger than
      * OutputBuffer::CHUNK is written in pieces (the first with the change, the others appended to it), so no
-     * statement exceeds the database's packet size.
+     * statement exceeds the database's packet size; all in one transaction, so another change of the run (a user's
+     * Stop) cannot come between the pieces and no reader sees half a change.
      */
-    public function updateAt(int $id, int $version, array $values, string $appendOutput = ''): bool
+    public function updateAt(int $id, int $version, array $values, array $append = []): bool
     {
         $values = self::encode($values);
         $later = [];
@@ -144,30 +150,36 @@ final class RunRepository implements RunStore
             $sets[] = self::column((string) $column) . ' = ?';
             $bindings[] = self::bindable($value);
         }
-        if ($appendOutput !== '') {
-            $pieces = OutputBuffer::pieces($appendOutput);
-            if (array_key_exists('output', $values)) {
-                $later['output'] = array_merge($later['output'] ?? [], $pieces);
+        foreach ($append as $column => $text) {
+            if ($text === '') {
+                continue;
+            }
+            $pieces = OutputBuffer::pieces($text);
+            if (array_key_exists($column, $values)) {
+                $later[$column] = array_merge($later[$column] ?? [], $pieces);
             } else {
-                $sets[] = "`output` = CONCAT(COALESCE(`output`, ''), ?)";
+                $sets[] = self::column($column) . ' = CONCAT(COALESCE(' . self::column($column) . ", ''), ?)";
                 $bindings[] = array_shift($pieces);
-                $later['output'] = $pieces;
+                $later[$column] = $pieces;
             }
         }
         $sets[] = '`version` = `version` + 1';
         $sets[] = '`updated_at` = ?';
         $bindings[] = date('Y-m-d H:i:s');
         $table = $this->sql->table('ansible_runs');
-        if ($this->sql->change("UPDATE $table SET " . implode(', ', $sets) . ' WHERE `id` = ? AND `version` = ?', array_merge($bindings, [$id, $version])) < 1) {
-            return false;
-        }
-        foreach ($later as $column => $pieces) {
-            foreach ($pieces as $piece) {
-                $this->sql->change("UPDATE $table SET `$column` = CONCAT(COALESCE(`$column`, ''), ?) WHERE `id` = ? AND `version` = ?", [$piece, $id, $version + 1]);
-            }
-        }
 
-        return true;
+        return $this->sql->transaction(function () use ($table, $sets, $bindings, $later, $id, $version): bool {
+            if ($this->sql->change("UPDATE $table SET " . implode(', ', $sets) . ' WHERE `id` = ? AND `version` = ?', array_merge($bindings, [$id, $version])) < 1) {
+                return false;
+            }
+            foreach ($later as $column => $pieces) {
+                foreach ($pieces as $piece) {
+                    $this->sql->change("UPDATE $table SET `$column` = CONCAT(COALESCE(`$column`, ''), ?) WHERE `id` = ? AND `version` = ?", [$piece, $id, $version + 1]);
+                }
+            }
+
+            return true;
+        });
     }
 
     /**

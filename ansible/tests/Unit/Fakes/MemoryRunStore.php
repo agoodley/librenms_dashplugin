@@ -53,7 +53,7 @@ final class MemoryRunStore implements RunStore
         return $this->targets[$runId] ?? [];
     }
 
-    public function updateAt(int $id, int $version, array $values, string $appendOutput = ''): bool
+    public function updateAt(int $id, int $version, array $values, array $append = []): bool
     {
         if ($this->beforeUpdate !== null) {
             $hook = $this->beforeUpdate;
@@ -66,8 +66,8 @@ final class MemoryRunStore implements RunStore
             return false;
         }
         $run = array_merge($this->runs[$id], $values);
-        if ($appendOutput !== '') {
-            $run['output'] = (string) $run['output'] . $appendOutput;
+        foreach ($append as $column => $text) {
+            $run[$column] = (string) ($run[$column] ?? '') . $text;
         }
         $run['version'] = $version + 1;
         $this->runs[$id] = $run;

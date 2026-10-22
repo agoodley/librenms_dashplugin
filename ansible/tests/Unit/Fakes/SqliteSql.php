@@ -7,7 +7,8 @@ use Agoodley\LibrenmsAnsible\Data\Sql;
 /**
  * The plugin's tables in an SQLite database in memory (the columns of its migrations), for RunRepository's tests:
  * its statements run as they are written for LibreNMS' database. Statements are recorded; $beforeChange runs once
- * before the next statement that changes rows (another request writing in between, or a failure).
+ * before the next statement that changes rows (another request writing in between), $onChange before each one (a
+ * failure in the middle of a change). Transactions nest with savepoints, as Laravel's do.
  */
 final class SqliteSql implements Sql
 {
@@ -17,6 +18,13 @@ final class SqliteSql implements Sql
     public array $statements = [];
 
     public ?\Closure $beforeChange = null;
+
+    /** @var (\Closure(string, int): void)|null called with the statement and how many changes ran before it */
+    public ?\Closure $onChange = null;
+
+    private int $changes = 0;
+
+    private int $depth = 0;
 
     public function __construct()
     {
@@ -48,6 +56,10 @@ final class SqliteSql implements Sql
             $this->beforeChange = null;
             $hook($query);
         }
+        if ($this->onChange !== null) {
+            ($this->onChange)($query, $this->changes);
+        }
+        $this->changes++;
 
         return $this->run($query, $bindings)->rowCount();
     }
@@ -61,14 +73,18 @@ final class SqliteSql implements Sql
 
     public function transaction(\Closure $callback): mixed
     {
-        $this->pdo->beginTransaction();
+        $savepoint = 'level' . $this->depth;
+        $this->depth === 0 ? $this->pdo->beginTransaction() : $this->pdo->exec("SAVEPOINT $savepoint");
+        $this->depth++;
         try {
             $result = $callback();
-            $this->pdo->commit();
+            $this->depth--;
+            $this->depth === 0 ? $this->pdo->commit() : $this->pdo->exec("RELEASE SAVEPOINT $savepoint");
 
             return $result;
         } catch (\Throwable $e) {
-            $this->pdo->rollBack();
+            $this->depth--;
+            $this->depth === 0 ? $this->pdo->rollBack() : $this->pdo->exec("ROLLBACK TO SAVEPOINT $savepoint");
 
             throw $e;
         }

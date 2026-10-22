@@ -5,10 +5,11 @@ namespace Agoodley\LibrenmsAnsible\Runs;
 /**
  * The log the plugin stores for a run: whole lines as the runner sent them (ANSI codes kept for the colours), at
  * most a configured number of bytes. While the whole log fits it is kept whole and each refresh only appends the new
- * text; past that the head (the first half of the size) stays, the tail (the last half) follows the end of the log,
- * and the lines in between are only counted. So the end of a long log (the PLAY RECAP, the errors) always survives;
- * the runner keeps the whole log. Values bigger than CHUNK are written in pieces (RunRepository), so a database
- * packet never has to hold a whole log.
+ * text; past that the head (the first half of the size) stays, the tail (at most the last half) follows the end of
+ * the log, and the lines in between are only counted. So the end of a long log (the PLAY RECAP, the errors) always
+ * survives; the runner keeps the whole log. The tail too only gets the new text appended, until it is full: then it
+ * is cut to its last three quarters at once, so it is rewritten once per quarter of its size, not at every refresh.
+ * Values bigger than CHUNK are written in pieces (RunRepository), so a database packet never has to hold a whole log.
  */
 final class OutputBuffer
 {
@@ -19,34 +20,63 @@ final class OutputBuffer
     private const LINE_MAX = 65536;
 
     /**
-     * The runner's new lines added to a run's stored log: the text to append to it, and the columns to change when
-     * the log no longer fits (the head rewritten once, then the tail).
+     * The runner's new lines added to a run's stored log: the text to append to the log (output) or to its tail
+     * (output_tail), or the columns to rewrite when the log no longer fits (the head once, then the tail when full).
      *
      * @param  array{output?: ?string, output_tail?: ?string, output_truncated?: mixed, output_omitted?: mixed}  $run
      * @param  string[]  $lines
-     * @return array{append: string, values: array<string, mixed>}
+     * @return array{append: array<string, string>, values: array<string, mixed>}
      */
     public static function add(array $run, array $lines, int $maxBytes): array
     {
         if (! $lines) {
-            return ['append' => '', 'values' => []];
+            return ['append' => [], 'values' => []];
         }
         $half = intdiv($maxBytes, 2);
         $lines = array_map(fn ($line) => self::line($line, $half), $lines);
-        $head = (string) ($run['output'] ?? '');
         if (empty($run['output_truncated'])) {
+            $head = (string) ($run['output'] ?? '');
             $add = ($head === '' ? '' : "\n") . implode("\n", $lines);
             if (strlen($head) + strlen($add) <= $maxBytes) {
-                return ['append' => $add, 'values' => []];
+                return ['append' => ['output' => $add], 'values' => []];
             }
 
-            return ['append' => '', 'values' => self::cut(array_merge(self::lines($head), $lines), $half, 0)];
+            return ['append' => [], 'values' => self::cut(array_merge(self::lines($head), $lines), $half, 0)];
         }
-        $tail = self::lines((string) ($run['output_tail'] ?? ''));
-        $kept = self::lastFitting(array_merge($tail, $lines), $half);
+        $tail = (string) ($run['output_tail'] ?? '');
+        $add = ($tail === '' ? '' : "\n") . implode("\n", $lines);
+        if (strlen($tail) + strlen($add) <= $half) {
+            return ['append' => ['output_tail' => $add], 'values' => []];
+        }
+        $all = array_merge(self::lines($tail), $lines);
+        $kept = self::lastFitting($all, self::tailKept($half));
 
-        return ['append' => '', 'values' => ['output_tail' => implode("\n", $kept),
-            'output_omitted' => (int) ($run['output_omitted'] ?? 0) + count($tail) + count($lines) - count($kept)]];
+        return ['append' => [], 'values' => ['output_tail' => implode("\n", $kept),
+            'output_omitted' => (int) ($run['output_omitted'] ?? 0) + count($all) - count($kept)]];
+    }
+
+    /**
+     * A run with a change and its appended text applied, as the database will hold it.
+     *
+     * @param  array<string, mixed>  $values
+     * @param  array<string, string>  $append
+     */
+    public static function applied(array $run, array $values, array $append): array
+    {
+        $run = array_merge($run, $values);
+        foreach ($append as $column => $text) {
+            $run[$column] = (string) ($run[$column] ?? '') . $text;
+        }
+
+        return $run;
+    }
+
+    /**
+     * How much of its size a tail keeps when it is cut: the rest is room for the next lines.
+     */
+    private static function tailKept(int $half): int
+    {
+        return intdiv($half * 3, 4);
     }
 
     /**
@@ -83,7 +113,7 @@ final class OutputBuffer
             $head[] = $line;
             $size += 1 + strlen($line);
         }
-        $tail = self::lastFitting(array_slice($lines, count($head)), $half);
+        $tail = self::lastFitting(array_slice($lines, count($head)), self::tailKept($half));
 
         return ['output' => implode("\n", $head), 'output_tail' => implode("\n", $tail), 'output_truncated' => true,
             'output_omitted' => $omitted + count($lines) - count($head) - count($tail)];
