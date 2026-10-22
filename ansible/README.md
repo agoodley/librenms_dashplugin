@@ -285,7 +285,9 @@ link to LibreNMS' config page of the device, where Oxidized's versions and their
 after the change and its batch, with the batch's devices, from now until now plus *Expected batch time*; while the
 batch runs it moves the end to *Expected batch time* from then whenever less than a quarter of it (at least two
 minutes) is left, sets it to the end of the batch plus *Settle time* once the batch has ended, and records it as
-closed when that time has passed. The window's *behavior* (skip, mute or run alerts) is LibreNMS' default unless
+closed when that time has passed. A stopped batch's window lasts until the end of the hold after the stop (*Hold after
+a stop*) plus *Settle time*, as the step in progress at the stop may still run: with the defaults, 30 + 10 minutes of
+the window's behavior (alerts skipped, for example) after the stop. The window's *behavior* (skip, mute or run alerts) is LibreNMS' default unless
 the settings choose one. A window someone removed in LibreNMS is recorded as such; the windows of batches that never
 ran end at once.
 
@@ -409,7 +411,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   `--check --diff`; the page shows, per device, the dry run's result and the diffs of what would change. A dry run the
   plugin cannot prove to be one is shown in red, *NOT PROVEN*, with why: it may have changed the devices, and it can be
   neither approved nor applied. Once it is verified, an admin with the approve permission **Approve**s (with a
-  comment) or **Reject**s. **Apply** starts the first batch: its maintenance window, the backups, then its run; after
+  comment) or **Reject**s; approvers find the changes that wait for them on the Changes page, with the status filter
+  *Awaiting approval*. **Apply** starts the first batch: its maintenance window, the backups, then its run; after
   it the change waits for **Continue** (when *Wait after the first batch* is on), and the next batches follow on their
   own until the last, or until one fails. **Stop** stops the running batch (as a run's stop: the step in progress runs
   on) and launches nothing more. It never waits, even while another request is busy with the change (or died while
@@ -435,7 +438,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   this device*.
 * **Eventlog:** each target gets entries (type `ansible`) for every step of a change: created, the dry run launched and
   what it found for that device ("would change", or an error when it is not proven to be a dry run), the approval
-  asked for and given, the apply, its maintenance window, its backups, its batch launched and ended, and how the change
+  asked for and given, the apply, its maintenance window, its backups (each fresh one with the version Oxidized keeps,
+  each missing one with why; the change's timeline lists them too), its batch launched and ended, and how the change
   ended; and, as in phase 1, the start and end of each run with its result and counters. The severity follows the
   result. The reference is the change's address (`plugin/ansible/changes/12`) or the run's, and the entries carry the
   user who did the step (in LibreNMS' *User* column): who launched the dry run, approved, rejected, applied, continued,

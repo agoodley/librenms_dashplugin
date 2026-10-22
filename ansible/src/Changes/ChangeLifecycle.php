@@ -1561,13 +1561,25 @@ final class ChangeLifecycle
     private function reportBackups(array $change, int $number, string $phase, array $values, int $now): void
     {
         $failed = [];
+        $fresh = [];
         foreach ($values as $deviceId => $value) {
             $state = $value["{$phase}_status"] ?? null;
-            if ($state !== null && $state !== BackupState::REQUESTED && $state !== BackupState::FRESH) {
+            if ($state === BackupState::FRESH) {
+                $fresh[$deviceId] = $value["{$phase}_version"] ?? null;
+                $this->events->write(ChangeText::backedUp($change, $number, $phase, $fresh[$deviceId]), $deviceId, 'info', ChangeText::reference((int) $change['id']),
+                    $this->batchUser($change, $number));
+            } elseif ($state !== null && $state !== BackupState::REQUESTED) {
                 $failed[] = $deviceId;
                 $this->events->write(ChangeText::backupFailed($change, $number, $phase, $state, $value["{$phase}_error"] ?? null), $deviceId, 'warning',
                     ChangeText::reference((int) $change['id']), $this->batchUser($change, $number));
             }
+        }
+        if ($fresh) {
+            $names = self::displays(array_intersect_key($this->changes->targets((int) $change['id']), $fresh));
+            $this->timeline($change, 'backup', 'Oxidized backed up ' . (count($fresh) <= 5
+                ? implode(', ', array_map(fn ($deviceId) => UntrustedText::line($names[$deviceId] ?? "#$deviceId", 80) . ($fresh[$deviceId] !== null
+                    ? ' (version ' . substr((string) $fresh[$deviceId], 0, 10) . ')' : ''), array_keys($fresh)))
+                : count($fresh) . ' devices') . " $phase batch $number.", null, $now);
         }
         if ($failed) {
             $this->timeline($change, 'backup', 'No fresh backup ' . $phase . ' batch ' . $number . ' of ' . count($failed) . ' ' . (count($failed) === 1 ? 'device' : 'devices') . '.',

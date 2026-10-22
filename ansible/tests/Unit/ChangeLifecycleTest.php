@@ -585,7 +585,13 @@ class ChangeLifecycleTest extends TestCase
         $lifecycle->advance($id, $this->t0 + 300 + 601);
         $this->assertSame(['closed', 'closed'], array_values(array_column($this->changes->windows, 'status')), 'the plugin closed its windows');
         $this->assertFalse($lifecycle->pending($id), 'nothing left to follow');
-        $this->assertStringContainsString('Ansible change #1 (CHG-1) applied', $this->events->of(503)[count($this->events->of(503)) - 2]['message']);
+        $messages503 = array_column($this->events->of(503), 'message');
+        $this->assertNotEmpty(preg_grep('/^Ansible change #1 \(CHG-1\) applied/', $messages503));
+        // the backups are recorded: in each device's eventlog with the version Oxidized keeps, and in the timeline
+        $this->assertCount(1, preg_grep('/^Ansible change #1 \(CHG-1\), batch 2: Oxidized backed this device up before the batch \(version [0-9a-f]{40}\)$/', $messages503));
+        $this->assertCount(1, preg_grep('/^Ansible change #1 \(CHG-1\), batch 2: Oxidized backed this device up after the batch \(version [0-9a-f]{40}\)$/', $messages503));
+        $this->assertCount(1, preg_grep('/^Oxidized backed up lab-sw1 \(version [0-9a-f]{10}\) before batch 1\.$/', $this->changes->messages($id)));
+        $this->assertCount(1, preg_grep('/^Oxidized backed up lab-sw2 \(version [0-9a-f]{10}\), lab-sw3 \(version [0-9a-f]{10}\) after batch 2\.$/', $this->changes->messages($id)));
     }
 
     public function testABatchWithFailuresAtTheThresholdStopsTheChange(): void

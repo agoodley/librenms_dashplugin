@@ -173,6 +173,15 @@ final class ChangeText
         return self::name($change) . ", batch $batch: maintenance window #$scheduleId was removed in LibreNMS before the plugin closed it";
     }
 
+    /**
+     * Eventlog entry of a target Oxidized backed up before or after its batch, with the version it keeps.
+     */
+    public static function backedUp(array $change, int $batch, string $phase, ?string $version): string
+    {
+        return self::name($change) . ", batch $batch: Oxidized backed this device up " . ($phase === 'before' ? 'before' : 'after') . ' the batch'
+            . ($version !== null && $version !== '' ? ' (version ' . UntrustedText::line(substr($version, 0, 40), 40) . ')' : '');
+    }
+
     public static function backupFailed(array $change, int $batch, string $phase, string $state, ?string $error): string
     {
         return self::name($change) . ", batch $batch: no fresh backup " . ($phase === 'before' ? 'before' : 'after') . ' the batch ('
