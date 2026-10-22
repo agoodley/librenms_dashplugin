@@ -169,9 +169,15 @@ final class FakeChangeRunner implements ChangeRunner
 
     public ?string $lockRefusal = null;
 
+    /** @var \Closure|null called when exclusive() has the lock, before the work (a launch recorded right before it) */
+    public ?\Closure $inExclusive = null;
+
     public function exclusive(\Closure $work): ?string
     {
         $this->exclusive++;
+        if ($this->inExclusive !== null) {
+            ($this->inExclusive)();
+        }
 
         return $this->lockRefusal ?? $work();
     }

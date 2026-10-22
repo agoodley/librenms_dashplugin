@@ -1425,6 +1425,80 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame([502, 503], end($this->runner->launches)['devices']);
     }
 
+    public function testTheBusyCheckOfApplyAndContinueIsUnderTheLaunchLock(): void
+    {
+        // a run launched on lab-sw1 right before the apply takes the lock of the launches: seen under the lock, the apply is refused
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $this->runner->inExclusive = function () {
+            $this->runner->busy = [501 => 'busy in run #90, which has not finished'];
+        };
+        $this->assertSame('Batch 1 cannot start now: lab-sw1 is busy in run #90, which has not finished. Nothing changed: the change is still ready; apply it once it is free.',
+            $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->assertSame([ChangeStatus::READY, ['dry_run']], [$this->changes->find($id)['status'], array_column($this->runner->launches, 'kind')]);
+
+        // and the same for a continue
+        $this->runner->inExclusive = null;
+        $this->runner->busy = [];
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 60));
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        $lifecycle->advance($id, $this->t0 + 101);
+        $this->runner->inExclusive = function () {
+            $this->runner->busy = [503 => 'busy in run #92, which has not finished'];
+        };
+        $this->assertSame('Batch 2 cannot start now: lab-sw3 is busy in run #92, which has not finished. Nothing changed: the change keeps waiting; continue it once it '
+            . 'is free.', $lifecycle->resume($id, self::ALICE, [], $this->t0 + 110));
+        $this->assertSame([ChangeStatus::PAUSED, 'canary', 'pending'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting'],
+            $this->changes->batches[$id][2]['status']]);
+    }
+
+    public function testABatchThePluginStartsOnItsOwnWaitsForABusyDeviceAWhile(): void
+    {
+        // batch 2 starts right after batch 1, but lab-sw3 is busy in a run that began before the apply: batch 2 waits for it, pending
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        $this->runner->busy = [503 => 'busy in run #92, which has not finished'];
+        $lifecycle->advance($id, $this->t0 + 101);
+        $batch = $this->changes->batches[$id][2];
+        $this->assertSame([ChangeStatus::APPLYING, 2, 'pending', 'waits: lab-sw3 is busy in run #92, which has not finished', Clock::store($this->t0 + 101)],
+            [$this->changes->find($id)['status'], (int) $this->changes->find($id)['current_batch'], $batch['status'], $batch['note'], $batch['started_at']]);
+        $this->assertSame(['Batch 2 waits: lab-sw3 is busy in run #92, which has not finished. It starts once it is free; if it is not by 2026-10-22 11:01 UTC, '
+            . 'the change ends.'], array_values(preg_grep('/^Batch 2 waits/', $this->changes->messages($id))));
+        $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'), 'not launched');
+        $this->assertSame([], array_filter($this->windows->windows, fn ($window) => $window['devices'] === [502, 503]), 'no window opened');
+        $lifecycle->advance($id, $this->t0 + 400);
+        $this->assertCount(1, preg_grep('/^Batch 2 waits/', $this->changes->messages($id)), 'said once');
+
+        // free: it starts
+        $this->runner->busy = [];
+        $lifecycle->advance($id, $this->t0 + 500);
+        $batch = $this->changes->batches[$id][2];
+        $this->assertSame(['running', null, Clock::store($this->t0 + 500)], [$batch['status'], $batch['note'], $batch['started_at']]);
+        $this->assertSame([502, 503], end($this->runner->launches)['devices']);
+
+        // still busy past the wait (the expected batch time, at least 15 minutes): the change ends
+        $this->setUp();
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $lifecycle = $this->lifecycle(['expectedSeconds' => 600]);
+        $this->backups->enabled = false;
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        $this->runner->busy = [503 => 'busy in run #92, which has not finished'];
+        $lifecycle->advance($id, $this->t0 + 101);
+        $lifecycle->advance($id, $this->t0 + 101 + 899);
+        $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status']);
+        $lifecycle->advance($id, $this->t0 + 101 + 900);
+        $this->assertSame([ChangeStatus::FAILED, 'batch 2 was not started: lab-sw3 is busy in run #92, which has not finished, still after a wait of 15 minutes', 'failed'],
+            [$this->changes->find($id)['status'], $this->changes->find($id)['error'], $this->changes->batches[$id][2]['status']]);
+        $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'));
+
+        // an admin's continue is refused at once instead (testApplyAndContinueAreRefusedWhileADeviceOfTheBatchIsBusy)
+    }
+
     public function testAnApprovalOrAPermissionLostDuringTheBackupsStopsTheBatchBeforeItsLaunch(): void
     {
         foreach (['the approver' => fn () => $this->runner->userProblems[2] = 'no longer holds the approve permission',

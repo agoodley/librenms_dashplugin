@@ -279,12 +279,6 @@ final class ChangeLifecycle
 
             return 'The approval no longer counts (' . $approval . '): the change needs a new approval.';
         }
-        // a device of batch 1 busy in another run (or held after a stop) would fail the batch at its start: refused now, the
-        // change stays ready
-        $busy = $this->busyRefusal($change, 1, 'the change is still ready; apply it');
-        if ($busy !== null) {
-            return $busy;
-        }
         // the switch to applying reserves the change's devices: checked and written under the lock of the launches, so
         // neither another change's apply nor a run takes one of them in between
         $targets = $this->changes->targets($id);
@@ -293,6 +287,12 @@ final class ChangeLifecycle
             $reserved = array_intersect_key($this->changes->reserved($id), $targets);
             if ($reserved) {
                 return self::reservedText($reserved, $targets);
+            }
+            // a device of batch 1 busy in another run (or held after a stop) would fail the batch at its start: refused now, the
+            // change stays ready (checked under the lock too, so no run launched meanwhile takes one)
+            $busy = $this->busyRefusal($change, 1, 'the change is still ready; apply it');
+            if ($busy !== null) {
+                return $busy;
             }
             $started = $this->update($change, ['status' => ChangeStatus::APPLYING, 'applied_by' => mb_substr($user['username'], 0, 255),
                 'applied_user_id' => (int) $user['user_id'], 'apply_started_at' => Clock::store($now), 'current_batch' => 1, 'waiting' => null, 'resume_at' => null,
@@ -362,23 +362,26 @@ final class ChangeLifecycle
                 : self::secretsText($missing, 'to continue with batch ' . ($batch + 1));
         }
         // a device of the batch busy in another run (or held after a stop) would fail it: refused now, the change keeps waiting
+        // (checked and the change moved under the lock of the launches, as at the apply)
         $next = $change['waiting'] === 'secrets' ? $batch : $batch + 1;
-        $busy = $this->busyRefusal($change, $next, 'the change keeps waiting; continue it');
-        if ($busy !== null) {
-            return $busy;
+        $resumed = null;
+        $refusal = $this->runner->exclusive(function () use ($change, $batch, $next, &$resumed): ?string {
+            $busy = $this->busyRefusal($change, $next, 'the change keeps waiting; continue it');
+            if ($busy !== null) {
+                return $busy;
+            }
+            $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]
+                + ($change['waiting'] === 'secrets' ? [] : ['current_batch' => $batch + 1]));
+
+            return $resumed === null ? 'The change changed meanwhile: reload the page.' : null;
+        });
+        if ($refusal !== null || $resumed === null) {
+            return $refusal ?? 'The change changed meanwhile: reload the page.';
         }
         if ($change['waiting'] === 'secrets') {
-            $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]);
-            if ($resumed === null) {
-                return 'The change changed meanwhile: reload the page.';
-            }
             $this->launchBatch($resumed, $batch, $user, $secrets, $now);
 
             return null;
-        }
-        $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null, 'current_batch' => $batch + 1]);
-        if ($resumed === null) {
-            return 'The change changed meanwhile: reload the page.';
         }
         $this->timeline($resumed, 'apply', 'Continued to batch ' . ($batch + 1) . '.', $user['username'], $now);
         $this->startBatch($resumed, $batch + 1, $user, $secrets, $now);
@@ -838,6 +841,9 @@ final class ChangeLifecycle
         if (self::stopAsked($this->changes->find($id) ?? $change)) {
             return; // its stop ends it at its next step
         }
+        if ($secrets === null && $this->busyWaits($change, $number, $now)) {
+            return;
+        }
         // everything a launch checks, before the window opens and the backups are taken: the dry run, the approval, the users,
         // the template as the runner has it, the targets and how the runner reaches them
         $this->beat();
@@ -851,7 +857,7 @@ final class ChangeLifecycle
         }
         $devices = $this->batchDevices($change, $number);
         $this->changes->updateBatch($id, $number, ['status' => 'preparing', 'started_at' => Clock::store($now), 'user_id' => (int) $user['user_id'],
-            'username' => mb_substr($user['username'], 0, 255)]);
+            'username' => mb_substr($user['username'], 0, 255), 'note' => null]);
         if ($this->settings->maintenance) {
             $error = $this->openWindow($change, $number, $devices, $now);
             if ($error !== null) {
@@ -1469,6 +1475,54 @@ final class ChangeLifecycle
     }
 
     /**
+     * A batch the plugin starts on its own (after the previous one, a pause, at a later step) whose device is busy in
+     * another run, one that began before the apply reserved the devices or holds them after a stop: it waits, pending,
+     * at most the expected time of a batch (at least 15 minutes) instead of ending the change at once; the wait is
+     * recorded as the batch's start and note, and said in the timeline once. True while it waits; past the wait the
+     * change ends as failed (true as well).
+     */
+    private function busyWaits(array $change, int $number, int $now): bool
+    {
+        $id = (int) $change['id'];
+        $busy = $this->runner->busy($this->batchDevices($change, $number));
+        if (! $busy) {
+            return false;
+        }
+        $what = $this->busyText($change, $busy);
+        $batch = $this->changes->batches($id)[$number] ?? [];
+        $since = ($batch['started_at'] ?? null) !== null ? self::at($batch['started_at']) : null;
+        if ($since === null) {
+            $until = $now + $this->secretsWait();
+            $this->changes->updateBatch($id, $number, ['started_at' => Clock::store($now), 'note' => UntrustedText::line("waits: $what", 500)]);
+            $this->timeline($change, 'batch', "Batch $number waits: $what. It starts once " . (count($busy) === 1 ? 'it is' : 'they are') . ' free; if '
+                . (count($busy) === 1 ? 'it is' : 'they are') . ' not by ' . Clock::text($until) . ', the change ends.', null, $now);
+
+            return true;
+        }
+        if ($now - $since < $this->secretsWait()) {
+            return true;
+        }
+        $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($what, 500)]);
+        $this->finish($change, ChangeStatus::FAILED, "batch $number was not started: $what, still after a wait of " . intdiv($this->secretsWait(), 60) . ' minutes', $now);
+
+        return true;
+    }
+
+    /**
+     * Devices busy in other runs, in words ("lab-sw1 is busy in run #12, which has not finished").
+     *
+     * @param  array<int, string>  $busy  device_id => why (ChangeRunner::busy())
+     */
+    private function busyText(array $change, array $busy): string
+    {
+        $names = self::displays($this->changes->targets((int) $change['id']));
+        $what = array_map(fn ($deviceId, $why) => UntrustedText::line((string) ($names[$deviceId] ?? "device #$deviceId"), 80) . ' is ' . UntrustedText::line($why, 300),
+            array_keys($busy), $busy);
+
+        return implode('; ', array_slice($what, 0, 5)) . (count($what) > 5 ? '; ' . (count($what) - 5) . ' more' : '');
+    }
+
+    /**
      * Why an action may not start batch $number now: a device of it is busy in an unfinished run or held after a stop
      * ("Batch 1 cannot start now: lab-sw1 is busy in run #12, which has not finished. Nothing changed: the change is still
      * ready; apply it once it is free."); null when none is.
@@ -1479,12 +1533,8 @@ final class ChangeLifecycle
         if (! $busy) {
             return null;
         }
-        $names = self::displays($this->changes->targets((int) $change['id']));
-        $what = array_map(fn ($deviceId, $why) => UntrustedText::line((string) ($names[$deviceId] ?? "device #$deviceId"), 80) . ' is ' . UntrustedText::line($why, 300),
-            array_keys($busy), $busy);
 
-        return "Batch $number cannot start now: " . implode('; ', array_slice($what, 0, 5)) . (count($what) > 5 ? '; ' . (count($what) - 5) . ' more' : '')
-            . ". Nothing changed: $then once " . (count($busy) === 1 ? 'it is' : 'they are') . ' free.';
+        return "Batch $number cannot start now: " . $this->busyText($change, $busy) . ". Nothing changed: $then once " . (count($busy) === 1 ? 'it is' : 'they are') . ' free.';
     }
 
     /**

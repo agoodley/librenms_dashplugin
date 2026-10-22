@@ -410,26 +410,29 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 * **Change:** **Run the dry run** (with the secret answers, when the template has some): Ansible runs the playbook with
   `--check --diff`; the page shows, per device, the dry run's result and the diffs of what would change. A dry run the
   plugin cannot prove to be one is shown in red, *NOT PROVEN*, with why: it may have changed the devices, and it can be
-  neither approved nor applied. Once it is verified, an admin with the approve permission **Approve**s (with a
-  comment) or **Reject**s; approvers find the changes that wait for them on the Changes page, with the status filter
-  *Awaiting approval*. **Apply** starts the first batch: its maintenance window, the backups, then its run; after it
-  the change waits for **Continue** (when *Wait after the first batch* is on), and the next batches follow on their
-  own until the last, or until one fails. An Apply or a Continue while a device of the batch is busy in another
-  unfinished run (or held after a stop) is refused and changes nothing: the change stays ready, or waiting. **Stop**
-  stops the running batch (as a run's stop: the step in progress runs on) and launches nothing more. It never waits,
-  even while another request is busy with the change (or died while at it): the stop is recorded at once, the runner
-  is asked at once to stop the batch's task, no batch launches afterwards (a launch under way looks for the stop again
-  right before it records its run and right before it asks the runner, and then launches nothing; a stop that comes
-  while the runner is being asked stops the task it just got at once; a launch whose request died after asking the
-  runner has its task looked for at once), and the change ends at its next step; a batch whose run had already ended
-  is recorded with its results, and the change ends after it. After a stop the page says, as the run page does, how
-  long the batch's devices stay held and how to find the step that may still run on the runner. **Cancel** drops a
-  change that has not been applied. A change that failed or was stopped offers **a new change with the remaining
-  devices** (the devices that failed or were never reached; held ones are left out and named, with until when), and a
-  dry run that failed on some devices offers **a new change without them**: the same template, answers (not the secret
-  ones), reference and first batch, the devices chosen and listed first, to dry-run and approve again. The page
-  follows the change every 2 seconds: the batches with their runs and results, the backups (with a link to each
-  device's config page), the maintenance windows, the log of the run it follows, and a timeline of every step.
+  neither approved nor applied. Once it is verified, an admin with the approve permission **Approve**s (with a comment)
+  or **Reject**s; approvers find the changes that wait for them on the Changes page, with the status filter *Awaiting
+  approval*. **Apply** starts the first batch: its maintenance window, the backups, then its run; after it the change
+  waits for **Continue** (when *Wait after the first batch* is on), and the next batches follow on their own until the
+  last, or until one fails. An Apply or a Continue while a device of the batch is busy in another unfinished run (or
+  held after a stop) is refused and changes nothing: the change stays ready, or waiting (checked under the lock of the
+  launches, so a run launched meanwhile is seen). A batch the plugin starts on its own (after the previous one, after a
+  pause) whose device is busy in a run that began before the apply waits for it, pending, at most the *Expected batch
+  time* (at least 15 minutes), said in the timeline; then the change ends as failed. **Stop** stops the running batch
+  (as a run's stop: the step in progress runs on) and launches nothing more. It never waits, even while another request
+  is busy with the change (or died while at it): the stop is recorded at once, the runner is asked at once to stop the
+  batch's task, no batch launches afterwards (a launch under way looks for the stop again right before it records its
+  run and right before it asks the runner, and then launches nothing; a stop that comes while the runner is being asked
+  stops the task it just got at once; a launch whose request died after asking the runner has its task looked for at
+  once), and the change ends at its next step; a batch whose run had already ended is recorded with its results, and the
+  change ends after it. After a stop the page says, as the run page does, how long the batch's devices stay held and how
+  to find the step that may still run on the runner. **Cancel** drops a change that has not been applied. A change that
+  failed or was stopped offers **a new change with the remaining devices** (the devices that failed or were never
+  reached; held ones are left out and named, with until when), and a dry run that failed on some devices offers **a new
+  change without them**: the same template, answers (not the secret ones), reference and first batch, the devices chosen
+  and listed first, to dry-run and approve again. The page follows the change every 2 seconds: the batches with their
+  runs and results, the backups (with a link to each device's config page), the maintenance windows, the log of the run
+  it follows, and a timeline of every step.
 * **Changes:** filter by device, requester, template, status ("Not ended" for the changes still going) and dates; the
   *JSON* button gives the same list, with each change's status and the state of its dry run as the page shows them
   (`dry_run_state`, and `dry_run_label`: *NOT PROVEN* for a dry run not proven to be one, which may have changed its
