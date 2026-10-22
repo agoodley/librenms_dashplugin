@@ -109,7 +109,7 @@
         <div class="col-md-7">
             <div class="panel panel-default">
                 <div class="panel-heading"><strong>Targets</strong> <span class="text-muted">({{ count($targets) }})</span>
-                    <span id="ans-run-summary">@include('ansible::partials.results', ['summary' => $run['summary'] ?? [], 'dryRun' => $dryRun, 'unproven' => $unproven])</span></div>
+                    <span id="ans-run-summary">@include('ansible::partials.results', ['resultSummary' => $run['summary'] ?? [], 'resultDryRun' => (bool) $dryRun, 'resultUnproven' => (bool) $unproven])</span></div>
                 <div class="table-responsive">
                 <table class="table table-condensed ans-table" id="ans-run-targets">
                     <thead><tr><th>Device</th><th>Inventory name</th><th>Result</th>@foreach($counters as $c)<th class="ans-num">{{ $c }}</th>@endforeach</tr></thead>

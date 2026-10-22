@@ -83,8 +83,8 @@
                     <td>
                         <span class="ans-wrap">{{ implode(', ', $run['target_names']) }}{{ $run['targets'] > count($run['target_names']) ? ' and ' . ($run['targets'] - count($run['target_names'])) . ' more' : '' }}</span>
                         @if($run['summary'] || \Agoodley\LibrenmsAnsible\Runs\RunResults::unproven($run))
-                            <br>@include('ansible::partials.results', ['summary' => $run['summary'] ?? [], 'dryRun' => ($run['kind'] ?? null) === 'dry_run',
-                                'unproven' => \Agoodley\LibrenmsAnsible\Runs\RunResults::unproven($run)])
+                            <br>@include('ansible::partials.results', ['resultSummary' => $run['summary'] ?? [], 'resultDryRun' => ($run['kind'] ?? null) === 'dry_run',
+                                'resultUnproven' => \Agoodley\LibrenmsAnsible\Runs\RunResults::unproven($run)])
                         @endif
                         @if($run['unexpected_hosts'])
                             <br><span class="label label-danger" title="The runner ran on hosts that were not targets"><i class="fa fa-exclamation-triangle"></i> {{ \Agoodley\LibrenmsAnsible\Support\Format::count(count($run['unexpected_hosts']), 'other host') }}</span>
