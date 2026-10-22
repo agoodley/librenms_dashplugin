@@ -320,8 +320,8 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | Hold after a stop | 30 min | a stopped run keeps its devices this long after the runner reported the stop (1–1440 min), because the step each device was in runs on; holders of the run permission can release them earlier on the run page |
 | *Changes* | | |
 | Approval | an approval | after a verified dry run, before the apply: *no approval*, *an approval* (by an admin with the approve permission, who may be the requester) or *an approval from a second admin* (never the requester) |
-| Approval valid | 24 h | a change not applied by then needs a new approval (1–720 h) |
-| Dry run valid | 24 h | a verified dry run counts this long for the approval and every batch (1–720 h) |
+| Approval valid | 24 h | an approval counts this long, for the apply and every batch: a change not applied by then needs a new approval, and one still being applied then stops before its next batch (a new change takes the remaining devices) (1–720 h) |
+| Dry run valid | 24 h | a verified dry run counts this long for the approval and every batch: a change still being applied then stops before its next batch (1–720 h) |
 | First batch | 1 device | the first batch (the canary), when the new change does not tick its devices (1–100) |
 | Batch size | 5 devices | each further batch (1–500) |
 | Stop at | 1 device | a batch with this many devices failed, unreachable, unknown or not run stops the change (1–500) |
