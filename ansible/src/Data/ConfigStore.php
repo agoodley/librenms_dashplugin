@@ -3,7 +3,6 @@
 namespace Agoodley\LibrenmsAnsible\Data;
 
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 /**
  * The plugin's own configuration rows in ansible_config (name => JSON), for what it keeps in clear: the settings
@@ -17,7 +16,7 @@ final class ConfigStore
      */
     public function get(string $name): ?array
     {
-        if (! Schema::hasTable('ansible_config')) {
+        if (! SchemaCheck::hasTable('ansible_config')) {
             return null;
         }
         $value = DB::table('ansible_config')->where('name', $name)->value('value');
@@ -46,7 +45,7 @@ final class ConfigStore
      */
     public function forget(string $name): void
     {
-        if (Schema::hasTable('ansible_config')) {
+        if (SchemaCheck::hasTable('ansible_config')) {
             DB::table('ansible_config')->where('name', $name)->delete();
         }
     }

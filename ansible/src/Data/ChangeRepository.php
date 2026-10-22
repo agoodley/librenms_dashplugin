@@ -7,7 +7,6 @@ use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStore;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 /**
  * Changes (ansible_changes) with their targets, batches, approvals, maintenance windows, dry-run diffs and timeline.
@@ -42,14 +41,15 @@ final class ChangeRepository implements ChangeStore
     public function available(): bool
     {
         try {
-            foreach (self::TABLES as $table) {
-                if (! Schema::hasTable($table)) {
+            foreach (array_diff(self::TABLES, ['ansible_change_targets']) as $table) {
+                if (! SchemaCheck::hasTable($table)) {
                     return false;
                 }
             }
 
-            return Schema::hasColumns('ansible_runs', ['change_id', 'kind', 'batch', 'context', 'commit_hash', 'proof'])
-                && Schema::hasColumn('ansible_change_targets', 'backup_check');
+            // a table's columns tell that it exists too
+            return SchemaCheck::hasColumns('ansible_runs', ['change_id', 'kind', 'batch', 'context', 'commit_hash', 'proof'])
+                && SchemaCheck::hasColumns('ansible_change_targets', ['backup_check']);
         } catch (\Throwable) {
             return false;
         }

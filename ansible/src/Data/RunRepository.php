@@ -7,7 +7,6 @@ use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Runs\RunStore;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 
 /**
  * The audit log: runs (ansible_runs) and their targets (ansible_run_targets). Only LibreNMS admins see it, and
@@ -35,8 +34,7 @@ final class RunRepository implements RunStore
     public function available(): bool
     {
         try {
-            return Schema::hasTable('ansible_runs') && Schema::hasTable('ansible_run_targets') && Schema::hasColumns('ansible_runs', self::LATER_COLUMNS)
-                && Schema::hasColumn('ansible_run_targets', 'unexpected');
+            return SchemaCheck::hasColumns('ansible_runs', self::LATER_COLUMNS) && SchemaCheck::hasColumns('ansible_run_targets', ['unexpected']);
         } catch (\Throwable) {
             return false;
         }

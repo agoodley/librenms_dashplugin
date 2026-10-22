@@ -6,7 +6,6 @@ use Agoodley\LibrenmsAnsible\Support\Connection;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 
 /**
  * The runner connection (Support\Connection), stored by the plugin in ansible_config, encrypted with Laravel's
@@ -27,7 +26,7 @@ final class ConnectionRepository
     {
         $this->error = null;
         try {
-            if (! Schema::hasTable('ansible_config')) {
+            if (! SchemaCheck::hasTable('ansible_config')) {
                 $this->error = 'The plugin\'s tables are missing: run ./lnms migrate.';
 
                 return new Connection();
