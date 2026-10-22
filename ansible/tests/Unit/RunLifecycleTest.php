@@ -231,6 +231,20 @@ class RunLifecycleTest extends TestCase
             $this->assertSame('error', $this->events->of($deviceId)[0]['severity']);
         }
 
+        // one Ansible stopped before the playbook (the limit left it no host: every target withheld, say) ran on no device: it is
+        // not judged, and its end is not said as a dry run that may have changed its devices
+        $this->events->entries = [];
+        $id = $this->running('error', ['kind' => 'dry_run', 'context' => 'change #6, dry run']);
+        $this->runner->logs['90'] = ["\e[1;35m[WARNING]: Could not match supplied host pattern, ignoring: lab-sw1.netops.lab\e[0m",
+            "\e[0;31m[ERROR]: Specified inventory, host pattern and/or --limit leaves us with no hosts to target.\e[0m"];
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertNull($run['proof'] ?? null);
+        foreach ([501, 502, 503] as $deviceId) {
+            $this->assertStringNotContainsString('NOT PROVEN', $this->events->of($deviceId)[0]['message']);
+            $this->assertNotSame('error', $this->events->of($deviceId)[0]['severity'], 'not run: a warning');
+        }
+
         // a run that is not a dry run keeps its words, and gets no proof
         $this->events->entries = [];
         $id = $this->running('success', ['kind' => 'batch', 'context' => 'change #5, batch 1 of 1']);

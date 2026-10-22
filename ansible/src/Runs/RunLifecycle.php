@@ -457,12 +457,16 @@ final class RunLifecycle
         }
         $status = RunResults::status($task->status, $evaluation['results']);
         // the dry run of a change: does its log prove it was one (Changes\DryRunProof)? Not judged without the whole log
-        // (the change asks the runner for it again), nor for a run stopped before the runner started it (nothing ran)
+        // (the change asks the runner for it again), nor for a run stopped before the runner started it, nor for one Ansible
+        // stopped before the playbook, as the limit left it no host (nothing ran on a device: there is nothing to prove)
         $dryRun = ($run['kind'] ?? null) === 'dry_run';
         $proven = null;
         if ($dryRun && $complete && ($task->status !== RunStatus::STOPPED || $runsOn)) {
-            $proven = DryRunProof::check($lines, RecapParser::parse($lines))['verified'];
-            $values['proof'] = $proven ? 'verified' : 'unverified';
+            $proof = DryRunProof::check($lines, RecapParser::parse($lines));
+            if (! $proof['nothing_ran']) {
+                $proven = $proof['verified'];
+                $values['proof'] = $proven ? 'verified' : 'unverified';
+            }
         }
         $unexpected = $this->unexpectedDevices($evaluation['unexpected']);
         $values += ['status' => $status, 'summary' => $evaluation['summary'], 'unexpected_hosts' => array_keys($evaluation['unexpected']) ?: null,
