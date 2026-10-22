@@ -282,9 +282,10 @@ their eventlog says it). The change page shows each device's backups (the Oxidiz
 link to LibreNMS' config page of the device, where Oxidized's versions and their diffs are.
 
 **Maintenance windows** are LibreNMS' own (*Alerts → Maintenance*): before each batch the plugin adds one, named
-after the change and its batch, with the batch's devices, from now until now plus *Expected batch time*; it moves its
-end while the batch runs, sets it to the end of the batch plus *Settle time* once the batch has ended, and records it
-as closed when that time has passed. The window's *behavior* (skip, mute or run alerts) is LibreNMS' default unless
+after the change and its batch, with the batch's devices, from now until now plus *Expected batch time*; while the
+batch runs it moves the end to *Expected batch time* from then whenever less than a quarter of it (at least two
+minutes) is left, sets it to the end of the batch plus *Settle time* once the batch has ended, and records it as
+closed when that time has passed. The window's *behavior* (skip, mute or run alerts) is LibreNMS' default unless
 the settings choose one. A window someone removed in LibreNMS is recorded as such; the windows of batches that never
 ran end at once.
 

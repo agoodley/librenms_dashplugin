@@ -325,6 +325,18 @@ class ChangeRulesTest extends TestCase
         $this->assertSame(1000 + 3600, MaintenanceTimes::opening(1000, 3600));
         $this->assertNull(MaintenanceTimes::extension(5000, 1000, 3600), 'far enough away');
         $this->assertSame(4200 + 3600, MaintenanceTimes::extension(5000, 4200, 3600), 'less than a quarter left');
+        // at the least expected time (5 minutes) a window is not rewritten at every poll: only once less than 2 minutes are left
+        $end = MaintenanceTimes::opening(1000, 300);
+        $this->assertSame(1300, $end);
+        $writes = 0;
+        for ($now = 1000; $now < 1000 + 420; $now += 2) { // a 7-minute batch polled every 2 seconds
+            $extended = MaintenanceTimes::extension($end, $now, 300);
+            if ($extended !== null) {
+                [$end, $writes] = [$extended, $writes + 1];
+            }
+            $this->assertGreaterThanOrEqual(120 - 2, $end - $now, 'it never gets close to its end');
+        }
+        $this->assertSame(2, $writes, 'two extensions in 7 minutes, not one per poll');
         $this->assertSame(2000 + 600, MaintenanceTimes::closing(2000, null, 600));
         $this->assertSame(3800 + 600, MaintenanceTimes::closing(2000, 3800, 600), 'after the hold of a stopped batch');
     }
