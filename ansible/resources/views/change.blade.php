@@ -214,19 +214,19 @@
             <div class="panel panel-default">
                 <div class="panel-heading"><strong>Batches</strong> <span class="text-muted">({{ \Agoodley\LibrenmsAnsible\Support\Format::count(count($targets), 'device') }}; stops at {{ $plan['stop_at'] ?? 1 }} failed {{ ($plan['stop_at'] ?? 1) == 1 ? 'device' : 'devices' }} in a batch{{ ! empty($plan['wait_after_first']) && count($batches) > 1 ? '; waits for an admin after the first batch' : '' }}{{ ! empty($plan['pause_minutes']) ? '; ' . $plan['pause_minutes'] . ' min between batches' : '' }})</span></div>
                 <div class="table-responsive">
-                <table class="table table-condensed ans-table" id="ans-batches">
+                <table class="table table-condensed ans-table ans-stack" id="ans-batches">
                     <thead><tr><th>Batch</th><th>Devices</th><th>State</th><th>Run</th><th>Results</th><th>When</th></tr></thead>
                     <tbody>
                     @foreach($batches as $number => $batch)
                         @php $batchRun = $batchRuns[$number] ?? null; @endphp
                         <tr data-batch="{{ $number }}">
-                            <td>{{ $number }}{{ $number === 1 && count($batches) > 1 ? ' (canary)' : '' }}</td>
-                            <td class="ans-wrap">{{ implode(', ', array_map(fn ($d) => $targets[$d]['display'] ?: $targets[$d]['hostname'], $byBatch[$number] ?? [])) }}</td>
-                            <td><span class="label label-{{ $batchCss[$batch['status']] ?? 'default' }} ans-batch-state">{{ $batchLabels[$batch['status']] ?? $batch['status'] }}</span>
+                            <td data-label="Batch">{{ $number }}{{ $number === 1 && count($batches) > 1 ? ' (canary)' : '' }}</td>
+                            <td class="ans-wrap" data-label="Devices">{{ implode(', ', array_map(fn ($d) => $targets[$d]['display'] ?: $targets[$d]['hostname'], $byBatch[$number] ?? [])) }}</td>
+                            <td data-label="State"><span class="label label-{{ $batchCss[$batch['status']] ?? 'default' }} ans-batch-state">{{ $batchLabels[$batch['status']] ?? $batch['status'] }}</span>
                                 @if($batch['note'])<div class="ans-help ans-wrap">{{ Clock::localize($batch['note']) }}</div>@endif</td>
-                            <td>@if($batchRun)<a href="{{ route('ansible.runs.show', $batchRun['id']) }}">#{{ $batchRun['id'] }}</a> <span class="label label-{{ RunStatus::css($batchRun['status']) }}">{{ RunStatus::label($batchRun['status']) }}</span>@endif</td>
-                            <td>@if($batchRun)@include('ansible::partials.results', ['summary' => $batchRun['summary'] ?? []])@endif</td>
-                            <td class="ans-muted" style="white-space: nowrap">{{ $local($batch['started_at']) }}{{ $batch['ended_at'] ? ' – ' . Clock::local($batch['ended_at'], 'H:i:s') : '' }}{{ $batch['username'] ? ' · ' . $batch['username'] : '' }}</td>
+                            <td data-label="Run">@if($batchRun)<a href="{{ route('ansible.runs.show', $batchRun['id']) }}">#{{ $batchRun['id'] }}</a> <span class="label label-{{ RunStatus::css($batchRun['status']) }}">{{ RunStatus::label($batchRun['status']) }}</span>@endif</td>
+                            <td data-label="Results">@if($batchRun)@include('ansible::partials.results', ['summary' => $batchRun['summary'] ?? []])@endif</td>
+                            <td class="ans-muted" style="white-space: nowrap" data-label="When">{{ $local($batch['started_at']) }}{{ $batch['ended_at'] ? ' – ' . Clock::local($batch['ended_at'], 'H:i:s') : '' }}{{ $batch['username'] ? ' · ' . $batch['username'] : '' }}</td>
                         </tr>
                     @endforeach
                     </tbody>
@@ -280,7 +280,7 @@
         <div class="panel-heading"><strong>Dry run per device</strong>
             <span class="text-muted">(results from the PLAY RECAP; what would change from the diffs Ansible printed: for cisco.ios.ios_config, diff against an intended configuration, <span class="ans-code">diff_against: intended</span> with <span class="ans-code">intended_config</span>, or run with -v to see its commands, outside loops)</span></div>
         <div class="table-responsive">
-        <table class="table table-condensed ans-table" id="ans-dry-run-devices">
+        <table class="table table-condensed ans-table ans-stack" id="ans-dry-run-devices">
             <thead><tr><th>Device</th><th>Batch</th><th>Dry run</th>@foreach($counters as $c)<th class="ans-num">{{ $c }}</th>@endforeach<th>What would change</th></tr></thead>
             <tbody>
             @foreach($targets as $deviceId => $target)
@@ -288,10 +288,10 @@
                 <tr data-device="{{ $deviceId }}">
                     <td class="ans-wrap"><a href="{{ url('device/' . $deviceId) }}">{{ $target['display'] ?: $target['hostname'] }}</a><div class="ans-code ans-muted">{{ $target['inventory_name'] }}</div>
                         @if($address !== null)<div class="ans-muted ans-dry-address" title="The address the runner reached this device at in the dry run (its overwrite IP, else its hostname). A batch runs on it only while the inventory still gives this address and platform.">dry-run at <span class="ans-code">{{ $address }}</span></div>@endif</td>
-                    <td>{{ $target['batch'] }}</td>
-                    <td>@if($dryState === 'unverified' && $target['dry_result'])<span class="label label-danger ans-dry-result ans-not-proven" title="The log does not prove this was a dry run: whatever the PLAY RECAP says, it may have changed this device">NOT PROVEN: may have changed this device</span>@elseif($target['dry_result'])<span class="label label-{{ $dryCss[$target['dry_result']] ?? 'default' }} ans-dry-result">{{ ChangeText::DRY_RESULTS[$target['dry_result']] ?? $target['dry_result'] }}</span>@else<span class="text-muted">-</span>@endif</td>
-                    @foreach($counters as $c)<td class="ans-num">{{ $target['dry_counts'][$c] ?? '' }}</td>@endforeach
-                    <td class="ans-diff-cell">
+                    <td data-label="Batch">{{ $target['batch'] }}</td>
+                    <td data-label="Dry run">@if($dryState === 'unverified' && $target['dry_result'])<span class="label label-danger ans-dry-result ans-not-proven" title="The log does not prove this was a dry run: whatever the PLAY RECAP says, it may have changed this device">NOT PROVEN: may have changed this device</span>@elseif($target['dry_result'])<span class="label label-{{ $dryCss[$target['dry_result']] ?? 'default' }} ans-dry-result">{{ ChangeText::DRY_RESULTS[$target['dry_result']] ?? $target['dry_result'] }}</span>@else<span class="text-muted">-</span>@endif</td>
+                    @foreach($counters as $c)<td class="ans-num ans-stack-inline" data-label="{{ $c }}">{{ $target['dry_counts'][$c] ?? '' }}</td>@endforeach
+                    <td class="ans-diff-cell" data-label="What would change">
                         @forelse($blocks as $block)
                             <details class="ans-diff-block" @if(count($blocks) <= 3) open @endif>
                                 <summary class="ans-muted">{{ $block['task'] ?: 'task' }}{{ $block['item'] !== null ? ' · item ' . $block['item'] : '' }} · {{ ['diff' => 'diff', 'commands' => 'commands', 'text' => 'the module\'s text'][$block['kind']] ?? $block['kind'] }}{{ $block['cut'] ? ' (cut)' : '' }}</summary>
@@ -391,9 +391,9 @@
 
     <div class="panel panel-default" id="ans-timeline">
         <div class="panel-heading"><strong>Timeline</strong> <span class="text-muted">(newest first; each target's eventlog in LibreNMS has these steps too)</span></div>
-        <table class="table table-condensed ans-table" id="ans-timeline-table">
+        <table class="table table-condensed ans-table ans-stack" id="ans-timeline-table">
             @foreach(array_reverse($events) as $event)
-                <tr data-kind="{{ $event['kind'] }}"><td style="white-space: nowrap; width: 160px" class="ans-muted">{{ $local($event['at']) }}</td><td style="width: 110px">{{ $event['username'] ?? 'the plugin' }}</td>
+                <tr data-kind="{{ $event['kind'] }}"><td style="white-space: nowrap; width: 160px" class="ans-muted ans-stack-inline">{{ $local($event['at']) }}</td><td style="width: 110px" class="ans-stack-inline">{{ $event['username'] ?? 'the plugin' }}</td>
                     <td class="ans-wrap">{{ Clock::localize($event['message']) }}</td></tr>
             @endforeach
         </table>

@@ -71,7 +71,7 @@
         <div class="panel-heading"><strong>Changes</strong> <span class="text-muted">({{ $total }}{{ $total > $perPage ? ', page ' . $page . ' of ' . $pages : '' }})</span>
             <span class="ans-muted" style="margin-left: 8px">each change is dry-run, approved when the settings ask for it, and applied in batches; its runs are in <a href="{{ route('ansible.runs') }}">Runs</a></span></div>
         <div class="table-responsive">
-        <table class="table table-condensed table-hover ans-table" id="ans-changes">
+        <table class="table table-condensed table-hover ans-table ans-stack" id="ans-changes">
             <thead>
             <tr><th>#</th><th>Created</th><th>Requester</th><th>Template</th><th>Reference</th><th>Targets</th><th>Dry run</th><th>Status</th></tr>
             </thead>
@@ -80,14 +80,14 @@
                 @php($state = $dryStates[$change['dry_run_state'] ?? ''] ?? null)
                 <tr data-change="{{ $change['id'] }}">
                     <td><a href="{{ route('ansible.changes.show', $change['id']) }}">#{{ $change['id'] }}</a></td>
-                    <td style="white-space: nowrap">{{ \Agoodley\LibrenmsAnsible\Support\Clock::local($change['created_at']) }}</td>
-                    <td>{{ $change['username'] }}</td>
-                    <td class="ans-wrap">{{ $change['template_name'] }}</td>
-                    <td class="ans-wrap ans-code">{{ $change['reference'] }}</td>
-                    <td><span class="ans-wrap">{{ implode(', ', $change['target_names']) }}{{ (int) $change['target_count'] > count($change['target_names']) ? ' and ' . ((int) $change['target_count'] - count($change['target_names'])) . ' more' : '' }}</span>
+                    <td style="white-space: nowrap" data-label="Created">{{ \Agoodley\LibrenmsAnsible\Support\Clock::local($change['created_at']) }}</td>
+                    <td data-label="Requester">{{ $change['username'] }}</td>
+                    <td class="ans-wrap" data-label="Template">{{ $change['template_name'] }}</td>
+                    <td class="ans-wrap ans-code" data-label="Reference">{{ $change['reference'] }}</td>
+                    <td data-label="Targets"><span class="ans-wrap">{{ implode(', ', $change['target_names']) }}{{ (int) $change['target_count'] > count($change['target_names']) ? ' and ' . ((int) $change['target_count'] - count($change['target_names'])) . ' more' : '' }}</span>
                         <br><span class="ans-muted">{{ \Agoodley\LibrenmsAnsible\Support\Format::count((int) $change['target_count'], 'device') }} in {{ \Agoodley\LibrenmsAnsible\Support\Format::count((int) $change['batch_count'], 'batch', 'batches') }}</span></td>
-                    <td>@if($state)<span class="label label-{{ $state[0] }}">{{ $state[1] }}</span>@else<span class="text-muted">-</span>@endif</td>
-                    <td><span class="label label-{{ ChangeStatus::css($change['status']) }}">{{ ChangeStatus::label($change['status']) }}</span>
+                    <td data-label="Dry run">@if($state)<span class="label label-{{ $state[0] }}">{{ $state[1] }}</span>@else<span class="text-muted">-</span>@endif</td>
+                    <td data-label="Status"><span class="label label-{{ ChangeStatus::css($change['status']) }}">{{ ChangeStatus::label($change['status']) }}</span>
                         @if(in_array($change['status'], ChangeStatus::RESERVING, true))
                             <span class="ans-muted">batch {{ $change['current_batch'] }} of {{ $change['batch_count'] }}{{ $change['waiting'] ? ' · ' . ['canary' => 'waits for an admin', 'secrets' => 'waits for the secret answers', 'timer' => 'pause'][$change['waiting']] ?? '' : '' }}</span>
                         @endif

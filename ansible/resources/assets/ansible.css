@@ -62,6 +62,18 @@
     .ans-device-panel .ans-device-runs .table > thead > tr > th, .ans-device-panel .ans-device-runs .table > tbody > tr > td { padding-left: 4px; padding-right: 4px; }
     .ans-device-panel .ans-device-result .label { white-space: normal; text-align: left; }
 }
+/* phones: a wide table (the diff per device, the timeline, the changes list, the batches) stacks each row, its cells one
+   under the other with their column's name, so nothing an approver must read is off-screen */
+@media (max-width: 600px) {
+    .ans-stack > thead { display: none; }
+    .ans-stack, .ans-stack > tbody, .ans-stack > tbody > tr, .ans-stack > tbody > tr > td { display: block; width: auto !important; }
+    .ans-stack > tbody > tr { border-top: 1px solid rgba(128, 128, 128, 0.35); padding: 4px 0; }
+    .ans-stack > tbody > tr > td { border-top: none !important; padding: 2px 6px !important; white-space: normal !important; overflow-wrap: anywhere; }
+    .ans-stack > tbody > tr > td[data-label]::before { content: attr(data-label) ": "; color: #8a949e; }
+    .ans-stack > tbody > tr > td.ans-stack-inline { display: inline-block; }
+    .ans-stack > tbody > tr > td:empty { display: none; }
+    .table-responsive > .ans-stack { margin-bottom: 0; }
+}
 .ans-nowrap { white-space: nowrap; }
 
 /* the run's log: text only, colours from ANSI codes as classes */
