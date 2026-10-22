@@ -676,6 +676,27 @@ class RunLifecycleTest extends TestCase
         $this->assertSame('The run has already ended.', $this->lifecycle()->stop($this->running('success', ['status' => 'success']), 'bob', $this->t0));
     }
 
+    public function testAStopNeverReachesATaskThatEndedOnTheRunner(): void
+    {
+        // the task ended on the runner, the plugin has not recorded it yet: Semaphore UI would turn its success into stopped
+        $id = $this->running('success');
+        $this->runner->logs['90'] = self::recapLog(['lab-sw1.netops.lab' => 'ok=1 changed=1 unreachable=0 failed=0']);
+        $this->assertNull($this->lifecycle()->stop($id, 'bob', $this->t0 + 10));
+        $this->assertNotContains('stop 90', $this->runner->calls, 'no stop sent');
+        $this->assertSame('running', $this->store->find($id)['status']);
+
+        // an end the plugin saw stays when the runner reports the task stopped afterwards
+        $id = $this->running('success');
+        $this->runner->logs['90'] = self::recapLog(['lab-sw1.netops.lab' => 'ok=1 changed=1 unreachable=0 failed=0',
+            'lab-sw2.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0', 'lab-sw3.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0']);
+        $this->lifecycle()->refresh($id, $this->t0 + 20); // seen ended, the log settling
+        $this->assertSame('success', $this->store->find($id)['runner_status']);
+        $this->runner->tasks['90'] = 'stopped';
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertSame('success', $run['status'], 'not stopped');
+        $this->assertSame('changed', $this->store->targets[$id][501]['result']);
+    }
+
     public function testDevicesAreReleasedOnlyWhenTheRunnerCouldNotBeAskedForLong(): void
     {
         $id = $this->running('running', ['runner_seen_at' => '2026-10-22 10:00:10']);

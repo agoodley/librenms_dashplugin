@@ -276,6 +276,7 @@ final class RunLifecycle
 
             return;
         }
+        $task = self::keptEnd($run, $task);
         $buffer = OutputBuffer::add($run, $output->lines, $this->outputMaxBytes);
         $values = $buffer['values'] + ['output_lines' => $output->next, 'runner_status' => $task->rawStatus, 'poll_error' => null,
             'polled_at' => self::time($now), 'runner_seen_at' => self::time($now), 'missing_checks' => 0, 'missing_since' => null,
@@ -376,6 +377,20 @@ final class RunLifecycle
             $this->events->write(RunText::finished($id, RunStatus::LOST, $result['result'], null, (string) $run['template_name'], (string) $run['username'], $reason, $run['context'] ?? null),
                 $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
         }
+    }
+
+    /**
+     * The task as the plugin takes it: an end the plugin already saw (success or error) stays, when the runner reports it
+     * stopped afterwards (Semaphore UI does when a stop comes after the end).
+     */
+    private static function keptEnd(array $run, RunnerTask $task): RunnerTask
+    {
+        $seen = (string) ($run['runner_status'] ?? '');
+        if ($run['runner_final_at'] !== null && $task->status === RunStatus::STOPPED && in_array($seen, ['success', 'error'], true)) {
+            return new RunnerTask($task->id, $seen === 'success' ? RunStatus::SUCCESS : RunStatus::FAILED, $seen, $task->started, $task->ended, $task->created, $task->commit);
+        }
+
+        return $task;
     }
 
     /**
@@ -555,7 +570,13 @@ final class RunLifecycle
             return 'The run is still being launched: try again in a moment.';
         }
         try {
-            ($this->runner)()->stop((string) $run['runner_task_id']);
+            $runner = ($this->runner)();
+            // Semaphore UI turns a task that ended (success, error) into "stopped" when a stop comes after its end: never
+            // send one for a task already over on the runner (the plugin records its end at its next refresh)
+            if (RunStatus::isFinal($runner->task((string) $run['runner_task_id'])->status)) {
+                return null;
+            }
+            $runner->stop((string) $run['runner_task_id']);
         } catch (RunnerError $e) {
             return $e->getMessage();
         }
