@@ -47,6 +47,10 @@
 .ans-settings fieldset { margin-bottom: 20px; }
 .ans-settings legend { font-size: 15px; }
 .ans-settings textarea.ans-code { min-height: 190px; }
+/* a save returns to its part of the page (its anchor): keep the part's heading below LibreNMS' sticky navbar */
+.ans-settings form[id], .ans-settings fieldset[id] { scroll-margin-top: 66px; }
+.ans-settings .ans-field-error { margin: 2px 0 0; font-size: 12px; color: #c0392b; }
+.ans-settings .form-control.ans-invalid { border-color: #c0392b; box-shadow: inset 0 1px 1px rgba(0, 0, 0, .075), 0 0 0 1px rgba(192, 57, 43, .35); }
 .ans-test-result { margin-top: 10px; }
 .ans-warning-loud { border: 2px solid #c0392b; background: #fbeeec; color: #5a1a13; padding: 8px 10px; border-radius: 4px; font-weight: 600; margin: 8px 0; }
 .ans-device-panel .panel-heading .pull-right .btn { margin-left: 4px; }
@@ -75,7 +79,8 @@ html.dark .ans-card { background: #1d2024; border-color: #3a3f45; }
 html.dark .ans-card p, html.dark .ans-muted, html.dark .ans-help, html.dark .ans-page .text-muted, html.dark .ans-device-panel .text-muted,
 html.dark .ans-settings .text-muted, html.dark .ans-settings .help-block { color: #b0b8be; }
 html.dark .ans-refusal { color: #f0a35e; }
-html.dark .ans-error-text { color: #f08a80; }
+html.dark .ans-error-text, html.dark .ans-settings .ans-field-error { color: #f08a80; }
+html.dark .ans-settings .form-control.ans-invalid { border-color: #f08a80; }
 html.dark .ans-targets-wrap { border-color: #3a3f45; }
 html.dark .ans-targets-wrap thead th { background: #2a2e33; }
 html.dark .ans-targets tr.ans-refused td { color: #8f979e; }

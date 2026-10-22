@@ -9,6 +9,14 @@
     $old = session('ansible_old', []);
     $oldSettings = session('ansible_old_settings', []);
     $errors_ = session('ansible_errors', []);
+    // the part the admin saved: the page returns to its anchor, and shows the answer there
+    $section = (string) session('ansible_section', '');
+    $section = in_array($section, ['ans-connection-form', 'ans-inventory-user', 'ans-settings-form', 'ans-permission'], true) ? $section : '';
+    $invalid = fn (string $key) => isset($errors_[$key]) ? ' ans-invalid' : '';
+    $describedBy = fn (string $key) => isset($errors_[$key]) ? new \Illuminate\Support\HtmlString('aria-invalid="true" aria-describedby="ans-error-' . e($key) . '"') : '';
+    $fieldError = fn (string $key) => isset($errors_[$key])
+        ? new \Illuminate\Support\HtmlString('<span class="help-block ans-field-error" id="ans-error-' . e($key) . '"><i class="fa fa-exclamation-circle"></i> ' . e($errors_[$key]) . '</span>')
+        : '';
     $value = fn (string $key, $default = '') => $old[$key] ?? ($c[$key] ?? $default);
     $setting = fn (string $key) => (string) ($oldSettings[$key] ?? ($s[$key] ?? ''));
     $defaults = \Agoodley\LibrenmsAnsible\Support\PluginSettings::DEFAULTS;
@@ -29,11 +37,8 @@
 <div class="ans-settings" style="margin: 15px; max-width: 980px;">
     <h4>Ansible plugin settings @if($a['admin'])<small><a href="{{ route('ansible.runs') }}">Runs</a> · <a href="{{ route('ansible.inventory') }}">Inventory</a></small>@endif</h4>
 
-    @if(session('ansible_status'))
-        <div class="alert alert-success" id="ans-settings-status">{{ session('ansible_status') }}</div>
-    @endif
-    @if($errors_)
-        <div class="alert alert-danger" id="ans-settings-errors"><ul style="margin: 0">@foreach($errors_ as $error)<li>{{ $error }}</li>@endforeach</ul></div>
+    @if($section === '' || ! $a['admin'])
+        @include('ansible::partials.settings-answer', ['failed' => 'Nothing was saved:'])
     @endif
     @if($a['connectionError'])
         <div class="alert alert-danger"><i class="fa fa-exclamation-triangle"></i> {{ $a['connectionError'] }}</div>
@@ -51,32 +56,36 @@
             @csrf
             <fieldset>
                 <legend>Runner connection (Semaphore UI)</legend>
+                @if($section === 'ans-connection-form')
+                    @include('ansible::partials.settings-answer', ['failed' => 'The connection was not saved:'])
+                @endif
                 <p class="help-block">Saved by the plugin, encrypted, and only changed by LibreNMS admins: these settings decide where the token goes.
                     The token must be that of a Task Runner of the project who is not a Semaphore admin: with a token that could change templates,
                     and so run any code with the device credentials, the plugin launches nothing.</p>
                 <div class="form-group row">
                     <label class="col-sm-4 control-label" for="ans-url" style="font-weight: normal">Runner URL</label>
-                    <div class="col-sm-8"><input id="ans-url" type="url" class="form-control input-sm" name="url" value="{{ $value('url') }}" placeholder="https://semaphore.example.com"></div>
+                    <div class="col-sm-8"><input id="ans-url" type="url" class="form-control input-sm{{ $invalid('url') }}" {{ $describedBy('url') }} name="url" value="{{ $value('url') }}" placeholder="https://semaphore.example.com">{{ $fieldError('url') }}</div>
                 </div>
                 <div class="form-group row">
                     <label class="col-sm-4 control-label" for="ans-token" style="font-weight: normal">API token</label>
                     <div class="col-sm-8">
-                        <input id="ans-token" type="password" class="form-control input-sm" name="token" value="" autocomplete="new-password"
+                        <input id="ans-token" type="password" class="form-control input-sm{{ $invalid('token') }}" {{ $describedBy('token') }} name="token" value="" autocomplete="new-password"
                                placeholder="{{ ! empty($c['has_token']) ? 'saved: leave empty to keep it (enter it again to change the URL or the TLS checks)' : 'not set' }}">
                         <span class="help-block" style="margin: 2px 0 0; font-size: 12px">write-only: never shown again or sent to a browser
                             @if(! empty($c['has_token']))· saved {{ $c['saved_at'] ? date('Y-m-d H:i', $c['saved_at']) : '' }} by {{ $c['saved_by'] }}
                                 <label style="font-weight: normal; margin-left: 8px"><input type="checkbox" name="remove_token" value="1"> remove it</label>@endif
                         </span>
+                        {{ $fieldError('token') }}
                     </div>
                 </div>
                 <div class="form-group row">
                     <label class="col-sm-4 control-label" for="ans-project" style="font-weight: normal">Project id</label>
-                    <div class="col-sm-8"><input id="ans-project" type="number" min="1" class="form-control input-sm" style="max-width: 140px" name="project" value="{{ $value('project') ?: '' }}">
+                    <div class="col-sm-8"><input id="ans-project" type="number" min="1" class="form-control input-sm{{ $invalid('project') }}" {{ $describedBy('project') }} style="max-width: 140px" name="project" value="{{ $value('project') ?: '' }}">{{ $fieldError('project') }}
                         <span class="help-block" style="margin: 2px 0 0; font-size: 12px">the number in the project's address in Semaphore UI (/project/&lt;id&gt;/...)</span></div>
                 </div>
                 <div class="form-group row">
                     <label class="col-sm-4 control-label" for="ans-inventory" style="font-weight: normal">LibreNMS inventory id</label>
-                    <div class="col-sm-8"><input id="ans-inventory" type="number" min="1" class="form-control input-sm" style="max-width: 140px" name="inventory" value="{{ $value('inventory') ?: '' }}">
+                    <div class="col-sm-8"><input id="ans-inventory" type="number" min="1" class="form-control input-sm{{ $invalid('inventory') }}" {{ $describedBy('inventory') }} style="max-width: 140px" name="inventory" value="{{ $value('inventory') ?: '' }}">{{ $fieldError('inventory') }}
                         <span class="help-block" style="margin: 2px 0 0; font-size: 12px">the file inventory that runs the plugin's inventory script; only templates with this
                             inventory can be launched. Semaphore UI does not show inventory ids: save without it, then Test connection lists the project's inventories.</span></div>
                 </div>
@@ -87,12 +96,12 @@
                 </div>
                 <div class="form-group row">
                     <label class="col-sm-4 control-label" for="ans-ca" style="font-weight: normal">CA bundle</label>
-                    <div class="col-sm-8"><input id="ans-ca" type="text" class="form-control input-sm" name="ca_bundle" value="{{ $value('ca_bundle') }}" placeholder="/etc/ssl/certs/semaphore-ca.pem">
+                    <div class="col-sm-8"><input id="ans-ca" type="text" class="form-control input-sm{{ $invalid('ca_bundle') }}" {{ $describedBy('ca_bundle') }} name="ca_bundle" value="{{ $value('ca_bundle') }}" placeholder="/etc/ssl/certs/semaphore-ca.pem">{{ $fieldError('ca_bundle') }}
                         <span class="help-block" style="margin: 2px 0 0; font-size: 12px">optional: a PEM file on the LibreNMS server to verify the runner's certificate with (empty: the system CAs)</span></div>
                 </div>
                 <div class="form-group row">
                     <label class="col-sm-4 control-label" for="ans-timeout" style="font-weight: normal">Timeout (seconds)</label>
-                    <div class="col-sm-8"><input id="ans-timeout" type="number" min="1" max="120" class="form-control input-sm" style="max-width: 140px" name="timeout" value="{{ $value('timeout', 15) }}">
+                    <div class="col-sm-8"><input id="ans-timeout" type="number" min="1" max="120" class="form-control input-sm{{ $invalid('timeout') }}" {{ $describedBy('timeout') }} style="max-width: 140px" name="timeout" value="{{ $value('timeout', 15) }}">{{ $fieldError('timeout') }}
                         <span class="help-block" style="margin: 2px 0 0; font-size: 12px">for each call to the runner · default: 15</span></div>
                 </div>
                 <button type="submit" class="btn btn-primary btn-sm" id="ans-connection-save"><i class="fa fa-save"></i> Save connection</button>
@@ -123,6 +132,9 @@
         @csrf
         <fieldset>
             <legend>Inventory user</legend>
+            @if($section === 'ans-inventory-user')
+                @include('ansible::partials.settings-answer', ['failed' => 'The inventory user was not saved:'])
+            @endif
             <p class="help-block">The LibreNMS user whose API token the runner fetches the inventory with (the <span class="ans-code">LIBRENMS_TOKEN</span>
                 of its environment in Semaphore UI). Once it is chosen, the inventory endpoint answers only that user's tokens, and the plugin checks
                 the targets against what that user may see. Until then the plugin launches nothing.</p>
@@ -133,7 +145,7 @@
             <div class="form-group row">
                 <label class="col-sm-4 control-label" for="ans-setting-inventory_user" style="font-weight: normal">Inventory user</label>
                 <div class="col-sm-8">
-                    <select id="ans-setting-inventory_user" name="inventory_user" class="form-control input-sm" style="max-width: 460px">
+                    <select id="ans-setting-inventory_user" name="inventory_user" class="form-control input-sm{{ $invalid('inventory_user') }}" {{ $describedBy('inventory_user') }} style="max-width: 460px">
                         <option value="">Not chosen: launches are refused</option>
                         @if($chosen !== '' && ! isset($a['users'][(int) $chosen]))
                             <option value="{{ $chosen }}" selected>#{{ $chosen }} (no longer exists)</option>
@@ -155,6 +167,7 @@
                             @endforeach
                         </optgroup>
                     </select>
+                    {{ $fieldError('inventory_user') }}
                     <span class="help-block" style="margin: 2px 0 0; font-size: 12px">a user whose role sees the devices the runner may change, e.g. global-read</span>
                 </div>
             </div>
@@ -166,12 +179,16 @@
         @csrf
         <fieldset>
             <legend>Targets and runs</legend>
+            @if($section === 'ans-settings-form')
+                @include('ansible::partials.settings-answer', ['failed' => 'Nothing was saved:'])
+            @endif
             <p class="help-block">Which devices runs can reach and how, and what the plugin keeps. Saved by the plugin; only LibreNMS admins change them,
                 and each change goes to the eventlog.</p>
             <div class="form-group row">
                 <label class="col-sm-4 control-label" for="ans-setting-platform_map" style="font-weight: normal">Platform mapping</label>
                 <div class="col-sm-8">
-                    <textarea id="ans-setting-platform_map" rows="5" class="form-control input-sm ans-code" name="platform_map" placeholder="asa   cisco.asa.asa   network_cli   become&#10;vyos  -">{{ $setting('platform_map') }}</textarea>
+                    <textarea id="ans-setting-platform_map" rows="5" class="form-control input-sm ans-code{{ $invalid('platform_map') }}" {{ $describedBy('platform_map') }} name="platform_map" placeholder="asa   cisco.asa.asa   network_cli   become&#10;vyos  -">{{ $setting('platform_map') }}</textarea>
+                    {{ $fieldError('platform_map') }}
                     <span class="help-block" style="margin: 2px 0 0; font-size: 12px">your lines add to the defaults below, one per LibreNMS os: os, ansible_network_os,
                         optionally the connection (network_cli, netconf, httpapi or a full name) and "become" (enable mode). A line for an os of the defaults
                         replaces its default; <span class="ans-code">os -</span> switches it off. A device whose os has no line cannot be a target.</span>
@@ -202,7 +219,7 @@
             <div class="form-group row">
                 <label class="col-sm-4 control-label" for="ans-setting-allowed_group" style="font-weight: normal">Allowed device group</label>
                 <div class="col-sm-8">
-                    <select id="ans-setting-allowed_group" class="form-control input-sm" style="max-width: 320px" name="allowed_group">
+                    <select id="ans-setting-allowed_group" class="form-control input-sm{{ $invalid('allowed_group') }}" {{ $describedBy('allowed_group') }} style="max-width: 320px" name="allowed_group">
                         <option value="">Every device</option>
                         @php
                             $allowed = $setting('allowed_group');
@@ -214,6 +231,7 @@
                             <option value="{{ $groupId }}" @selected($allowed === (string) $groupId)>{{ $name }}</option>
                         @endforeach
                     </select>
+                    {{ $fieldError('allowed_group') }}
                     <span class="help-block" style="margin: 2px 0 0; font-size: 12px">only the members of this LibreNMS device group are in the inventory and can be targets</span>
                 </div>
             </div>
@@ -221,8 +239,9 @@
                 <div class="form-group row">
                     <label class="col-sm-4 control-label" for="ans-setting-{{ $name }}" style="font-weight: normal">{{ $label }}</label>
                     <div class="col-sm-8">
-                        <input id="ans-setting-{{ $name }}" type="number" min="{{ $limits[$name][0] }}" max="{{ $limits[$name][1] }}" class="form-control input-sm" style="max-width: 140px"
+                        <input id="ans-setting-{{ $name }}" type="number" min="{{ $limits[$name][0] }}" max="{{ $limits[$name][1] }}" class="form-control input-sm{{ $invalid($name) }}" {{ $describedBy($name) }} style="max-width: 140px"
                                name="{{ $name }}" value="{{ $setting($name) }}">
+                        {{ $fieldError($name) }}
                         <span class="help-block" style="margin: 2px 0 0; font-size: 12px">{{ $help }} · {{ $limits[$name][0] }} to {{ $limits[$name][1] }} · default: {{ $defaults[$name] }}</span>
                     </div>
                 </div>
@@ -233,6 +252,9 @@
 
         <fieldset id="ans-permission">
             <legend>Run permission</legend>
+            @if($section === 'ans-permission')
+                @include('ansible::partials.settings-answer', ['failed' => 'Nothing was changed:'])
+            @endif
             <p class="help-block">LibreNMS admins see the runs and the inventory; to launch and stop runs they also need this permission
                 (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::PERMISSION }}</span>). It is given to each user directly:
                 LibreNMS' role editor keeps only its own permissions, so a role would lose it the next time it is saved. Any LibreNMS admin can

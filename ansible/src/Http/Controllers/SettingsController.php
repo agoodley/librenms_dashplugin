@@ -205,11 +205,12 @@ class SettingsController extends Controller
     }
 
     /**
-     * Back to the plugin's settings page, at the part that was saved.
+     * Back to the plugin's settings page, at the part that was saved (its anchor): the page shows the answer there,
+     * and each error next to its field.
      */
-    private function back(string $anchor = ''): RedirectResponse
+    private function back(string $section): RedirectResponse
     {
-        return redirect()->to(url('plugin/settings/' . AnsibleServiceProvider::PLUGIN_NAME) . ($anchor !== '' ? '#' . $anchor : ''));
+        return redirect()->to(url('plugin/settings/' . AnsibleServiceProvider::PLUGIN_NAME) . '#' . $section)->with('ansible_section', $section);
     }
 
     /**
