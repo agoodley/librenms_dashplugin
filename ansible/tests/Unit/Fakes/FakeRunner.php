@@ -40,8 +40,11 @@ final class FakeRunner implements Runner
     /** @var string[] */
     public array $calls = [];
 
-    /** The times a task reports (Unix times; null: not known). */
+    /** The times a task reports (Unix times; null: not known). A task that waits in the queue has no start time. */
     public ?int $startedAt = null;
+
+    /** The task was stopped while it waited in the runner's queue: it never started. */
+    public bool $neverStarted = false;
 
     public ?int $endedAt = null;
 
@@ -113,7 +116,11 @@ final class FakeRunner implements Runner
             throw $status;
         }
 
-        return new RunnerTask($id, RunStatus::fromSemaphore($status), $status, $this->startedAt, RunStatus::isFinal(RunStatus::fromSemaphore($status)) ? $this->endedAt : null);
+        // Semaphore UI gives a task no start time while it waits in the queue, nor when it is stopped there
+        $state = RunStatus::fromSemaphore($status);
+
+        return new RunnerTask($id, $state, $status, $state === RunStatus::QUEUED || $this->neverStarted ? null : $this->startedAt,
+            RunStatus::isFinal($state) ? $this->endedAt : null);
     }
 
     public function output(string $taskId, int $from = 0): RunnerOutput

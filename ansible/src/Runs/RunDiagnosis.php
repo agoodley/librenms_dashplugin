@@ -63,6 +63,9 @@ final class RunDiagnosis
      */
     public static function afterStop(array $run, ?string $task, int $now): string
     {
+        if ($task === null && ($run['started_at'] ?? null) === null && ($run['held_until'] ?? null) === null) {
+            return 'The run was stopped before the runner started it: nothing ran, and its devices were free at once.';
+        }
         $taskId = (string) ($run['runner_task_id'] ?? '');
         $processes = 'the ansible-playbook processes of this run' . ($taskId !== '' ? ' (task #' . UntrustedText::line($taskId, 20) . ')' : '');
         $text = ($task !== null ? 'The run was stopped during the task "' . UntrustedText::line($task, 120) . '". ' : '')

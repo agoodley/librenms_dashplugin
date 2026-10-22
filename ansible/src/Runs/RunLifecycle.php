@@ -402,10 +402,14 @@ final class RunLifecycle
         $targets = $this->targetNames($id);
         $evaluation = RunResults::evaluate($targets, $lines, $complete);
         $heldUntil = null;
+        $runsOn = false;
         if ($task->status === RunStatus::STOPPED) {
-            // the step each target was in runs on: its result is unknown, and the devices stay held for a while
-            $evaluation = RunResults::afterStop($evaluation, $targets, TaskLines::inProgress($lines, array_values($targets))['hosts']);
-            $heldUntil = ($task->ended ?? $now) + $this->holdSeconds;
+            // the step each target was in runs on: its result is unknown, and the devices stay held for a while; a task
+            // stopped in the runner's queue never started (Semaphore UI gives it no start time): nothing runs on
+            $inProgress = TaskLines::inProgress($lines, array_values($targets))['hosts'];
+            $evaluation = RunResults::afterStop($evaluation, $targets, $inProgress);
+            $runsOn = $task->started !== null || $run['started_at'] !== null || $inProgress !== [];
+            $heldUntil = $runsOn ? ($task->ended ?? $now) + $this->holdSeconds : null;
         }
         $status = RunResults::status($task->status, $evaluation['results']);
         $unexpected = $this->unexpectedDevices($evaluation['unexpected']);
@@ -423,7 +427,8 @@ final class RunLifecycle
         $user = (string) $run['username'];
         $note = $late ? 'the runner reported this end after the plugin had given the run up as ' . strtolower(RunStatus::label((string) $run['status']))
             : ($task->status === RunStatus::STOPPED ? ($run['stop_reason'] ?? ($run['stopped_by'] ? 'stopped by ' . $run['stopped_by'] : 'stopped in the runner'))
-                . '; the step in progress may still run on the runner' . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . date('Y-m-d H:i', $heldUntil) : '') : null);
+                . (! $runsOn ? ' before the runner started it' : '; the step in progress may still run on the runner'
+                    . ($heldUntil !== null && $heldUntil > $now ? ': the devices are held until ' . date('Y-m-d H:i', $heldUntil) : '')) : null);
         foreach ($evaluation['results'] as $deviceId => $result) {
             $this->events->write(RunText::finished($id, $status, $result['result'], $result['counts'], (string) $run['template_name'], $user, $note), $deviceId,
                 RunResults::SEVERITY[$result['result']] ?? 'info', RunText::reference($id), $user);

@@ -37,6 +37,7 @@ class RunLifecycleTest extends TestCase
         $this->runner = new FakeRunner();
         $this->events = new RecordingEvents();
         $this->t0 = strtotime('2026-10-22 10:00:00');
+        $this->runner->startedAt = $this->t0 + 1; // a task that left the queue has a start time
     }
 
     private function lifecycle(int $outputMax = 1048576, int $stopAfter = 86400): RunLifecycle
@@ -325,6 +326,35 @@ class RunLifecycleTest extends TestCase
         $run = $this->lifecycle()->refresh($id, $this->t0 + 100);
         $this->assertSame(['unknown' => 1, 'changed' => 2], $run['summary'], 'every step had its result: nothing runs on');
         $this->assertNotNull($run['held_until'], 'a stopped run holds its devices all the same');
+    }
+
+    public function testATaskStoppedInTheRunnersQueueHoldsNothing(): void
+    {
+        // a second launch of a template waits for the first; stopped there, it never starts
+        $id = $this->store->add(['runner_task_id' => '92', 'status' => 'stopping', 'stopped_by' => 'bob', 'runner_final_at' => '2026-10-22 10:00:30'], self::TARGETS);
+        $this->runner->tasks['92'] = 'waiting';
+        $this->assertNull($this->lifecycle()->refresh($id, $this->t0 + 20)['started_at'], 'no start time while queued');
+        $this->runner->tasks['92'] = 'stopped';
+        $this->runner->neverStarted = true;
+        $this->runner->logs['92'] = [];
+
+        $run = $this->settle($this->lifecycle(), $id, $this->t0 + 100);
+        $this->assertSame('stopped', $run['status']);
+        $this->assertNull($run['held_until'], 'nothing runs on: the devices are free at once');
+        $this->assertFalse(RunLifecycle::held($run, $this->t0 + 101));
+        $this->assertSame(['not_run' => 3], $run['summary']);
+        $this->assertStringEndsWith('(stopped by bob before the runner started it)', $this->events->of(501)[0]['message']);
+        $this->assertStringNotContainsString('may still run', $this->events->of(501)[0]['message']);
+        $this->assertSame('The run was stopped before the runner started it: nothing ran, and its devices were free at once.',
+            RunDiagnosis::afterStop($run, null, $this->t0 + 101));
+        $this->assertSame('The devices of this run are not held any more.', $this->lifecycle()->release($id, 'carol', $this->t0 + 110));
+
+        // a task that started holds its devices even when its log shows no step yet
+        $started = $this->store->add(['runner_task_id' => '93', 'status' => 'stopping', 'stopped_by' => 'bob', 'runner_final_at' => '2026-10-22 10:00:30'], self::TARGETS);
+        $this->runner->tasks['93'] = 'stopped';
+        $this->runner->neverStarted = false;
+        $this->runner->logs['93'] = ['PLAY [Show version] ****'];
+        $this->assertNotNull($this->lifecycle()->refresh($started, $this->t0 + 100)['held_until']);
     }
 
     public function testStepsInProgressAtTheEndOfALog(): void
