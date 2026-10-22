@@ -14,15 +14,16 @@ class LockKeeperTest extends TestCase
 {
     /**
      * A lock as Laravel's: refresh() answers $refreshes (or throws), isOwnedByCurrentProcess() $owned, get() takes it again
-     * unless another process takes it at that moment.
+     * unless another process takes it at that moment ($takenOnGet), or takes it back from another process whose hold
+     * expired ($takesBack).
      */
-    private static function lock(bool|string $refreshes, bool $owned = true, bool $takenOnGet = false): object
+    private static function lock(bool|string $refreshes, bool $owned = true, bool $takenOnGet = false, bool $takesBack = false): object
     {
-        return new class ($refreshes, $owned, $takenOnGet)
+        return new class ($refreshes, $owned, $takenOnGet, $takesBack)
         {
             public int $gets = 0;
 
-            public function __construct(public bool|string $refreshes, public bool $owned, public bool $takenOnGet)
+            public function __construct(public bool|string $refreshes, public bool $owned, public bool $takenOnGet, public bool $takesBack)
             {
             }
 
@@ -43,7 +44,7 @@ class LockKeeperTest extends TestCase
             public function get($callback = null): bool
             {
                 $this->gets++;
-                $this->owned = $this->owned && ! $this->takenOnGet;
+                $this->owned = $this->takesBack || ($this->owned && ! $this->takenOnGet);
 
                 return $this->owned;
             }
@@ -69,6 +70,19 @@ class LockKeeperTest extends TestCase
     {
         $this->expectException(LockLost::class);
         LockKeeper::renew(self::lock(false, false), 120);
+    }
+
+    public function testALockAnotherProcessTookIsNeverTakenBack(): void
+    {
+        // the other request's hold expired meanwhile: taking the lock again would succeed, and two requests would work on the change
+        $lock = self::lock(false, false, false, true);
+        try {
+            LockKeeper::renew($lock, 120);
+            $this->fail('the lock is taken back');
+        } catch (LockLost $e) {
+            $this->assertSame('the lock was taken by another request, or released, while this one worked', $e->getMessage());
+        }
+        $this->assertSame(0, $lock->gets, 'not taken again');
     }
 
     public function testALockTakenByAnotherProcessWhileItIsTakenAgainIsLost(): void

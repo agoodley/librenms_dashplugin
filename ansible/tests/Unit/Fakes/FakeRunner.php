@@ -99,9 +99,20 @@ final class FakeRunner implements Runner
         return $this->role;
     }
 
+    /** @var LaunchRequest[] the launches asked */
+    public array $launched = [];
+
+    /** The task a launch starts (null: the launch is refused, as in the tests that do not launch). */
+    public ?RunnerTask $launchTask = null;
+
     public function launch(LaunchRequest $request): RunnerTask
     {
-        throw new RunnerError(RunnerError::REFUSED, 'not in these tests');
+        $this->launched[] = $request;
+        if ($this->launchTask === null) {
+            throw new RunnerError(RunnerError::REFUSED, 'not in these tests');
+        }
+
+        return $this->launchTask;
     }
 
     public function findTask(string $templateId, string $message, int $notBefore): RunnerTaskSearch

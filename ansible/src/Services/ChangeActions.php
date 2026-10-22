@@ -152,10 +152,22 @@ final class ChangeActions implements ChangeRunner
             $template = $runner->template((string) $change['template_id']);
             $inventory = $runner->inventory((string) $connection->inventory);
         } catch (RunnerError $e) {
-            return ['parts' => null, 'error' => $e->getMessage(), 'missing' => $template === null && $e->kind === RunnerError::NOT_FOUND];
+            return self::unreadable($e, $template !== null);
         }
 
         return (new TemplateReader($runner, $connection->project))->snapshot($template, $inventory);
+    }
+
+    /**
+     * What snapshot() answers when the runner could not give the template or its inventory: why, and whether the runner
+     * said that the template itself does not exist (HTTP 404 for it, not for the inventory), which the pages say as a
+     * template deleted in the runner rather than as one the runner cannot give now.
+     *
+     * @return array{parts: null, error: string, missing: bool}
+     */
+    public static function unreadable(RunnerError $e, bool $templateRead): array
+    {
+        return ['parts' => null, 'error' => $e->getMessage(), 'missing' => ! $templateRead && $e->kind === RunnerError::NOT_FOUND];
     }
 
     public function wholeLog(int $runId): ?array

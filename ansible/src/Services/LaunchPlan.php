@@ -42,6 +42,9 @@ final class LaunchPlan
 
     public int $maxTargets = 0;
 
+    /** The runner's project the run is launched in (the plugin's connection). */
+    public int $project = 0;
+
     /** @var array<string, mixed>|null the template's snapshot (Changes\TemplateSnapshot), for the runs of changes */
     public ?array $snapshot = null;
 

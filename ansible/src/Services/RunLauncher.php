@@ -35,6 +35,11 @@ final class RunLauncher
     /** Lock around the busy check and the insert of a run (and around the switch of a change to applying, which reserves its devices). */
     public const LOCK = 'ansible-plugin-launch';
 
+    /**
+     * @param  (\Closure(string, int[], array, ?RunSpec): LaunchPlan)|null  $planner  the tests' plan() (null: plan())
+     * @param  (\Closure(): object)|null  $lock  the tests' lock of the launches (null: LibreNMS' cache lock)
+     * @param  (\Closure(LaunchPlan): \Agoodley\LibrenmsAnsible\Runs\RunLifecycle)|null  $lifecycle  the tests' run lifecycle (null: RunFollower's)
+     */
     public function __construct(
         private readonly Plugin $plugin,
         private readonly RunRepository $runs,
@@ -42,6 +47,9 @@ final class RunLauncher
         private readonly PluginSettings $settings,
         private readonly Eventlog $eventlog = new Eventlog(),
         private readonly ?ChangeRepository $changes = null,
+        private readonly ?\Closure $planner = null,
+        private readonly ?\Closure $lock = null,
+        private readonly ?\Closure $lifecycle = null,
     ) {
     }
 
@@ -62,6 +70,7 @@ final class RunLauncher
             return $plan;
         }
         $connection = $this->plugin->connection();
+        $plan->project = (int) $connection->project;
         try {
             $plan->runner = $this->plugin->runner($connection);
             // a token that could change templates, or may not run them, launches nothing (asked each time, like the template)
@@ -206,7 +215,7 @@ final class RunLauncher
         if ($existing !== null) {
             return $this->existing($existing, $plan, $spec);
         }
-        $plan = $this->plan($templateId, $deviceIds, $answers, $spec);
+        $plan = $this->planner !== null ? ($this->planner)($templateId, $deviceIds, $answers, $spec) : $this->plan($templateId, $deviceIds, $answers, $spec);
         if (! $plan->ok() || $plan->refused) {
             // a second submit of the same form sees the targets busy in the run the first one just recorded
             $existing = $this->runs->byRequestToken($requestToken);
@@ -225,7 +234,7 @@ final class RunLauncher
             return self::refused($plan, $errors);
         }
 
-        $lock = Cache::lock(self::LOCK, 30);
+        $lock = $this->lock !== null ? ($this->lock)() : Cache::lock(self::LOCK, 30);
         try {
             $lock->block(10);
         } catch (LockTimeoutException) {
@@ -284,7 +293,6 @@ final class RunLauncher
      */
     private function record($user, LaunchPlan $plan, string $requestToken, string $nonce, ?RunSpec $spec = null): int
     {
-        $connection = $this->plugin->connection();
         $targets = [];
         foreach ($plan->targets as $deviceId => $target) {
             $targets[$deviceId] = ['inventory_name' => $target['name'], 'hostname' => $target['hostname'], 'display' => $target['display']];
@@ -294,7 +302,7 @@ final class RunLauncher
             'user_id' => (int) $user->user_id,
             'username' => (string) $user->username,
             'runner' => 'semaphore',
-            'runner_project' => $connection->project,
+            'runner_project' => $plan->project,
             'template_id' => $plan->template->id,
             'template_name' => mb_substr($plan->template->name, 0, 255),
             'playbook' => mb_substr($plan->template->playbook, 0, 255),
@@ -317,7 +325,8 @@ final class RunLauncher
     private function start(int $runId, LaunchPlan $plan, string $username, string $nonce, ?RunSpec $spec = null): void
     {
         $template = $plan->template;
-        $lifecycle = (new RunFollower($this->plugin, $this->runs, $this->settings, $this->eventlog, $plan->runner, $this->inventory))->lifecycle();
+        $lifecycle = $this->lifecycle !== null ? ($this->lifecycle)($plan)
+            : (new RunFollower($this->plugin, $this->runs, $this->settings, $this->eventlog, $plan->runner, $this->inventory))->lifecycle();
         // the last moment a change's stop can keep the task from the runner: the run is recorded as not launched
         $halted = $spec?->halted();
         if ($halted !== null) {
