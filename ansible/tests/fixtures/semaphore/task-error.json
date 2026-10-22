@@ -1,0 +1,1 @@
+{"id":19,"template_id":10,"project_id":2,"status":"error","playbook":"","environment":"{}","user_id":3,"created":"2026-10-21T22:13:43.343348922Z","start":"2026-10-21T22:13:44.353090428Z","end":"2026-10-21T22:13:48.262353612Z","message":"LibreNMS Ansible run #2 by admin","params":{"limit":["lab-sw1","lab-dead"]},"limit":""}

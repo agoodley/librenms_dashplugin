@@ -1,0 +1,1 @@
+{"id": 18, "template_id": 5, "project_id": 2, "status": "waiting", "playbook": "", "environment": "{\"note\": \"fixture\"}", "secret": "{}", "user_id": 3, "created": "2026-10-21T22:13:26.201045159Z", "message": "LibreNMS Ansible run #1 by admin", "params": {"limit": ["lab-sw1", "lab-sw2"]}, "limit": ""}

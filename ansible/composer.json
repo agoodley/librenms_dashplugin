@@ -1,0 +1,50 @@
+{
+    "name": "agoodley/librenms-ansible-plugin",
+    "description": "LibreNMS plugin: run reviewed Ansible templates on LibreNMS devices through a runner (Semaphore UI), with an inventory from LibreNMS, live status and an audit log",
+    "keywords": [
+        "librenms",
+        "plugin",
+        "ansible",
+        "semaphore",
+        "network-automation"
+    ],
+    "type": "library",
+    "license": "GPL-3.0-or-later",
+    "authors": [
+        {
+            "name": "agoodley"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Agoodley\\LibrenmsAnsible\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Agoodley\\LibrenmsAnsible\\Tests\\": "tests/"
+        }
+    },
+    "require": {
+        "php": "^8.2",
+        "ext-curl": "*",
+        "ext-mbstring": "*",
+        "librenms/plugin-interfaces": "^1.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5|^11.0"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Agoodley\\LibrenmsAnsible\\AnsibleServiceProvider"
+            ]
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

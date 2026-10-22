@@ -1,0 +1,61 @@
+<?php
+
+namespace Agoodley\LibrenmsAnsible\Console;
+
+use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
+use Agoodley\LibrenmsAnsible\Data\RunRepository;
+use Agoodley\LibrenmsAnsible\Services\Eventlog;
+use Agoodley\LibrenmsAnsible\Services\InventoryService;
+use Agoodley\LibrenmsAnsible\Services\Plugin;
+use Agoodley\LibrenmsAnsible\Services\RunFollower;
+use Agoodley\LibrenmsAnsible\Support\Format;
+use Illuminate\Console\Command;
+
+/**
+ * ansible:sync, every minute through the LibreNMS scheduler: follows every unfinished run on the runner to its
+ * end (status, output, results, eventlog), so the audit log is complete when nobody watches the run page, and asks
+ * about lost and released runs every few minutes for a week, so a later real end is recorded (Runs\RunLifecycle).
+ */
+class SyncCommand extends Command
+{
+    protected $signature = 'ansible:sync';
+
+    protected $description = 'Follow the unfinished runs of the Ansible plugin on the runner to their end';
+
+    /**
+     * Refresh each unfinished run once; runs the runner just reported finished are refreshed again a few seconds
+     * later, when their output is complete.
+     */
+    public function handle(): int
+    {
+        $runs = new RunRepository();
+        if (! $runs->available()) {
+            $this->warn('The Ansible plugin\'s tables are missing or out of date: run ./lnms migrate.');
+
+            return self::SUCCESS;
+        }
+        $settings = Plugin::settings();
+        $follower = new RunFollower(new Plugin(), $runs, $settings, new Eventlog(), null, new InventoryService(new DeviceRepository(), $settings));
+        foreach ($runs->watched() as $id) {
+            $follower->refresh($id);
+        }
+        $ids = $runs->unfinished();
+        $settling = [];
+        foreach ($ids as $id) {
+            $run = $follower->refresh($id);
+            if ($run !== null && RunFollower::settling($run)) {
+                $settling[] = $id;
+            }
+        }
+        if ($settling) {
+            sleep(RunFollower::INTERVAL + 1);
+            foreach ($settling as $id) {
+                $follower->refresh($id);
+            }
+        }
+        $left = count($runs->unfinished());
+        $this->line(date('Y-m-d H:i:s') . ' ansible:sync: ' . Format::count(count($ids), 'unfinished run') . ' followed, ' . $left . ' still unfinished');
+
+        return self::SUCCESS;
+    }
+}
