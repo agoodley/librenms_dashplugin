@@ -212,7 +212,7 @@ The runner connection is stored encrypted with LibreNMS' `APP_KEY`.
 | Max targets per run | 25 | 1–500 |
 | Output size | 1024 KB | the log kept per run (16–8192 KB): a longer log keeps its start and its end (the PLAY RECAP, the errors) with a line that counts the lines left out; the runner keeps the whole log |
 | Stop after | 24 h | a run still unfinished after this long is stopped by the plugin (1–720 h); it keeps its devices until the runner confirms the stop |
-| *Run permission* | | which admins may launch and stop runs ([Permissions](#permissions)) |
+| *Run permission* | | which admins may launch and stop runs, and release the devices of a stuck run ([Permissions](#permissions)) |
 
 A setting that cannot be used is refused with the reason, and nothing is saved: a platform mapping line that cannot
 be read, a device group or user that does not exist, a number out of its range. When the stored settings cannot be
@@ -245,9 +245,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 
 * **Viewing** the runs, a run, the inventory, the JSON and the device panel is for LibreNMS **admins**. Everyone else
   gets HTTP 403 on every route of the plugin and sees no menu entry, panel or button.
-* **Launching and stopping** runs also needs the plugin's own permission, `ansible.run`, which an admin grants on the
-  settings page (*Run permission*). Admins do not get it automatically: an admin without it sees everything, but no
-  *New run* or *Stop*, and the plugin answers 403 to such requests.
+* **Launching and stopping** runs (and releasing the devices of a run the runner could not be asked about) also needs
+  the plugin's own permission, `ansible.run`, which an admin grants on the settings page (*Run permission*). Admins do
+  not get it automatically: an admin without it sees everything, but no *New run*, *Stop* or *Release the devices*,
+  and the plugin answers 403 to such requests.
 * Any LibreNMS admin can grant the run permission, also to themselves: it is an explicit, logged opt-in (each grant
   and revoke goes to the eventlog, with who did it), not a separation of duties between admins. Each change of the
   runner connection or of the other settings is logged the same way (never the token).
@@ -372,7 +373,7 @@ plugin had given the run up"), and a task that runs again makes the run unfinish
   behind the plugin's project must hold only reviewed playbooks, the project only the plugin's templates, and the
   token must be guarded like the device credentials. Semaphore Enterprise's per-template permissions and custom roles
   narrow it further.
-* **Who:** admins only, and only those holding `ansible.run` may launch and stop.
+* **Who:** admins only, and only those holding `ansible.run` may launch, stop, and release the devices of a stuck run.
 * **Targets:** only devices that exist, are enabled, in the allowed group, mapped, not busy, visible to the
   inventory user, at most the max; the limit is made only of the plugin's own inventory names, which cannot be
   Ansible patterns (no `,` `:` `!` `&` `*` `?` `[` `]` `~` `@`) or group names. Ansible applies the limit to every
