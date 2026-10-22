@@ -12,17 +12,26 @@ interface ChangeRunner
     /**
      * Launch the dry run (kind "dry_run": all targets, --check --diff) or a batch (kind "batch") of a change, checked like
      * every launch (the token, the template as the runner has it now, the targets, the answers) and by $verify with the
-     * template's snapshot parts (TemplateSnapshot) right before the run is recorded. Each run of a change has a one-time
-     * token of its own (change, kind, number), so it is launched once at most. The run's id and the snapshot it was
-     * checked with, or why nothing was launched.
+     * template's snapshot parts (TemplateSnapshot) and how the inventory reaches the run's devices now (Connections::of()),
+     * right before the run is recorded. Each run of a change has a one-time token of its own (change, kind, number), so
+     * it is launched once at most. The run's id with the snapshot and the connections it was checked with, or why nothing
+     * was launched.
      *
      * @param  int[]  $deviceIds
      * @param  array{user_id: int, username: string}  $user  who launches it
      * @param  array<string, string>  $secrets  the secret answers given now (never stored)
-     * @param  \Closure(array): ?string  $verify  why the run may not be launched with this snapshot, null when it may
-     * @return array{run_id: ?int, errors: string[], parts: ?array}
+     * @param  \Closure(array, array): ?string  $verify  why the run may not be launched with this snapshot and these connections, null when it may
+     * @return array{run_id: ?int, errors: string[], parts: ?array, connections: ?array}
      */
     public function launch(array $change, string $kind, int $number, array $deviceIds, array $user, #[\SensitiveParameter] array $secrets, \Closure $verify): array;
+
+    /**
+     * How the runner reaches these devices as the LibreNMS inventory is now (Connections::of()).
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, array<string, mixed>>
+     */
+    public function connections(array $deviceIds): array;
 
     /**
      * The run of a change's dry run or batch recorded by an earlier launch (its one-time token), null when there is none.

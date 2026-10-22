@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsAnsible\Services;
 
 use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeRunner;
+use Agoodley\LibrenmsAnsible\Changes\Connections;
 use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\PermissionRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
@@ -33,13 +34,16 @@ final class ChangeActions implements ChangeRunner
     public function launch(array $change, string $kind, int $number, array $deviceIds, array $user, #[\SensitiveParameter] array $secrets, \Closure $verify): array
     {
         $parts = null;
+        $connections = null;
         $context = $kind === RunSpec::DRY_RUN ? 'change #' . (int) $change['id'] . ', dry run'
             : 'change #' . (int) $change['id'] . ", batch $number of " . (int) $change['batch_count'];
         $spec = new RunSpec((int) $change['id'], $kind, $number, $context, $kind === RunSpec::BATCH ? ($change['dry_run_commit'] ?? null) : null,
-            function (array $snapshot) use ($verify, &$parts): ?string {
+            function (array $snapshot) use ($verify, $deviceIds, &$parts, &$connections): ?string {
+                // right before the run is recorded and launched: the template as the runner has it, the devices as the inventory reaches them
                 $parts = $snapshot;
+                $connections = $this->connections($deviceIds);
 
-                return $verify($snapshot);
+                return $verify($snapshot, $connections);
             });
         $launcher = new RunLauncher($this->plugin, $this->runs, $this->inventory, $this->settings, $this->eventlog, $this->changes);
         $result = $launcher->launch((object) ['user_id' => (int) $user['user_id'], 'username' => (string) $user['username']], (string) $change['template_id'],
@@ -54,7 +58,13 @@ final class ChangeActions implements ChangeRunner
             }
         }
 
-        return ['run_id' => $result['run_id'], 'errors' => array_values(array_unique($errors)), 'parts' => $parts ?? $result['plan']->snapshot];
+        return ['run_id' => $result['run_id'], 'errors' => array_values(array_unique($errors)), 'parts' => $parts ?? $result['plan']->snapshot,
+            'connections' => $connections];
+    }
+
+    public function connections(array $deviceIds): array
+    {
+        return Connections::of($this->inventory->build(), $deviceIds);
     }
 
     public function findRun(int $changeId, string $kind, int $number): ?int

@@ -472,13 +472,20 @@ the devices as *not attributed*, with the reason. A block keeps at most 400 line
 
 When the dry run launches, the plugin takes a **fingerprint** of what it runs: the template as the runner has it
 (playbook, inventory, repository and its branch, variable groups with their values hashed, CLI arguments, survey, limit
-settings), the targets with their inventory names, the answers (not the secret ones) and the batch plan. An approval
-binds that fingerprint, the dry run and the commit the dry run ran. Before an approval, the apply and **every batch**
-the plugin reads the template from the runner again and compares; and it checks that:
+settings), the targets with their inventory names, **how the runner reaches each target** (the `ansible_*` variables
+the inventory gives its host: `ansible_host`, the overwrite IP else the hostname, and `ansible_network_os`,
+`ansible_connection` and become from the platform mapping), the answers (not the secret ones) and the batch plan. The
+change page shows the address each device was dry-run at. An approval binds that fingerprint, the dry run and the
+commit the dry run ran. Before an approval, the apply and **every batch** (and again right before its launch) the
+plugin reads the template from the runner and the devices from LibreNMS again and compares; and it checks that:
 
 * the dry run is still verified and younger than *Dry run valid*, and no other run touched its devices since: a run
   of phase 1, a batch of another change, or a dry run of another change that is not proven to be one (it may have
   changed them); a dry run still running is judged when it ends;
+* the inventory reaches every target as at the dry run: a device given another overwrite IP or hostname (so maybe
+  another physical device: editing a device needs only LibreNMS' device permission, not the plugin's), another
+  platform mapping, or no longer a host voids the dry run, with the device and what changed
+  (`sec-sw1: ansible_host 127.0.1.11 → 127.0.1.12`). Its facts (sysName, location, version, hardware) do not count;
 * the approval (when the settings need one) is younger than *Approval valid*, approved this dry run, and its approver
   still is an admin with the approve permission (and, with a second admin, not the requester);
 * the admin who launches the batch still holds the run permission.
@@ -486,7 +493,8 @@ the plugin reads the template from the runner again and compares; and it checks 
 When one of these fails before the apply, the dry run or the approval no longer counts and the change goes back to
 a draft or awaits a new approval. During the apply, the change stops: no further batch is launched. The batch itself
 is launched with the commit of the dry run (Semaphore's commit option), and a batch whose run reports another commit
-stops the change.
+stops the change, as does a batch at the end of which a device of it is no longer reached as at the dry run (the
+batch may have run elsewhere: the change says so).
 
 ### Batches
 
@@ -597,8 +605,9 @@ released has stopped by then.
 * **A dry run that is not proven to be one is never approved or applied**, and says so loudly on its page and in the
   eventlog of each target; it counts as a run that may have changed its devices.
 * **What is applied is exactly what was dry-run and approved:** the same template as the runner has it (read again
-  and compared before the approval, the apply and every batch), the same commit, the same devices, the same answers,
-  the same batch plan; each batch runs on its own devices only.
+  and compared before the approval, the apply and every batch), the same commit, the same devices reached the same
+  way (address and platform, compared with the inventory before the approval, the apply, every batch and right before
+  its launch), the same answers, the same batch plan; each batch runs on its own devices only.
 * **No batch after** a stop, a batch over the failure threshold, a batch the plugin lost track of (or whose result is
   unknown, stopped, released, or ran another commit or on another host), an approval that no longer counts, a dry run
   that no longer counts, a refused backup. A batch is launched once at most; a stopped change launches nothing more.
@@ -697,6 +706,10 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   dry run (so it shows nothing for them), and modules whose check mode guesses (`command` and `shell` are skipped,
   many network modules compute what they would send from the running configuration) can apply differently. The proof
   shows that nothing ran outside check mode, not that the dry run predicts the apply.
+* **The runner fetches the inventory when its run starts**, seconds after the plugin last compared how it reaches the
+  devices: an address changed in that moment is not seen before the run (the plugin sees it at the end of the batch
+  and stops the change, unless it was changed back by then). A repository's own `group_vars` or `host_vars` that
+  set connection variables are not part of the comparison (the plugin's inventory is).
 * **A `check_mode` set by a Jinja expression** gets its banner's marker from the expression as written, not from its
   value: Ansible prints the banner before it evaluates the expression for each host. A task with `check_mode: "{{
   ... }}"` that evaluates to false runs for real under a `[CHECK MODE]` banner, which the plugin cannot see. Keep

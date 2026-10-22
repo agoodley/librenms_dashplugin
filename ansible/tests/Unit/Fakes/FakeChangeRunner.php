@@ -47,6 +47,12 @@ final class FakeChangeRunner implements ChangeRunner
     /** The commit the runner reports for the runs it launches (pinned ones report the pin). */
     public ?string $commit = 'abc1234';
 
+    /** @var array<int, array<string, mixed>> device => how the inventory reaches it now (Connections::of()); devices not set get ansible_host 10.0.0.<id % 256> */
+    public array $connections = [];
+
+    /** @var \Closure|null called right before a launch's check (to change the inventory at that moment) */
+    public ?\Closure $beforeVerify = null;
+
     public function __construct(private readonly MemoryRunStore $runs, private readonly array $inventoryNames)
     {
         $this->snapshot = self::snapshotOf();
@@ -68,14 +74,18 @@ final class FakeChangeRunner implements ChangeRunner
     {
         $token = "{$change['id']}:$kind:$number";
         if (isset($this->tokens[$token])) {
-            return ['run_id' => $this->tokens[$token], 'errors' => [], 'parts' => $this->snapshot];
+            return ['run_id' => $this->tokens[$token], 'errors' => [], 'parts' => $this->snapshot, 'connections' => null];
         }
         if ($this->launchErrors) {
-            return ['run_id' => null, 'errors' => $this->launchErrors, 'parts' => null];
+            return ['run_id' => null, 'errors' => $this->launchErrors, 'parts' => null, 'connections' => null];
         }
-        $refusal = $verify($this->snapshot);
+        if ($this->beforeVerify !== null) {
+            ($this->beforeVerify)($kind, $number);
+        }
+        $connections = $this->connections($deviceIds);
+        $refusal = $verify($this->snapshot, $connections);
         if ($refusal !== null) {
-            return ['run_id' => null, 'errors' => ["The launch was refused: $refusal."], 'parts' => null];
+            return ['run_id' => null, 'errors' => ["The launch was refused: $refusal."], 'parts' => null, 'connections' => $connections];
         }
         $pin = $kind === 'batch' ? $change['dry_run_commit'] : null;
         $runId = $this->runs->add(['status' => 'queued', 'runner_task_id' => (string) (900 + count($this->runs->runs)), 'username' => $user['username'],
@@ -84,7 +94,19 @@ final class FakeChangeRunner implements ChangeRunner
         $this->tokens[$token] = $runId;
         $this->launches[] = ['kind' => $kind, 'number' => $number, 'devices' => $deviceIds, 'user' => $user['username'], 'secrets' => $secrets, 'commit' => $pin];
 
-        return ['run_id' => $runId, 'errors' => [], 'parts' => $this->snapshot];
+        return ['run_id' => $runId, 'errors' => [], 'parts' => $this->snapshot, 'connections' => $connections];
+    }
+
+    public function connections(array $deviceIds): array
+    {
+        $connections = [];
+        foreach ($deviceIds as $deviceId) {
+            $connections[(int) $deviceId] = $this->connections[(int) $deviceId] ?? ['ansible_connection' => 'ansible.netcommon.network_cli',
+                'ansible_host' => '10.0.0.' . ((int) $deviceId % 256), 'ansible_network_os' => 'cisco.ios.ios'];
+        }
+        ksort($connections);
+
+        return $connections;
     }
 
     public function findRun(int $changeId, string $kind, int $number): ?int

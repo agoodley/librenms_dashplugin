@@ -98,7 +98,7 @@ final class ChangeLifecycle
         $targets = $this->changes->targets($id);
         $answers = self::answers($change);
         $result = $this->runner->launch($change, 'dry_run', (int) $change['dry_runs'], array_keys($targets), $user, $secrets,
-            fn (array $snapshot) => null);
+            fn (array $snapshot, array $connections) => null);
         if ($result['run_id'] === null) {
             $error = UntrustedText::line(implode(' ', $result['errors']) ?: 'the launch was refused', 1000);
             $this->update($change, ['status' => ChangeStatus::DRAFT, 'dry_run_state' => 'not_launched', 'error' => 'The dry run was not launched: ' . $error]);
@@ -106,7 +106,9 @@ final class ChangeLifecycle
 
             return 'The dry run was not launched: ' . $error;
         }
-        $parts = $result['parts'] !== null ? Fingerprint::parts($result['parts'], self::names($targets), $answers, (array) $change['plan']) : null;
+        // how the runner reaches each target, as the launch saw it right before the run was recorded
+        $connections = $result['connections'] ?? $this->runner->connections(array_keys($targets));
+        $parts = $result['parts'] !== null ? Fingerprint::parts($result['parts'], self::names($targets), $connections, $answers, (array) $change['plan']) : null;
         $this->update($change, ['dry_run_id' => $result['run_id'], 'dry_run_state' => 'running', 'fingerprint_parts' => $parts,
             'plan_fingerprint' => $parts !== null ? Fingerprint::of($parts) : null]);
         $this->timeline($change, 'dry_run', 'Dry run launched (run #' . $result['run_id'] . ').', $user['username'], $now);
@@ -728,15 +730,18 @@ final class ChangeLifecycle
         $targets = $this->changes->targets($id);
         $answers = self::answers($change);
         $plan = (array) $change['plan'];
+        $recorded = self::recorded($change);
         $result = $this->runner->launch($change, 'batch', $number, $this->batchDevices($change, $number), $user, $secrets ?? [],
-            function (array $snapshot) use ($expected, $targets, $answers, $plan, $change): ?string {
-                $parts = Fingerprint::parts($snapshot, self::names($targets), $answers, $plan);
-                if (Fingerprint::of($parts) === $expected) {
-                    return null;
-                }
-                $what = Fingerprint::differences((array) ($change['fingerprint_parts'] ?? []), $parts);
+            function (array $snapshot, array $connections) use ($expected, $targets, $recorded, $answers, $plan, $change): ?string {
+                $parts = Fingerprint::parts($snapshot, self::names($targets), $recorded, $answers, $plan);
+                if (Fingerprint::of($parts) !== $expected) {
+                    $what = Fingerprint::differences((array) ($change['fingerprint_parts'] ?? []), $parts);
 
-                return 'the template changed in the runner since the dry run' . ($what ? ' (' . implode(', ', $what) . ')' : '') . ': its approval no longer counts';
+                    return 'the template changed in the runner since the dry run' . ($what ? ' (' . implode(', ', $what) . ')' : '') . ': its approval no longer counts';
+                }
+                $moved = Connections::differences($recorded, $connections, self::displays($targets));
+
+                return $moved ? self::movedText($moved, 'since the dry run') . ': its approval no longer counts' : null;
             });
         if ($result['run_id'] === null) {
             $error = UntrustedText::line(implode(' ', $result['errors']) ?: 'the launch was refused', 1000);
@@ -767,6 +772,12 @@ final class ChangeLifecycle
         $results = array_replace(array_fill_keys($devices, null), array_intersect_key($results, array_flip($devices)));
         $plan = (array) $change['plan'];
         $stop = BatchOutcome::stopReason($number, $run, $results, max(1, (int) ($plan['stop_at'] ?? 1)), $change['dry_run_commit']);
+        if ($stop === null) {
+            $moved = Connections::differences(self::recorded($change), $this->runner->connections($devices), self::displays($this->changes->targets($id)));
+            if ($moved) {
+                $stop = self::movedText($moved, "by the end of batch $number") . ': the batch may have run on other devices than the ones dry-run';
+            }
+        }
         $this->recordBatch($change, $number, $run, $stop === null ? 'done' : 'failed', $stop, $now);
         $count = (int) $change['batch_count'];
         if ($stop !== null) {
@@ -857,8 +868,9 @@ final class ChangeLifecycle
     // ------------------------------------------------------------------ checks
 
     /**
-     * Why the change's dry run no longer counts, null when it does: not verified, expired, or another change was
-     * applied to one of its devices since.
+     * Why the change's dry run no longer counts, null when it does: not verified, expired, another run may have changed
+     * one of its devices since, or the inventory no longer reaches one of them as at the dry run (another address,
+     * another platform, no longer a host: Connections).
      */
     private function dryRunProblem(array $change, int $now): ?string
     {
@@ -876,8 +888,43 @@ final class ChangeLifecycle
             return 'another run changed ' . count($changed) . ' of its devices since its dry run (run' . (count($runs) === 1 ? ' #' : 's #')
                 . implode(', #', array_slice($runs, 0, 5)) . ')';
         }
+        $targets = $this->changes->targets((int) $change['id']);
+        $moved = Connections::differences(self::recorded($change), $this->runner->connections(array_keys($targets)), self::displays($targets));
 
-        return null;
+        return $moved ? self::movedText($moved, 'since the dry run') : null;
+    }
+
+    /**
+     * How the runner reached the change's devices at its dry run (Connections), as its fingerprint parts recorded it.
+     *
+     * @return array<int|string, mixed>
+     */
+    private static function recorded(array $change): array
+    {
+        $parts = (array) ($change['fingerprint_parts'] ?? []);
+        $connections = $parts['connections'] ?? [];
+
+        return is_array($connections) || is_object($connections) ? (array) $connections : [];
+    }
+
+    /**
+     * Devices the runner no longer reaches as at the dry run, in words.
+     *
+     * @param  string[]  $what  Connections::differences()
+     */
+    private static function movedText(array $what, string $when): string
+    {
+        return 'how the runner reaches ' . (count($what) === 1 ? 'a device' : 'devices') . " changed $when (" . implode('; ', $what) . ')';
+    }
+
+    /**
+     * The name of each target to show: its display name, else its hostname.
+     *
+     * @return array<int, string>
+     */
+    private static function displays(array $targets): array
+    {
+        return array_map(fn ($target) => (string) (($target['display'] ?? '') ?: ($target['hostname'] ?? '') ?: ($target['inventory_name'] ?? '')), $targets);
     }
 
     /**
@@ -889,7 +936,8 @@ final class ChangeLifecycle
         if ($snapshot['parts'] === null) {
             return 'the template cannot be read from the runner: ' . $snapshot['error'];
         }
-        $parts = Fingerprint::parts($snapshot['parts'], self::names($this->changes->targets((int) $change['id'])), self::answers($change), (array) $change['plan']);
+        $parts = Fingerprint::parts($snapshot['parts'], self::names($this->changes->targets((int) $change['id'])), self::recorded($change), self::answers($change),
+            (array) $change['plan']);
         if (Fingerprint::of($parts) === $change['plan_fingerprint']) {
             return null;
         }

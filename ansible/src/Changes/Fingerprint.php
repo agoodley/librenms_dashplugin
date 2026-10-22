@@ -6,11 +6,12 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 
 /**
  * What an approval approves, as one hash: the template as the runner has it (TemplateSnapshot: its playbook,
- * inventory, repository, variable groups and every field the template check reads), the targets, the answers that are
- * not secret, the batch plan, and the dry run with the commit it ran (when the runner tells). It is computed when the
- * dry run is launched, compared when the change is approved and before every batch (the template re-read from the
- * runner), so an apply never runs something other than what was dry-run and approved. Secret answers are not part of
- * it: the plugin never keeps them.
+ * inventory, repository, variable groups and every field the template check reads), the targets, how the runner
+ * reaches each of them (Connections: its address and platform), the answers that are not secret, the batch plan, and
+ * the dry run with the commit it ran (when the runner tells). It is computed when the dry run is launched, compared
+ * when the change is approved and before every batch (the template re-read from the runner, the connections from the
+ * inventory), so an apply never runs something other than what was dry-run and approved, nor elsewhere. Secret answers
+ * are not part of it: the plugin never keeps them.
  */
 final class Fingerprint
 {
@@ -22,6 +23,7 @@ final class Fingerprint
         'inventory' => 'the LibreNMS inventory in the runner',
         'repository' => 'its repository',
         'targets' => 'the targets',
+        'connections' => 'how the runner reaches the targets',
         'answers' => 'the answers',
         'plan' => 'the batch plan',
     ];
@@ -56,15 +58,17 @@ final class Fingerprint
      *
      * @param  array<string, mixed>  $snapshot  TemplateSnapshot::parts()
      * @param  array<int, string>  $targets  device_id => inventory name
+     * @param  array<int|string, mixed>  $connections  device_id => how the runner reaches it (Connections::of()), as recorded at the dry run
      * @param  array<string, string|int>  $answers  the answers that are not secret
      * @param  array<string, mixed>  $plan  BatchPlan::toArray()
      * @return array<string, mixed>
      */
-    public static function parts(array $snapshot, array $targets, array $answers, array $plan): array
+    public static function parts(array $snapshot, array $targets, array $connections, array $answers, array $plan): array
     {
         ksort($targets);
+        ksort($connections);
 
-        return $snapshot + ['targets' => array_map('strval', $targets), 'answers' => (object) $answers, 'plan' => $plan];
+        return $snapshot + ['targets' => array_map('strval', $targets), 'connections' => (object) $connections, 'answers' => (object) $answers, 'plan' => $plan];
     }
 
     /**

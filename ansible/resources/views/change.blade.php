@@ -16,6 +16,7 @@
     use Agoodley\LibrenmsAnsible\Changes\ChangeText;
     use Agoodley\LibrenmsAnsible\Changes\BackupState;
     use Agoodley\LibrenmsAnsible\Changes\ApprovalRules;
+    use Agoodley\LibrenmsAnsible\Changes\Connections;
     use Agoodley\LibrenmsAnsible\Runs\RunResults;
     use Agoodley\LibrenmsAnsible\Runs\RunStatus;
     use Agoodley\LibrenmsAnsible\Support\Clock;
@@ -41,6 +42,8 @@
         $byBatch[(int) $target['batch']][] = $deviceId;
     }
     $short = fn (?string $oid) => $oid ? substr($oid, 0, 10) : '';
+    // how the runner reached each device at the dry run (Connections): a batch runs only while the inventory reaches it the same way
+    $reached = (array) (((array) ($change['fingerprint_parts'] ?? []))['connections'] ?? []);
 @endphp
 
 @section('content')
@@ -230,9 +233,10 @@
             <thead><tr><th>Device</th><th>Batch</th><th>Dry run</th>@foreach($counters as $c)<th class="ans-num">{{ $c }}</th>@endforeach<th>What would change</th></tr></thead>
             <tbody>
             @foreach($targets as $deviceId => $target)
-                @php $blocks = $diffs[$deviceId] ?? []; @endphp
+                @php $blocks = $diffs[$deviceId] ?? []; $address = Connections::address($reached, (int) $deviceId); @endphp
                 <tr data-device="{{ $deviceId }}">
-                    <td class="ans-wrap"><a href="{{ url('device/' . $deviceId) }}">{{ $target['display'] ?: $target['hostname'] }}</a><div class="ans-code ans-muted">{{ $target['inventory_name'] }}</div></td>
+                    <td class="ans-wrap"><a href="{{ url('device/' . $deviceId) }}">{{ $target['display'] ?: $target['hostname'] }}</a><div class="ans-code ans-muted">{{ $target['inventory_name'] }}</div>
+                        @if($address !== null)<div class="ans-muted ans-dry-address" title="The address the runner reached this device at in the dry run (its overwrite IP, else its hostname). A batch runs on it only while the inventory still gives this address and platform.">dry-run at <span class="ans-code">{{ $address }}</span></div>@endif</td>
                     <td>{{ $target['batch'] }}</td>
                     <td>@if($target['dry_result'])<span class="label label-{{ $dryCss[$target['dry_result']] ?? 'default' }} ans-dry-result">{{ ChangeText::DRY_RESULTS[$target['dry_result']] ?? $target['dry_result'] }}</span>@else<span class="text-muted">-</span>@endif</td>
                     @foreach($counters as $c)<td class="ans-num">{{ $target['dry_counts'][$c] ?? '' }}</td>@endforeach

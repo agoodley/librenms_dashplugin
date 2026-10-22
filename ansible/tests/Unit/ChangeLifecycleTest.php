@@ -7,6 +7,7 @@ use Agoodley\LibrenmsAnsible\Changes\BatchPlan;
 use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeSettings;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
+use Agoodley\LibrenmsAnsible\Changes\Connections;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeBackups;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeChangeRunner;
@@ -273,6 +274,125 @@ class ChangeLifecycleTest extends TestCase
         $this->assertStringContainsString("the template changed in the runner since the dry run (the template's playbook)", (string) $error);
         $this->assertSame(ChangeStatus::DRAFT, $this->changes->find($id)['status']);
         $this->assertSame('void', $this->changes->find($id)['dry_run_state']);
+    }
+
+    // ------------------------------------------------------------------ how the runner reaches the devices
+
+    /** lab-sw1 (501) pointed at the address of lab-sw2 (502), as an admin who may edit devices could do. */
+    private const ELSEWHERE = ['ansible_connection' => 'ansible.netcommon.network_cli', 'ansible_host' => '10.0.0.246', 'ansible_network_os' => 'cisco.ios.ios'];
+
+    public function testTheDryRunRecordsHowTheRunnerReachesEachTarget(): void
+    {
+        $id = $this->change();
+        $this->dryRun($id);
+
+        $recorded = (array) $this->changes->find($id)['fingerprint_parts']['connections'];
+        $this->assertSame(['10.0.0.245', '10.0.0.246', '10.0.0.247'], [Connections::address($recorded, 501), Connections::address($recorded, 502), Connections::address($recorded, 503)]);
+        $this->assertSame('cisco.ios.ios', ((array) $recorded[501])['ansible_network_os']);
+    }
+
+    public function testADeviceReachedElsewhereAfterTheApprovalIsNotApplied(): void
+    {
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->runner->connections[501] = self::ELSEWHERE;
+
+        $answer = $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->assertSame('The dry run no longer counts (how the runner reaches a device changed since the dry run (lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246)): '
+            . 'launch it again.', $answer);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::DRAFT, 'void', null, null], [$change['status'], $change['dry_run_state'], $change['approved_by'], $change['approval_fingerprint']]);
+        $this->assertNotNull($this->changes->approvals[0]['voided_at'], 'the approval is void');
+        $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'), 'no batch was launched');
+        $this->assertStringContainsString('lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246', end($this->events->entries)['message'], 'said in the eventlog');
+
+        // a new dry run records the new address, and a new approval approves it
+        $this->dryRun($id, null, $this->t0 + 60);
+        $this->assertSame('10.0.0.246', Connections::address((array) $this->changes->find($id)['fingerprint_parts']['connections'], 501));
+        $this->assertNull($lifecycle->approve($id, self::BOB, true, 'the new address is right', $this->t0 + 100));
+        $this->backups->enabled = false;
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 110));
+        $this->assertSame([501], end($this->runner->launches)['devices'], 'batch 1 launched');
+    }
+
+    public function testADeviceReachedElsewhereIsSeenBeforeTheApproval(): void
+    {
+        $id = $this->change();
+        $this->dryRun($id);
+        $this->runner->connections[502] = [Connections::NOT_A_HOST => 'disabled in LibreNMS'];
+
+        $error = $this->lifecycle()->approve($id, self::BOB, true, '', $this->t0 + 40);
+        $this->assertSame('The dry run no longer counts (how the runner reaches a device changed since the dry run (lab-sw2 is no longer a host of the inventory '
+            . '(disabled in LibreNMS))): launch it again.', $error);
+        $this->assertSame([], $this->changes->approvals, 'nothing approved');
+
+        // the page's polls see it too, before anyone approves
+        $id = $this->change();
+        $this->dryRun($id);
+        $this->runner->connections[503] = ['ansible_host' => '10.0.0.247', 'ansible_network_os' => 'junipernetworks.junos.junos', 'ansible_connection' => 'ansible.netcommon.network_cli'];
+        $this->lifecycle()->advance($id, $this->t0 + 50);
+        $this->assertSame(ChangeStatus::DRAFT, $this->changes->find($id)['status']);
+        $this->assertStringContainsString('lab-sw3: ansible_network_os cisco.ios.ios → junipernetworks.junos.junos', (string) $this->changes->find($id)['error']);
+    }
+
+    public function testADeviceReachedElsewhereRightBeforeItsBatchLaunchesIsNotRun(): void
+    {
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        // after the checks of the batch's start (the window, the backups), right before the launch
+        $this->runner->beforeVerify = function (string $kind) {
+            if ($kind === 'batch') {
+                $this->runner->connections[501] = self::ELSEWHERE;
+            }
+        };
+
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $change = $this->changes->find($id);
+        $this->assertSame(ChangeStatus::FAILED, $change['status']);
+        $this->assertSame('batch 1 was not launched: The launch was refused: how the runner reaches a device changed since the dry run (lab-sw1: ansible_host '
+            . '10.0.0.245 → 10.0.0.246): its approval no longer counts.', $change['error']);
+        $this->assertSame(['dry_run'], array_column($this->runner->launches, 'kind'), 'no batch was launched');
+        $this->assertSame('failed', $this->changes->batches[$id][1]['status']);
+    }
+
+    public function testADeviceReachedElsewhereBetweenBatchesStopsTheChange(): void
+    {
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+        $lifecycle->advance($id, $this->t0 + 101);
+        $this->assertSame([ChangeStatus::PAUSED, 'canary'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+        $this->runner->connections[502] = ['ansible_host' => '10.0.0.99'] + self::ELSEWHERE;
+
+        $lifecycle->advance($id, $this->t0 + 150);
+        $change = $this->changes->find($id);
+        $this->assertSame(ChangeStatus::FAILED, $change['status']);
+        $this->assertSame('stopped while it waited before batch 2: how the runner reaches a device changed since the dry run (lab-sw2: ansible_host 10.0.0.246 → 10.0.0.99)',
+            $change['error']);
+        $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'), 'batch 2 was never launched');
+        $this->assertSame('cancelled', $this->changes->batches[$id][2]['status']);
+    }
+
+    public function testADeviceReachedElsewhereWhileItsBatchRanStopsTheChange(): void
+    {
+        // the address changed after the launch's check: the batch may have run on another device; the change stops and says so
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->runner->connections[501] = self::ELSEWHERE;
+        $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed'], [], $this->t0 + 100);
+
+        $lifecycle->advance($id, $this->t0 + 101);
+        $change = $this->changes->find($id);
+        $this->assertSame(ChangeStatus::FAILED, $change['status']);
+        $this->assertSame('how the runner reaches a device changed by the end of batch 1 (lab-sw1: ansible_host 10.0.0.245 → 10.0.0.246): the batch may have run on other '
+            . 'devices than the ones dry-run', $change['error']);
+        $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'), 'no further batch');
+        $this->assertSame('failed', $this->changes->batches[$id][1]['status']);
     }
 
     public function testDryRunsAndApprovalsExpire(): void

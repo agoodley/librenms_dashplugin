@@ -7,6 +7,7 @@ use Agoodley\LibrenmsAnsible\Changes\BackupState;
 use Agoodley\LibrenmsAnsible\Changes\BatchOutcome;
 use Agoodley\LibrenmsAnsible\Changes\BatchPlan;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
+use Agoodley\LibrenmsAnsible\Changes\Connections;
 use Agoodley\LibrenmsAnsible\Changes\DryRunCheck;
 use Agoodley\LibrenmsAnsible\Changes\Fingerprint;
 use Agoodley\LibrenmsAnsible\Changes\MaintenanceTimes;
@@ -76,27 +77,98 @@ class ChangeRulesTest extends TestCase
     public function testTheFingerprintChangesWithWhatAnApplyRuns(): void
     {
         $plan = BatchPlan::make([501, 502], [], 1, 5, 1, true, 0)->toArray();
-        $base = Fingerprint::parts(self::snapshot(), [502 => 'b', 501 => 'a'], ['interface' => 'Fa0/1'], $plan);
-        $same = Fingerprint::parts(self::snapshot(), [501 => 'a', 502 => 'b'], ['interface' => 'Fa0/1'], $plan);
+        $reach = [501 => ['ansible_host' => '10.0.0.1', 'ansible_network_os' => 'cisco.ios.ios'], 502 => ['ansible_host' => '10.0.0.2', 'ansible_network_os' => 'cisco.ios.ios']];
+        $parts = fn (array $snapshot = [], array $targets = [501 => 'a', 502 => 'b'], ?array $connections = null, array $answers = ['interface' => 'Fa0/1'], ?array $batches = null)
+            => Fingerprint::parts($snapshot ?: self::snapshot(), $targets, $connections ?? $reach, $answers, $batches ?? $plan);
+        $base = $parts([], [502 => 'b', 501 => 'a'], [502 => $reach[502], 501 => $reach[501]]);
+        $same = $parts();
         $this->assertSame(Fingerprint::of($base), Fingerprint::of($same), 'the order of targets does not matter');
         $this->assertSame(64, strlen(Fingerprint::of($base)));
 
         $changed = [
-            "the template's playbook" => Fingerprint::parts(self::snapshot(['playbook' => 'other.yml']), [501 => 'a', 502 => 'b'], ['interface' => 'Fa0/1'], $plan),
-            "the template's survey variables" => Fingerprint::parts(self::snapshot(['surveyVars' => []]), [501 => 'a', 502 => 'b'], ['interface' => 'Fa0/1'], $plan),
-            'its variable groups' => Fingerprint::parts(self::snapshot([], ['ANSIBLE_CHECK_MODE_MARKERS' => 'true', 'LIBRENMS_URL' => 'https://other']), [501 => 'a', 502 => 'b'], ['interface' => 'Fa0/1'], $plan),
-            'its repository' => Fingerprint::parts(self::snapshot([], ['ANSIBLE_CHECK_MODE_MARKERS' => 'true', 'LIBRENMS_URL' => 'https://l'], new RunnerRepository('9', 'r', 'file:///repos/r.git', 'dev')), [501 => 'a', 502 => 'b'], ['interface' => 'Fa0/1'], $plan),
-            'the targets' => Fingerprint::parts(self::snapshot(), [501 => 'a'], ['interface' => 'Fa0/1'], $plan),
-            'the answers' => Fingerprint::parts(self::snapshot(), [501 => 'a', 502 => 'b'], ['interface' => 'Fa0/2'], $plan),
-            'the batch plan' => Fingerprint::parts(self::snapshot(), [501 => 'a', 502 => 'b'], ['interface' => 'Fa0/1'], BatchPlan::make([501, 502], [502], 1, 5, 1, true, 0)->toArray()),
+            "the template's playbook" => $parts(self::snapshot(['playbook' => 'other.yml'])),
+            "the template's survey variables" => $parts(self::snapshot(['surveyVars' => []])),
+            'its variable groups' => $parts(self::snapshot([], ['ANSIBLE_CHECK_MODE_MARKERS' => 'true', 'LIBRENMS_URL' => 'https://other'])),
+            'its repository' => $parts(self::snapshot([], ['ANSIBLE_CHECK_MODE_MARKERS' => 'true', 'LIBRENMS_URL' => 'https://l'], new RunnerRepository('9', 'r', 'file:///repos/r.git', 'dev'))),
+            'the targets' => $parts([], [501 => 'a']),
+            'how the runner reaches the targets' => $parts([], [501 => 'a', 502 => 'b'], [501 => ['ansible_host' => '10.0.0.9'] + $reach[501], 502 => $reach[502]]),
+            'the answers' => $parts([], [501 => 'a', 502 => 'b'], null, ['interface' => 'Fa0/2']),
+            'the batch plan' => $parts([], [501 => 'a', 502 => 'b'], null, ['interface' => 'Fa0/1'], BatchPlan::make([501, 502], [502], 1, 5, 1, true, 0)->toArray()),
         ];
-        foreach ($changed as $what => $parts) {
-            $this->assertNotSame(Fingerprint::of($base), Fingerprint::of($parts), $what);
-            $this->assertContains($what, Fingerprint::differences($base, $parts), $what);
+        foreach ($changed as $what => $other) {
+            $this->assertNotSame(Fingerprint::of($base), Fingerprint::of($other), $what);
+            $this->assertContains($what, Fingerprint::differences($base, $other), $what);
         }
         $this->assertSame([], Fingerprint::differences($base, $same));
+        $stored = json_decode((string) json_encode($base), true);
+        $this->assertSame(Fingerprint::of($base), Fingerprint::of($parts(self::snapshot(), [501 => 'a', 502 => 'b'], $stored['connections'])),
+            'the connections read back from the stored parts give the same fingerprint');
         $this->assertNotSame(Fingerprint::approval('a', 7, null), Fingerprint::approval('a', 7, 'abc1234'), 'the dry run\'s commit is part of the approval');
         $this->assertStringNotContainsString('https://l', (string) json_encode($base), 'the stored parts hold hashes of the variables, not their values');
+    }
+
+    // ------------------------------------------------------------------ how the runner reaches the devices
+
+    public function testConnectionsAreTheAnsibleVariablesOfEachHost(): void
+    {
+        $inventory = self::labInventory();
+        $connections = Connections::of($inventory, [502, 501, 503]);
+
+        $this->assertSame([501, 502, 503], array_keys($connections));
+        $this->assertSame(['ansible_become' => true, 'ansible_become_method' => 'enable', 'ansible_connection' => 'ansible.netcommon.network_cli',
+            'ansible_host' => '127.0.1.11', 'ansible_network_os' => 'cisco.ios.ios'], $connections[501], 'the overwrite IP is the address');
+        $this->assertSame('sec-sw2.example.net', $connections[502]['ansible_host'], 'else the hostname');
+        $this->assertSame([Connections::NOT_A_HOST => 'disabled in LibreNMS'], $connections[503]);
+        $this->assertSame('127.0.1.11', Connections::address($connections, 501));
+        $this->assertNull(Connections::address($connections, 503));
+    }
+
+    public function testAnotherAddressOrPlatformIsAnotherConnectionNotOtherFacts(): void
+    {
+        $names = [501 => 'sec-sw1', 502 => 'sec-sw2', 503 => 'sec-sw3'];
+        $recorded = json_decode((string) json_encode(Connections::of(self::labInventory(), [501, 502])), true); // as stored
+        $this->assertSame([], Connections::differences($recorded, Connections::of(self::labInventory(), [501, 502]), $names));
+
+        // the facts of a device (sysName, location, version, hardware, type) are not how the runner reaches it
+        $facts = Connections::of(self::labInventory([501 => ['sysName' => 'renamed', 'version' => '17.9', 'hardware' => 'other', 'location_id' => 2, 'type' => 'server']]), [501, 502]);
+        $this->assertSame([], Connections::differences($recorded, $facts, $names));
+
+        $moved = Connections::differences($recorded, Connections::of(self::labInventory([501 => ['overwrite_ip' => '127.0.1.12']]), [501, 502]), $names);
+        $this->assertSame(['sec-sw1: ansible_host 127.0.1.11 → 127.0.1.12'], $moved, 'pointed at another device');
+
+        $renamed = Connections::differences($recorded, Connections::of(self::labInventory([502 => ['hostname' => 'sec-sw9.example.net']]), [501, 502]), $names);
+        $this->assertSame(['sec-sw2: ansible_host sec-sw2.example.net → sec-sw9.example.net'], $renamed, 'a new hostname without an overwrite IP is a new address');
+
+        $platform = Connections::differences($recorded, Connections::of(self::labInventory([501 => ['os' => 'junos']]), [501, 502]), $names);
+        $this->assertSame(['sec-sw1: ansible_become true → (none), ansible_become_method enable → (none), ansible_network_os cisco.ios.ios → junipernetworks.junos.junos'],
+            $platform, 'another platform (from its os, or from the Platform mapping setting)');
+
+        $gone = Connections::differences($recorded, Connections::of(self::labInventory([502 => ['disabled' => 1]]), [501, 502]), $names);
+        $this->assertSame(['sec-sw2 is no longer a host of the inventory (disabled in LibreNMS)'], $gone);
+        $this->assertSame(['sec-sw3: the dry run recorded no address for it'], Connections::differences($recorded, Connections::of(self::labInventory([503 => ['disabled' => 0]]), [503]), $names));
+    }
+
+    /**
+     * An inventory of three switches (501 with an overwrite IP, 502 without, 503 disabled), with some of their fields replaced.
+     *
+     * @param  array<int, array<string, mixed>>  $changes
+     */
+    private static function labInventory(array $changes = []): \Agoodley\LibrenmsAnsible\Inventory\Inventory
+    {
+        $devices = [
+            501 => ['hostname' => 'sec-sw1.example.net', 'overwrite_ip' => '127.0.1.11', 'sysName' => 'sec-sw1', 'os' => 'ios', 'type' => 'network', 'hardware' => 'C9300',
+                'version' => '17.6', 'location_id' => 1, 'disabled' => 0],
+            502 => ['hostname' => 'sec-sw2.example.net', 'overwrite_ip' => null, 'sysName' => 'sec-sw2', 'os' => 'iosxe', 'type' => 'network', 'hardware' => 'C9300',
+                'version' => '17.6', 'location_id' => 1, 'disabled' => 0],
+            503 => ['hostname' => 'sec-sw3.example.net', 'overwrite_ip' => '127.0.1.13', 'sysName' => 'sec-sw3', 'os' => 'ios', 'type' => 'network', 'hardware' => 'C9300',
+                'version' => '17.6', 'location_id' => 1, 'disabled' => 1],
+        ];
+        foreach ($changes as $deviceId => $values) {
+            $devices[$deviceId] = $values + $devices[$deviceId];
+        }
+
+        return (new \Agoodley\LibrenmsAnsible\Inventory\InventoryBuilder(\Agoodley\LibrenmsAnsible\Inventory\PlatformMap::parse(null)))
+            ->build($devices, [], [], [1 => 'HQ', 2 => 'Annex']);
     }
 
     // ------------------------------------------------------------------ can the template be dry-run?
