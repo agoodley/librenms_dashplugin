@@ -153,6 +153,14 @@ class ChangeRulesTest extends TestCase
         $this->assertSame('without the devices its dry run failed on (sw2)', $passed['text']);
         $targets[502]['dry_result'] = 'changed';
         $this->assertSame([502], NextChange::prefill($change, $targets, NextChange::PASSED, [])['canary'], 'its first batch, when it is among them');
+
+        // a device the runner reaches otherwise than at the earlier dry run is taken as it is now, and said: the new change's to check
+        $ios = ['ansible_connection' => 'ansible.netcommon.network_cli', 'ansible_network_os' => 'cisco.ios.ios'];
+        $change['fingerprint_parts'] = ['connections' => [503 => ['ansible_host' => '10.0.0.3'] + $ios, 504 => ['ansible_host' => '10.0.0.4'] + $ios]];
+        $now = [501 => ['ansible_host' => '10.0.9.1'] + $ios, 503 => ['ansible_host' => '10.0.3.99'] + $ios, 504 => ['ansible_host' => '10.0.0.4'] + $ios];
+        $this->assertSame(['sw3: ansible_host 10.0.0.3 → 10.0.3.99'], NextChange::prefill($change, $targets, NextChange::REMAINING, [], $now)['moved'],
+            'only the devices it takes (not sw1, applied), as their dry run recorded them');
+        $this->assertSame([], NextChange::prefill($change, $targets, NextChange::REMAINING, [])['moved'], 'nothing known now: nothing said');
     }
 
     // ------------------------------------------------------------------ how the runner reaches the devices

@@ -57,13 +57,16 @@ final class NextChange
 
     /**
      * What the new change page fills in: the devices (busy ones left out, with why), the first batch among them, the
-     * answers that are not secret, the reference, and what it is in words.
+     * answers that are not secret, the reference, what it is in words, and the devices the runner reaches otherwise
+     * than at the earlier change's dry run (moved: "lab-sw5: ansible_host 127.0.0.15 → 127.0.3.99"), which the new
+     * change would take as they are now: the page asks to check that it is intended.
      *
      * @param  array<int, array>  $targets  ChangeStore::targets() of the earlier change
      * @param  array<int, array{run: int, held_until: ?string}>  $busy  RunRepository::busy()
-     * @return array{from: int, kind: string, devices: int[], canary: int[], left_out: string[], vars: array<string, string>, reference: string, text: string}
+     * @param  array<int, array<string, mixed>>  $connections  how the inventory reaches the devices now (Connections::of())
+     * @return array{from: int, kind: string, devices: int[], canary: int[], left_out: string[], vars: array<string, string>, reference: string, text: string, moved: string[]}
      */
-    public static function prefill(array $change, array $targets, string $kind, array $busy): array
+    public static function prefill(array $change, array $targets, string $kind, array $busy, array $connections = []): array
     {
         $devices = [];
         $leftOut = [];
@@ -88,8 +91,12 @@ final class NextChange
                 self::dryRunFailures($targets))), 300) . ')'
             : 'with its remaining devices';
 
+        // compared with what the earlier dry run recorded, for the devices it recorded
+        $recorded = array_intersect_key(Connections::recordedIn($change), array_flip($devices));
+        $moved = Connections::differences($recorded, array_intersect_key($connections, $recorded), array_map(fn (array $target) => self::name($target), $targets));
+
         return ['from' => $id, 'kind' => $kind, 'devices' => $devices, 'canary' => array_values(array_intersect($first, $devices)), 'left_out' => $leftOut,
-            'vars' => $vars, 'reference' => (string) ($change['reference'] ?? ''), 'text' => $text];
+            'vars' => $vars, 'reference' => (string) ($change['reference'] ?? ''), 'text' => $text, 'moved' => $moved];
     }
 
     /**

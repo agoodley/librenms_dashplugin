@@ -430,9 +430,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   failed or was stopped offers **a new change with the remaining devices** (the devices that failed or were never
   reached; held ones are left out and named, with until when), and a dry run that failed on some devices offers **a new
   change without them**: the same template, answers (not the secret ones), reference and first batch, the devices chosen
-  and listed first, to dry-run and approve again. The page follows the change every 2 seconds: the batches with their
-  runs and results, the backups (with a link to each device's config page), the maintenance windows, the log of the run
-  it follows, and a timeline of every step.
+  and listed first, to dry-run and approve again; a device the runner now reaches otherwise than at the earlier change's
+  dry run (another address, say) is named there, to check that it is intended. The page follows the change every 2
+  seconds: the batches with their runs and results, the backups (with a link to each device's config page), the
+  maintenance windows, the log of the run it follows, and a timeline of every step.
 * **Changes:** filter by device, requester, template, status ("Not ended" for the changes still going) and dates; the
   *JSON* button gives the same list, with each change's status and the state of its dry run as the page shows them
   (`dry_run_state`, and `dry_run_label`: *NOT PROVEN* for a dry run not proven to be one, which may have changed its

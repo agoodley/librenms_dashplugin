@@ -8,6 +8,7 @@ use Agoodley\LibrenmsAnsible\Changes\BackupState;
 use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\ChangeText;
+use Agoodley\LibrenmsAnsible\Changes\Connections;
 use Agoodley\LibrenmsAnsible\Changes\InventoryGuard;
 use Agoodley\LibrenmsAnsible\Changes\NextChange;
 use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
@@ -119,7 +120,11 @@ class ChangeController extends Controller
                 $changes = new ChangeRepository();
                 $source = $changes->available() ? $changes->find((int) $request->query('from')) : null;
                 if ($source !== null) {
-                    $prefill = NextChange::prefill($source, $changes->targets((int) $source['id']), $kind, (new RunRepository())->busy());
+                    $sourceTargets = $changes->targets((int) $source['id']);
+                    $service = $this->inventoryService();
+                    // how the runner would reach them now, against the earlier dry run: an edit since is said, not taken silently
+                    $connections = Connections::of($service->build($service->inventoryUser()['visible'] ?? null), array_keys($sourceTargets));
+                    $prefill = NextChange::prefill($source, $sourceTargets, $kind, (new RunRepository())->busy(), $connections);
                     $templateId = $templateId !== '' ? $templateId : (string) $source['template_id'];
                 }
             } catch (\Throwable $e) {

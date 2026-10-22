@@ -47,6 +47,11 @@
             <a href="{{ route('ansible.changes.show', $prefill['from']) }}">change #{{ (int) $prefill['from'] }}</a>, {{ $prefill['text'] }}: its template,
             answers, reference and first batch are filled in, its devices chosen and listed first. Not a resume: it is dry-run and approved again; secret answers
             are asked again.
+            @if($prefill['moved'] ?? [])
+                <div style="margin-top: 4px" class="text-warning" id="ans-prefill-moved"><i class="fa fa-exclamation-triangle"></i>
+                    How the runner reaches {{ count($prefill['moved']) === 1 ? 'a device' : 'devices' }} changed since change #{{ (int) $prefill['from'] }}
+                    ({{ implode('; ', $prefill['moved']) }}): check that it is intended.</div>
+            @endif
             @if($prefill['left_out'])
                 <div style="margin-top: 4px" id="ans-prefill-left-out">Left out, they cannot be targets yet:
                     <ul style="margin: 2px 0 0">@foreach($prefill['left_out'] as $why)<li>{{ $why }}</li>@endforeach</ul></div>
