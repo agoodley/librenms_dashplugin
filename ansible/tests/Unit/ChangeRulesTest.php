@@ -42,6 +42,14 @@ class ChangeRulesTest extends TestCase
         $this->assertStringContainsString('15 min between batches', $chosen->describe());
     }
 
+    public function testTheRuleOfTheSettingsInWords(): void
+    {
+        $this->assertSame('a canary batch of 1 device, then batches of up to 5 devices; stops at 1 failed device in a batch; waits for an admin to continue '
+            . 'after the first batch', BatchPlan::rule(1, 5, 1, true, 0));
+        $this->assertSame('a canary batch of 2 devices, then batches of 1 device; stops at 3 failed devices in a batch; 10 min between batches',
+            BatchPlan::rule(2, 1, 3, false, 10));
+    }
+
     public function testAPlanFromDataMustCoverTheTargetsExactlyOnce(): void
     {
         $data = BatchPlan::make([1, 2, 3], [], 1, 5, 1, true, 0)->toArray();

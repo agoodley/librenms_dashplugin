@@ -31,8 +31,16 @@
             <a href="{{ url('plugin/settings/ansible') }}">Settings</a></div>
     @endif
 
-    <p class="ans-help" style="margin: 0 0 6px">A change is dry-run first (<span class="ans-code">--check --diff</span>, with the diff per device), approved when the settings ask
-        for it, then applied in batches ({{ $planText }}, with the settings), each with a LibreNMS maintenance window and Oxidized backups before and after.</p>
+    @php
+        // what the settings make of a change: its approval, its batches, and the windows and backups that are on
+        $approvalText = [\Agoodley\LibrenmsAnsible\Changes\ApprovalRules::OFF => 'then, as the settings ask for no approval, applied',
+            \Agoodley\LibrenmsAnsible\Changes\ApprovalRules::SECOND => 'approved by a second admin (not the requester) with the approve permission, then applied'][$changeSettings->approval]
+            ?? 'approved by an admin with the approve permission, then applied';
+        $around = array_filter([$changeSettings->maintenance ? 'in a LibreNMS maintenance window' : null,
+            $changeSettings->backups && $oxidized ? 'with Oxidized backups before and after it' : null]);
+    @endphp
+    <p class="ans-help" style="margin: 0 0 6px" id="ans-new-change-intro">A change is dry-run first (<span class="ans-code">--check --diff</span>, with the diff per device),
+        {{ $approvalText }} in batches ({{ $planText }}){{ $around ? ', each batch ' . implode(', ', $around) : '' }}.</p>
 
     @if($prefill)
         {{-- the text is escaped first, then the change's number becomes a link --}}

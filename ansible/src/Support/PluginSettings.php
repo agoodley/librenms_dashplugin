@@ -345,6 +345,15 @@ final class PluginSettings
     }
 
     /**
+     * The batch rule of the settings, in words (BatchPlan::rule()).
+     */
+    public function batchRule(): string
+    {
+        return \Agoodley\LibrenmsAnsible\Changes\BatchPlan::rule($this->int('canary_size'), $this->int('batch_size'), $this->int('stop_at'),
+            $this->values['wait_after_canary'] !== '0', $this->int('batch_pause_minutes'));
+    }
+
+    /**
      * A positive id, null for none.
      */
     private static function id(string $value): ?int

@@ -122,7 +122,8 @@ class ChangeController extends Controller
             'prefill' => $prefill,
             'device' => ctype_digit((string) $request->query('device', '')) ? (int) $request->query('device') : null,
             'requestToken' => bin2hex(random_bytes(16)), 'maxTargets' => $this->settings()->maxTargets(), 'assetVersion' => self::assetVersion(),
-            'groups' => [], 'locations' => [], 'planText' => $this->settings()->batchPlan([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])->describe()];
+            'groups' => [], 'locations' => [], 'planText' => $this->settings()->batchRule(), 'changeSettings' => $this->settings()->changeSettings(),
+            'oxidized' => (new \Agoodley\LibrenmsAnsible\Services\OxidizedBackups())->enabled()];
         try {
             $service = $this->inventoryService();
             $devices = $service->devices();

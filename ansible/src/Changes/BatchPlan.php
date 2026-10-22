@@ -169,6 +169,27 @@ final class BatchPlan
      * The plan in words: "3 batches: 1, then 5, then 2 devices; stops at 1 failed device in a batch; waits for an admin
      * after the first batch".
      */
+    /**
+     * The rule the settings give for any change, in words: "a canary batch of 1 device, then batches of up to 5 devices;
+     * stops at 1 failed device in a batch; waits for an admin to continue after the first batch".
+     */
+    public static function rule(int $canarySize, int $batchSize, int $stopAt, bool $waitAfterFirst, int $pauseMinutes): string
+    {
+        $canarySize = max(1, $canarySize);
+        $batchSize = max(1, $batchSize);
+        $stopAt = max(1, $stopAt);
+        $text = 'a canary batch of ' . ($canarySize === 1 ? '1 device' : "$canarySize devices") . ', then batches of '
+            . ($batchSize === 1 ? '1 device' : "up to $batchSize devices") . "; stops at $stopAt failed " . ($stopAt === 1 ? 'device' : 'devices') . ' in a batch';
+        if ($waitAfterFirst) {
+            $text .= '; waits for an admin to continue after the first batch';
+        }
+        if ($pauseMinutes > 0) {
+            $text .= "; $pauseMinutes min between batches";
+        }
+
+        return $text;
+    }
+
     public function describe(): string
     {
         $sizes = array_map('count', $this->batches);
