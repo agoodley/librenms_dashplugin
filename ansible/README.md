@@ -420,7 +420,7 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   at it): the stop is recorded at once, the runner is asked at once to stop the batch's task, no batch launches
   afterwards (a launch under way looks for the stop again right before it records its run and right before it asks
   the runner, and then launches nothing; a stop that comes while the runner is being asked stops the task it just got
-  at once), and the change ends
+  at once; a launch whose request died after asking the runner has its task looked for at once), and the change ends
   at its next step; a batch whose run had already ended is
   recorded with its results, and the change ends after it. After a stop the page says, as the run page does, how long the batch's devices stay
   held and how to find the step that may still run on the runner. **Cancel** drops a change that has not been applied.

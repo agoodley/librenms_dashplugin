@@ -37,6 +37,9 @@ final class RunLifecycle
     /** Seconds after which the task of a launch that did not complete is looked for (at once when the answer was unclear). */
     public const LAUNCH_GRACE = 300;
 
+    /** Least seconds between two searches for the task of a launch that a stop makes. */
+    public const STOP_SEARCH_INTERVAL = 10;
+
     /** Seconds after which a launch whose task a complete search did not find was not launched. */
     public const LAUNCH_TIMEOUT = 600;
 
@@ -206,6 +209,30 @@ final class RunLifecycle
         }
         $this->runs->updateAt((int) $run['id'], (int) $run['version'], ['polled_at' => self::time($now),
             'poll_error' => $run['poll_error'] ?? 'The launch did not complete: the plugin looks for its task in the runner.']);
+    }
+
+    /**
+     * The run as it is after looking for the task of its launch in the runner (by the launch's message, with its nonce),
+     * whatever its age: recorded when found; as it was when not (or the runner cannot be asked now).
+     */
+    private function findForStop(array $run, int $now): array
+    {
+        if ($run['polled_at'] !== null && $now - self::at($run['polled_at']) < self::STOP_SEARCH_INTERVAL) {
+            return $run; // looked for a moment ago (a change's stop asks at each of its steps)
+        }
+        try {
+            $search = ($this->runner)()->findTask((string) $run['template_id'],
+                RunText::taskMessage((int) $run['id'], (string) $run['username'], $run['launch_nonce'] ?? null), self::at($run['created_at']) - self::CLOCK_SKEW);
+        } catch (RunnerError) {
+            return $run;
+        }
+        if ($search->task !== null) {
+            $this->adopt($run, $search->task, $now);
+        } else {
+            $this->runs->updateAt((int) $run['id'], (int) $run['version'], ['polled_at' => self::time($now)]);
+        }
+
+        return $this->runs->find((int) $run['id']) ?? $run;
     }
 
     /**
@@ -567,7 +594,12 @@ final class RunLifecycle
             return 'The run has already ended.';
         }
         if ($run['runner_task_id'] === null) {
-            return 'The run is still being launched: try again in a moment.';
+            // a launch without a recorded task (its request is at it, or died after asking the runner): the task is looked for
+            // now, not only after LAUNCH_GRACE, so a stop reaches a task whose launch request died at once
+            $run = $this->findForStop($run, $now);
+            if ($run['runner_task_id'] === null) {
+                return 'The run is still being launched: try again in a moment.';
+            }
         }
         try {
             $runner = ($this->runner)();

@@ -676,6 +676,29 @@ class RunLifecycleTest extends TestCase
         $this->assertSame('The run has already ended.', $this->lifecycle()->stop($this->running('success', ['status' => 'success']), 'bob', $this->t0));
     }
 
+    public function testAStopLooksForTheTaskOfALaunchWithoutOne(): void
+    {
+        // the launching request died after asking the runner: the stop finds its task by the launch's message at once
+        $id = $this->store->add([], self::TARGETS);
+        $this->runner->search = new RunnerTaskSearch(new RunnerTask('90', 'running', 'running', $this->t0 + 1), true);
+        $this->runner->tasks['90'] = 'running';
+        $this->assertNull($this->lifecycle()->stop($id, 'bob', $this->t0 + 10));
+        $run = $this->store->find($id);
+        $this->assertSame(['90', 'stopping', 'bob'], [$run['runner_task_id'], $run['status'], $run['stopped_by']]);
+        $this->assertContains('stop 90', $this->runner->calls);
+
+        // no task yet (the launching request is still at it): asked again later
+        $id = $this->store->add([], self::TARGETS);
+        $this->runner->search = new RunnerTaskSearch(null, true);
+        $this->assertSame('The run is still being launched: try again in a moment.', $this->lifecycle()->stop($id, 'bob', $this->t0 + 10));
+        $this->assertNull($this->store->find($id)['runner_task_id']);
+        $searches = count(array_filter($this->runner->calls, fn ($call) => str_starts_with($call, 'find ')));
+        $this->lifecycle()->stop($id, 'bob', $this->t0 + 12);
+        $this->assertCount($searches, array_filter($this->runner->calls, fn ($call) => str_starts_with($call, 'find ')), 'not looked for again at once');
+        $this->lifecycle()->stop($id, 'bob', $this->t0 + 10 + RunLifecycle::STOP_SEARCH_INTERVAL);
+        $this->assertCount($searches + 1, array_filter($this->runner->calls, fn ($call) => str_starts_with($call, 'find ')));
+    }
+
     public function testAStopNeverReachesATaskThatEndedOnTheRunner(): void
     {
         // the task ended on the runner, the plugin has not recorded it yet: Semaphore UI would turn its success into stopped
