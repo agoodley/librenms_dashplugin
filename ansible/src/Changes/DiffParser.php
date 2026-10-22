@@ -40,6 +40,9 @@ final class DiffParser
 
     public const TOTAL_BYTES = 1048576;
 
+    /** What stands for the blocks of a device, or the blocks not attributed, past TOTAL_BYTES. */
+    public const TOTAL_CUT = '… (the page keeps 1 MB of the dry run\'s diffs: the rest is in the run\'s log)';
+
     /**
      * The blocks per device, and those not attributed.
      *
@@ -64,6 +67,7 @@ final class DiffParser
         $unattributed = [];
         $bytes = [];
         $total = 0;
+        $over = [];
         foreach ($entries as $entry) {
             if ($entry['kind'] !== 'changed') {
                 continue;
@@ -73,7 +77,20 @@ final class DiffParser
                 $block = self::capped($block);
                 $size = strlen(implode("\n", $block['lines']));
                 if ($total + $size > self::TOTAL_BYTES) {
-                    continue; // the pages show what fits; the runner keeps the whole log
+                    // the pages show what fits, the runner keeps the whole log: what is left out is marked, once per device (and
+                    // once for the blocks not attributed), so a device never reads as one whose module printed no diff
+                    $deviceId = $reason === null ? $deviceOf[$entry['host']] : null;
+                    if (! isset($over[$deviceId ?? 'unattributed'])) {
+                        $over[$deviceId ?? 'unattributed'] = true;
+                        $marker = ['task' => $entry['task'], 'item' => $entry['item'], 'kind' => $block['kind'], 'lines' => [self::TOTAL_CUT], 'cut' => true];
+                        if ($deviceId !== null) {
+                            $devices[$deviceId][] = $marker;
+                        } else {
+                            $unattributed[] = $marker + ['host' => $entry['host'], 'reason' => 'the page keeps 1 MB of the dry run\'s diffs'];
+                        }
+                    }
+
+                    continue;
                 }
                 if ($reason === null) {
                     $deviceId = $deviceOf[$entry['host']];

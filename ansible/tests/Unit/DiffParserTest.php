@@ -230,6 +230,32 @@ class DiffParserTest extends TestCase
         $this->assertLessThan(1100, mb_strlen($block['lines'][5]));
     }
 
+    public function testDiffsPastTheChangesCapAreMarkedNotDropped(): void
+    {
+        // twelve devices that would each change about 108 KB: the change keeps 1 MB of diffs
+        $big = array_merge(['--- before', '+++ after', '@@ -1 +1,120 @@'], array_map(fn ($i) => '+line ' . $i . ' ' . str_repeat('x', 900), range(1, 120)));
+        $task = [];
+        $targets = [];
+        foreach (range(1, 12) as $n) {
+            $task = array_merge($task, $big, ["changed: [h$n]"]);
+            $targets[$n] = "h$n";
+        }
+        $task = array_merge($task, $big, ['changed: [other]']);
+        $changed = array_fill_keys(array_values($targets), 1) + ['other' => 1];
+        $result = self::parse(self::log($task, $changed), $targets);
+
+        $this->assertSame(range(1, 12), array_keys($result['devices']), 'every device that would change has something to show');
+        $kept = array_filter($result['devices'], fn ($blocks) => $blocks[0]['lines'] !== [DiffParser::TOTAL_CUT]);
+        $marked = array_diff_key($result['devices'], $kept);
+        $this->assertCount(9, $kept, 'what fits in 1 MB');
+        foreach ($marked as $blocks) {
+            $this->assertSame([['task' => 'Set it', 'item' => null, 'kind' => 'diff', 'lines' => [DiffParser::TOTAL_CUT], 'cut' => true]], $blocks, 'the rest is marked, once');
+        }
+        $this->assertLessThanOrEqual(DiffParser::TOTAL_BYTES, array_sum(array_map(fn ($blocks) => strlen(implode("\n", array_merge(...array_column($blocks, 'lines')))), $result['devices'])));
+        $this->assertSame([DiffParser::TOTAL_CUT], $result['unattributed'][0]['lines'], 'the blocks not attributed too');
+        $this->assertSame(['other', true], [$result['unattributed'][0]['host'], $result['unattributed'][0]['cut']]);
+    }
+
     public function testUnifiedDiffShape(): void
     {
         $this->assertTrue(DiffParser::isUnifiedDiff(self::diff('x')));
