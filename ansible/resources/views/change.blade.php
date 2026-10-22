@@ -52,7 +52,7 @@
         $currentBatch = $batches[(int) $change['current_batch']] ?? null;
         $preparing = implode(' and ', array_filter([$settings->maintenance ? 'maintenance window' : null, $settings->backups && $oxidized ? 'backups' : null]));
         $logNote = $final || $currentBatch === null ? 'no batch was launched' : 'batch ' . (int) $change['current_batch'] . ': ' . match ($currentBatch['status']) {
-            'pending' => 'about to start',
+            'pending' => ($currentBatch['note'] ?? null) ? Clock::localize((string) $currentBatch['note']) : 'about to start', // waits: a device busy in another run
             'preparing' => 'preparing' . ($preparing !== '' ? " ($preparing)" : ''),
             'prepared' => 'waits for the secret answers',
             'launching' => 'being launched',
