@@ -374,11 +374,11 @@ stopped it 5 minutes later; it stays *Stopping* until the runner confirms, and t
 a stop* like any stopped run. The times of the runs are kept in UTC, so these deadlines mean the same to the web
 server and to the sync command even if their PHP time zones differ (which `./validate.php` reports), and the pages
 show them as LibreNMS shows its own: in each user's time zone (which LibreNMS takes from the browser or the user's
-settings), deadlines such as a hold or *Stop after* with their zone. Eventlog texts carry their zone. A lost or released run is still asked about every few minutes for a week (a run released
-before its task was known is looked for by its launch's message and nonce, as a launch is): a later end is recorded
-with its real results ("the runner reported this end after the plugin had given the run up"), once the runner's log
-has its PLAY RECAP or a minute after the end, and a task that runs again makes the run unfinished again, its devices
-busy.
+settings), deadlines such as a hold or *Stop after* with their zone; eventlog texts carry their zone. A lost or
+released run is still asked about every few minutes for a week (a run released before its task was known is looked
+for by its launch's message and nonce, as a launch is): a later end is recorded with its real results ("the runner
+reported this end after the plugin had given the run up"), once the runner's log has its PLAY RECAP or a minute after
+the end, and a task that runs again makes the run unfinished again, its devices busy.
 
 ## Safety
 
