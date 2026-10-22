@@ -11,6 +11,7 @@ use Agoodley\LibrenmsAnsible\Changes\ChangeText;
 use Agoodley\LibrenmsAnsible\Changes\Connections;
 use Agoodley\LibrenmsAnsible\Changes\InventoryGuard;
 use Agoodley\LibrenmsAnsible\Changes\NextChange;
+use Agoodley\LibrenmsAnsible\Changes\RolloutPlan;
 use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
@@ -142,7 +143,10 @@ class ChangeController extends Controller
             'device' => ctype_digit((string) $request->query('device', '')) ? (int) $request->query('device') : null,
             'requestToken' => bin2hex(random_bytes(16)), 'maxTargets' => $this->settings()->maxTargets(), 'assetVersion' => self::assetVersion(),
             'groups' => [], 'locations' => [], 'planText' => $this->settings()->batchRule(), 'changeSettings' => $this->settings()->changeSettings(),
-            'oxidized' => (new \Agoodley\LibrenmsAnsible\Services\OxidizedBackups())->enabled()];
+            'oxidized' => (new \Agoodley\LibrenmsAnsible\Services\OxidizedBackups())->enabled(),
+            // why the topology plugin does not plan the batches (null: it does)
+            'topologyWhy' => $this->settings()->topologyPlan() ? (new \Agoodley\LibrenmsAnsible\Services\TopologyPlanning())->unavailable()
+                : 'planning with the topology plugin is switched off in the settings'];
         try {
             $service = $this->inventoryService();
             $devices = $service->devices();
@@ -197,9 +201,10 @@ class ChangeController extends Controller
         if (($problem = self::tablesProblem()) !== null) {
             return response()->json(['error' => $problem], 503);
         }
-        [$templateId, $devices, $answers, $canary, $reference] = self::input($request);
+        [$templateId, $devices, $answers, $canary, $reference, $unplanned] = self::input($request);
         try {
-            return response()->json(ChangeService::forPage($this->changeService()->preview($templateId, $devices, $answers, $canary, $reference)));
+            return response()->json(ChangeService::forPage($this->changeService()->preview($templateId, $devices, $answers, $canary, $reference, $unplanned,
+                (int) $request->user()->user_id)));
         } catch (\Throwable $e) {
             return response()->json(['error' => $this->failure('preview', $e)], 500);
         }
@@ -214,8 +219,11 @@ class ChangeController extends Controller
         if (($problem = self::tablesProblem()) !== null) {
             return response()->json(['errors' => [$problem]], 503);
         }
-        [$templateId, $devices, $answers, $canary, $reference] = self::input($request);
+        [$templateId, $devices, $answers, $canary, $reference, $unplanned] = self::input($request);
         $token = is_string($request->input('request_token')) ? $request->input('request_token') : '';
+        // the blast radius the preview showed ("": none, the settings planned it)
+        $blast = $request->input('blast_signature');
+        $blast = is_string($blast) && preg_match('/^([0-9a-f]{64})?$/D', $blast) ? $blast : null;
         $expected = null;
         if (is_array($request->input('batches'))) {
             $expected = [];
@@ -225,7 +233,7 @@ class ChangeController extends Controller
             }
         }
         try {
-            $result = $this->changeService()->create($request->user(), $templateId, $devices, $answers, $canary, $reference, $token, $expected);
+            $result = $this->changeService()->create($request->user(), $templateId, $devices, $answers, $canary, $reference, $token, $expected, $unplanned, $blast);
         } catch (\Throwable $e) {
             return response()->json(['errors' => [$this->failure('new change', $e)]], 500);
         }
@@ -330,6 +338,18 @@ class ChangeController extends Controller
     }
 
     /**
+     * POST plugin/ansible/changes/{id}/accept-blast {comment}: accept the new blast radius of the batch that waits because
+     * it grew since the approval.
+     */
+    public function acceptBlast(Request $request, int $id): JsonResponse
+    {
+        $user = self::user($request);
+        $holds = Access::canApprove($request->user());
+
+        return $this->act($id, fn (ChangeLifecycle $lifecycle) => $lifecycle->acceptBlast($id, $user, $holds, self::comment($request), time()));
+    }
+
+    /**
      * POST plugin/ansible/changes/{id}/apply {secrets}: start the first batch.
      */
     public function apply(Request $request, int $id): JsonResponse
@@ -419,7 +439,14 @@ class ChangeController extends Controller
         $runs = new RunRepository();
         ['run' => $run, 'batches' => $batches, 'batchRuns' => $batchRuns, 'windows' => $windows, 'targets' => $targets, 'approvals' => $approvals,
             'signature' => $signature, 'pending' => $pending, 'withheld' => $withheld] = $this->live($change);
-        ['actions' => $actions, 'approvalRefusal' => $approvalRefusal, 'canRun' => $canRun, 'canApprove' => $canApprove] = $this->actions($request, $change);
+        ['actions' => $actions, 'approvalRefusal' => $approvalRefusal, 'canRun' => $canRun, 'canApprove' => $canApprove, 'acceptRefusal' => $acceptRefusal]
+            = $this->actions($request, $change);
+        // what the topology plugin said about each batch (approved with the change), and what it says before each batch
+        $topology = \Agoodley\LibrenmsAnsible\Changes\BatchPlan::topologyPart($change['plan'] ?? null);
+        $blast = [];
+        foreach (array_keys($batches) as $number) {
+            $blast[$number] = $topology !== null ? ChangeService::blastForPage($topology, (int) $number, $targets) : null;
+        }
         $dryRun = $change['dry_run_id'] !== null ? ['id' => (int) $change['dry_run_id']] : null;
         $settings = $this->settings()->changeSettings();
         $status = $change['status'];
@@ -462,7 +489,9 @@ class ChangeController extends Controller
             'change' => $change, 'targets' => $targets, 'batches' => $batches, 'batchRuns' => $batchRuns, 'run' => $run, 'dryRun' => $dryRun,
             'approvals' => $approvals, 'windows' => $windows, 'events' => $events, 'signature' => $signature,
             'diffs' => $diffs, 'unattributed' => $unattributed, 'secretVars' => $secretVars, 'settings' => $settings, 'canRun' => $canRun, 'canApprove' => $canApprove,
-            'approvalRefusal' => $approvalRefusal, 'actions' => $actions, 'pending' => $pending, 'withheld' => $withheld, 'laterBusy' => $laterBusy,
+            'approvalRefusal' => $approvalRefusal, 'acceptRefusal' => $acceptRefusal, 'actions' => $actions, 'pending' => $pending, 'withheld' => $withheld,
+            'laterBusy' => $laterBusy, 'topology' => $topology, 'blast' => $blast,
+            'topologyPlanned' => \Agoodley\LibrenmsAnsible\Changes\BatchPlan::isTopology($change['plan'] ?? null),
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
             'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($settings->approval, $change) : null,
             // before the apply: the targets Oxidized cannot back up (asked at the dry run), whose batches the setting would refuse
@@ -506,8 +535,9 @@ class ChangeController extends Controller
         $withheld = $this->withheld($change, $batches);
         // what the page shows changed: it fetches itself again (the log is followed apart)
         $signature = md5((string) json_encode([(int) $change['version'], $run['id'] ?? null, $run['status'] ?? null,
-            array_map(fn ($b) => [$b['status'], $b['run_id'], $b['note']], $batches), array_map(fn ($r) => $r['status'], $batchRuns),
-            array_map(fn ($w) => [$w['status'], $w['closing'], $w['ends_at']], $windows),
+            array_map(fn ($b) => [$b['status'], $b['run_id'], $b['note'], $b['blast']['state'] ?? null, $b['blast']['at'] ?? null, $b['blast_accepted']['at'] ?? null,
+                $b['blast_override']['at'] ?? null], $batches), array_map(fn ($r) => $r['status'], $batchRuns),
+            array_map(fn ($w) => [$w['status'], $w['closing'], $w['ends_at'], $w['cut_off'] ?? null], $windows),
             array_map(fn ($t) => [$t['dry_result'], $t['result'], $t['before_status'], $t['after_status'], ($t['served_hash'] ?? null) === InventoryGuard::LEFT_OUT], $targets),
             $changes->eventCount($id), count($approvals), $withheld]));
 
@@ -590,12 +620,16 @@ class ChangeController extends Controller
         $status = $change['status'];
         $approvalRefusal = $canApprove ? ApprovalRules::refusal($this->settings()->changeSettings()->approval, $change, (int) $user->user_id, true) : null;
 
-        return ['canRun' => $canRun, 'canApprove' => $canApprove, 'approvalRefusal' => $approvalRefusal, 'actions' => [
+        $acceptRefusal = $canApprove ? ApprovalRules::acceptRefusal($this->settings()->changeSettings()->approval, $change, (int) $user->user_id, true) : null;
+
+        return ['canRun' => $canRun, 'canApprove' => $canApprove, 'approvalRefusal' => $approvalRefusal, 'acceptRefusal' => $acceptRefusal, 'actions' => [
             'dry_run' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
             'approve' => $canApprove && $status === ChangeStatus::AWAITING && $approvalRefusal === null,
             'reject' => $canApprove && $status === ChangeStatus::AWAITING,
             'apply' => $canRun && $status === ChangeStatus::READY,
-            'continue' => $canRun && $status === ChangeStatus::PAUSED,
+            // a batch whose blast radius grew is not continued: an approver accepts the new one
+            'continue' => $canRun && $status === ChangeStatus::PAUSED && $change['waiting'] !== 'blast',
+            'accept' => $canApprove && $status === ChangeStatus::PAUSED && $change['waiting'] === 'blast' && $acceptRefusal === null,
             'stop' => $canRun && in_array($status, [ChangeStatus::APPLYING, ChangeStatus::PAUSED, ChangeStatus::DRY_RUN], true),
             'cancel' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
         ]];
@@ -686,10 +720,11 @@ class ChangeController extends Controller
     }
 
     /**
-     * The template id, device ids, answers (not the secret ones), canary devices and reference of a preview or create
-     * request; anything of another shape is dropped.
+     * The template id, device ids, answers (not the secret ones), canary devices, reference and what to do with the devices
+     * the topology plugin cannot plan (RolloutPlan::LEAVE or HAND) of a preview or create request; anything of another
+     * shape is dropped.
      *
-     * @return array{0: string, 1: int[], 2: array<string, mixed>, 3: int[], 4: string}
+     * @return array{0: string, 1: int[], 2: array<string, mixed>, 3: int[], 4: string, 5: string}
      */
     private static function input(Request $request): array
     {
@@ -712,7 +747,8 @@ class ChangeController extends Controller
         $template = $request->input('template');
 
         return [is_scalar($template) ? mb_substr((string) $template, 0, 64) : '', $ids($request->input('devices')), $answers, $ids($request->input('canary')),
-            is_string($request->input('reference')) ? mb_substr($request->input('reference'), 0, 1000) : ''];
+            is_string($request->input('reference')) ? mb_substr($request->input('reference'), 0, 1000) : '',
+            $request->input('unplanned') === RolloutPlan::HAND ? RolloutPlan::HAND : RolloutPlan::LEAVE];
     }
 
     /**

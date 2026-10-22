@@ -49,7 +49,7 @@ class SettingsController extends Controller
         }
         $result = PluginSettings::fromInput($input, $before, $groups, $users);
         $anchor = array_key_exists('inventory_user', $input) && count($input) === 1 ? 'ans-inventory-user'
-            : (in_array($request->input('section'), ['ans-changes-form', 'ans-backups-form'], true) ? (string) $request->input('section') : 'ans-settings-form');
+            : (in_array($request->input('section'), ['ans-changes-form', 'ans-backups-form', 'ans-topology-form'], true) ? (string) $request->input('section') : 'ans-settings-form');
         if ($result['settings'] === null) {
             return $this->back($anchor)->with('ansible_errors', $result['errors'])->with('ansible_old_settings', $input);
         }

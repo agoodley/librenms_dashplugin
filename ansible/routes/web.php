@@ -58,6 +58,7 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
         Route::middleware(RequireAdmin::class . ':approve')->group(function (): void {
             Route::post('changes/{id}/approve', [ChangeController::class, 'approve'])->whereNumber('id')->name('changes.approve');
             Route::post('changes/{id}/reject', [ChangeController::class, 'reject'])->whereNumber('id')->name('changes.reject');
+            Route::post('changes/{id}/accept-blast', [ChangeController::class, 'acceptBlast'])->whereNumber('id')->name('changes.accept-blast');
         });
     });
 

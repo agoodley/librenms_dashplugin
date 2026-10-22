@@ -447,6 +447,8 @@
         var previewBox = byId('ans-preview');
         var reference = byId('ans-reference');
         var MAX_ROWS = 500;
+        // the devices the topology plugin cannot plan: left out of the change, or in a final batch planned by hand
+        var unplanned = 'leave';
 
         // the chosen devices in the list's order (the batches follow it)
         function selectedIds() {
@@ -548,7 +550,8 @@
             var first = canaryIds().length;
             status.textContent = list.length + ' of ' + devices.length + ' devices shown' + (list.length > MAX_ROWS ? ' (the first ' + MAX_ROWS + ': narrow the filters)' : '')
                 + ' · ' + count + ' selected (at most ' + config.maxTargets + ')'
-                + (count ? ' · first batch: ' + (first ? first + ' chosen' : 'the first of the list, as the settings say') : '');
+                + (count ? ' · first batch: ' + (first ? first + ' chosen' + (config.topology ? ' (those in the planner\'s first batch)' : '')
+                    : (config.topology ? 'from the planner\'s first batch' : 'the first of the list, as the settings say')) : '');
             status.className = count > config.maxTargets ? 'text-danger' : 'ans-muted';
         }
 
@@ -623,6 +626,7 @@
                 ['Batches', plan.plan_text || '-'],
                 ['Reference', plan.reference ? el('span', 'ans-code', plan.reference) : el('span', 'text-muted', '(none)')]
             ]));
+            append(body, plannerPanel(plan));
             if (plan.targets.length) {
                 append(body, table(['Batch', 'Device', 'Inventory name', 'Platform'], plan.targets.map(function (t) {
                     return [{text: String(batchOf[t.device_id] || '-'), cls: 'ans-batch'}, t.display, {text: t.name, cls: 'ans-code'}, {text: t.platform, cls: 'ans-code'}];
@@ -651,11 +655,110 @@
             previewBox.appendChild(panel);
         }
 
+        // what the topology plugin made of the batches: each one's place and what goes down while it runs, the devices it cannot
+        // plan (with the choice to leave them out or plan them by hand), or why it did not plan them (the blast radius is unknown)
+        function plannerPanel(plan) {
+            var planner = plan.planner;
+            if (!planner || !plan.batches || !plan.batches.length) {
+                return null;
+            }
+            var box = el('div', 'panel panel-default');
+            box.id = 'ans-preview-planner';
+            box.style.margin = '8px 0';
+            if (!planner.used) {
+                var unknown = alertBox('info', null, null);
+                unknown.id = 'ans-preview-blast-unknown';
+                unknown.style.margin = '8px 0';
+                append(unknown, [el('i', 'fa fa-question-circle'), ' Blast radius unknown: the batches are planned by the plugin\'s settings, as '
+                    + (planner.why || 'the topology plugin does not plan them') + '. Nothing tells what each batch cuts off while it runs.']);
+                return unknown;
+            }
+            append(box, el('div', 'panel-heading', [el('strong', null, 'Rollout plan and blast radius'), ' ',
+                el('span', 'text-muted', '(the topology plugin: farthest from the core first, the core last, never two devices that back each other up in one batch; '
+                    + 'what each batch cuts off is approved with the change and checked again before it starts)')]));
+            var rows = el('tbody');
+            plan.batches.forEach(function (batch) {
+                var blast = batch.blast || {};
+                var down = el('td', 'ans-wrap');
+                if (blast.hand) {
+                    append(down, [el('span', 'text-warning', 'unknown: nothing tells what depends on ' + (batch.devices.length === 1 ? 'it' : 'them')),
+                        blast.skipped && blast.skipped.length ? el('div', 'ans-help', blast.skipped.map(function (s) {
+                            return s.name + ': ' + s.text;
+                        }).join('; ')) : null]);
+                } else if (blast.lost && blast.lost.length) {
+                    blast.lost.forEach(function (lost, index) {
+                        var link = el('a', null, lost.name);
+                        link.href = config.deviceUrl + '/' + lost.device_id;
+                        append(down, [index ? ', ' : null, link]);
+                    });
+                } else {
+                    append(down, el('span', 'text-muted', 'no other monitored device'));
+                }
+                if (!blast.hand && blast.unmanaged) {
+                    append(down, el('div', 'ans-help', 'and ' + blast.unmanaged + ' unmanaged neighbor' + (blast.unmanaged === 1 ? '' : 's') + ' (phones, access points...)'));
+                }
+                var simulate = el('td');
+                if (blast.simulate && !blast.hand) {
+                    var sim = el('a', 'btn btn-xs btn-default', [el('i', 'fa fa-bolt'), ' Simulate']);
+                    sim.href = blast.simulate;
+                    sim.target = '_blank';
+                    sim.title = 'The topology plugin\'s failure simulation of this batch on the L2 map';
+                    append(simulate, sim);
+                }
+                var row = el('tr', null, [el('td', null, String(batch.number) + (batch.number === 1 && plan.batches.length > 1 ? ' (canary)' : '')),
+                    el('td', 'ans-wrap', batch.devices.map(function (d) {
+                        return d.display;
+                    }).join(', ')), el('td', null, blast.tier_text || ''), down, simulate]);
+                row.setAttribute('data-batch', batch.number);
+                append(rows, row);
+            });
+            var table = el('table', 'table table-condensed ans-table ans-stack');
+            table.id = 'ans-preview-blast';
+            append(table, [el('thead', null, el('tr', null, [el('th', null, 'Batch'), el('th', null, 'Devices'), el('th', null, 'Where'),
+                el('th', null, 'Down while it runs'), el('th', null, '')])), rows]);
+            append(box, el('div', 'table-responsive', table));
+            var hand = plan.batches.some(function (batch) {
+                return batch.blast && batch.blast.hand;
+            });
+            if ((planner.left_out && planner.left_out.length) || hand) {
+                var choice = el('div', 'panel-body');
+                choice.id = 'ans-preview-unplanned';
+                if (planner.left_out && planner.left_out.length) {
+                    append(choice, el('p', 'text-warning', [el('strong', null, 'The topology plugin cannot plan ' + planner.left_out.length + ' of the devices'),
+                        ' (nothing tells what depends on them): ' + planner.left_out.map(function (entry) {
+                            return entry.name + ' (' + entry.text + ')';
+                        }).join(', ') + '.']));
+                } else {
+                    append(choice, el('p', 'text-warning', 'The last batch is planned by hand: the topology plugin cannot plan its devices, nothing tells what depends on them.'));
+                }
+                [['leave', 'Leave them out of the change'], ['hand', 'Put them in a final batch planned by hand']].forEach(function (option) {
+                    var radio = el('input');
+                    radio.type = 'radio';
+                    radio.name = 'ans-unplanned';
+                    radio.value = option[0];
+                    radio.checked = unplanned === option[0];
+                    radio.addEventListener('change', function () {
+                        unplanned = option[0];
+                        preview();
+                    });
+                    var label = el('label', null, [radio, ' ', option[1]]);
+                    label.style.marginRight = '16px';
+                    label.style.fontWeight = 'normal';
+                    append(choice, label);
+                });
+                append(box, choice);
+            }
+            (planner.notes || []).forEach(function (note) {
+                append(box, el('div', 'panel-body ans-help text-warning', note));
+            });
+            return box;
+        }
+
         function preview() {
             createButton.disabled = true;
             previewButton.disabled = true;
             launchState.textContent = 'checking with the runner…';
-            var request_ = {template: config.template, devices: selectedIds(), vars: answers(), canary: canaryIds(), reference: reference.value};
+            var request_ = {template: config.template, devices: selectedIds(), vars: answers(), canary: canaryIds(), reference: reference.value, unplanned: unplanned};
             request('POST', config.preview, request_).then(function (result) {
                 previewButton.disabled = false;
                 if (result.status !== 200) {
@@ -669,14 +772,18 @@
                         return t.device_id;
                     }), canary: result.body.batches[0].devices.map(function (d) {
                         return d.device_id;
-                    }), vars: request_.vars, reference: request_.reference};
-                    // the devices in the order of the batches, and the batches: the change gets exactly these or none
+                    }), vars: request_.vars, reference: request_.reference, unplanned: unplanned, blast: result.body.blast_signature || ''};
+                    // the devices in the order of the batches, and the batches: the change gets exactly these or none; the devices the
+                    // topology plugin leaves out go along, so that its plan is the same, and what each batch cuts off too
                     previewed.devices = [];
                     previewed.batches = result.body.batches.map(function (batch) {
                         return batch.devices.map(function (d) {
                             previewed.devices.push(d.device_id);
                             return d.device_id;
                         });
+                    });
+                    ((result.body.planner && result.body.planner.left_out) || []).forEach(function (entry) {
+                        previewed.devices.push(entry.device_id);
                     });
                     createButton.disabled = false;
                     launchState.textContent = 'creates exactly this (nothing runs yet)';
@@ -695,7 +802,8 @@
             previewButton.disabled = true;
             launchState.textContent = 'creating…';
             request('POST', config.store, {template: config.template, devices: previewed.devices, vars: previewed.vars, canary: previewed.canary,
-                batches: previewed.batches, reference: previewed.reference, request_token: config.requestToken}).then(function (result) {
+                batches: previewed.batches, reference: previewed.reference, unplanned: previewed.unplanned, blast_signature: previewed.blast,
+                request_token: config.requestToken}).then(function (result) {
                 if ((result.status === 201 || result.status === 200) && result.body.url) {
                     launchState.textContent = 'created: opening the change…';
                     window.location.assign(result.body.url);
@@ -849,7 +957,13 @@
                 reject: 'Reject this change? It ends it: nothing is applied.',
                 apply: 'Apply this change to ' + devices + ' in ' + batches + '? Batch 1 starts now' + (now.prepare ? ', after its ' + now.prepare : '') + '.',
                 'continue': now.waiting === 'secrets' ? 'Launch batch ' + now.currentBatch + ' with the secret answers given here?'
-                    : 'Continue with batch ' + (now.currentBatch + 1) + '? Check the devices of the batches so far first.',
+                    : (now.waiting === 'blast_unknown' ? 'Continue batch ' + now.currentBatch + ' without its blast radius? It cannot be computed now: nothing checks '
+                        + 'what the batch cuts off. Its maintenance window covers its devices and the devices approved as cut off. Your decision is recorded in the '
+                        + 'timeline and in the eventlog.'
+                        : 'Continue with batch ' + (now.currentBatch + 1) + '? Check the devices of the batches so far first.'),
+                accept: 'Accept the new blast radius of batch ' + now.currentBatch + '? It cuts off devices that were not approved (they are named above). '
+                    + 'The batch then starts again, its blast radius checked once more, and its maintenance window covers them. Your acceptance is recorded in the '
+                    + 'timeline and in the eventlog.',
                 stop: 'Stop this change? A running batch is stopped as a run\'s stop (the step in progress on each device runs on), no further batch starts, '
                     + 'and the change ends: it cannot be resumed.',
                 cancel: 'Cancel this change? It ends it: nothing is applied.'

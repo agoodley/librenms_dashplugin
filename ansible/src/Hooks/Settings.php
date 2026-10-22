@@ -38,7 +38,7 @@ class Settings implements SettingsHook
         // LibreNMS disables a plugin whose hook throws: nothing may escape
         $data = ['admin' => false, 'connection' => null, 'connectionError' => null, 'settings' => PluginSettings::DEFAULTS, 'settingsError' => null,
             'mapErrors' => [], 'holders' => [], 'candidates' => [], 'approveHolders' => [], 'approveCandidates' => [], 'groups' => [], 'users' => [], 'fetches' => [],
-            'lastCheck' => null, 'mapRows' => [], 'oxidized' => false];
+            'lastCheck' => null, 'mapRows' => [], 'oxidized' => false, 'topology' => 'unknown', 'topologyApi' => null];
         try {
             $data['admin'] = Access::canView(auth()->user());
             if ($data['admin']) {
@@ -57,6 +57,10 @@ class Settings implements SettingsHook
                 $data['approveHolders'] = $permissions->holders(Access::APPROVE);
                 $data['approveCandidates'] = $permissions->candidates(Access::APPROVE);
                 $data['oxidized'] = (new \Agoodley\LibrenmsAnsible\Services\OxidizedBackups())->enabled();
+                // can the topology plugin plan the changes (installed, enabled, a planning API the plugin speaks)?
+                $data['topology'] = (new \Agoodley\LibrenmsAnsible\Services\TopologyPlanning())->unavailable();
+                $data['topologyApi'] = class_exists(\Agoodley\LibrenmsAnsible\Services\TopologyPlanning::API)
+                    ? (string) constant(\Agoodley\LibrenmsAnsible\Services\TopologyPlanning::API . '::VERSION') : null;
                 $data['groups'] = (new DeviceRepository())->deviceGroups();
                 $data['users'] = (new UserRepository())->all();
                 $data['fetches'] = (new FetchRepository())->all();

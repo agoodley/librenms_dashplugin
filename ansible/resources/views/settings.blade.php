@@ -11,8 +11,8 @@
     $errors_ = session('ansible_errors', []);
     // the part the admin saved: the page returns to its anchor, and shows the answer there
     $section = (string) session('ansible_section', '');
-    $section = in_array($section, ['ans-connection-form', 'ans-inventory-user', 'ans-settings-form', 'ans-changes-form', 'ans-backups-form', 'ans-permission',
-        'ans-approve-permission'], true) ? $section : '';
+    $section = in_array($section, ['ans-connection-form', 'ans-inventory-user', 'ans-settings-form', 'ans-changes-form', 'ans-backups-form', 'ans-topology-form',
+        'ans-permission', 'ans-approve-permission'], true) ? $section : '';
     $invalid = fn (string $key) => isset($errors_[$key]) ? ' ans-invalid' : '';
     $describedBy = fn (string $key) => isset($errors_[$key]) ? new \Illuminate\Support\HtmlString('aria-invalid="true" aria-describedby="ans-error-' . e($key) . '"') : '';
     $fieldError = fn (string $key) => isset($errors_[$key])
@@ -51,6 +51,17 @@
         ['maintenance_behavior', 'Maintenance behavior', 'what LibreNMS does with the alerts of the devices in the window'],
         ['maintenance_minutes', 'Expected batch time (minutes)', 'the window\'s end when it opens; the plugin moves it while the batch runs. Also how long a batch waits for the secret answers (at least 15 min)'],
         ['settle_minutes', 'Settle time (minutes)', 'the window closes this long after its batch ended (for polling and alerts to settle)'],
+    ];
+    // phase 3: the rollout plan and the blast radius from the topology plugin
+    $topologyFields = [
+        ['topology_plan', 'Plan with the topology plugin', 'a new change plans its batches with the topology plugin\'s rollout planner (farthest from the core first, the core last, never '
+            . 'two devices that back each other up in one batch, within the batch size, the first batch taken from its first one) and approves what each batch cuts off; '
+            . 'off, or without the topology plugin, the settings above plan them and the blast radius is unknown'],
+        ['blast_grew', 'When the blast radius grew', 'before each batch and right before its launch its blast radius is computed again: when it would cut off devices that '
+            . 'were not approved (a redundant link went down since), the batch does not start, and the change waits for an admin with the approve permission to accept '
+            . 'the new one (recorded), or ends'],
+        ['blast_unknown', 'When the blast radius cannot be computed', 'the topology plugin disabled, an error: the batch does not start, and the change waits for an admin '
+            . 'with the run permission to continue it without one (recorded; its window then covers the devices approved as cut off), or ends'],
     ];
 @endphp
 
@@ -278,7 +289,10 @@
 
     @foreach([['ans-changes-form', 'Changes', $changeFields, 'How a change is approved and applied: its dry run, its approval and its batches. A change keeps the batch plan it was created with.', 'ans-changes-save'],
         ['ans-backups-form', 'Backups and maintenance windows', $backupFields, ($a['oxidized'] ? 'LibreNMS uses Oxidized: the plugin asks it for a backup before and after each batch.'
-            : 'LibreNMS does not use Oxidized now (oxidized.enabled, oxidized.url): no backups are made, whatever is set here.') . ' The maintenance windows are LibreNMS\' own (Alerts, Maintenance).', 'ans-backups-save']]
+            : 'LibreNMS does not use Oxidized now (oxidized.enabled, oxidized.url): no backups are made, whatever is set here.') . ' The maintenance windows are LibreNMS\' own (Alerts, Maintenance).', 'ans-backups-save'],
+        ['ans-topology-form', 'Rollout plan and blast radius', $topologyFields, ($a['topology'] === null ? 'The topology plugin is installed, enabled and offers its planning API (version '
+            . $a['topologyApi'] . '): new changes can be planned with it, and each batch\'s maintenance window also covers the devices it cuts off.'
+            : 'The topology plugin cannot plan now: ' . $a['topology'] . '. New changes are planned by the settings above, and their blast radius is unknown.'), 'ans-topology-save']]
         as [$formId, $legend, $fields, $intro, $saveId])
         <form method="post" action="{{ route('ansible.settings.runs') }}" id="{{ $formId }}">
             @csrf
