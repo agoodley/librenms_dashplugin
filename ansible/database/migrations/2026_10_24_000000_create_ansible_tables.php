@@ -84,7 +84,10 @@ return new class extends Migration
             });
         }
         if (class_exists(\Spatie\Permission\Models\Permission::class)) {
+            // spatie caches the permissions for 24 hours: a permission deleted since must not be found in the cache
+            app(\Spatie\Permission\PermissionRegistrar::class)->forgetCachedPermissions();
             \Spatie\Permission\Models\Permission::findOrCreate(self::PERMISSION, 'web');
+            app(\Spatie\Permission\PermissionRegistrar::class)->forgetCachedPermissions();
         }
     }
 
@@ -95,7 +98,9 @@ return new class extends Migration
         Schema::dropIfExists('ansible_inventory_fetches');
         Schema::dropIfExists('ansible_config');
         if (class_exists(\Spatie\Permission\Models\Permission::class)) {
-            \Spatie\Permission\Models\Permission::where('name', self::PERMISSION)->where('guard_name', 'web')->delete();
+            // through the model (its users and roles lose it), then the cache, so a later migrate creates it again
+            \Spatie\Permission\Models\Permission::query()->where('name', self::PERMISSION)->where('guard_name', 'web')->get()->each->delete();
+            app(\Spatie\Permission\PermissionRegistrar::class)->forgetCachedPermissions();
         }
     }
 };
