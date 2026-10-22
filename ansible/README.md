@@ -240,8 +240,8 @@ that could change Semaphore. Step by step (the names are suggestions):
    templates. Do not confuse it with the **Limit** field under **Ansible options**: that is a limit of the template's
    own, and the plugin refuses a template that has one. A template must not have CLI arguments other than verbosity,
    `--diff`, `--forks`, `--timeout`, `--tags`, `--skip-tags`, `--force-handlers` and `--flush-cache` (`--check` makes
-   every run a dry run: the plugin launches the dry run itself). With `-v` the dry run also shows the commands of
-   modules that print no diff, such as `cisco.ios.ios_config` (or give `ios_config` `diff_against`).
+   every run a dry run: the plugin launches the dry run itself). `cisco.ios.ios_config` prints no diff in check mode
+   by itself: see [The diff per device](#the-diff-per-device) for `diff_against: intended`, or `-v`.
 10. **Survey variables** are the only variables the plugin sends, as typed answers: *String*, *Text* (several lines),
     *Integer*, *Enum* (one of a list) and *Secret*; *required* is enforced by the plugin. Their names may not be
     Ansible connection or magic variables (`ansible_*`, `hostvars`, `inventory_hostname`, `omit`, ...) nor `librenms_*`;
@@ -488,9 +488,30 @@ approved either. Each target's result comes from the PLAY RECAP: *would change* 
 ### The diff per device
 
 With `--diff` Ansible prints, before a task's result line, what the task would change: a unified diff for modules
-that compute one (`template`, `copy`, `lineinfile`, network config modules with `diff_against`), and with `-v` a
-module's details below its result line, such as the `commands` of `cisco.ios.ios_config` (read from the details' first
-level, in YAML or JSON). The plugin takes each block and gives it to the device whose result line follows it, only when
+that compute one (`template`, `copy`, `lineinfile`, network config modules diffing against an intended
+configuration), and with `-v` a module's details below its result line, such as the `commands` of
+`cisco.ios.ios_config` (read from the details' first level, in YAML or JSON).
+
+`cisco.ios.ios_config` in check mode prints no diff by itself, and `diff_against: running` only prints *unable to
+perform diff against running-config due to check mode*. For a unified diff per device, diff against an intended
+configuration: the running one with the change, as in this task (the lab's `lnms2_desc_intended.yml`):
+
+```yaml
+- name: Read the running configuration
+  cisco.ios.ios_command:
+    commands: [show running-config]
+  register: running
+- name: Set the description
+  cisco.ios.ios_config:
+    parents: "interface {{ interface }}"
+    lines: ["description {{ description }}"]
+    diff_against: intended
+    intended_config: "{{ running.stdout[0] | regex_replace('(?m)^(interface ' ~ interface ~ ')$', '\\1\n description ' ~ description) }}"
+```
+
+Or give the template `-v`: the dry run then shows the commands `ios_config` would send, except in a loop, where
+they are listed as *not attributed* (a loop item's label could imitate the next result line); the device's row then
+points to them. The plugin takes each block and gives it to the device whose result line follows it, only when
 nothing in the log contradicts that: the host is a target and the task names it once (once per loop item), the host
 has no more *changed* results in the log than its PLAY RECAP counts, in a loop only unified diffs (whose every line
 starts with a prefix device text cannot avoid), and no raw text right after another result's details that a foreign

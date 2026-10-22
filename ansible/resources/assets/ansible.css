@@ -102,6 +102,8 @@ html.dark .ans-page .alert-warning, html.dark .ans-settings .alert-warning { col
 .ans-diff-cell { min-width: 260px; }
 .ans-diff-block { margin: 0 0 4px; }
 .ans-diff-block summary { cursor: pointer; font-size: 12px; }
+/* Bootstrap 3 makes summary a block, which hides the disclosure triangle of collapsed blocks: give it back */
+.ans-page details > summary { display: list-item; cursor: pointer; }
 .ans-diff {
     margin: 2px 0 4px; padding: 4px 6px; max-height: 380px; overflow: auto; font-size: 12px; line-height: 1.35;
     background: #f7f7f9; border: 1px solid #e1e1e8; border-radius: 3px; white-space: pre-wrap; overflow-wrap: anywhere;

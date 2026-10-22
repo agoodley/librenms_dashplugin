@@ -44,6 +44,8 @@
     $short = fn (?string $oid) => $oid ? substr($oid, 0, 10) : '';
     // how the runner reached each device at the dry run (Connections): a batch runs only while the inventory reaches it the same way
     $reached = (array) (((array) ($change['fingerprint_parts'] ?? []))['connections'] ?? []);
+    // the blocks not attributed, per host they name: a device whose diff is among them says so
+    $unattributedOf = array_count_values(array_map(fn ($block) => (string) $block['host'], $unattributed));
 @endphp
 
 @section('content')
@@ -253,7 +255,7 @@
 
     <div class="panel panel-default" id="ans-dry-run">
         <div class="panel-heading"><strong>Dry run per device</strong>
-            <span class="text-muted">(results from the PLAY RECAP; what would change from the diffs Ansible printed: for cisco.ios.ios_config, set diff_against or run with -v to see its commands)</span></div>
+            <span class="text-muted">(results from the PLAY RECAP; what would change from the diffs Ansible printed: for cisco.ios.ios_config, diff against an intended configuration, <span class="ans-code">diff_against: intended</span> with <span class="ans-code">intended_config</span>, or run with -v to see its commands, outside loops)</span></div>
         <div class="table-responsive">
         <table class="table table-condensed ans-table" id="ans-dry-run-devices">
             <thead><tr><th>Device</th><th>Batch</th><th>Dry run</th>@foreach($counters as $c)<th class="ans-num">{{ $c }}</th>@endforeach<th>What would change</th></tr></thead>
@@ -274,7 +276,10 @@
 @endforeach</pre>
                             </details>
                         @empty
-                            @if($target['dry_result'] === 'changed')
+                            @if($target['dry_result'] === 'changed' && ($unattributedOf[$target['inventory_name']] ?? 0) > 0)
+                                <span class="ans-muted ans-diff-elsewhere">would change; what it printed is <a href="#ans-unattributed">not attributed</a> ({{ $unattributedOf[$target['inventory_name']] }}
+                                    {{ $unattributedOf[$target['inventory_name']] === 1 ? 'block' : 'blocks' }} naming it below, with why)</span>
+                            @elseif($target['dry_result'] === 'changed')
                                 <span class="ans-muted">would change; the module printed no diff</span>
                             @endif
                         @endforelse
