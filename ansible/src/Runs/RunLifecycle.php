@@ -58,6 +58,9 @@ final class RunLifecycle
 
     public const WATCH_INTERVAL = 300;
 
+    /** Seconds after which a watched run whose task the runner reported finished is asked again, for the rest of its log. */
+    public const SETTLE_POLL = 5;
+
     /**
      * @param  \Closure(): Runner  $runner  the runner, asked for when needed (RunnerError when it is not set up)
      * @param  \Closure(string[]): array<string, array{device_id: int, hostname: string, display: string}>|null  $devices
@@ -99,12 +102,18 @@ final class RunLifecycle
     }
 
     /**
-     * Is a lost or released run due to be asked about a late end?
+     * Is a lost or released run due to be asked about a late end? (Also a released one that never got its task: the
+     * runner may have started it after all.) Every WATCH_INTERVAL seconds, and every SETTLE_POLL seconds while the
+     * runner's log of an end it reported settles.
      */
     public static function watched(array $run, int $now): bool
     {
-        return in_array($run['status'], RunStatus::WATCHED, true) && $run['runner_task_id'] !== null && $run['watch_until'] !== null
-            && strtotime((string) $run['watch_until']) > $now && ($run['polled_at'] === null || $now - strtotime((string) $run['polled_at']) >= self::WATCH_INTERVAL);
+        if (! in_array($run['status'], RunStatus::WATCHED, true) || $run['watch_until'] === null || strtotime((string) $run['watch_until']) <= $now) {
+            return false;
+        }
+
+        return $run['polled_at'] === null
+            || $now - strtotime((string) $run['polled_at']) >= ($run['runner_final_at'] !== null ? self::SETTLE_POLL : self::WATCH_INTERVAL);
     }
 
     /**
@@ -375,16 +384,17 @@ final class RunLifecycle
      *
      * @param  array<string, mixed>  $values  the columns this refresh writes
      * @param  array<string, string>  $append  the text it adds to the stored log (OutputBuffer::add())
+     * @param  string[]|null  $whole  the runner's whole log when the caller has it (a late end)
      */
-    private function finish(array $run, array $values, array $append, RunnerTask $task, Runner $runner, int $now, bool $late = false): void
+    private function finish(array $run, array $values, array $append, RunnerTask $task, Runner $runner, int $now, bool $late = false, ?array $whole = null): void
     {
         $id = (int) $run['id'];
         $stored = OutputBuffer::applied($run, $values, $append);
-        $lines = OutputBuffer::display($stored);
+        $lines = $whole ?? OutputBuffer::display($stored);
         $complete = true;
-        if (! empty($stored['output_truncated'])) {
+        if ($whole === null && ! empty($stored['output_truncated'])) {
             try {
-                $lines = $runner->output((string) $run['runner_task_id'])->lines;
+                $lines = $runner->output((string) $stored['runner_task_id'])->lines;
             } catch (RunnerError) {
                 $complete = false; // the stored head and tail
             }
@@ -454,38 +464,60 @@ final class RunLifecycle
 
     /**
      * A lost or released run: when the runner has its task again, a late end is recorded like any end (with the
-     * whole log), and an unfinished task is followed again (its devices busy again).
+     * whole log, once it settled), and an unfinished task is followed again (its devices busy again). A run released
+     * before its task was known is looked for by its launch's message (with its nonce), as a launch is.
      */
     private function watch(array $run, int $now): void
     {
         $id = (int) $run['id'];
-        $taskId = (string) $run['runner_task_id'];
+        $found = [];
         try {
             $runner = ($this->runner)();
-            $task = $runner->task($taskId);
-            $output = RunStatus::isFinal($task->status) ? $runner->output($taskId) : null;
+            if ($run['runner_task_id'] === null) {
+                $task = $runner->findTask((string) $run['template_id'], RunText::taskMessage($id, (string) $run['username'], $run['launch_nonce'] ?? null),
+                    strtotime((string) $run['created_at']) - self::CLOCK_SKEW)->task;
+                if ($task === null) {
+                    $this->runs->updateAt($id, (int) $run['version'], ['polled_at' => self::time($now)]);
+
+                    return;
+                }
+                $found = ['runner_task_id' => $task->id];
+            } else {
+                $task = $runner->task((string) $run['runner_task_id']);
+            }
+            $output = RunStatus::isFinal($task->status) ? $runner->output($task->id) : null;
         } catch (RunnerError) {
             $this->runs->updateAt($id, (int) $run['version'], ['polled_at' => self::time($now)]);
 
             return;
         }
         if ($output === null) {
-            if ($this->runs->updateAt($id, (int) $run['version'], ['status' => $task->status, 'runner_status' => $task->rawStatus, 'finished_at' => null,
-                'summary' => null, 'error' => null, 'watch_until' => null, 'missing_checks' => 0, 'missing_since' => null,
-                'runner_seen_at' => self::time($now), 'polled_at' => self::time($now),
-                'poll_error' => "The runner has task #$taskId again, unfinished: the plugin follows the run again (it was " . strtolower(RunStatus::label((string) $run['status'])) . ').'])) {
+            if ($this->runs->updateAt($id, (int) $run['version'], $found + ['status' => $task->status, 'runner_status' => $task->rawStatus, 'finished_at' => null,
+                'summary' => null, 'error' => null, 'watch_until' => null, 'missing_checks' => 0, 'missing_since' => null, 'runner_final_at' => null,
+                'runner_seen_at' => self::time($now), 'polled_at' => self::time($now), 'started_at' => $task->started !== null ? self::time($task->started) : $run['started_at'],
+                'poll_error' => "The runner has task #{$task->id}" . ($found ? '' : ' again') . ', unfinished: the plugin follows the run again (it was '
+                    . strtolower(RunStatus::label((string) $run['status'])) . ').'])) {
                 $this->runs->setResults($id, array_fill_keys(array_keys($this->targetNames($id)), ['result' => null, 'counts' => null]));
                 foreach (array_keys($this->targetNames($id)) as $deviceId) {
-                    $this->events->write(RunText::followedAgain($id, $taskId, (string) $run['status'], (string) $run['template_name'], (string) $run['username']),
+                    $this->events->write(RunText::followedAgain($id, $task->id, (string) $run['status'], (string) $run['template_name'], (string) $run['username'], $found !== []),
                         $deviceId, 'warning', RunText::reference($id), (string) $run['username']);
                 }
             }
 
             return;
         }
-        $values = OutputBuffer::replace($output->lines, $this->outputMaxBytes) + ['output_lines' => $output->next, 'runner_status' => $task->rawStatus,
+        // Semaphore reports the end before the last lines are readable: record it once the log has its PLAY RECAP, or a
+        // while after the end
+        $settled = RecapParser::parse($output->lines) !== null || ($task->ended !== null && $now - $task->ended >= self::SETTLE)
+            || ($run['runner_final_at'] !== null && $now - strtotime((string) $run['runner_final_at']) >= self::SETTLE);
+        if (! $settled) {
+            $this->runs->updateAt($id, (int) $run['version'], $found + ['polled_at' => self::time($now), 'runner_final_at' => $run['runner_final_at'] ?? self::time($now)]);
+
+            return;
+        }
+        $values = $found + OutputBuffer::replace($output->lines, $this->outputMaxBytes) + ['output_lines' => $output->next, 'runner_status' => $task->rawStatus,
             'poll_error' => null, 'runner_seen_at' => self::time($now)];
-        $this->finish($run, $values, [], $task, $runner, $now, true);
+        $this->finish($run, $values, [], $task, $runner, $now, true, $output->lines);
     }
 
     // ------------------------------------------------------------------ users' actions

@@ -365,9 +365,11 @@ The plugin never ends a run, nor frees its devices, on ambiguous evidence: a tim
 while the token cannot see the project, a search that failed, are noted on the run page and the run keeps its devices
 while the plugin keeps asking. A run unfinished after *Stop after* is stopped, and is forced if the runner has not
 stopped it 5 minutes later; it stays *Stopping* until the runner confirms, and then holds its devices for *Hold after
-a stop* like any stopped run. A lost or released run is still asked about every few minutes for a week: a later end
-is recorded with its real results ("the runner reported this end after the plugin had given the run up"), and a task
-that runs again makes the run unfinished again, its devices busy.
+a stop* like any stopped run. A lost or released run is still asked about every few minutes for a week (a run released
+before its task was known is looked for by its launch's message and nonce, as a launch is): a later end is recorded
+with its real results ("the runner reported this end after the plugin had given the run up"), once the runner's log
+has its PLAY RECAP or a minute after the end, and a task that runs again makes the run unfinished again, its devices
+busy.
 
 ## Safety
 

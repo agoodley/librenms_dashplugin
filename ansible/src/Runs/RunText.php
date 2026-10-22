@@ -73,13 +73,14 @@ final class RunText
     }
 
     /**
-     * Eventlog entry of each target when the runner has the task of a lost or released run again, unfinished: the
-     * run is followed again and its devices are busy again.
+     * Eventlog entry of each target when the runner has the task of a lost or released run again (or, for a run
+     * released before its task was known, has a task for it after all), unfinished: the run is followed again and
+     * its devices are busy again.
      */
-    public static function followedAgain(int $runId, string $taskId, string $was, string $template, string $user): string
+    public static function followedAgain(int $runId, string $taskId, string $was, string $template, string $user, bool $found = false): string
     {
-        return "Ansible run #$runId: the runner has its task #" . UntrustedText::line($taskId, 20) . ' again, unfinished: the plugin follows it again (it was '
-            . strtolower(RunStatus::label($was)) . '), template ' . self::quote($template) . ' by ' . UntrustedText::line($user, 60);
+        return "Ansible run #$runId: the runner has " . ($found ? 'a task for it after all, #' . UntrustedText::line($taskId, 20) : 'its task #' . UntrustedText::line($taskId, 20) . ' again')
+            . ', unfinished: the plugin follows it again (it was ' . strtolower(RunStatus::label($was)) . '), template ' . self::quote($template) . ' by ' . UntrustedText::line($user, 60);
     }
 
     /**
