@@ -7,6 +7,7 @@ use Agoodley\LibrenmsAnsible\Changes\BackupState;
 use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\ChangeText;
+use Agoodley\LibrenmsAnsible\Changes\NextChange;
 use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
@@ -101,7 +102,23 @@ class ChangeController extends Controller
         $plugin = new Plugin();
         $connection = $plugin->connection();
         $templateId = is_string($request->query('template')) ? mb_substr($request->query('template'), 0, 64) : '';
+        // a new change made from an earlier one (?from=ID&devices=remaining|passed): its template, answers, reference, first batch and devices
+        $prefill = null;
+        $kind = $request->query('devices');
+        if (ctype_digit((string) $request->query('from', '')) && in_array($kind, [NextChange::REMAINING, NextChange::PASSED], true)) {
+            try {
+                $changes = new ChangeRepository();
+                $source = $changes->available() ? $changes->find((int) $request->query('from')) : null;
+                if ($source !== null) {
+                    $prefill = NextChange::prefill($source, $changes->targets((int) $source['id']), $kind, (new RunRepository())->busy());
+                    $templateId = $templateId !== '' ? $templateId : (string) $source['template_id'];
+                }
+            } catch (\Throwable $e) {
+                $this->failure('new change from a change', $e);
+            }
+        }
         $data = ['usable' => [], 'unusable' => [], 'template' => null, 'templateReasons' => [], 'templateNotes' => [], 'runnerError' => null, 'blocked' => [],
+            'prefill' => $prefill,
             'device' => ctype_digit((string) $request->query('device', '')) ? (int) $request->query('device') : null,
             'requestToken' => bin2hex(random_bytes(16)), 'maxTargets' => $this->settings()->maxTargets(), 'assetVersion' => self::assetVersion(),
             'groups' => [], 'locations' => [], 'planText' => $this->settings()->batchPlan([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])->describe()];
@@ -403,6 +420,25 @@ class ChangeController extends Controller
             array_map(fn ($t) => [$t['dry_result'], $t['result'], $t['before_status'], $t['after_status']], $targets), count($events), count($approvals)]));
         $dryRunAt = Clock::unix($change['dry_run_at']);
         $approvedAt = Clock::unix($change['approved_at']);
+        // after a failure or a stop: a new change with the remaining devices; after a failed dry run: one without the devices it failed on
+        $busy = in_array($status, [ChangeStatus::FAILED, ChangeStatus::STOPPED], true) || $change['dry_run_state'] === 'failed' ? $runs->busy() : [];
+        $remaining = in_array($status, [ChangeStatus::FAILED, ChangeStatus::STOPPED], true) ? NextChange::prefill($change, $targets, NextChange::REMAINING, $busy) : null;
+        $passed = $change['dry_run_state'] === 'failed' && ! ChangeStatus::isFinal($status) ? NextChange::prefill($change, $targets, NextChange::PASSED, $busy) : null;
+        // a stopped batch: the step in progress may still run on the runner, its devices held a while (as on the run page)
+        $stoppedRun = null;
+        foreach (array_reverse($batchRuns, true) as $batchRun) {
+            if ($batchRun['status'] === RunStatus::STOPPED) {
+                $stoppedRun = $batchRun;
+                break;
+            }
+        }
+        $stopped = $stoppedRun === null ? null : [
+            'run' => $stoppedRun,
+            'held' => \Agoodley\LibrenmsAnsible\Runs\RunLifecycle::held($stoppedRun, time()),
+            'note' => \Agoodley\LibrenmsAnsible\Runs\RunDiagnosis::afterStop($stoppedRun, \Agoodley\LibrenmsAnsible\Runs\TaskLines::inProgress(OutputBuffer::display($stoppedRun),
+                array_values(array_map(fn ($t) => (string) $t['inventory_name'], $runs->targets((int) $stoppedRun['id']))))['task'], time()),
+            'command' => \Agoodley\LibrenmsAnsible\Runs\RunDiagnosis::leftoverCommand($stoppedRun),
+        ];
         $actions = [
             'dry_run' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
             'approve' => $canApprove && $status === ChangeStatus::AWAITING && $approvalRefusal === null,
@@ -418,6 +454,7 @@ class ChangeController extends Controller
             'approvals' => $approvals, 'windows' => $windows, 'events' => array_slice($events, -self::TIMELINE), 'signature' => $signature,
             'diffs' => $diffs, 'unattributed' => $unattributed, 'secretVars' => $secretVars, 'settings' => $settings, 'canRun' => $canRun, 'canApprove' => $canApprove,
             'approvalRefusal' => $approvalRefusal, 'actions' => $actions, 'pending' => $follower->pending($id),
+            'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
             'dryRunExpires' => $dryRunAt !== null && in_array($status, [ChangeStatus::AWAITING, ChangeStatus::READY], true) ? $dryRunAt + $settings->dryRunSeconds : null,
             'approvalExpires' => $approvedAt !== null && $status === ChangeStatus::READY ? $approvedAt + $settings->approvalSeconds : null,
             'next' => $run !== null ? OutputBuffer::since($run, 0)['next'] : 0,

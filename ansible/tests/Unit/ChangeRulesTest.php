@@ -11,6 +11,7 @@ use Agoodley\LibrenmsAnsible\Changes\Connections;
 use Agoodley\LibrenmsAnsible\Changes\DryRunCheck;
 use Agoodley\LibrenmsAnsible\Changes\Fingerprint;
 use Agoodley\LibrenmsAnsible\Changes\MaintenanceTimes;
+use Agoodley\LibrenmsAnsible\Changes\NextChange;
 use Agoodley\LibrenmsAnsible\Changes\TemplateSnapshot;
 use Agoodley\LibrenmsAnsible\Runner\RunnerEnvironment;
 use Agoodley\LibrenmsAnsible\Runner\RunnerInventory;
@@ -105,6 +106,34 @@ class ChangeRulesTest extends TestCase
             'the connections read back from the stored parts give the same fingerprint');
         $this->assertNotSame(Fingerprint::approval('a', 7, null), Fingerprint::approval('a', 7, 'abc1234'), 'the dry run\'s commit is part of the approval');
         $this->assertStringNotContainsString('https://l', (string) json_encode($base), 'the stored parts hold hashes of the variables, not their values');
+    }
+
+    // ------------------------------------------------------------------ a new change made from an earlier one
+
+    public function testANewChangeFromAnEarlierOneTakesWhatItLeftToDo(): void
+    {
+        $plan = BatchPlan::make([501, 502, 503, 504], [502], 1, 2, 1, true, 0)->toArray(); // 502, then 501 503, then 504
+        $change = ['id' => 31, 'reference' => 'CHG-7', 'plan' => $plan, 'variables' => [
+            ['name' => 'interface', 'value' => 'Fa0/9', 'secret' => false], ['name' => 'description', 'value' => 'uplink', 'secret' => false],
+            ['name' => 'key', 'value' => '********', 'secret' => true]]];
+        $target = fn (int $batch, int $position, ?string $dry, ?string $result) => ['batch' => $batch, 'position' => $position, 'dry_result' => $dry,
+            'result' => $result, 'display' => '', 'hostname' => '', 'inventory_name' => ''];
+        $targets = [501 => ['display' => 'sw1'] + $target(2, 1, 'changed', 'changed'), 502 => ['display' => 'sw2'] + $target(1, 0, 'changed', 'changed'),
+            503 => ['display' => 'sw3'] + $target(2, 2, 'changed', 'failed'), 504 => ['display' => 'sw4'] + $target(3, 3, 'changed', null)];
+
+        $this->assertSame([503, 504], NextChange::devices($targets, NextChange::REMAINING), 'not applied: failed, and never run');
+        $prefill = NextChange::prefill($change, $targets, NextChange::REMAINING, [504 => ['run' => 9, 'held_until' => '2026-10-22 11:40:00']]);
+        $this->assertSame([503], $prefill['devices'], 'a held device is left out');
+        $this->assertStringStartsWith('sw4: held by run #9 until ', $prefill['left_out'][0]);
+        $this->assertSame(['interface' => 'Fa0/9', 'description' => 'uplink'], $prefill['vars'], 'the answers, never the secret ones');
+        $this->assertSame(['CHG-7', 'the remaining devices of change #31', []], [$prefill['reference'], $prefill['text'], $prefill['canary']]);
+
+        $targets[502]['dry_result'] = 'unreachable';
+        $passed = NextChange::prefill($change, $targets, NextChange::PASSED, []);
+        $this->assertSame([501, 503, 504], $passed['devices'], 'without the devices its dry run failed on, in its order');
+        $this->assertSame('change #31 without the devices its dry run failed on (sw2)', $passed['text']);
+        $targets[502]['dry_result'] = 'changed';
+        $this->assertSame([502], NextChange::prefill($change, $targets, NextChange::PASSED, [])['canary'], 'its first batch, when it is among them');
     }
 
     // ------------------------------------------------------------------ how the runner reaches the devices

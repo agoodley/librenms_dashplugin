@@ -8,6 +8,7 @@ use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeSettings;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\Connections;
+use Agoodley\LibrenmsAnsible\Changes\NextChange;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeBackups;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeChangeRunner;
@@ -195,7 +196,9 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame(ChangeStatus::DRAFT, $change['status']);
         $this->assertSame('failed', $change['dry_run_state']);
         $this->assertSame('failed', $this->changes->targets[$id][502]['dry_result']);
-        $this->assertStringContainsString('every target must do what was asked', end($change['dry_run_findings']));
+        $this->assertSame('The dry run ended failed on lab-sw2 (failed): every target must do what was asked without failing.', end($change['dry_run_findings']),
+            'it names the devices');
+        $this->assertSame([501, 503], NextChange::devices($this->changes->targets($id), NextChange::PASSED), 'a new change without them takes the others');
     }
 
     public function testAnUnreadableLogIsAskedAgainThenLeavesTheDryRunUnverified(): void

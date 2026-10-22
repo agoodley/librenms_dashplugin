@@ -84,21 +84,41 @@
                 This dry run is NOT PROVEN to be a dry run: it may have changed the devices. Check them before anything else. It can be neither approved nor applied.
                 <ul style="margin: 4px 0 0; font-weight: normal">@foreach((array) $change['dry_run_findings'] as $finding)<li>{{ $finding }}</li>@endforeach</ul></div>
         @elseif($dryState === 'failed')
-            <div class="alert alert-danger" id="ans-dry-run-failed"><strong>The dry run did not succeed on every target:</strong> it cannot be approved or applied. Fix the cause and run it again.
-                <ul style="margin: 4px 0 0">@foreach((array) $change['dry_run_findings'] as $finding)<li>{{ $finding }}</li>@endforeach</ul></div>
+            <div class="alert alert-danger" id="ans-dry-run-failed"><strong>The dry run did not succeed on every target:</strong> it cannot be approved or applied. Fix the cause and run it again,
+                or make a new change without these devices.
+                <ul style="margin: 4px 0 0">@foreach((array) $change['dry_run_findings'] as $finding)<li>{{ $finding }}</li>@endforeach</ul>
+                @if($passed && $passed['devices'] && $canRun)
+                    <div style="margin-top: 6px"><a class="btn btn-sm btn-default" id="ans-change-without-failed"
+                        href="{{ route('ansible.changes.new', ['template' => $change['template_id'], 'from' => $change['id'], 'devices' => 'passed']) }}"><i class="fa fa-plus"></i>
+                        A new change without them ({{ \Agoodley\LibrenmsAnsible\Support\Format::count(count($passed['devices']), 'device') }})</a>
+                        <span class="ans-muted">(answers, reference and first batch filled in; it is dry-run and approved again)</span></div>
+                @endif
+            </div>
         @endif
         @if($change['error'] && ! in_array($dryState, ['unverified', 'failed'], true) && $status !== ChangeStatus::APPLIED)
             <div class="alert alert-{{ in_array($status, [ChangeStatus::FAILED, ChangeStatus::REJECTED], true) ? 'danger' : 'warning' }}" id="ans-change-error">
                 <strong>{{ ChangeStatus::label($status) }}:</strong> {{ $change['error'] }}
-                @if(in_array($status, [ChangeStatus::FAILED, ChangeStatus::STOPPED], true) && $canRun)
-                    @php
-                        $left = array_keys(array_filter($targets, fn ($t) => in_array($t['result'], [null, 'not_run', 'failed', 'unreachable', 'unknown'], true)));
-                    @endphp
-                    @if($left)
-                        <div style="margin-top: 6px"><a class="btn btn-sm btn-default" id="ans-change-remaining"
-                            href="{{ route('ansible.changes.new', ['template' => $change['template_id']]) }}#devices={{ implode(',', $left) }}"><i class="fa fa-plus"></i> A new change with the {{ count($left) }} remaining {{ count($left) === 1 ? 'device' : 'devices' }}</a>
-                            <span class="ans-muted">(not a resume: it is dry-run and approved again)</span></div>
-                    @endif
+                @if($remaining && $canRun && ($remaining['devices'] || $remaining['left_out']))
+                    <div style="margin-top: 6px">
+                        @if($remaining['devices'])
+                            <a class="btn btn-sm btn-default" id="ans-change-remaining"
+                                href="{{ route('ansible.changes.new', ['template' => $change['template_id'], 'from' => $change['id'], 'devices' => 'remaining']) }}"><i class="fa fa-plus"></i>
+                                A new change with the {{ count($remaining['devices']) }} remaining {{ count($remaining['devices']) === 1 ? 'device' : 'devices' }}</a>
+                            <span class="ans-muted">(answers, reference and first batch filled in; not a resume: it is dry-run and approved again)</span>
+                        @endif
+                        @if($remaining['left_out'])
+                            <div class="ans-help" id="ans-change-remaining-held">Not offered yet: @foreach($remaining['left_out'] as $why){{ $why }}@if(! $loop->last); @endif @endforeach</div>
+                        @endif
+                    </div>
+                @endif
+            </div>
+        @endif
+        @if($stopped && ($stopped['held'] || $status === ChangeStatus::STOPPED))
+            <div class="alert alert-warning" id="ans-change-stopped-note"><i class="fa fa-exclamation-triangle"></i>
+                Batch {{ $stopped['run']['batch'] }} (<a href="{{ route('ansible.runs.show', $stopped['run']['id']) }}">run #{{ $stopped['run']['id'] }}</a>): {{ $stopped['note'] }}
+                @if($stopped['command'] && $stopped['held'])
+                    <div style="margin-top: 6px">On the runner, <code class="ans-code">{{ $stopped['command'] }}</code> lists them (besides the grep itself); end each with <code class="ans-code">kill PID</code>.
+                        Then release the devices on the <a href="{{ route('ansible.runs.show', $stopped['run']['id']) }}">run page</a>.</div>
                 @endif
             </div>
         @endif

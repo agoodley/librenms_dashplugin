@@ -12,6 +12,8 @@
 
 @php
     $usableTemplate = $template !== null && ! $templateReasons;
+    // a new change made from an earlier one: its answers (not the secret ones) and reference filled in
+    $answer = fn ($var) => $prefill !== null && array_key_exists($var->name, $prefill['vars']) ? $prefill['vars'][$var->name] : $var->default;
     $typeLabels = ['string' => 'text', 'text' => 'several lines', 'int' => 'whole number', 'enum' => 'one of a list', 'secret' => 'secret'];
 @endphp
 
@@ -32,9 +34,23 @@
     <p class="ans-help" style="margin: 0 0 6px">A change is dry-run first (<span class="ans-code">--check --diff</span>, with the diff per device), approved when the settings ask
         for it, then applied in batches ({{ $planText }}, with the settings), each with a LibreNMS maintenance window and Oxidized backups before and after.</p>
 
+    @if($prefill)
+        {{-- the text is escaped first, then the change's number becomes a link --}}
+        <div class="alert alert-info" id="ans-prefill-note"><i class="fa fa-copy"></i> A new change with {!! str_replace(e('change #' . $prefill['from']),
+            '<a href="' . e(route('ansible.changes.show', $prefill['from'])) . '">change #' . (int) $prefill['from'] . '</a>', e($prefill['text'])) !!}: its template,
+            answers, reference and first batch are filled in, its devices chosen and listed first. Not a resume: it is dry-run and approved again; secret answers
+            are asked again.
+            @if($prefill['left_out'])
+                <div style="margin-top: 4px" id="ans-prefill-left-out">Left out, they cannot be targets yet:
+                    <ul style="margin: 2px 0 0">@foreach($prefill['left_out'] as $why)<li>{{ $why }}</li>@endforeach</ul></div>
+            @endif
+        </div>
+    @endif
+
     <h4 class="ans-step"><span class="badge">1</span> Template</h4>
     <form method="get" action="{{ route('ansible.changes.new') }}" class="form-inline" id="ans-template-form">
         @if($device)<input type="hidden" name="device" value="{{ $device }}">@endif
+        @if($prefill)<input type="hidden" name="from" value="{{ $prefill['from'] }}"><input type="hidden" name="devices" value="{{ $prefill['kind'] }}">@endif
         <select name="template" class="form-control input-sm" id="ans-template" style="min-width: 320px" onchange="this.form.submit()">
             <option value="">Choose a template…</option>
             @foreach($usable as $option)
@@ -114,13 +130,13 @@
                     <div class="col-sm-7">
                         @switch($var->type)
                             @case('text')
-                                <textarea class="form-control input-sm ans-var" id="ans-var-{{ $loop->index }}" name="{{ $var->name }}" rows="4" maxlength="10000">{{ $var->default }}</textarea>
+                                <textarea class="form-control input-sm ans-var" id="ans-var-{{ $loop->index }}" name="{{ $var->name }}" rows="4" maxlength="10000">{{ $answer($var) }}</textarea>
                                 @break
                             @case('enum')
                                 <select class="form-control input-sm ans-var" id="ans-var-{{ $loop->index }}" name="{{ $var->name }}">
                                     @unless($var->required)<option value="">(none)</option>@endunless
                                     @foreach($var->values as $value)
-                                        <option value="{{ $value['value'] }}" @selected($var->default === $value['value'])>{{ $value['name'] }}</option>
+                                        <option value="{{ $value['value'] }}" @selected((string) $answer($var) === (string) $value['value'])>{{ $value['name'] }}</option>
                                     @endforeach
                                 </select>
                                 @break
@@ -128,10 +144,10 @@
                                 <p class="form-control-static ans-muted" id="ans-var-{{ $loop->index }}">asked at the dry run and at the apply (the plugin never keeps secret answers)</p>
                                 @break
                             @case('int')
-                                <input type="text" inputmode="numeric" class="form-control input-sm ans-var" id="ans-var-{{ $loop->index }}" name="{{ $var->name }}" value="{{ $var->default }}" style="max-width: 160px">
+                                <input type="text" inputmode="numeric" class="form-control input-sm ans-var" id="ans-var-{{ $loop->index }}" name="{{ $var->name }}" value="{{ $answer($var) }}" style="max-width: 160px">
                                 @break
                             @default
-                                <input type="text" class="form-control input-sm ans-var" id="ans-var-{{ $loop->index }}" name="{{ $var->name }}" value="{{ $var->default }}" maxlength="1000">
+                                <input type="text" class="form-control input-sm ans-var" id="ans-var-{{ $loop->index }}" name="{{ $var->name }}" value="{{ $answer($var) }}" maxlength="1000">
                         @endswitch
                         <p class="ans-help">{{ $typeLabels[$var->type] ?? $var->type }}{{ $var->description !== '' ? ' · ' . $var->description : '' }}</p>
                         <div class="ans-error-text ans-var-error"></div>
@@ -144,7 +160,7 @@
 
         <h4 class="ans-step"><span class="badge">4</span> Reference</h4>
         <div class="form-inline">
-            <input type="text" class="form-control input-sm" id="ans-reference" maxlength="120" placeholder="e.g. CHG-1234" style="min-width: 260px" autocomplete="off">
+            <input type="text" class="form-control input-sm" id="ans-reference" maxlength="120" placeholder="e.g. CHG-1234" style="min-width: 260px" autocomplete="off" value="{{ $prefill['reference'] ?? '' }}">
             <span class="ans-help">optional: a ticket number or a few words (letters, digits, spaces and . , : _ - / ( ) @ + =)</span>
         </div>
 
@@ -165,6 +181,7 @@
                 'template' => $template->id,
                 'requestToken' => $requestToken,
                 'device' => $device,
+                'prefill' => $prefill !== null ? ['devices' => $prefill['devices'], 'canary' => $prefill['canary']] : null,
                 'maxTargets' => $maxTargets,
                 'deviceUrl' => url('device'),
             ];

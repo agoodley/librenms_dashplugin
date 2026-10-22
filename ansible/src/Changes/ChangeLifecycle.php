@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Changes;
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Runs\EventSink;
 use Agoodley\LibrenmsAnsible\Runs\RecapParser;
+use Agoodley\LibrenmsAnsible\Runs\RunResults;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Runs\RunStore;
 use Agoodley\LibrenmsAnsible\Support\Clock;
@@ -466,9 +467,18 @@ final class ChangeLifecycle
         $next = $state === 'verified' ? (ApprovalRules::needed($this->settings->approval) ? ChangeStatus::AWAITING : ChangeStatus::READY) : ChangeStatus::DRAFT;
         $findings = $proof['findings'];
         if ($state === 'failed') {
+            // the devices it did not succeed on, by name
+            $bad = [];
+            foreach ($this->changes->targets($id) as $deviceId => $row) {
+                $result = $targets[$deviceId]['result'] ?? 'not_run';
+                if (! in_array($result, RunResults::DONE, true)) {
+                    $bad[] = NextChange::name($row) . ' (' . (ChangeText::DRY_RESULTS[$result] ?? $result) . ')';
+                }
+            }
             $findings[] = $run['status'] === RunStatus::SUCCESS && ! empty($run['unexpected_hosts'])
                 ? 'The runner ran the dry run on hosts that were not its targets: ' . implode(', ', array_slice($run['unexpected_hosts'], 0, 5)) . '.'
-                : 'The dry run ended ' . strtolower(RunStatus::label($run['status'])) . ': every target must do what was asked without failing.';
+                : 'The dry run ended ' . strtolower(RunStatus::label($run['status'])) . ($bad ? ' on ' . implode(', ', array_slice($bad, 0, 10))
+                    . (count($bad) > 10 ? ' and ' . (count($bad) - 10) . ' more' : '') : '') . ': every target must do what was asked without failing.';
         }
         $ended = $this->update($change, ['status' => $next, 'dry_run_state' => $state, 'dry_run_ended_at' => Clock::store($now),
             'dry_run_commit' => $run['commit_hash'] ?? null, 'dry_run_findings' => $findings,

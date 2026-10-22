@@ -388,9 +388,12 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   comment) or **Reject**s. **Apply** starts the first batch: its maintenance window, the backups, then its run; after
   it the change waits for **Continue** (when *Wait after the first batch* is on), and the next batches follow on their
   own until the last, or until one fails. **Stop** stops the running batch (as a run's stop: the step in progress runs
-  on) and launches nothing more; **Cancel** drops a change that has not been applied. A change that failed or was
-  stopped offers **a new change with the remaining devices**: the same template, with the devices that failed or were
-  never reached, to dry-run and approve again. The page follows the change every 2 seconds: the batches with their
+  on) and launches nothing more; after a stop the page says, as the run page does, how long the batch's devices stay
+  held and how to find the step that may still run on the runner. **Cancel** drops a change that has not been applied.
+  A change that failed or was stopped offers **a new change with the remaining devices** (the devices that failed or
+  were never reached; held ones are left out and named, with until when), and a dry run that failed on some devices
+  offers **a new change without them**: the same template, answers (not the secret ones), reference and first batch,
+  the devices chosen and listed first, to dry-run and approve again. The page follows the change every 2 seconds: the batches with their
   runs and results, the backups (with a link to each device's config page), the maintenance windows, the log of the
   run it follows, and a timeline of every step.
 * **Changes:** filter by device, requester, template, status ("Not ended" for the changes still going) and dates; the

@@ -735,10 +735,16 @@
         previewButton.addEventListener('click', preview);
         createButton.addEventListener('click', create);
 
-        // devices to choose from the start: ?device=ID (the device page) and #devices=1,2,3 (the remaining devices of a change)
+        // devices to choose from the start: ?device=ID (the device page), the devices of a new change made from an earlier one
+        // (config.prefill, in that change's order, with its first batch), and #devices=1,2,3
         var wanted = [];
         if (config.device) {
             wanted.push(Number(config.device));
+        }
+        if (config.prefill) {
+            config.prefill.devices.forEach(function (id) {
+                wanted.push(Number(id));
+            });
         }
         var hash = /(?:^#|&)devices=([0-9,]{1,20000})/.exec(window.location.hash || '');
         if (hash) {
@@ -756,6 +762,20 @@
                 return;
             }
             devices = result.body.devices;
+            if (config.prefill) {
+                // the chosen devices first, in the earlier change's order (the batches follow the list)
+                var rank = {};
+                config.prefill.devices.forEach(function (id, index) {
+                    rank[Number(id)] = index;
+                });
+                devices = devices.filter(function (device) {
+                    return rank[device.id] !== undefined;
+                }).sort(function (a, b) {
+                    return rank[a.id] - rank[b.id];
+                }).concat(devices.filter(function (device) {
+                    return rank[device.id] === undefined;
+                }));
+            }
             var oses = {};
             devices.forEach(function (device) {
                 oses[device.os] = device.platform;
@@ -776,6 +796,13 @@
                     refused.push(preset.display + ': ' + preset.refusal.text);
                 }
             });
+            if (config.prefill) {
+                config.prefill.canary.forEach(function (id) {
+                    if (selected[Number(id)]) {
+                        canary[Number(id)] = true;
+                    }
+                });
+            }
             if (refused.length) {
                 var box = alertBox('warning', 'Not chosen, they cannot be targets now:', refused);
                 box.id = 'ans-preset-refused';
