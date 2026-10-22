@@ -316,8 +316,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   the limit (the targets' inventory names), the answers that are not secret as extra variables, the secret ones in
   Semaphore's write-only secret field, and a message "LibreNMS Ansible run #N by user [nonce]"; nothing else. The
   nonce is random per run: a launch whose answer never came (a timeout) is found again by its message, among the
-  tasks created after the run (a minute of clock difference allowed), so it never takes a task of another database
-  that shares the project.
+  tasks created after the run (two minutes of clock difference between the servers allowed), so it never takes a
+  task of another database that shares the project.
 * **Following:** the run page asks the plugin every 2 seconds, and the plugin asks the runner at most every 2 seconds
   per run (a lock per run, held longer than the slowest refresh, keeps two pages and the sync command from doing it at
   once; every write is a compare-and-set on the run's version, so a slow answer never writes over a newer state). The
