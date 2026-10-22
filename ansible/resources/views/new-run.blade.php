@@ -22,6 +22,10 @@
         <div class="alert alert-danger" id="ans-runner-error"><i class="fa fa-exclamation-triangle"></i> {{ $runnerError }}
             <a href="{{ url('plugin/settings/ansible') }}">Settings</a></div>
     @endif
+    @if($blocked)
+        <div class="alert alert-danger" id="ans-launch-blocked"><i class="fa fa-ban"></i> {{ $blocked }}
+            <a href="{{ url('plugin/settings/ansible') }}">Settings</a></div>
+    @endif
 
     <h4 class="ans-step"><span class="badge">1</span> Template</h4>
     <form method="get" action="{{ route('ansible.runs.new') }}" class="form-inline" id="ans-template-form">

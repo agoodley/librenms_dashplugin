@@ -605,14 +605,14 @@
                     box.appendChild(failed);
                     return;
                 }
-                var ok = alertBox(data.too_powerful ? 'warning' : 'success', null, null);
+                var ok = alertBox(data.blocked ? 'warning' : 'success', null, null);
                 ok.id = 'ans-test-ok';
-                append(ok, [el('strong', null, 'Connected: '), data.runner + ' ' + data.version + ', project "' + data.project + '", the token\'s role: ' + (data.role || 'unknown') + '.']);
+                append(ok, [el('strong', null, 'Connected: '), data.runner + ' ' + data.version + ', project "' + data.project + '", the token\'s role: '
+                    + (data.role || 'none') + (data.admin ? ' (a Semaphore UI admin)' : '') + '.']);
                 box.appendChild(ok);
-                if (data.too_powerful) {
-                    var loud = el('div', 'ans-warning-loud', 'This token can change templates; use a Task Runner token. ');
-                    loud.id = 'ans-test-powerful';
-                    append(loud, el('span', null, 'Whoever holds an Owner or Manager token can change a template\'s playbook and repository, and so run any code with the stored device credentials.'));
+                if (data.blocked) {
+                    var loud = el('div', 'ans-warning-loud', data.blocked);
+                    loud.id = 'ans-test-blocked';
                     box.appendChild(loud);
                 }
                 if (data.warnings.length) {

@@ -47,8 +47,9 @@ class SettingsController extends Controller
     }
 
     /**
-     * POST plugin/ansible/settings/test: test the saved connection: the runner's version, the token's role (a
-     * loud warning when it can change templates), the LibreNMS inventory and every template, usable or not.
+     * POST plugin/ansible/settings/test: test the saved connection: the runner's version, the token's role (and why
+     * launches are blocked when it could change templates or may not run them), the LibreNMS inventory and every
+     * template, usable or not.
      */
     public function test(): JsonResponse
     {
@@ -63,14 +64,8 @@ class SettingsController extends Controller
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $this->failure('connection test', $e)]);
         }
+        // a token that could change templates or may not run them: said once, as the reason launches are blocked
         $warnings = [];
-        if ($health->tooPowerful()) {
-            $warnings[] = "The token's user is $health->role of the project: this token can change templates, and so their playbook and repository, "
-                . 'so whoever holds it can run any code with the stored device credentials. Use a Task Runner token.';
-        }
-        if (! $health->canRun) {
-            $warnings[] = "The token's user may not run tasks in the project: give it the Task Runner role.";
-        }
         try {
             $inventory = $runner->inventory((string) $connection->inventory);
             $inventoryInfo = ['id' => $inventory->id, 'name' => $inventory->name, 'type' => $inventory->type, 'source' => $inventory->source];
@@ -96,7 +91,8 @@ class SettingsController extends Controller
         }
 
         return response()->json(['ok' => true, 'runner' => $runner->name(), 'version' => $health->version, 'project' => $health->project,
-            'role' => $health->role, 'too_powerful' => $health->tooPowerful(), 'can_run' => $health->canRun, 'inventory' => $inventoryInfo,
+            'role' => $health->role, 'admin' => $health->admin, 'too_powerful' => $health->tooPowerful(), 'can_run' => $health->canRun,
+            'blocked' => $health->launchBlock(), 'inventory' => $inventoryInfo,
             'templates' => $list, 'warnings' => $warnings]);
     }
 

@@ -117,9 +117,11 @@ that could change Semaphore. Step by step (the names are suggestions):
    whose templates the plugin should not run.
 2. **A Task Runner user and its token.** Create a user (e.g. `librenms`, not an admin), add it to the project with the
    role *Task Runner*, log in as that user and create an API token (user menu → *API Tokens*). That token goes in the
-   plugin's settings. Do not use an Owner or Manager token: those may change templates, and so their playbook and
-   repository, which lets whoever holds the token run any code with the stored device credentials. The plugin's
-   *Test connection* warns loudly about such a token.
+   plugin's settings. Not an Owner's or Manager's token, nor a Semaphore admin's: those may change templates, and so
+   their playbook and repository, which lets whoever holds the token run any code with the stored device credentials.
+   The plugin launches nothing with such a token (it asks the runner for the token's role and user before every
+   preview and launch), nor with one whose user may not run tasks (*Guest*); *Test connection* says why and what to
+   change.
 3. **The device credentials** in the project's *Key Store*: a *Login with password* key (or an SSH key) for the
    devices, and the enable password as a key too when your platforms need it (the plugin's platform mapping sets
    `ansible_become` and `ansible_become_method: enable` for IOS, IOS-XE and EOS).
@@ -286,7 +288,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 
 ## Safety
 
-* **The runner token is a Task Runner's**, stored encrypted (Laravel's `Crypt` with LibreNMS' `APP_KEY`), never
+* **The runner token is a Task Runner's**: before every preview and launch the plugin asks Semaphore for the token's
+  role in the project (`GET /api/project/{p}/role`) and its user (`GET /api/user`), and launches nothing when the
+  role is Owner or Manager or the user is a Semaphore admin (they could change templates), or when the role may not
+  run tasks. The token is stored encrypted (Laravel's `Crypt` with LibreNMS' `APP_KEY`), never
   shown again or sent to a browser, never in an error message or log, and only sent to the URL an admin saved with it.
   Calls to the runner verify TLS certificates (unless an admin turns that off), never follow redirects, and time out.
 * **Only reviewed templates and playbooks:** the plugin launches only templates that pass the checks above, and sends

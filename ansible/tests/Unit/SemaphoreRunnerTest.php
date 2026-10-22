@@ -22,6 +22,7 @@ class SemaphoreRunnerTest extends TestCase
             'GET /api/info' => new HttpResponse(200, FakeTransport::fixture('info.json')),
             'GET /api/project/2/' => new HttpResponse(200, FakeTransport::fixture('project.json')),
             'GET /api/project/2/role' => new HttpResponse(200, FakeTransport::fixture('role.json')),
+            'GET /api/user' => new HttpResponse(200, FakeTransport::fixture('user.json')),
             'GET /api/project/2/templates' => new HttpResponse(200, FakeTransport::fixture('templates.json')),
             'GET /api/project/2/templates/5' => new HttpResponse(200, FakeTransport::fixture('template-survey.json')),
             'GET /api/project/2/inventory/3' => new HttpResponse(200, FakeTransport::fixture('inventory-static.json')),
@@ -47,6 +48,8 @@ class SemaphoreRunnerTest extends TestCase
         $this->assertSame('task_runner', $health->role);
         $this->assertTrue($health->canRun);
         $this->assertFalse($health->tooPowerful());
+        $this->assertFalse($health->admin);
+        $this->assertNull($health->launchBlock());
         $this->assertSame('Bearer ' . self::TOKEN, $this->http->requests[0]['headers']['Authorization']);
         $this->assertSame('https://semaphore.example.com/api/info', $this->http->requests[0]['url']);
     }
@@ -55,7 +58,30 @@ class SemaphoreRunnerTest extends TestCase
     {
         $this->http->on('GET /api/project/2/role', new HttpResponse(200, '{"role":"manager","permissions":7}'));
 
-        $this->assertTrue($this->runner()->health()->tooPowerful());
+        $health = $this->runner()->health();
+        $this->assertTrue($health->tooPowerful());
+        $this->assertStringContainsString('Manager role in the project', (string) $health->launchBlock());
+    }
+
+    public function testAnAdminsTokenIsTooPowerfulWhateverItsRole(): void
+    {
+        // a Semaphore admin may change every project, also one where it only has the Task Runner role
+        $this->http->on('GET /api/user', new HttpResponse(200, str_replace('"admin":false', '"admin":true', FakeTransport::fixture('user.json'))));
+
+        $health = $this->runner()->health();
+        $this->assertSame('task_runner', $health->role);
+        $this->assertTrue($health->admin);
+        $this->assertTrue($health->tooPowerful());
+        $this->assertStringStartsWith('Launches are blocked: the runner token is too powerful (its user is a Semaphore UI admin)', (string) $health->launchBlock());
+    }
+
+    public function testWithoutTheAdminFlagTheHealthIsUnknown(): void
+    {
+        $this->http->on('GET /api/user', new HttpResponse(200, '{"id":4,"username":"lnms-plugin"}'));
+
+        $this->expectException(RunnerError::class);
+        $this->expectExceptionMessage('/user is not what the plugin expects');
+        $this->runner()->health();
     }
 
     public function testTemplatesFromTheRecordedList(): void

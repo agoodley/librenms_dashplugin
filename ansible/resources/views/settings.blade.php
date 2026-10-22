@@ -41,7 +41,8 @@
             <fieldset>
                 <legend>Runner connection (Semaphore UI)</legend>
                 <p class="help-block">Saved by the plugin, encrypted, and only changed by LibreNMS admins: these settings decide where the token goes.
-                    The token should be a Task Runner's: one that may change templates could run any code with the device credentials.</p>
+                    The token must be that of a Task Runner of the project who is not a Semaphore admin: with a token that could change templates,
+                    and so run any code with the device credentials, the plugin launches nothing.</p>
                 <div class="form-group row">
                     <label class="col-sm-4 control-label" for="ans-url" style="font-weight: normal">Runner URL</label>
                     <div class="col-sm-8"><input id="ans-url" type="url" class="form-control input-sm" name="url" value="{{ $value('url') }}" placeholder="https://semaphore.example.com"></div>

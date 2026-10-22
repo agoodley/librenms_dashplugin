@@ -18,8 +18,9 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Previews and launches runs. Everything is checked on the server, against the runner as it is now: the template
- * (TemplateCheck, asked from the runner, never cached), the answers (VariableValidator) and the targets
+ * Previews and launches runs. Everything is checked on the server, against the runner as it is now: the token (it
+ * may run tasks and cannot change templates: RunnerHealth::launchBlock()), the template (TemplateCheck, asked from
+ * the runner, never cached), the answers (VariableValidator) and the targets
  * (TargetSelection, at most the max per run). A launch that fails a check is refused before the runner is asked.
  * The busy check and the recording of the run happen under one lock, so two launches cannot take the same
  * device and a submitted form starts one run at most (its one-time token).
@@ -51,6 +52,13 @@ final class RunLauncher
         $connection = $this->plugin->connection();
         try {
             $plan->runner = $this->plugin->runner($connection);
+            // a token that could change templates, or may not run them, launches nothing (asked each time, like the template)
+            $block = $plan->runner->health()->launchBlock();
+            if ($block !== null) {
+                $plan->errors[] = $block;
+
+                return $plan;
+            }
             $plan->template = $plan->runner->template($templateId);
             $inventory = $plan->runner->inventory((string) $connection->inventory);
         } catch (RunnerError $e) {

@@ -58,21 +58,28 @@ final class SemaphoreRunner implements Runner
     }
 
     /**
-     * Version (GET /api/info), project name and the token's role in it (GET /api/project/{p}/role).
+     * Version (GET /api/info), project name, the token's role in it (GET /api/project/{p}/role) and whether its user
+     * is a Semaphore admin (GET /api/user).
      */
     public function health(): RunnerHealth
     {
         $info = $this->get('/info', 'the version');
         $project = $this->get($this->projectPath('/'), "project {$this->project}");
         $role = $this->get($this->projectPath('/role'), "the token's role in project {$this->project}");
+        $user = $this->get('/user', "the token's user");
+        if (! is_bool($user['admin'] ?? null)) {
+            // without it the plugin cannot tell whether the token's user may change every project
+            throw $this->badResponse('/user');
+        }
         $roleName = is_string($role['role'] ?? null) ? $role['role'] : null;
         $permissions = is_int($role['permissions'] ?? null) ? $role['permissions'] : 0;
 
         return new RunnerHealth(
             UntrustedText::line($info['version'] ?? 'unknown', 60),
             UntrustedText::line($project['name'] ?? "#{$this->project}", 120),
-            $roleName,
+            $roleName === null ? null : UntrustedText::line($roleName, 40),
             ($permissions & self::PERMISSION_RUN) === self::PERMISSION_RUN || in_array($roleName, ['owner', 'manager', 'task_runner'], true),
+            $user['admin'],
         );
     }
 

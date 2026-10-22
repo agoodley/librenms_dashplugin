@@ -30,7 +30,7 @@ class LaunchController extends Controller
         $plugin = new Plugin();
         $connection = $plugin->connection();
         $templateId = is_string($request->query('template')) ? mb_substr($request->query('template'), 0, 64) : '';
-        $data = ['usable' => [], 'unusable' => [], 'template' => null, 'templateReasons' => [], 'templateNotes' => [], 'runnerError' => null,
+        $data = ['usable' => [], 'unusable' => [], 'template' => null, 'templateReasons' => [], 'templateNotes' => [], 'runnerError' => null, 'blocked' => null,
             'device' => ctype_digit((string) $request->query('device', '')) ? (int) $request->query('device') : null,
             'requestToken' => bin2hex(random_bytes(16)), 'maxTargets' => $this->settings()->maxTargets(), 'assetVersion' => self::assetVersion(),
             'groups' => [], 'locations' => []];
@@ -38,6 +38,7 @@ class LaunchController extends Controller
             $devices = $this->inventoryService()->devices();
             [$data['groups'], $data['locations']] = [$devices->deviceGroups(), $devices->locations()];
             $runner = $plugin->runner($connection);
+            $data['blocked'] = $runner->health()->launchBlock();
             foreach ($runner->templates() as $template) {
                 $reasons = TemplateCheck::reasons($template, (string) $connection->inventory);
                 if ($reasons) {
@@ -53,6 +54,13 @@ class LaunchController extends Controller
                 $data['template'] = $runner->template($templateId);
                 $data['templateReasons'] = TemplateCheck::reasons($data['template'], (string) $connection->inventory);
                 $data['templateNotes'] = TemplateCheck::notes($data['template']);
+                if ($data['templateReasons']) {
+                    // the template on its own can say more than the list (the token's permission on it): list it once, as unusable
+                    $chosen = $data['template'];
+                    $data['usable'] = array_values(array_filter($data['usable'], fn ($t) => $t->id !== $chosen->id));
+                    $data['unusable'] = array_values(array_filter($data['unusable'], fn ($u) => $u['template']->id !== $chosen->id));
+                    $data['unusable'][] = ['template' => $chosen, 'reasons' => $data['templateReasons']];
+                }
             }
         } catch (RunnerError $e) {
             $data['runnerError'] = $e->getMessage();
