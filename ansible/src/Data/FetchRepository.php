@@ -6,8 +6,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * When the runner last fetched the inventory, as which LibreNMS user and how many hosts it got: the Inventory
- * page shows it, and a run's targets are checked against what that user may see.
+ * When the inventory was last fetched with each LibreNMS user's API token, and how many hosts it got: the settings
+ * page proposes those users as the inventory user, and the Inventory page shows the inventory user's last fetch.
  */
 final class FetchRepository
 {
@@ -43,12 +43,18 @@ final class FetchRepository
     }
 
     /**
-     * The latest fetch, null when the runner never fetched the inventory.
+     * The latest fetch with a user's token, null when there was none.
      *
      * @return array{user_id: int, username: string, hosts: int, address: ?string, fetched_at: ?string}|null
      */
-    public function latest(): ?array
+    public function forUser(int $userId): ?array
     {
-        return $this->all()[0] ?? null;
+        foreach ($this->all() as $fetch) {
+            if ($fetch['user_id'] === $userId) {
+                return $fetch;
+            }
+        }
+
+        return null;
     }
 }

@@ -161,8 +161,11 @@ that could change Semaphore. Step by step (the names are suggestions):
 
 Then, in the plugin's settings: the runner URL, the token, the project id, the inventory id, **Save connection**, and
 **Test connection**: it shows the Semaphore version, the token's role, the LibreNMS inventory, and every template of
-the project as usable or not, with what to change. Finally grant the run permission to the admins who may launch runs.
-The Inventory page shows when the runner last fetched the inventory, as which user and how many hosts it got.
+the project as usable or not, with what to change. Choose the **inventory user** (the user of step 6; the settings
+page lists the users whose token fetched the inventory first): from then on the inventory endpoint answers only that
+user's tokens, and the plugin checks targets against what that user may see; until it is chosen the plugin launches
+nothing. Finally grant the run permission to the admins who may launch runs. The Inventory page shows when the runner
+last fetched the inventory with the inventory user's token and how many hosts it got.
 
 ## Settings
 
@@ -183,6 +186,8 @@ The runner connection is stored encrypted with LibreNMS' `APP_KEY`.
 | Verify TLS certificates | on | off only for a test lab: anyone between LibreNMS and the runner could read the token |
 | CA bundle | (system CAs) | a PEM file on the LibreNMS server to verify the runner's certificate with |
 | Timeout | 15 s | per call to the runner (1–120) |
+| *Inventory user* | | |
+| Inventory user | not chosen | the LibreNMS user whose API token the runner uses; once chosen, only that user's tokens get the inventory, and targets are checked against what that user may see; until then nothing is launched |
 | *Targets and runs* | | |
 | Platform mapping | the defaults below | one line per LibreNMS os: `os ansible_network_os [connection] [become]`; a device whose os has no line cannot be a target |
 | Allowed device group | every device | only the members of this LibreNMS device group are in the inventory and can be targets |
@@ -233,6 +238,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   LibreNMS lets admins pass every permission check.
 * **The inventory endpoint** (`/plugin/ansible/api/inventory`) takes a LibreNMS API token (as `X-Auth-Token`, like
   LibreNMS' API, or as a Bearer token) instead of a session, and answers with the devices that token's user may see.
+  Once an admin chose the inventory user, it answers only that user's tokens (any other gets a JSON 403 that says
+  why): the user the plugin trusts for the target checks is always one an admin chose, never whoever fetched last.
 * **Every setting** is for admins, on the plugin's own routes. LibreNMS opens the plugin's settings page to holders of
   `plugin.admin` and stores what is posted to it; the plugin reads none of that, so a `plugin.admin` holder who is not
   an admin cannot change what runs reach (the page shows them a note).
@@ -243,7 +250,7 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   (the ones the plugin cannot launch are listed with the reason), then the targets: filter by device group, location,
   platform or text; each device shows its inventory name, platform, LibreNMS status and, when it cannot be a target,
   why (disabled, no platform mapping, outside the allowed group, busy in another unfinished run, not visible to the
-  inventory's user, no usable address). Answer the survey variables, then **Preview**: it shows exactly what will be
+  inventory user, no usable address). Answer the survey variables, then **Preview**: it shows exactly what will be
   launched: the template, the targets with their inventory names, refused devices, the answers (secrets masked) and
   the limit. **Launch** checks everything again against the runner and opens the run.
 * **Run:** the status, the template, who launched it and when, each target's result with the PLAY RECAP counters, the
@@ -277,7 +284,7 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   launches it only when its inventory is the LibreNMS one (a file inventory), it allows the limit override, it has no
   limit of its own, its CLI arguments are on the short list above, its survey variables have safe names and known
   types, and the token's user may run it.
-* **Launch:** the targets are checked again (the plugin's own run of the target check, as the inventory's user sees
+* **Launch:** the targets are checked again (the plugin's own run of the target check, as the inventory user sees
   them), at most *Max targets per run*; then, under a lock (LibreNMS' cache), the plugin checks that no target is busy
   in another unfinished run and records the run before it asks the runner: two launches cannot take the same device,
   and a form that is submitted twice starts one run (each form has a one-time token). The runner gets the template id,
@@ -313,7 +320,7 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   narrow it further.
 * **Who:** admins only, and only those holding `ansible.run` may launch and stop.
 * **Targets:** only devices that exist, are enabled, in the allowed group, mapped, not busy, visible to the
-  inventory's user, at most the max; the limit is made only of the plugin's own inventory names, which cannot be
+  inventory user, at most the max; the limit is made only of the plugin's own inventory names, which cannot be
   Ansible patterns (no `,` `:` `!` `&` `*` `?` `[` `]` `~` `@`) or group names. Ansible applies the limit to every
   play of a playbook: a play on `localhost` or on a host the playbook adds at run time is skipped (checked with
   Ansible core 2.20); tasks delegated to another host still run there, on behalf of a target.
@@ -329,8 +336,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   PHP leaves them out of stack traces), the task message or a page.
 * **Output** is untrusted too: it is stored capped and shown escaped; ANSI colours become a fixed set of CSS classes,
   other escape sequences and control characters are dropped, and the run page adds new lines as text, never as HTML.
-* **Inventory endpoint:** read only (GET), a LibreNMS API token (a session cookie is not enough), scoped to the
-  token user's devices, cleaned values, no credentials (no SNMP data), JSON.
+* **Inventory endpoint:** read only (GET; other methods get 405), a LibreNMS API token (a session cookie is not
+  enough), only the inventory user's once it is chosen, scoped to the token user's devices, cleaned values, no
+  credentials (no SNMP data), JSON.
 * **CSRF** on every POST; errors are JSON that says what to fix.
 
 ## Semaphore UI behaviour the plugin relies on

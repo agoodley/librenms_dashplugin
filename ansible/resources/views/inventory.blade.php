@@ -1,5 +1,5 @@
-{{-- Inventory (InventoryController::show): what the runner gets from LibreNMS, the devices left out and why, the
-     runner's fetches and the setup steps. --}}
+{{-- Inventory (InventoryController::show): what the runner gets from LibreNMS with the inventory user's token, the
+     devices left out and why, the fetches and the setup steps. --}}
 @extends('layouts.librenmsv1')
 
 @section('title', 'Ansible inventory')
@@ -22,6 +22,7 @@
     $reasonLabels = ['disabled' => 'disabled', 'outside_group' => 'outside the allowed group', 'no_mapping' => 'no platform mapping',
         'no_address' => 'no usable address', 'not_visible' => 'not visible to the inventory\'s user'];
     $script = 'inventory/librenms_inventory.py';
+    $fetch = $inventoryUser['fetch'] ?? null;
 @endphp
 
 @section('content')
@@ -40,7 +41,7 @@
         <div class="ans-card ans-{{ $hosts ? 'ok' : 'warning' }}">
             <h4>Hosts</h4>
             <div class="ans-card-value" id="ans-inventory-hosts">{{ count($hosts) }}</div>
-            <p>{{ $runnerUser ? 'what the runner gets as ' . $runnerUser['username'] : 'as a user who sees every device (the runner has not fetched it yet)' }}</p>
+            <p>{{ $inventoryUser ? 'what the runner gets with the token of the inventory user ' . $inventoryUser['username'] : 'as a user who sees every device (no inventory user is chosen yet)' }}</p>
         </div>
         <div class="ans-card ans-info">
             <h4>Groups</h4>
@@ -52,14 +53,20 @@
             <div class="ans-card-value">{{ count($leftOut) }}</div>
             <p>devices that cannot be targets, with the reason below</p>
         </div>
-        <div class="ans-card ans-{{ $runnerUser ? 'ok' : 'critical' }}" id="ans-last-fetch">
-            <h4>Last fetch by the runner</h4>
-            @if($runnerUser)
-                <div class="ans-card-value" style="font-size: 16px">{{ $runnerUser['fetched_at'] }}</div>
-                <p>as {{ $runnerUser['username'] }}, {{ \Agoodley\LibrenmsAnsible\Support\Format::count($runnerUser['hosts'], 'host') }}{{ $runnerUser['address'] ? ', from ' . $runnerUser['address'] : '' }}</p>
+        <div class="ans-card ans-{{ $fetch ? 'ok' : 'critical' }}" id="ans-last-fetch">
+            @if(! $inventoryUser)
+                <h4>Inventory user</h4>
+                <div class="ans-card-value" style="font-size: 16px">not chosen</div>
+                <p>{{ $inventoryUserProblem }} <a href="{{ url('plugin/settings/ansible') }}#ans-inventory-user">Settings</a></p>
             @else
-                <div class="ans-card-value" style="font-size: 16px">never</div>
-                <p>follow the setup steps below</p>
+                <h4>Last fetch by the runner</h4>
+                @if($fetch)
+                    <div class="ans-card-value" style="font-size: 16px">{{ $fetch['fetched_at'] }}</div>
+                    <p>with the token of the inventory user {{ $inventoryUser['username'] }}, {{ \Agoodley\LibrenmsAnsible\Support\Format::count($fetch['hosts'], 'host') }}{{ $fetch['address'] ? ', from ' . $fetch['address'] : '' }}</p>
+                @else
+                    <div class="ans-card-value" style="font-size: 16px">never</div>
+                    <p>with the token of the inventory user {{ $inventoryUser['username'] }}: follow the setup steps below</p>
+                @endif
             @endif
         </div>
     </div>
@@ -69,7 +76,7 @@
         <span class="ans-muted">the inventory of this page, as Ansible's dynamic inventory JSON</span>
     </p>
 
-    <details class="panel panel-default" id="ans-setup" @if(! $runnerUser) open @endif>
+    <details class="panel panel-default" id="ans-setup" @if(! $fetch) open @endif>
         <summary class="panel-heading" style="cursor: pointer"><strong>Setup steps</strong> <span class="text-muted">(the runner pulls the inventory from LibreNMS)</span></summary>
         <div class="panel-body">
             <ol style="padding-left: 18px; margin-bottom: 0">
@@ -161,16 +168,22 @@
         </div>
     </div>
 
-    @if(count($fetches) > 1)
-        <div class="panel panel-default">
+    @if($fetches && (! $inventoryUser || count($fetches) > 1 || ! $fetch))
+        <div class="panel panel-default" id="ans-fetches">
             <div class="panel-heading"><strong>Fetches by user</strong></div>
             <table class="table table-condensed ans-table">
                 <thead><tr><th>User</th><th>Last fetch</th><th class="ans-num">Hosts</th><th>From</th></tr></thead>
-                @foreach($fetches as $fetch)
-                    <tr><td>{{ $fetch['username'] }}</td><td>{{ $fetch['fetched_at'] }}</td><td class="ans-num">{{ $fetch['hosts'] }}</td><td>{{ $fetch['address'] }}</td></tr>
+                @foreach($fetches as $row)
+                    <tr><td>{{ $row['username'] }}</td><td>{{ $row['fetched_at'] }}</td><td class="ans-num">{{ $row['hosts'] }}</td><td>{{ $row['address'] }}</td></tr>
                 @endforeach
             </table>
-            <div class="panel-footer ans-muted" style="font-size: 12px">The plugin checks targets against what the user of the latest fetch may see.</div>
+            <div class="panel-footer ans-muted" style="font-size: 12px">
+                @if($inventoryUser)
+                    Only the inventory user's token gets an answer now, and the plugin checks targets against what that user may see.
+                @else
+                    The plugin trusts none of these yet: an admin chooses the inventory user in the settings, then only that user's token gets an answer.
+                @endif
+            </div>
         </div>
     @endif
 </div>

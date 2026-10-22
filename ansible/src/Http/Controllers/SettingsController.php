@@ -5,7 +5,6 @@ namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 use Agoodley\LibrenmsAnsible\AnsibleServiceProvider;
 use Agoodley\LibrenmsAnsible\Data\ConnectionRepository;
 use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
-use Agoodley\LibrenmsAnsible\Data\FetchRepository;
 use Agoodley\LibrenmsAnsible\Data\PermissionRepository;
 use Agoodley\LibrenmsAnsible\Data\SettingsRepository;
 use Agoodley\LibrenmsAnsible\Data\UserRepository;
@@ -125,8 +124,13 @@ class SettingsController extends Controller
         if (! array_filter($list, fn ($t) => $t['usable'])) {
             $warnings[] = 'No template can be launched by the plugin yet: change them as their reasons say.';
         }
-        if ((new FetchRepository())->latest() === null) {
-            $warnings[] = 'The runner has not fetched the inventory from LibreNMS yet: see the setup steps on the Inventory page.';
+        $inventoryService = $this->inventoryService();
+        $inventoryUser = $inventoryService->inventoryUser();
+        if ($inventoryUser === null) {
+            $warnings[] = (string) $inventoryService->inventoryUserProblem();
+        } elseif ($inventoryUser['fetch'] === null) {
+            $warnings[] = 'The runner has not fetched the inventory with the inventory user ' . $inventoryUser['user']->username . '\'s token yet: '
+                . 'see the setup steps on the Inventory page.';
         }
 
         return response()->json(['ok' => true, 'runner' => $runner->name(), 'version' => $health->version, 'project' => $health->project,

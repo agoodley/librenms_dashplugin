@@ -18,24 +18,25 @@ class InventoryController extends Controller
     private const JSON = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE;
 
     /**
-     * plugin/ansible/inventory: the inventory as the runner gets it (as the user it last fetched it as; as a user
-     * who sees every device until then), the devices left out and why, the fetches and the setup steps.
+     * plugin/ansible/inventory: the inventory as the runner gets it with the inventory user's token (as a user who
+     * sees every device while none is chosen), the devices left out and why, the fetches and the setup steps.
      */
     public function show(): View
     {
-        $data = ['inventory' => null, 'leftOut' => [], 'names' => [], 'fetches' => [], 'runnerUser' => null, 'error' => null,
-            'connection' => null, 'endpoint' => route('ansible.api.inventory'), 'assetVersion' => self::assetVersion(),
+        $data = ['inventory' => null, 'leftOut' => [], 'names' => [], 'fetches' => [], 'inventoryUser' => null, 'inventoryUserProblem' => null,
+            'error' => $this->settings()->error, 'connection' => null, 'endpoint' => route('ansible.api.inventory'), 'assetVersion' => self::assetVersion(),
             'mapErrors' => $this->settings()->platformMap()->errors()];
         try {
             $service = $this->inventoryService();
-            $runnerUser = $service->runnerUser();
-            $data['runnerUser'] = $runnerUser === null ? null : ['username' => $runnerUser['user']->username] + $runnerUser['fetch'];
-            $inventory = $service->build($runnerUser['visible'] ?? null);
+            $inventoryUser = $service->inventoryUser();
+            $data['inventoryUserProblem'] = $service->inventoryUserProblem();
+            $data['inventoryUser'] = $inventoryUser === null ? null : ['username' => (string) $inventoryUser['user']->username, 'fetch' => $inventoryUser['fetch']];
+            $inventory = $service->build($inventoryUser['visible'] ?? null);
             $leftOut = $inventory->leftOut();
-            if ($runnerUser !== null) {
-                // devices the runner's user may not see are not in its inventory at all
-                foreach (array_diff_key($service->devices()->exists(), $runnerUser['visible']) as $deviceId => $true) {
-                    $leftOut[$deviceId] = ['reason' => 'not_visible', 'text' => 'the inventory\'s user ' . $runnerUser['user']->username . ' may not see it'];
+            if ($inventoryUser !== null) {
+                // devices the inventory user may not see are not in its inventory at all
+                foreach (array_diff_key($service->devices()->exists(), $inventoryUser['visible']) as $deviceId => $true) {
+                    $leftOut[$deviceId] = ['reason' => 'not_visible', 'text' => 'the inventory user ' . $inventoryUser['user']->username . ' may not see it'];
                 }
                 ksort($leftOut);
             }
@@ -58,7 +59,7 @@ class InventoryController extends Controller
     {
         try {
             $service = $this->inventoryService();
-            $inventory = $service->build($service->runnerUser()['visible'] ?? null);
+            $inventory = $service->build($service->inventoryUser()['visible'] ?? null);
         } catch (\Throwable $e) {
             return response()->json(['error' => $this->failure('inventory', $e)], 500);
         }
@@ -68,13 +69,19 @@ class InventoryController extends Controller
 
     /**
      * plugin/ansible/api/inventory[?host=NAME]: the dynamic inventory JSON for the token's user (only the devices
-     * that user may see), or one host's variables. A --list fetch is recorded (when, as whom, how many hosts).
+     * that user may see), or one host's variables. Once an admin chose the inventory user, only that user's tokens
+     * get an answer. A --list fetch is recorded (when, as whom, how many hosts).
      */
     public function runner(Request $request): JsonResponse
     {
         $user = $request->user();
         if ($this->settings()->error !== null) {
             return response()->json(['error' => $this->settings()->error], 500, ['Cache-Control' => 'no-store']);
+        }
+        $chosen = $this->settings()->inventoryUser();
+        if ($chosen !== null && (int) $user->user_id !== $chosen) {
+            return response()->json(['error' => 'This API token\'s user is not the inventory user chosen in the Ansible plugin settings: '
+                . 'the runner must fetch the inventory with that user\'s token (an admin can change the inventory user there).'], 403, ['Cache-Control' => 'no-store']);
         }
         try {
             $inventory = $this->inventoryService()->forUser($user);

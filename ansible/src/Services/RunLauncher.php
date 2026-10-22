@@ -96,13 +96,15 @@ final class RunLauncher
     private function targets(LaunchPlan $plan, array $deviceIds): void
     {
         $devices = $this->inventory->devices();
-        $runnerUser = $this->inventory->runnerUser();
-        if ($runnerUser === null) {
-            $plan->warnings[] = 'The runner has not fetched the inventory yet, so the plugin cannot check that it will find these devices: '
-                . 'set up the LibreNMS inventory in Semaphore UI (see the Inventory page).';
+        $inventoryUser = $this->inventory->inventoryUser();
+        if ($inventoryUser === null) {
+            $plan->errors[] = (string) $this->inventory->inventoryUserProblem();
+        } elseif ($inventoryUser['fetch'] === null) {
+            $plan->warnings[] = 'The runner has not fetched the inventory with ' . $inventoryUser['user']->username . '\'s token yet: '
+                . 'check the LibreNMS inventory in Semaphore UI (see the Inventory page).';
         }
-        $selection = new TargetSelection($this->inventory->build(), $devices->exists(), $this->runs->busy(), $runnerUser['visible'] ?? null,
-            (string) ($runnerUser['user']->username ?? ''));
+        $selection = new TargetSelection($this->inventory->build(), $devices->exists(), $this->runs->busy(), $inventoryUser['visible'] ?? null,
+            (string) ($inventoryUser['user']->username ?? ''));
         $chosen = $selection->select($deviceIds);
         $rows = $devices->devices();
         $names = $devices->names(array_keys($chosen['targets'] + $chosen['refused']));

@@ -10,7 +10,7 @@ namespace Agoodley\LibrenmsAnsible\Inventory;
  * group, location and device type. Every value that comes from the network is cleaned (UntrustedText).
  *
  * Names are computed over every device and group LibreNMS has, so a device and a group keep their names
- * whichever devices the inventory's user may see: the names the plugin puts in a run's limit are the ones the
+ * whichever devices the inventory user may see: the names the plugin puts in a run's limit are the ones the
  * runner gets.
  */
 final class InventoryBuilder
@@ -35,7 +35,7 @@ final class InventoryBuilder
      * @param  array<int, int[]>  $memberships  device_id => ids of its device groups
      * @param  array<int, string>  $deviceGroups  device group id => name, every group
      * @param  array<int, string>  $locations  location id => name, every location
-     * @param  array<int, true>|null  $visible  device ids the inventory's user may see
+     * @param  array<int, true>|null  $visible  device ids the inventory user may see
      */
     public function build(array $devices, array $memberships, array $deviceGroups, array $locations, ?array $visible = null): Inventory
     {

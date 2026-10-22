@@ -39,7 +39,7 @@ class RunsTest extends TestCase
 
         $this->assertNull($selection->refusal(1));
         $this->assertSame('not_visible', $selection->refusal(3)['reason']);
-        $this->assertStringContainsString("inventory's user ansible-inventory may not see it", $selection->refusal(3)['text']);
+        $this->assertStringContainsString("inventory user ansible-inventory may not see it", $selection->refusal(3)['text']);
         $this->assertSame('disabled', $selection->refusal(7)['reason'], 'its own reason first');
     }
 

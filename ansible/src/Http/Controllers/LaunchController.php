@@ -30,15 +30,21 @@ class LaunchController extends Controller
         $plugin = new Plugin();
         $connection = $plugin->connection();
         $templateId = is_string($request->query('template')) ? mb_substr($request->query('template'), 0, 64) : '';
-        $data = ['usable' => [], 'unusable' => [], 'template' => null, 'templateReasons' => [], 'templateNotes' => [], 'runnerError' => null, 'blocked' => null,
+        $data = ['usable' => [], 'unusable' => [], 'template' => null, 'templateReasons' => [], 'templateNotes' => [], 'runnerError' => null, 'blocked' => [],
             'device' => ctype_digit((string) $request->query('device', '')) ? (int) $request->query('device') : null,
             'requestToken' => bin2hex(random_bytes(16)), 'maxTargets' => $this->settings()->maxTargets(), 'assetVersion' => self::assetVersion(),
             'groups' => [], 'locations' => []];
         try {
-            $devices = $this->inventoryService()->devices();
+            $service = $this->inventoryService();
+            $devices = $service->devices();
             [$data['groups'], $data['locations']] = [$devices->deviceGroups(), $devices->locations()];
+            // what refuses every launch, said up front (the preview and the launch check it again)
+            $data['blocked'] = array_values(array_filter([$this->settings()->error, $service->inventoryUserProblem()]));
             $runner = $plugin->runner($connection);
-            $data['blocked'] = $runner->health()->launchBlock();
+            $block = $runner->health()->launchBlock();
+            if ($block !== null) {
+                array_unshift($data['blocked'], $block);
+            }
             foreach ($runner->templates() as $template) {
                 $reasons = TemplateCheck::reasons($template, (string) $connection->inventory);
                 if ($reasons) {
@@ -81,9 +87,9 @@ class LaunchController extends Controller
             $service = $this->inventoryService();
             $inventory = $service->build();
             $devices = $service->devices();
-            $runnerUser = $service->runnerUser();
-            $selection = new TargetSelection($inventory, $devices->exists(), (new RunRepository())->busy(), $runnerUser['visible'] ?? null,
-                (string) ($runnerUser['user']->username ?? ''));
+            $inventoryUser = $service->inventoryUser();
+            $selection = new TargetSelection($inventory, $devices->exists(), (new RunRepository())->busy(), $inventoryUser['visible'] ?? null,
+                (string) ($inventoryUser['user']->username ?? ''));
             $memberships = $devices->memberships();
             $locations = $devices->locations();
             $map = $this->settings()->platformMap();
@@ -109,7 +115,7 @@ class LaunchController extends Controller
         }
 
         return response()->json(['devices' => $list, 'max_targets' => $this->settings()->maxTargets(),
-            'runner_user' => $runnerUser['user']->username ?? null, 'fetched_at' => $runnerUser['fetch']['fetched_at'] ?? null]);
+            'inventory_user' => $inventoryUser['user']->username ?? null, 'fetched_at' => $inventoryUser['fetch']['fetched_at'] ?? null]);
     }
 
     /**

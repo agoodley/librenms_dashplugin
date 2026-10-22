@@ -23,7 +23,8 @@
             <a href="{{ url('plugin/settings/ansible') }}">Settings</a></div>
     @endif
     @if($blocked)
-        <div class="alert alert-danger" id="ans-launch-blocked"><i class="fa fa-ban"></i> {{ $blocked }}
+        <div class="alert alert-danger" id="ans-launch-blocked"><i class="fa fa-ban"></i>
+            @if(count($blocked) === 1){{ $blocked[0] }}@else<ul style="margin: 0; padding-left: 18px">@foreach($blocked as $reason)<li>{{ $reason }}</li>@endforeach</ul>@endif
             <a href="{{ url('plugin/settings/ansible') }}">Settings</a></div>
     @endif
 

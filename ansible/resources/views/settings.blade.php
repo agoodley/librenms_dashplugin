@@ -101,6 +101,53 @@
             </fieldset>
         </form>
 
+    @php
+        $chosen = $setting('inventory_user');
+        $fetchedBy = array_column($a['fetches'], null, 'user_id');
+    @endphp
+    <form method="post" action="{{ route('ansible.settings.runs') }}" id="ans-inventory-user" autocomplete="off">
+        @csrf
+        <fieldset>
+            <legend>Inventory user</legend>
+            <p class="help-block">The LibreNMS user whose API token the runner fetches the inventory with (the <span class="ans-code">LIBRENMS_TOKEN</span>
+                of its environment in Semaphore UI). Once it is chosen, the inventory endpoint answers only that user's tokens, and the plugin checks
+                the targets against what that user may see. Until then the plugin launches nothing.</p>
+            @if($chosen === '' && $fetchedBy)
+                <div class="alert alert-info" id="ans-inventory-user-proposal">The inventory was fetched with the token of
+                    {{ implode(', ', array_column($a['fetches'], 'username')) }}: choose the user the runner should use.</div>
+            @endif
+            <div class="form-group row">
+                <label class="col-sm-4 control-label" for="ans-setting-inventory_user" style="font-weight: normal">Inventory user</label>
+                <div class="col-sm-8">
+                    <select id="ans-setting-inventory_user" name="inventory_user" class="form-control input-sm" style="max-width: 460px">
+                        <option value="">Not chosen: launches are refused</option>
+                        @if($chosen !== '' && ! isset($a['users'][(int) $chosen]))
+                            <option value="{{ $chosen }}" selected>#{{ $chosen }} (no longer exists)</option>
+                        @endif
+                        @if($fetchedBy)
+                            <optgroup label="Fetched the inventory">
+                                @foreach($fetchedBy as $userId => $fetched)
+                                    @if(isset($a['users'][$userId]))
+                                        <option value="{{ $userId }}" @selected($chosen === (string) $userId)>{{ $fetched['username'] }} · last fetch {{ $fetched['fetched_at'] }}, {{ \Agoodley\LibrenmsAnsible\Support\Format::count($fetched['hosts'], 'host') }}</option>
+                                    @endif
+                                @endforeach
+                            </optgroup>
+                        @endif
+                        <optgroup label="{{ $fetchedBy ? 'Other users' : 'Users' }}">
+                            @foreach($a['users'] as $userId => $user)
+                                @unless(isset($fetchedBy[$userId]))
+                                    <option value="{{ $userId }}" @selected($chosen === (string) $userId)>{{ $user['username'] }}{{ $user['realname'] ? ' (' . $user['realname'] . ')' : '' }}{{ $user['enabled'] ? '' : ' · disabled' }}</option>
+                                @endunless
+                            @endforeach
+                        </optgroup>
+                    </select>
+                    <span class="help-block" style="margin: 2px 0 0; font-size: 12px">a user whose role sees the devices the runner may change, e.g. global-read</span>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm" id="ans-inventory-user-save"><i class="fa fa-save"></i> Save inventory user</button>
+        </fieldset>
+    </form>
+
     <form method="post" action="{{ route('ansible.settings.runs') }}" id="ans-settings-form">
         @csrf
         <fieldset>

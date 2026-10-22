@@ -17,7 +17,7 @@ final class TargetSelection
      * @param  Inventory  $inventory  the inventory of every device (InventoryBuilder::build() without a scope)
      * @param  array<int, true>  $exists  ids of every LibreNMS device
      * @param  array<int, int>  $busy  device_id => id of the unfinished run it is a target of
-     * @param  array<int, true>|null  $runnerVisible  devices the inventory's user may see (null: not known yet)
+     * @param  array<int, true>|null  $runnerVisible  devices the inventory user may see (null: none chosen)
      * @param  string  $runnerUser  that user's name, for the reason
      */
     public function __construct(
@@ -72,7 +72,7 @@ final class TargetSelection
         if ($this->runnerVisible !== null && ! isset($this->runnerVisible[$deviceId])) {
             $user = $this->runnerUser !== '' ? ' ' . UntrustedText::line($this->runnerUser, 60) : '';
 
-            return ['reason' => 'not_visible', 'text' => "the inventory's user$user may not see it in LibreNMS, so the runner would not find it"];
+            return ['reason' => 'not_visible', 'text' => "the inventory user$user may not see it in LibreNMS, so the runner would not find it"];
         }
         $run = $this->busy[$deviceId] ?? null;
         if ($run !== null && $run !== $ignoreRun) {
