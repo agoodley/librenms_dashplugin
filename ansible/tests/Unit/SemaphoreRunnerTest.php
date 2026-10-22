@@ -266,7 +266,7 @@ class SemaphoreRunnerTest extends TestCase
 
     public function testFindTheTaskOfALaunchByItsMessageAndTime(): void
     {
-        $this->http->on('GET /api/project/2/tasks/last?count=1000', new HttpResponse(200, FakeTransport::fixture('tasks-last.json')));
+        $this->http->on('GET /api/project/2/tasks/last?count=200', new HttpResponse(200, FakeTransport::fixture('tasks-last.json')));
         $before = strtotime('2026-10-21T23:09:00Z');
 
         $search = $this->runner()->findTask('15', 'LibreNMS Ansible run #41 by admin', $before);
@@ -280,17 +280,60 @@ class SemaphoreRunnerTest extends TestCase
             'a task created before the run is not its task');
     }
 
-    public function testASearchThatDoesNotReachBackIsNotComplete(): void
+    /**
+     * A page of Semaphore UI's task list, newest first: ids $from down to $to, all of template 3 and created at $created.
+     */
+    private static function taskPage(int $from, int $to, string $created = '2026-10-22T10:00:00Z'): string
     {
         $tasks = [];
-        for ($i = 1000; $i > 0; $i--) {
-            $tasks[] = ['id' => $i, 'template_id' => 3, 'status' => 'success', 'message' => '', 'created' => '2026-10-22T10:00:00Z'];
+        for ($id = $from; $id >= $to; $id--) {
+            $tasks[] = ['id' => $id, 'template_id' => 3, 'status' => 'success', 'message' => "other task $id", 'created' => $created];
         }
-        $this->http->on('GET /api/project/2/tasks/last?count=1000', new HttpResponse(200, json_encode($tasks)));
 
-        $this->assertFalse($this->runner()->findTask('15', 'LibreNMS Ansible run #41 by admin [x]', strtotime('2026-10-22T09:00:00Z'))->complete,
-            'a thousand tasks since the launch: the launch\'s may be older');
-        $this->assertTrue($this->runner()->findTask('15', 'LibreNMS Ansible run #41 by admin [x]', strtotime('2026-10-22T11:00:00Z'))->complete);
+        return (string) json_encode($tasks);
+    }
+
+    public function testASearchPagesBackPastTheTwoHundredTasksAPageHolds(): void
+    {
+        // Semaphore UI 2.19 answers at most 200 tasks whatever count asks: 200 tasks newer than the launch fill the first page
+        $message = 'LibreNMS Ansible run #41 by admin [x]';
+        $launched = strtotime('2026-10-22T09:00:00Z');
+        $this->http->on('GET /api/project/2/tasks/last?count=200', new HttpResponse(200, self::taskPage(1300, 1101)));
+        $second = json_decode(self::taskPage(1100, 902), true);
+        $second[] = ['id' => 901, 'template_id' => 15, 'status' => 'success', 'message' => $message, 'created' => '2026-10-22T09:00:05Z'];
+        $this->http->on('GET /api/project/2/tasks/last?count=200&before=1101', new HttpResponse(200, (string) json_encode($second)));
+
+        $search = $this->runner()->findTask('15', $message, $launched);
+        $this->assertSame('901', $search->task->id, 'found on the second page');
+        $this->assertTrue($search->complete);
+        $this->assertCount(2, $this->http->requests);
+    }
+
+    public function testASearchIsCompleteOnlyWhenItReachedBackToTheLaunchOrTheEndOfTheList(): void
+    {
+        $launched = strtotime('2026-10-22T09:00:00Z');
+        $search = fn () => $this->runner()->findTask('15', 'LibreNMS Ansible run #41 by admin [x]', $launched);
+
+        // five full pages, all newer than the launch: the launch's task may be older still
+        foreach ([1000, 800, 600, 400, 200] as $page => $top) {
+            $this->http->on('GET /api/project/2/tasks/last?count=200' . ($page ? '&before=' . ($top + 1) : ''), new HttpResponse(200, self::taskPage($top, $top - 199)));
+        }
+        $this->assertFalse($search()->complete, 'a thousand tasks since the launch and more before them');
+        $this->assertCount(5, $this->http->requests, 'at most five pages');
+
+        // the second page reaches back past the launch
+        $this->http->on('GET /api/project/2/tasks/last?count=200&before=801', new HttpResponse(200, self::taskPage(800, 601, '2026-10-22T08:59:00Z')));
+        $result = $search();
+        $this->assertNull($result->task);
+        $this->assertTrue($result->complete);
+
+        // the end of the list: every task of the project is newer than the launch
+        $this->http->on('GET /api/project/2/tasks/last?count=200&before=801', new HttpResponse(200, '[]'));
+        $this->assertTrue($search()->complete);
+
+        // a Semaphore UI that ignores before= sends the same page again: no further back, not complete
+        $this->http->on('GET /api/project/2/tasks/last?count=200&before=801', new HttpResponse(200, self::taskPage(1000, 801)));
+        $this->assertFalse($search()->complete);
     }
 
     public function testANonSemaphoreAddressIsNotReportedAsAWrongToken(): void

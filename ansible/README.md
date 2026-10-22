@@ -434,6 +434,10 @@ Checked against Semaphore UI 2.19.17:
   204 and does nothing. (Checked with Semaphore UI 2.19.17 and ansible-core 2.20: a stopped pause was still waiting
   12 minutes later; a looped `ios_config` stopped after its first item applied the five others over the next
   minute.)
+* `GET .../tasks/last?count=N` answers at most 200 tasks, newest first, whatever N asks (with an `X-Has-Next` header),
+  and `&before=<task id>` the older ones: to find the task of a launch whose answer never came, the plugin pages back
+  until it reaches a task created before the launch or the end of the list (at most 1000 tasks); a search that does
+  not reach back so far is not taken as proof that nothing was launched.
 * `GET .../tasks/{id}/output` returns the whole log at every call, one record per line with ANSI colour codes; the
   task is reported finished before its last lines can be read. `POST .../tasks/{id}/stop` needs the body
   `{"force": false}` (an empty body is refused). `GET .../tasks/{id}` answers HTTP 400 for a task it does not have.

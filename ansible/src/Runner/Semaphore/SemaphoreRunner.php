@@ -33,8 +33,11 @@ final class SemaphoreRunner implements Runner
     /** Bit of a template's "permissions" that allows running it. */
     private const PERMISSION_RUN = 1;
 
-    /** Tasks read when looking for the task of a launch whose answer never came. */
-    private const SEARCH_COUNT = 1000;
+    /** Tasks per page of GET /tasks/last: Semaphore UI 2.19 answers at most 200 (its maxTasksPageSize). */
+    private const SEARCH_PAGE = 200;
+
+    /** Pages read at most when looking for the task of a launch whose answer never came (1000 tasks back). */
+    public const SEARCH_PAGES = 5;
 
     /** What a template may let a task override besides the limit (task_params / template flags). */
     private const OVERRIDES = [
@@ -205,32 +208,52 @@ final class SemaphoreRunner implements Runner
     }
 
     /**
-     * GET /api/project/{p}/tasks/last: the newest task of the template with this message created at $notBefore or
-     * later, among the last 1000 tasks of the project. The search is complete when that list reaches back past
-     * $notBefore (or holds every task of the project).
+     * GET /api/project/{p}/tasks/last?count=200, then the older pages (&before=the oldest id so far), newest first: the
+     * newest task of the template with this message created at $notBefore or later. The search is complete when it
+     * reached a task created before $notBefore, or the end of the list (an empty page), within SEARCH_PAGES pages; a
+     * page that does not go further back (a Semaphore UI that ignores before=) leaves it incomplete. Semaphore UI caps
+     * a page at 200 tasks whatever count asks, so one page says nothing about the tasks before it.
      */
     public function findTask(string $templateId, string $message, int $notBefore): RunnerTaskSearch
     {
-        $tasks = $this->get($this->projectPath('/tasks/last?count=' . self::SEARCH_COUNT), 'the latest tasks');
-        if (! array_is_list($tasks)) {
-            throw $this->badResponse('/tasks/last');
-        }
-        $found = null;
-        $oldest = null;
-        foreach ($tasks as $task) {
-            if (! is_array($task)) {
-                continue;
+        $before = null;
+        for ($page = 0; $page < self::SEARCH_PAGES; $page++) {
+            $tasks = $this->get($this->projectPath('/tasks/last?count=' . self::SEARCH_PAGE . ($before !== null ? '&before=' . $before : '')), 'the latest tasks');
+            if (! array_is_list($tasks)) {
+                throw $this->badResponse('/tasks/last');
             }
-            $created = self::time($task['created'] ?? null);
-            $oldest = $created !== null && ($oldest === null || $created < $oldest) ? $created : $oldest;
-            if ((string) ($task['template_id'] ?? '') === $templateId && ($task['message'] ?? null) === $message
-                && $created !== null && $created >= $notBefore && ($found === null || (int) $task['id'] > (int) $found['id'])) {
-                $found = $task;
+            if (! $tasks) {
+                return new RunnerTaskSearch(null, true); // the end of the project's tasks
             }
+            $found = null;
+            $oldestId = null;
+            $oldestCreated = null;
+            foreach ($tasks as $task) {
+                if (! is_array($task) || ! isset($task['id']) || ! is_numeric($task['id'])) {
+                    continue;
+                }
+                $id = (int) $task['id'];
+                $created = self::time($task['created'] ?? null);
+                $oldestId = $oldestId === null ? $id : min($oldestId, $id);
+                $oldestCreated = $created !== null && ($oldestCreated === null || $created < $oldestCreated) ? $created : $oldestCreated;
+                if ((string) ($task['template_id'] ?? '') === $templateId && ($task['message'] ?? null) === $message
+                    && $created !== null && $created >= $notBefore && ($found === null || $id > (int) $found['id'])) {
+                    $found = $task;
+                }
+            }
+            if ($found !== null) {
+                return new RunnerTaskSearch($this->task_($found), true); // the pages before this one had no such task
+            }
+            if ($oldestCreated !== null && $oldestCreated < $notBefore) {
+                return new RunnerTaskSearch(null, true); // back past the launch
+            }
+            if ($oldestId === null || ($before !== null && $oldestId >= $before)) {
+                return new RunnerTaskSearch(null, false); // the list does not go further back
+            }
+            $before = $oldestId;
         }
-        $complete = count($tasks) < self::SEARCH_COUNT || ($oldest !== null && $oldest < $notBefore);
 
-        return new RunnerTaskSearch($found === null ? null : $this->task_($found), $complete);
+        return new RunnerTaskSearch(null, false);
     }
 
     /**
