@@ -16,6 +16,7 @@ use Agoodley\LibrenmsAnsible\Changes\TemplateSnapshot;
 use Agoodley\LibrenmsAnsible\Runner\RunnerEnvironment;
 use Agoodley\LibrenmsAnsible\Runner\RunnerInventory;
 use Agoodley\LibrenmsAnsible\Runner\RunnerRepository;
+use Agoodley\LibrenmsAnsible\Services\ChangeFollower;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use PHPUnit\Framework\TestCase;
 
@@ -137,6 +138,26 @@ class ChangeRulesTest extends TestCase
     }
 
     // ------------------------------------------------------------------ how the runner reaches the devices
+
+    public function testTheLogPanelShowsTheDryRunThenOnlyTheRunsOfTheBatches(): void
+    {
+        $change = ['status' => ChangeStatus::READY, 'dry_run_id' => 7, 'apply_started_at' => null, 'current_batch' => 0];
+        $batches = [1 => ['run_id' => null, 'status' => 'pending'], 2 => ['run_id' => null, 'status' => 'pending']];
+        $this->assertSame(7, ChangeFollower::shownRun($change, $batches), 'before the apply: the dry run');
+        $this->assertSame(7, ChangeFollower::shownRun(['status' => ChangeStatus::DRY_RUN] + $change, $batches));
+        $applying = ['status' => ChangeStatus::APPLYING, 'apply_started_at' => '2026-10-22 10:00:00', 'current_batch' => 1] + $change;
+        $this->assertNull(ChangeFollower::shownRun($applying, [1 => ['run_id' => null, 'status' => 'preparing']] + $batches),
+            'batch 1 prepares its window and backups: no run, never the dry run\'s end');
+        $this->assertSame(8, ChangeFollower::shownRun($applying, [1 => ['run_id' => 8, 'status' => 'running']] + $batches));
+        $this->assertSame(8, ChangeFollower::shownRun(['status' => ChangeStatus::PAUSED] + $applying, [1 => ['run_id' => 8, 'status' => 'done']] + $batches),
+            'the wait after the canary: its run');
+        $this->assertNull(ChangeFollower::shownRun(['current_batch' => 2] + $applying, [1 => ['run_id' => 8, 'status' => 'done'], 2 => ['run_id' => null, 'status' => 'preparing']]),
+            'batch 2 prepares: not batch 1\'s end');
+        $this->assertSame(8, ChangeFollower::shownRun(['status' => ChangeStatus::FAILED, 'current_batch' => 2] + $applying,
+            [1 => ['run_id' => 8, 'status' => 'done'], 2 => ['run_id' => null, 'status' => 'failed']]), 'after the end: the last batch that ran');
+        $this->assertNull(ChangeFollower::shownRun(['status' => ChangeStatus::FAILED] + $applying, [1 => ['run_id' => null, 'status' => 'failed']] + $batches),
+            'no batch ran: none');
+    }
 
     public function testConnectionsAreTheAnsibleVariablesOfEachHost(): void
     {

@@ -172,6 +172,36 @@ final class ChangeFollower
     }
 
     /**
+     * The run the change page shows in its Log panel: the dry run until the apply starts; then the current batch's run,
+     * or none while that batch has none yet (it prepares its window and backups, waits for the secret answers, is being
+     * launched: the panel says so, rather than show the dry run's or an earlier batch's end as if the apply had ended);
+     * after the change's end, the last batch that ran.
+     *
+     * @param  array<int, array>  $batches  the change's batches (ChangeStore::batches())
+     */
+    public static function shownRun(array $change, array $batches): ?int
+    {
+        $dryRun = $change['dry_run_id'] !== null ? (int) $change['dry_run_id'] : null;
+        if ($change['status'] === ChangeStatus::DRY_RUN || ($change['apply_started_at'] ?? null) === null) {
+            return $dryRun;
+        }
+        $number = (int) $change['current_batch'];
+        if (($batches[$number]['run_id'] ?? null) !== null) {
+            return (int) $batches[$number]['run_id'];
+        }
+        if (! ChangeStatus::isFinal($change['status'])) {
+            return null;
+        }
+        for ($number--; $number >= 1; $number--) {
+            if (($batches[$number]['run_id'] ?? null) !== null) {
+                return (int) $batches[$number]['run_id'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * How long the lock of a change is held at most, renewed during long work (each launch, each call to Oxidized): the
      * longest work between two renewals, a launch's calls to the runner (each may take the whole timeout).
      */

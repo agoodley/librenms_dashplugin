@@ -46,6 +46,19 @@
     $reached = (array) (((array) ($change['fingerprint_parts'] ?? []))['connections'] ?? []);
     // the blocks not attributed, per host they name: a device whose diff is among them says so
     $unattributedOf = array_count_values(array_map(fn ($block) => (string) $block['host'], $unattributed));
+    // the Log panel once the apply started: the current batch's run, or what that batch does before it has one
+    $logNote = null;
+    if (! $run && $change['apply_started_at'] !== null) {
+        $currentBatch = $batches[(int) $change['current_batch']] ?? null;
+        $preparing = implode(' and ', array_filter([$settings->maintenance ? 'maintenance window' : null, $settings->backups && $oxidized ? 'backups' : null]));
+        $logNote = $final || $currentBatch === null ? 'no batch was launched' : 'batch ' . (int) $change['current_batch'] . ': ' . match ($currentBatch['status']) {
+            'pending' => 'about to start',
+            'preparing' => 'preparing' . ($preparing !== '' ? " ($preparing)" : ''),
+            'prepared' => 'waits for the secret answers',
+            'launching' => 'being launched',
+            default => $batchLabels[$currentBatch['status']] ?? (string) $currentBatch['status'],
+        };
+    }
 @endphp
 
 @section('content')
@@ -364,7 +377,7 @@
 
     <div class="panel panel-default" id="ans-change-log-panel">
         <div class="panel-heading"><strong>Log</strong>
-            <span class="text-muted" id="ans-change-log-title">@if($run){{ $run['kind'] === 'dry_run' ? 'dry run' : 'batch ' . $run['batch'] }}, <a href="{{ route('ansible.runs.show', $run['id']) }}">run #{{ $run['id'] }}</a> ({{ RunStatus::label($run['status']) }})@else nothing runs now @endif</span>
+            <span class="text-muted" id="ans-change-log-title">@if($run){{ $run['kind'] === 'dry_run' ? 'dry run' : 'batch ' . $run['batch'] }}, <a href="{{ route('ansible.runs.show', $run['id']) }}">run #{{ $run['id'] }}</a> ({{ RunStatus::label($run['status']) }})@elseif($logNote){{ $logNote }}@else nothing runs now @endif</span>
             <span class="text-muted" id="ans-log-state">{{ ! $final || $pending ? '(live: refreshed every 2 seconds)' : '' }}</span></div>
         <div class="panel-body" style="padding: 6px">
             <div class="ans-log-bar">

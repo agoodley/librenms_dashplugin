@@ -468,7 +468,7 @@ class ChangeController extends Controller
         $changes = new ChangeRepository();
         $runs = new RunRepository();
         $batches = $changes->batches($id);
-        $runId = $this->changeFollower()->currentRun($change);
+        $runId = ChangeFollower::shownRun($change, $batches);
         $run = $runId !== null ? $runs->find($runId) : null;
         $summaries = $runs->summaries(array_values(array_filter(array_map(fn ($batch) => $batch['run_id'] !== null ? (int) $batch['run_id'] : null, $batches))));
         $batchRuns = [];
