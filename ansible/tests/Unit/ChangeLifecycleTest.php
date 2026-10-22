@@ -1113,6 +1113,23 @@ class ChangeLifecycleTest extends TestCase
         }
     }
 
+    public function testAStopRecordedWhileABatchStartsIsCheckedAgainBeforeItsLaunch(): void
+    {
+        // the stop lands while the batch's start checks it (after startBatch() looked for one): its launch is not even begun
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $this->runner->duringPreflight = function (string $kind) use ($id, $lifecycle): void {
+            if ($kind === 'batch') {
+                $this->assertNull($lifecycle->stop($id, 'bob', $this->t0 + 51));
+            }
+        };
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->assertSame(['dry_run 1'], $this->runner->launchCalls, 'no launch of batch 1 begun');
+        $lifecycle->advance($id, $this->t0 + 60);
+        $this->assertSame([ChangeStatus::STOPPED, 'stopped by bob before batch 1 was launched'], [$this->changes->find($id)['status'], $this->changes->find($id)['error']]);
+    }
+
     public function testAStopRecordedWhileTheRunnerIsAskedStopsTheTaskAtOnce(): void
     {
         // after the last check: the run is recorded, the runner is being asked; the stop cannot reach the run yet (no task), so the

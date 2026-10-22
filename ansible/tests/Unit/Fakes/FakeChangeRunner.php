@@ -79,9 +79,16 @@ final class FakeChangeRunner implements ChangeRunner
     /** @var \Closure|null called while the runner is asked to start a run, after the last check (a stop landing after it) */
     public ?\Closure $whileAsked = null;
 
+    /** @var string[] every call of launch(), "kind number" (before any of its checks) */
+    public array $launchCalls = [];
+
+    /** @var \Closure|null called during a preflight (something happening while the batch's start checks it) */
+    public ?\Closure $duringPreflight = null;
+
     public function launch(array $change, string $kind, int $number, array $deviceIds, array $user, #[\SensitiveParameter] array $secrets, \Closure $verify,
         ?\Closure $halt = null): array
     {
+        $this->launchCalls[] = "$kind $number";
         $token = "{$change['id']}:$kind:$number";
         if (isset($this->tokens[$token])) {
             return ['run_id' => $this->tokens[$token], 'errors' => [], 'parts' => $this->snapshot, 'connections' => null];
@@ -143,6 +150,9 @@ final class FakeChangeRunner implements ChangeRunner
     public function preflight(array $change, string $kind, int $number, array $deviceIds, \Closure $verify): ?string
     {
         $this->preflights++;
+        if ($this->duringPreflight !== null) {
+            ($this->duringPreflight)($kind, $number);
+        }
         if ($this->preflightError !== null) {
             return $this->preflightError;
         }
