@@ -51,13 +51,15 @@
     if (! $run && $change['apply_started_at'] !== null) {
         $currentBatch = $batches[(int) $change['current_batch']] ?? null;
         $preparing = implode(' and ', array_filter([$settings->maintenance ? 'maintenance window' : null, $settings->backups && $oxidized ? 'backups' : null]));
-        $logNote = $final || $currentBatch === null ? 'no batch was launched' : 'batch ' . (int) $change['current_batch'] . ': ' . match ($currentBatch['status']) {
-            'pending' => ($currentBatch['note'] ?? null) ? Clock::localize((string) $currentBatch['note']) : 'about to start', // waits: a device busy in another run
+        $waits = ($currentBatch['status'] ?? null) === 'pending' && str_starts_with((string) ($currentBatch['note'] ?? ''), 'waits: ');
+        $logNote = $final || $currentBatch === null ? 'no batch was launched' : 'batch ' . (int) $change['current_batch'] . ($waits
+            ? ' ' . Clock::localize((string) $currentBatch['note']) : ': ' . match ($currentBatch['status']) { // "batch 2 waits: lab-sw3 is busy in run #92 ..."
+            'pending' => 'about to start',
             'preparing' => 'preparing' . ($preparing !== '' ? " ($preparing)" : ''),
             'prepared' => 'waits for the secret answers',
             'launching' => 'being launched',
             default => $batchLabels[$currentBatch['status']] ?? (string) $currentBatch['status'],
-        };
+        });
     }
 @endphp
 
@@ -66,11 +68,21 @@
     @include('ansible::partials.nav', ['active' => 'change', 'changeId' => $change['id']])
 
     <div class="ans-cards">
-        <div class="ans-card ans-{{ ['success' => 'ok', 'danger' => 'critical', 'warning' => 'warning'][ChangeStatus::css($status)] ?? 'info' }}" id="ans-change-status-card">
+        @php
+            // while the page holds the secret answers it launches the batch that waits for them itself: shown as applying
+            $heldAttributes = $change['waiting'] === 'secrets' && ! $final;
+            $cardCss = fn (string $state) => 'ans-card ans-' . (['success' => 'ok', 'danger' => 'critical', 'warning' => 'warning'][ChangeStatus::css($state)] ?? 'info');
+            // a batch the plugin started on its own that waits for a device busy in another run: until when
+            $currentRow = $batches[(int) $change['current_batch']] ?? null;
+            $busyUntil = $status === ChangeStatus::APPLYING && ($currentRow['status'] ?? null) === 'pending' && str_starts_with((string) ($currentRow['note'] ?? ''), 'waits: ')
+                && ($currentRow['started_at'] ?? null) !== null ? Clock::unix($currentRow['started_at']) + \Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::waitSeconds($settings) : null;
+        @endphp
+        <div class="{{ $cardCss($status) }}" id="ans-change-status-card" @if($heldAttributes) data-held-class="{{ $cardCss(ChangeStatus::APPLYING) }}" @endif>
             <h4>Status</h4>
-            <div class="ans-card-value"><span id="ans-change-status" class="label label-{{ ChangeStatus::css($status) }}">{{ ChangeStatus::label($status) }}</span></div>
+            <div class="ans-card-value"><span id="ans-change-status" class="label label-{{ ChangeStatus::css($status) }}" @if($heldAttributes) data-held-text="{{ ChangeStatus::label(ChangeStatus::APPLYING) }}" data-held-class="label label-{{ ChangeStatus::css(ChangeStatus::APPLYING) }}" @endif>{{ ChangeStatus::label($status) }}</span></div>
             <p>@if(in_array($status, ChangeStatus::RESERVING, true) || $status === ChangeStatus::APPLIED)batch {{ $change['current_batch'] }} of {{ $change['batch_count'] }}@else{{ $change['batch_count'] }} {{ (int) $change['batch_count'] === 1 ? 'batch' : 'batches' }}@endif
                 @if($change['waiting'])<span id="ans-change-waiting" @if($change['waiting'] === 'secrets') data-held-text=" · batch {{ (int) $change['current_batch'] }} is launched with the secret answers this page holds"@endif> · {{ $waitText[$change['waiting']] ?? '' }}</span>@endif
+                @if($busyUntil)<span id="ans-change-busy-wait"> · batch {{ (int) $change['current_batch'] }} waits for a device busy in another run until {{ Clock::show($busyUntil, 'Y-m-d H:i T') }}, then the change ends</span>@endif
                 @if($change['finished_at']) · ended {{ $local($change['finished_at']) }}@endif</p>
         </div>
         <div class="ans-card ans-info">

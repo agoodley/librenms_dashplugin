@@ -432,7 +432,7 @@ final class ChangeRepository implements ChangeStore
             ->leftJoin('ansible_change_batches as b', fn ($join) => $join->on('b.change_id', '=', 't.change_id')->on('b.number', '=', 't.batch'))
             ->where('t.device_id', $deviceId)->orderByDesc('c.id')->limit($limit)
             ->get(['c.id', 'c.username', 'c.template_name', 'c.reference', 'c.status', 'c.created_at', 'c.dry_run_state', 't.batch', 't.dry_result', 't.result',
-                'b.status as batch_status'])
+                't.served_hash', 't.served_note', 'b.status as batch_status'])
             ->map(fn ($r) => (array) $r)->all();
     }
 

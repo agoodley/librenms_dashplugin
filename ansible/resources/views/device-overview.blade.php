@@ -41,6 +41,9 @@
                             && \Agoodley\LibrenmsAnsible\Changes\ChangeStatus::isFinal($change['status']))
                             {{-- its batch never ran (the change was stopped or ended before it): said so, not as a batch that ran without it --}}
                             <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css('not_run') }} ans-not-run">applied: not run ({{ $change['status'] === \Agoodley\LibrenmsAnsible\Changes\ChangeStatus::STOPPED ? 'stopped before its batch' : 'its batch was not launched' }})</span>
+                        @elseif($change['result'] === 'not_run' && ($change['served_hash'] ?? null) === \Agoodley\LibrenmsAnsible\Changes\InventoryGuard::LEFT_OUT)
+                            {{-- the inventory guard left it out of what the runner fetched during its batch: said so, with why --}}
+                            <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css('not_run') }} ans-not-run" title="{{ $change['served_note'] ?? '' }}">applied: not run (withheld from the runner)</span>
                         @elseif($change['result'])
                             <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($change['result']) }}">applied: {{ strtolower(\Agoodley\LibrenmsAnsible\Runs\RunResults::LABELS[$change['result']] ?? $change['result']) }}</span>
                         @endif
