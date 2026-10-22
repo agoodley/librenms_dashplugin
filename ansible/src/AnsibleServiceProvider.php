@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible;
 use Agoodley\LibrenmsAnsible\Console\SyncCommand;
 use Agoodley\LibrenmsAnsible\Data\ConnectionRepository;
 use Agoodley\LibrenmsAnsible\Hooks\DeviceOverview;
+use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Hooks\MenuEntry;
 use Agoodley\LibrenmsAnsible\Hooks\Page;
 use Agoodley\LibrenmsAnsible\Hooks\Settings;
@@ -45,6 +46,8 @@ class AnsibleServiceProvider extends ServiceProvider
 
         $this->loadViewsFrom(__DIR__ . '/../resources/views', $name);
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+        // times on the plugin's pages in the user's time zone, as LibreNMS shows its own (LibreNMS\Util\Time::format())
+        Clock::useUserZone(fn () => $this->app->runningInConsole() ? null : session('preferences.timezone'));
 
         if ($this->app->runningInConsole()) {
             $this->commands([SyncCommand::class]);

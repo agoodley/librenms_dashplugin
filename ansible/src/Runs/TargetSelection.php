@@ -93,7 +93,7 @@ final class TargetSelection
     public static function busyRefusal(array $busy): array
     {
         return ['reason' => 'busy', 'text' => $busy['held_until'] !== null
-            ? "held by run #{$busy['run']} until " . Clock::local($busy['held_until'], 'Y-m-d H:i') . ': it was stopped, and the step in progress may still run on the runner '
+            ? "held by run #{$busy['run']} until " . Clock::local($busy['held_until'], 'Y-m-d H:i T') . ': it was stopped, and the step in progress may still run on the runner '
                 . '(an admin can release the devices on the run page)'
             : "busy in run #{$busy['run']}, which has not finished"];
     }

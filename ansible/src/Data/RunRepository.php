@@ -286,12 +286,12 @@ final class RunRepository implements RunStore
         } elseif (($filters['status'] ?? '') !== '') {
             $query->where('r.status', $filters['status']);
         }
-        // dates in LibreNMS' time zone, the times kept in UTC
+        // days in the time zone the pages show times in (the user's), the times kept in UTC
         if (! empty($filters['from'])) {
-            $query->where('r.created_at', '>=', Clock::store((int) strtotime($filters['from'] . ' 00:00:00')));
+            $query->where('r.created_at', '>=', Clock::store((new \DateTimeImmutable($filters['from'] . ' 00:00:00', Clock::zone()))->getTimestamp()));
         }
         if (! empty($filters['to'])) {
-            $query->where('r.created_at', '<=', Clock::store((int) strtotime($filters['to'] . ' 23:59:59')));
+            $query->where('r.created_at', '<=', Clock::store((new \DateTimeImmutable($filters['to'] . ' 23:59:59', Clock::zone()))->getTimestamp()));
         }
         $total = (clone $query)->count();
         $rows = $query->orderByDesc('r.id')->forPage(max(1, $page), $perPage)

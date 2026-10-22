@@ -90,6 +90,8 @@ class RunController extends Controller
             'stoppedNote' => self::stoppedNote($run, $targets),
             'stoppedCommand' => RunDiagnosis::leftoverCommand($run),
             'held' => RunLifecycle::held($run, time()),
+            'stopAfterAt' => RunStatus::isFinal($run['status']) || $run['stop_requested_at'] !== null ? null
+                : Clock::show((int) Clock::unix((string) $run['created_at']) + $this->settings()->stopAfterSeconds(), 'Y-m-d H:i T'),
             'next' => OutputBuffer::since($run, 0)['next'],
             'canRun' => Access::canRun($request->user()),
             'releasable' => RunLifecycle::releasable($run, time()),

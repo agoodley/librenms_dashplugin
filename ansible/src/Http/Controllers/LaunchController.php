@@ -8,6 +8,7 @@ use Agoodley\LibrenmsAnsible\Runs\TargetSelection;
 use Agoodley\LibrenmsAnsible\Runs\TemplateCheck;
 use Agoodley\LibrenmsAnsible\Runs\TemplateReview;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
+use Agoodley\LibrenmsAnsible\Support\Clock;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -121,7 +122,7 @@ class LaunchController extends Controller
         }
 
         return response()->json(['devices' => $list, 'max_targets' => $this->settings()->maxTargets(),
-            'inventory_user' => $inventoryUser['user']->username ?? null, 'fetched_at' => $inventoryUser['fetch']['fetched_at'] ?? null]);
+            'inventory_user' => $inventoryUser['user']->username ?? null, 'fetched_at' => Clock::local($inventoryUser['fetch']['fetched_at'] ?? null)]);
     }
 
     /**

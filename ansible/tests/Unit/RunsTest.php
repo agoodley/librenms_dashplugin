@@ -54,7 +54,7 @@ class RunsTest extends TestCase
         $refusal = $this->selection([1 => ['run' => 7, 'held_until' => '2026-10-22 10:35:00']])->refusal(1);
 
         $this->assertSame('busy', $refusal['reason']);
-        $this->assertSame('held by run #7 until 2026-10-22 10:35: it was stopped, and the step in progress may still run on the runner '
+        $this->assertSame('held by run #7 until 2026-10-22 10:35 UTC: it was stopped, and the step in progress may still run on the runner '
             . '(an admin can release the devices on the run page)', $refusal['text']);
     }
 

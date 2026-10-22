@@ -56,7 +56,7 @@
             <div class="alert alert-{{ in_array($status, ['not_launched', 'failed'], true) ? 'danger' : 'warning' }}" id="ans-run-error"><i class="fa fa-exclamation-triangle"></i>
                 <strong>{{ \Agoodley\LibrenmsAnsible\Runs\RunStatus::label($status) }}:</strong> {{ $run['error'] }}
                 @if(in_array($status, \Agoodley\LibrenmsAnsible\Runs\RunStatus::WATCHED, true) && $run['watch_until'])
-                    <br><span class="ans-muted">The plugin still asks the runner about this run until {{ $local($run['watch_until']) }}: a later end is recorded here.</span>
+                    <br><span class="ans-muted">The plugin still asks the runner about this run until {{ \Agoodley\LibrenmsAnsible\Support\Clock::local($run['watch_until'], 'Y-m-d H:i T') }}: a later end is recorded here.</span>
                 @endif
             </div>
         @endif
@@ -81,6 +81,9 @@
     @if($canRun && ! $final)
         <p><button type="button" class="btn btn-sm btn-danger" id="ans-run-stop"><i class="fa fa-stop"></i> Stop</button>
             <span class="ans-muted" id="ans-run-stop-note">asks the runner to stop the task: no further task starts, but the step in progress runs on, so the devices stay held for a while</span>
+            @if($stopAfterAt)
+                <br><span class="ans-muted" id="ans-run-stop-after">Still unfinished at {{ $stopAfterAt }}, the plugin stops it (Stop after setting).</span>
+            @endif
             <span id="ans-run-release-box" @if(! $releasable) style="display: none" @endif>
                 <button type="button" class="btn btn-sm btn-warning" id="ans-run-release" style="margin-left: 12px"><i class="fa fa-unlock"></i> Release the devices</button>
                 <span class="ans-muted">the runner could not be asked about this run for a while: end it as released, its results unknown (written to the eventlog)</span>

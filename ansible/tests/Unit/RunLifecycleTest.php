@@ -244,7 +244,7 @@ class RunLifecycleTest extends TestCase
         $note = RunDiagnosis::afterStop($run, 'Wait', $this->t0 + 1000);
         $this->assertStringStartsWith('The run was stopped during the task "Wait". Semaphore UI stops only Ansible\'s main process: the step each target was in runs on', $note);
         $this->assertStringContainsString('with all its loop items, and a pause keeps waiting until that process is killed', $note);
-        $this->assertStringContainsString('The devices stay held until 2026-10-22 10:30 because that step can still run on the runner: check the runner for the '
+        $this->assertStringContainsString('The devices stay held until 2026-10-22 10:30 UTC because that step can still run on the runner: check the runner for the '
             . 'ansible-playbook processes of this run (task #205), end them, and release the devices when it is done.', $note);
         $this->assertStringContainsString('The plugin held its devices until 2026-10-22 10:30', RunDiagnosis::afterStop($run, 'Wait', $this->t0 + 1900));
         $this->assertSame("ps -eo pid,args | grep '\"id\":205,'", RunDiagnosis::leftoverCommand($run), 'the page shows how to find what runs on');

@@ -74,7 +74,7 @@
                         <input id="ans-token" type="password" class="form-control input-sm{{ $invalid('token') }}" {{ $describedBy('token') }} name="token" value="" autocomplete="new-password"
                                placeholder="{{ ! empty($c['has_token']) ? 'saved: leave empty to keep it (enter it again to change the URL or the TLS checks)' : 'not set' }}">
                         <span class="help-block" style="margin: 2px 0 0; font-size: 12px">write-only: never shown again or sent to a browser
-                            @if(! empty($c['has_token']))· saved {{ $c['saved_at'] ? date('Y-m-d H:i', $c['saved_at']) : '' }} by {{ $c['saved_by'] }}
+                            @if(! empty($c['has_token']))· saved {{ $c['saved_at'] ? \Agoodley\LibrenmsAnsible\Support\Clock::show((int) $c['saved_at'], 'Y-m-d H:i') : '' }} by {{ $c['saved_by'] }}
                                 <label style="font-weight: normal; margin-left: 8px"><input type="checkbox" name="remove_token" value="1"> remove it</label>@endif
                         </span>
                         {{ $fieldError('token') }}
@@ -114,12 +114,12 @@
                 @endphp
                 @if($check && ! empty($check['blocked']))
                     <div class="ans-warning-loud" id="ans-connection-blocked" style="margin-top: 8px">{{ $check['blocked'] }}
-                        <span class="ans-muted">(checked {{ date('Y-m-d H:i', $check['checked_at']) }})</span></div>
+                        <span class="ans-muted">(checked {{ \Agoodley\LibrenmsAnsible\Support\Clock::show((int) $check['checked_at'], 'Y-m-d H:i') }})</span></div>
                 @elseif($check && $check['error'])
                     <div class="alert alert-warning" id="ans-connection-check" style="margin: 8px 0 0">The runner could not be asked
-                        ({{ date('Y-m-d H:i', $check['checked_at']) }}): {{ $check['error'] }}</div>
+                        ({{ \Agoodley\LibrenmsAnsible\Support\Clock::show((int) $check['checked_at'], 'Y-m-d H:i') }}): {{ $check['error'] }}</div>
                 @elseif($check)
-                    <p class="ans-muted" id="ans-connection-check" style="margin: 6px 0 0; font-size: 12px">Last check {{ date('Y-m-d H:i', $check['checked_at']) }}:
+                    <p class="ans-muted" id="ans-connection-check" style="margin: 6px 0 0; font-size: 12px">Last check {{ \Agoodley\LibrenmsAnsible\Support\Clock::show((int) $check['checked_at'], 'Y-m-d H:i') }}:
                         Semaphore UI {{ $check['version'] ?? '' }}, project "{{ $check['project'] ?? '' }}", the token's role {{ $check['role'] ?: 'none' }}.</p>
                 @endif
                 <div id="ans-test-result" class="ans-test-result"></div>

@@ -8,6 +8,26 @@ use PHPUnit\Framework\TestCase;
 
 class FormatTest extends TestCase
 {
+    public function testThePagesShowTimesInTheUsersTimeZone(): void
+    {
+        try {
+            // LibreNMS' session preference, which its pages set from the browser
+            Clock::useUserZone(fn () => 'Europe/Berlin');
+            $this->assertSame('2026-10-22 12:00:00', Clock::local('2026-10-22 10:00:00'));
+            $this->assertSame('2026-10-22 12:00 CEST', Clock::local('2026-10-22 10:00:00', 'Y-m-d H:i T'), 'a deadline carries its zone');
+            $this->assertSame('2026-10-22 12:00:00', Clock::show(gmmktime(10, 0, 0, 10, 22, 2026)));
+            $this->assertSame('Europe/Berlin', Clock::zone()->getName());
+            Clock::useUserZone(fn () => 'Mars/Olympus');
+            $this->assertSame(date_default_timezone_get(), Clock::zone()->getName(), 'not a time zone: PHP\'s');
+            Clock::useUserZone(fn () => throw new \RuntimeException('no session'));
+            $this->assertSame(date_default_timezone_get(), Clock::zone()->getName(), 'no session (the sync command): PHP\'s');
+            Clock::useUserZone(fn () => null);
+            $this->assertSame('2026-10-22 10:00:00', Clock::local('2026-10-22 10:00:00'), 'no preference: PHP\'s (UTC here)');
+        } finally {
+            Clock::useUserZone(null);
+        }
+    }
+
     public function testTimesAreKeptInUtcAndShownInLibreNmsTimeZone(): void
     {
         $zone = date_default_timezone_get();

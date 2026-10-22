@@ -74,7 +74,7 @@ final class RunDiagnosis
             . 'its loop items, and a pause keeps waiting until that process is killed. ';
         $held = isset($run['held_until']) ? (string) $run['held_until'] : null;
         if ($held !== null && (int) Clock::unix($held) > $now) {
-            return $text . 'The devices stay held until ' . self::minute($held) . " because that step can still run on the runner: check the runner for $processes, "
+            return $text . 'The devices stay held until ' . self::deadline($held) . " because that step can still run on the runner: check the runner for $processes, "
                 . 'end them, and release the devices when it is done.';
         }
         if ($held !== null && ! empty($run['released_by'])) {
@@ -82,7 +82,7 @@ final class RunDiagnosis
                 . ", before the end of the hold: if that step still runs, end $processes.";
         }
         if ($held !== null) {
-            return $text . 'The plugin held its devices until ' . self::minute($held) . ": if that step still runs, end $processes.";
+            return $text . 'The plugin held its devices until ' . self::deadline($held) . ": if that step still runs, end $processes.";
         }
 
         return $text . "Before you change these devices again, look on the runner for $processes and end them.";
@@ -104,11 +104,19 @@ final class RunDiagnosis
     }
 
     /**
-     * A kept time to the minute, in LibreNMS' time zone.
+     * A kept time to the minute, as the pages show it (the user's time zone).
      */
     private static function minute(string $time): string
     {
         return (string) Clock::local($time, 'Y-m-d H:i');
+    }
+
+    /**
+     * A deadline, as the pages show it, with its time zone.
+     */
+    private static function deadline(string $time): string
+    {
+        return (string) Clock::local($time, 'Y-m-d H:i T');
     }
 
     /**
