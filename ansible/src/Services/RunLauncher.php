@@ -8,7 +8,7 @@ use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Runs\RunText;
 use Agoodley\LibrenmsAnsible\Runs\TargetSelection;
-use Agoodley\LibrenmsAnsible\Runs\TemplateCheck;
+use Agoodley\LibrenmsAnsible\Runs\TemplateReview;
 use Agoodley\LibrenmsAnsible\Runs\VariableValidator;
 use Agoodley\LibrenmsAnsible\Support\ErrorText;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
@@ -76,7 +76,7 @@ final class RunLauncher
             $plan->errors[] = "The LibreNMS inventory (#{$inventory->id}, {$inventory->name}) is a {$inventory->type} inventory in the runner: "
                 . 'make it a file inventory that runs the plugin\'s inventory script, so the runner gets the hosts from LibreNMS.';
         }
-        $reasons = TemplateCheck::reasons($plan->template, (string) $connection->inventory);
+        $reasons = (new TemplateReview($plan->runner, (string) $connection->inventory))->reasons($plan->template);
         if ($reasons) {
             $plan->errors[] = 'The template "' . $plan->template->name . '" cannot be launched safely: ' . implode('; ', $reasons) . '.';
         }

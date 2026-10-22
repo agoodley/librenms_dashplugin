@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsAnsible\Runs;
 
+use Agoodley\LibrenmsAnsible\Runner\RunnerEnvironment;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
 use Agoodley\LibrenmsAnsible\Runner\SurveyVar;
 
@@ -9,9 +10,10 @@ use Agoodley\LibrenmsAnsible\Runner\SurveyVar;
  * Can the plugin launch a template safely? Only when the runner runs it on the plugin's targets and nothing
  * else: it uses the LibreNMS inventory, a launch may set its limit (else Semaphore silently runs it on every
  * host), it has no limit or CLI arguments of its own that could widen or replace the targets or override the
- * answers, and its survey variables cannot set Ansible's connection or magic variables. Each failed check is a
- * reason that says what to change in the runner. Checked against the template as the runner has it right
- * before every launch.
+ * answers, its survey variables cannot set Ansible's connection or magic variables, and its variable group gives
+ * the inventory script what it needs (without it the script fails, Ansible finds no host and the task still ends
+ * with success). Each failed check is a reason that says what to change in the runner, in the words of Semaphore
+ * UI's template editor. Checked against the template as the runner has it right before every launch.
  */
 final class TemplateCheck
 {
@@ -63,15 +65,19 @@ final class TemplateCheck
         if ($template->type !== '') {
             $reasons[] = "it is a {$template->type} template: only plain task templates can be launched";
         }
-        if ($template->inventoryId !== $inventoryId) {
+        if ($inventoryId === '' || $inventoryId === '0') {
+            $reasons[] = 'the LibreNMS inventory is not chosen in the plugin settings yet';
+        } elseif ($template->inventoryId !== $inventoryId) {
             $reasons[] = 'it uses ' . ($template->inventoryId === null ? 'no inventory' : "inventory #{$template->inventoryId}")
                 . ", not the LibreNMS inventory (#$inventoryId): set its inventory to the LibreNMS one";
         }
         if (! $template->limitOverride) {
-            $reasons[] = 'it does not allow a limit override, so Semaphore would ignore the limit and run it on every host of the inventory: tick "Allow limit override" in the template';
+            $reasons[] = 'a launch may not set its limit, so Semaphore would ignore the limit and run it on every host of the inventory: in the template, '
+                . 'tick "Limit" under "Ansible prompts" (not the "Limit" field under "Ansible options", which is a limit of the template\'s own)';
         }
         if ($template->fixedLimit) {
-            $reasons[] = 'it has a limit of its own (' . implode(', ', array_slice($template->fixedLimit, 0, 5)) . '): clear it, the plugin sets the limit';
+            $reasons[] = 'it has a limit of its own (' . implode(', ', array_slice($template->fixedLimit, 0, 5)) . '): clear the "Limit" field under '
+                . '"Ansible options" in the template, the plugin sets the limit';
         }
         $argument = self::badArgument($template->arguments);
         if ($argument !== null) {
@@ -82,6 +88,40 @@ final class TemplateCheck
         }
 
         return array_merge($reasons, self::surveyReasons($template->surveyVars));
+    }
+
+    /**
+     * Reasons about the template's variable group (Semaphore UI's "environment"): the inventory script needs the
+     * environment variable LIBRENMS_URL and the secret environment variable LIBRENMS_TOKEN.
+     *
+     * @param  RunnerEnvironment|null  $environment  the group, null when the template has none or it cannot be read
+     * @param  string|null  $error  why it cannot be read
+     * @return string[]
+     */
+    public static function environmentReasons(RunnerTemplate $template, ?RunnerEnvironment $environment, ?string $error = null): array
+    {
+        if ($template->environmentId === null) {
+            return ['it has no variable group: give it the LibreNMS one, with the environment variable LIBRENMS_URL and the secret environment variable '
+                . 'LIBRENMS_TOKEN that the inventory script needs (without them Ansible finds no host)'];
+        }
+        if ($environment === null) {
+            return ["its variable group #{$template->environmentId} cannot be read" . ($error !== null && $error !== '' ? ": $error" : '')];
+        }
+        $reasons = [];
+        $name = '"' . $environment->name . '"';
+        if (! in_array('LIBRENMS_URL', array_merge($environment->envNames, $environment->secretEnvNames), true)) {
+            $reasons[] = "its variable group $name has no environment variable LIBRENMS_URL (Variables tab, \"Environment variables\"): the inventory "
+                . 'script needs the address of LibreNMS';
+        }
+        if (! in_array('LIBRENMS_TOKEN', $environment->secretEnvNames, true)) {
+            $reasons[] = in_array('LIBRENMS_TOKEN', $environment->envNames, true)
+                ? "its variable group $name has LIBRENMS_TOKEN as a plain environment variable: make it a secret one (Secrets tab, \"Environment "
+                    . 'variables"), so the token is write-only'
+                : "its variable group $name has no secret environment variable LIBRENMS_TOKEN (Secrets tab, \"Environment variables\"; an extra variable "
+                    . 'does not reach the inventory script): the script needs the inventory user\'s API token';
+        }
+
+        return $reasons;
     }
 
     /**

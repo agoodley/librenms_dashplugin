@@ -48,7 +48,7 @@
         @if($run['unexpected_hosts'])
             <div class="alert alert-danger" id="ans-run-unexpected"><i class="fa fa-exclamation-triangle"></i>
                 <strong>The runner ran this template on hosts that were not its targets:</strong> {{ implode(', ', $run['unexpected_hosts']) }}.
-                Check in the runner that the template uses the LibreNMS inventory and allows the limit override, and what was done to these hosts.</div>
+                Check in the runner that the template uses the LibreNMS inventory and lets a launch set the limit (Ansible prompts, Limit), and what was done to these hosts.</div>
         @endif
         @if($run['error'])
             <div class="alert alert-{{ in_array($status, ['not_launched', 'failed'], true) ? 'danger' : 'warning' }}" id="ans-run-error"><i class="fa fa-exclamation-triangle"></i>

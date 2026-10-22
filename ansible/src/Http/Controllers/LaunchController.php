@@ -6,6 +6,7 @@ use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runs\TargetSelection;
 use Agoodley\LibrenmsAnsible\Runs\TemplateCheck;
+use Agoodley\LibrenmsAnsible\Runs\TemplateReview;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
@@ -45,8 +46,9 @@ class LaunchController extends Controller
             if ($block !== null) {
                 array_unshift($data['blocked'], $block);
             }
+            $review = new TemplateReview($runner, (string) $connection->inventory);
             foreach ($runner->templates() as $template) {
-                $reasons = TemplateCheck::reasons($template, (string) $connection->inventory);
+                $reasons = $review->reasons($template);
                 if ($reasons) {
                     $data['unusable'][] = ['template' => $template, 'reasons' => $reasons];
                 } else {
@@ -58,7 +60,7 @@ class LaunchController extends Controller
             }
             if ($templateId !== '') {
                 $data['template'] = $runner->template($templateId);
-                $data['templateReasons'] = TemplateCheck::reasons($data['template'], (string) $connection->inventory);
+                $data['templateReasons'] = $review->reasons($data['template']);
                 $data['templateNotes'] = TemplateCheck::notes($data['template']);
                 if ($data['templateReasons']) {
                     // the template on its own can say more than the list (the token's permission on it): list it once, as unusable

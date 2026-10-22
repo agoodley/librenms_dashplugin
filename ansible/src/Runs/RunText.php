@@ -69,7 +69,7 @@ final class RunText
     {
         return "Ansible run #$runId ran on this device although it was not a target (as " . UntrustedText::clean($host, 60) . '): '
             . strtolower(RunResults::LABELS[$result] ?? $result) . ', template ' . self::quote($template) . ' by ' . UntrustedText::line($user, 60)
-            . '. Check in the runner that the template uses the LibreNMS inventory and allows the limit override.';
+            . '. Check in the runner that the template uses the LibreNMS inventory and lets a launch set the limit (Ansible prompts, Limit).';
     }
 
     /**
@@ -92,7 +92,7 @@ final class RunText
         $names = implode(', ', array_map(fn ($h) => UntrustedText::clean($h, 60), array_slice($hosts, 0, 10))) . (count($hosts) > 10 ? ', ...' : '');
 
         return "Ansible run #$runId ran on hosts that were not its targets: $names. Check in the runner that template "
-            . self::quote($template) . ' uses the LibreNMS inventory and allows the limit override.';
+            . self::quote($template) . ' uses the LibreNMS inventory and lets a launch set the limit (Ansible prompts, Limit).';
     }
 
     /**

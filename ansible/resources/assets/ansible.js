@@ -207,7 +207,7 @@
                 var unexpected = alertBox('danger', 'The runner ran this template on hosts that were not its targets: ',
                     null);
                 unexpected.id = 'ans-run-unexpected';
-                append(unexpected, data.unexpected_hosts.join(', ') + '. Check in the runner that the template uses the LibreNMS inventory and allows the limit override, and what was done to these hosts.');
+                append(unexpected, data.unexpected_hosts.join(', ') + '. Check in the runner that the template uses the LibreNMS inventory and lets a launch set the limit (Ansible prompts, Limit), and what was done to these hosts.');
                 alerts.appendChild(unexpected);
             }
             if (data.error) {

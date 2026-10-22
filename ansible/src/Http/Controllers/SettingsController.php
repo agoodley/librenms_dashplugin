@@ -10,6 +10,7 @@ use Agoodley\LibrenmsAnsible\Data\SettingsRepository;
 use Agoodley\LibrenmsAnsible\Data\UserRepository;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Runs\TemplateCheck;
+use Agoodley\LibrenmsAnsible\Runs\TemplateReview;
 use Agoodley\LibrenmsAnsible\Services\Eventlog;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Agoodley\LibrenmsAnsible\Support\AuditText;
@@ -123,8 +124,9 @@ class SettingsController extends Controller
             $warnings[] = "The LibreNMS inventory #{$connection->inventory}: " . $e->getMessage();
         }
         $list = [];
+        $review = new TemplateReview($runner, (string) $connection->inventory);
         foreach ($templates as $template) {
-            $reasons = TemplateCheck::reasons($template, (string) $connection->inventory);
+            $reasons = $review->reasons($template);
             $list[] = ['id' => $template->id, 'name' => $template->name, 'playbook' => $template->playbook, 'usable' => ! $reasons,
                 'reasons' => $reasons, 'notes' => TemplateCheck::notes($template)];
         }

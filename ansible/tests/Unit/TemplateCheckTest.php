@@ -2,9 +2,12 @@
 
 namespace Agoodley\LibrenmsAnsible\Tests\Unit;
 
+use Agoodley\LibrenmsAnsible\Runner\RunnerEnvironment;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
 use Agoodley\LibrenmsAnsible\Runner\SurveyVar;
 use Agoodley\LibrenmsAnsible\Runs\TemplateCheck;
+use Agoodley\LibrenmsAnsible\Runs\TemplateReview;
+use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeRunner;
 use PHPUnit\Framework\TestCase;
 
 class TemplateCheckTest extends TestCase
@@ -18,6 +21,7 @@ class TemplateCheckTest extends TestCase
             'id' => '7', 'name' => 'Port descriptions', 'description' => '', 'playbook' => 'ports.yml', 'app' => 'ansible', 'type' => '',
             'inventoryId' => '4', 'limitOverride' => true, 'fixedLimit' => [], 'arguments' => [], 'argumentsRaw' => '[]',
             'surveyVars' => [new SurveyVar('interface', 'Interface', '', 'string', '', true)], 'canRun' => true, 'taskOverrides' => [],
+            'environmentId' => '4',
         ];
 
         return new RunnerTemplate(...$fields);
@@ -41,8 +45,36 @@ class TemplateCheckTest extends TestCase
         $this->assertCount(3, $reasons);
         $this->assertStringContainsString('uses inventory #2, not the LibreNMS inventory (#4)', $reasons[0]);
         $this->assertStringContainsString('run it on every host of the inventory', $reasons[1]);
-        $this->assertStringContainsString('limit of its own (lab-sw1)', $reasons[2]);
+        $this->assertStringContainsString('tick "Limit" under "Ansible prompts" (not the "Limit" field under "Ansible options"', $reasons[1],
+            'in the words of Semaphore UI\'s template editor, with its look-alike');
+        $this->assertStringContainsString('limit of its own (lab-sw1): clear the "Limit" field under "Ansible options"', $reasons[2]);
         $this->assertStringContainsString('uses no inventory', TemplateCheck::reasons(self::template(['inventoryId' => null]), '4')[0]);
+        $this->assertSame(['the LibreNMS inventory is not chosen in the plugin settings yet'], TemplateCheck::reasons(self::template(), ''));
+    }
+
+    public function testTheVariableGroupMustGiveTheInventoryScriptWhatItNeeds(): void
+    {
+        $good = new RunnerEnvironment('4', 'LibreNMS inventory', ['LIBRENMS_URL'], ['LIBRENMS_TOKEN']);
+        $this->assertSame([], TemplateCheck::environmentReasons(self::template(), $good));
+
+        $this->assertStringStartsWith('it has no variable group: give it the LibreNMS one', TemplateCheck::environmentReasons(self::template(['environmentId' => null]), null)[0]);
+        $reasons = TemplateCheck::environmentReasons(self::template(), new RunnerEnvironment('4', 'Other', ['FOO'], ['api_key']));
+        $this->assertCount(2, $reasons);
+        $this->assertStringContainsString('"Other" has no environment variable LIBRENMS_URL (Variables tab', $reasons[0]);
+        $this->assertStringContainsString('has no secret environment variable LIBRENMS_TOKEN (Secrets tab', $reasons[1]);
+        $plain = TemplateCheck::environmentReasons(self::template(), new RunnerEnvironment('4', 'Plain', ['LIBRENMS_URL', 'LIBRENMS_TOKEN'], []));
+        $this->assertSame(['its variable group "Plain" has LIBRENMS_TOKEN as a plain environment variable: make it a secret one (Secrets tab, "Environment variables"), so the token is write-only'], $plain);
+        $this->assertSame(['its variable group #4 cannot be read: HTTP 403'], TemplateCheck::environmentReasons(self::template(), null, 'HTTP 403'));
+    }
+
+    public function testTheReviewAsksForEachVariableGroupOnce(): void
+    {
+        $runner = new FakeRunner();
+        $review = new TemplateReview($runner, '4');
+
+        $this->assertSame([], $review->reasons(self::template()));
+        $this->assertSame([], $review->reasons(self::template(['id' => '8'])));
+        $this->assertStringStartsWith('it has no variable group', $review->reasons(self::template(['id' => '9', 'environmentId' => null]))[0]);
     }
 
     public function testKindAndPermission(): void
