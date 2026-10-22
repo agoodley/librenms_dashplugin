@@ -574,17 +574,19 @@ is launched with the commit of the dry run (Semaphore's commit option), and a ba
 stops the change.
 
 The runner fetches the inventory from the plugin only when the task starts, which can be well after the checks right
-before the launch: Semaphore UI runs a template's tasks one after another, so a batch may wait behind another task,
-then for its checkout. So while a change's dry run or batch is in progress, the inventory endpoint serves its devices
-only as the dry run recorded how the runner reaches them. A device edited meanwhile (another address, platform, or no
-longer a host) is **left out** of what the runner gets: neither its new address (it may be another device's) nor the
-old one. The change's timeline, the batch and the device's eventlog say so at the fetch, the batch does not run there,
-and the change stops when the batch ends (a dry run with a device left out does not count). Each fetch records what
-it served each device of a dry run or batch in progress (a hash of its connection, or that it was left out), and the
-end of the batch or dry run checks that record, not LibreNMS as it is by then: an edit set back before the batch ended
-is still caught, and one made after the runner had the inventory does not blame the batch (the next batch's checks
-see it; without any fetch recorded, the devices are compared as LibreNMS has them at the end). The Inventory page
-shows such a device as left out meanwhile.
+before the launch: Semaphore UI runs a template's tasks one after another, so a batch may wait behind another task, then
+for its checkout. So while a change's dry run or batch is in progress, the inventory endpoint serves its devices only as
+the dry run recorded how the runner reaches them. A device edited meanwhile (another address, platform, or no longer a
+host) is **left out** of what the runner gets: neither its new address (it may be another device's) nor the old one.
+Names count too, as the run's limit holds each device's inventory name at the launch: a device renamed meanwhile is left
+out, and so is another device that now carries a device's launch-time name (one renamed into it, or added under the
+hostname of a device deleted or renamed meanwhile), which the limit would reach instead. The change's timeline, the
+batch and the device's eventlog say so at the fetch, the batch does not run there, and the change stops when the batch
+ends (a dry run with a device left out does not count). Each fetch records what it served each device of a dry run or
+batch in progress (a hash of its connection, or that it was left out), and the end of the batch or dry run checks that
+record, not LibreNMS as it is by then: an edit set back before the batch ended is still caught, and one made after the
+runner had the inventory does not blame the batch (the next batch's checks see it; without any fetch recorded, the
+devices are compared as LibreNMS has them at the end). The Inventory page shows such a device as left out meanwhile.
 
 ### Batches
 

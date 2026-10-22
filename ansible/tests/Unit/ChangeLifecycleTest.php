@@ -518,22 +518,59 @@ class ChangeLifecycleTest extends TestCase
         return (new InventoryGuard($this->changes, $this->events))->serve($this->inventoryNow(), $at, $host);
     }
 
-    /** The inventory as LibreNMS has it now (the fake runner's connections: a device NOT_A_HOST is left out). */
+    /** @var array<int, string> device => its inventory name now, when it is not the target's (a renamed device, or another one: 504) */
+    private array $hostNames = [];
+
+    /** The inventory as LibreNMS has it now (the fake runner's connections: a device NOT_A_HOST is left out; names as $hostNames says). */
     private function inventoryNow(): Inventory
     {
         $hosts = [];
         $names = [];
         $leftOut = [];
-        foreach ($this->runner->connections(array_keys(self::TARGETS)) as $deviceId => $vars) {
+        foreach ($this->runner->connections(array_unique([...array_keys(self::TARGETS), ...array_keys($this->hostNames)])) as $deviceId => $vars) {
             if (isset($vars[Connections::NOT_A_HOST])) {
                 $leftOut[$deviceId] = ['reason' => 'disabled', 'text' => (string) $vars[Connections::NOT_A_HOST]];
 
                 continue;
             }
-            $hosts[self::TARGETS[$deviceId]] = $vars + ['librenms_sysname' => strtok(self::TARGETS[$deviceId], '.')];
-            $names[$deviceId] = self::TARGETS[$deviceId];
+            $name = $this->hostNames[$deviceId] ?? self::TARGETS[$deviceId];
+            $hosts[$name] = $vars + ['librenms_sysname' => strtok($name, '.')];
+            $names[$deviceId] = $name;
         }
+
         return new Inventory($hosts, $names, ['os_ios' => array_values($names)], ['os_ios' => ['kind' => 'os', 'label' => 'ios']], $leftOut);
+    }
+
+    public function testADeviceCarryingATargetsInventoryNameIsNotServedWhileItsBatchIsInProgress(): void
+    {
+        // batch 1 waits in the runner's queue with the limit lab-sw1.netops.lab; lab-sw1 is renamed and device 504 takes its name,
+        // both at the addresses they had: the runner must reach neither under that name
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = false;
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->hostNames = [501 => 'lab-sw1-moved.netops.lab', 504 => 'lab-sw1.netops.lab'];
+
+        $served = $this->fetched($this->t0 + 55);
+        $this->assertSame([], array_values(array_intersect(['lab-sw1.netops.lab', 'lab-sw1-moved.netops.lab'], array_keys($served->hosts()))),
+            'neither the device that took the name nor the renamed target is served');
+        $this->assertEquals(new \stdClass(), $served->hostVars('lab-sw1.netops.lab'));
+        $this->assertSame(InventoryGuard::REASON, $served->leftOut()[504]['reason'] ?? null);
+        $this->assertSame([InventoryGuard::LEFT_OUT, 'another device (#504) now carries lab-sw1\'s inventory name lab-sw1.netops.lab'],
+            [$this->changes->targets[$id][501]['served_hash'], $this->changes->targets[$id][501]['served_note']]);
+        $this->endRun($this->batchRun($id, 1), 'incomplete', [501 => 'not_run'], [], $this->t0 + 100);
+        $lifecycle->advance($id, $this->t0 + 101);
+        $this->assertSame(ChangeStatus::FAILED, $this->changes->find($id)['status']);
+        $this->assertStringContainsString('another device (#504) now carries lab-sw1\'s inventory name lab-sw1.netops.lab', (string) $this->changes->find($id)['error']);
+
+        // renamed only (nobody took the name): left out as well, said so
+        $this->hostNames = [];
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 150);
+        $this->hostNames = [501 => 'lab-sw1-moved.netops.lab'];
+        $served = $this->fetched($this->t0 + 155);
+        $this->assertArrayNotHasKey('lab-sw1-moved.netops.lab', $served->hosts());
+        $this->assertSame('lab-sw1\'s inventory name changed (lab-sw1.netops.lab → lab-sw1-moved.netops.lab)', $this->changes->targets[$id][501]['served_note']);
     }
 
     public function testAHostReachedElsewhereWhenTheRunnerFetchesTheInventoryIsLeftOut(): void

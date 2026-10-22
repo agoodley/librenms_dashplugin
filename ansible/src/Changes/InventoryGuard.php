@@ -16,6 +16,9 @@ use Agoodley\LibrenmsAnsible\Runs\EventSink;
  * change's timeline and the device's eventlog say so the first time, and what the fetch served each target is recorded
  * (the hash of its connection, or that it was left out), so the end of the dry run or batch checks what the runner got
  * rather than LibreNMS as it is by then. A dry run whose launch has not recorded its connections yet is only recorded.
+ * The run's limit names each target by the inventory name it had at the launch, so names are checked too: a target
+ * whose inventory name changed is left out, and so is another device that carries a target's launch-time name (the
+ * limit would reach it instead), for instance one added under the hostname of a target that was renamed or deleted.
  */
 final class InventoryGuard
 {
@@ -35,13 +38,15 @@ final class InventoryGuard
     /**
      * Each target in progress as the inventory has it now: its change, phase (dry_run or batch) and batch, the hash of
      * its connection, or why it must be left out (note: "lab-sw5: ansible_host 10.0.0.5 → 10.0.0.6", "lab-sw5 is no
-     * longer a host of the inventory (...)").
+     * longer a host of the inventory (...)", "lab-sw5's inventory name changed (...)"), and the other device that
+     * carries its launch-time inventory name now, if one does (holder: left out too).
      *
-     * @return array<int, array{change: array, phase: string, batch: ?array, device_id: int, target: array, hash: ?string, note: ?string}>
+     * @return array<int, array{change: array, phase: string, batch: ?array, device_id: int, target: array, hash: ?string, note: ?string, holder: ?int}>
      */
     public function check(Inventory $inventory): array
     {
         $found = [];
+        $holders = array_flip($inventory->names()); // inventory name => the device that carries it now
         foreach ($this->changes->inProgress() as $entry) {
             $change = $entry['change'];
             // a dry run records its connections once its launch returns: until then nothing is compared, only recorded
@@ -49,14 +54,23 @@ final class InventoryGuard
             $names = array_map(fn (array $target) => (string) (($target['display'] ?? '') ?: ($target['hostname'] ?? '') ?: ($target['inventory_name'] ?? '')),
                 $entry['targets']);
             foreach (Connections::of($inventory, array_keys($entry['targets'])) as $deviceId => $vars) {
+                // the run's limit holds the name the target had at the launch: it must still be that device's, and only its
+                $limitName = (string) ($entry['targets'][$deviceId]['inventory_name'] ?? '');
+                $holder = $limitName !== '' && isset($holders[$limitName]) && (int) $holders[$limitName] !== $deviceId ? (int) $holders[$limitName] : null;
+                $current = $inventory->nameOf($deviceId);
+                $name = UntrustedText::line((string) ($names[$deviceId] ?? "device #$deviceId"), 80);
                 $note = null;
-                if (isset($vars[Connections::NOT_A_HOST])) {
+                if ($holder !== null) {
+                    $note = "another device (#$holder) now carries $name's inventory name " . UntrustedText::line($limitName, 120);
+                } elseif ($current !== null && $current !== $limitName) {
+                    $note = "$name's inventory name changed (" . UntrustedText::line($limitName, 120) . ' → ' . UntrustedText::line($current, 120) . ')';
+                } elseif (isset($vars[Connections::NOT_A_HOST])) {
                     $note = Connections::differences([], [$deviceId => $vars], $names)[0] ?? null;
                 } elseif ($recorded !== null) {
                     $note = Connections::differences($recorded, [$deviceId => $vars], $names)[0] ?? null;
                 }
                 $found[] = ['change' => $change, 'phase' => $entry['phase'], 'batch' => $entry['batch'], 'device_id' => $deviceId,
-                    'target' => $entry['targets'][$deviceId], 'hash' => $note === null ? Connections::hash($vars) : null, 'note' => $note];
+                    'target' => $entry['targets'][$deviceId], 'hash' => $note === null ? Connections::hash($vars) : null, 'note' => $note, 'holder' => $holder];
             }
         }
 
@@ -76,6 +90,11 @@ final class InventoryGuard
             if ($entry['note'] !== null && $inventory->nameOf($entry['device_id']) !== null) {
                 $leave[$entry['device_id']] = ['reason' => self::REASON, 'text' => self::during($entry) . ' is in progress on it, and the runner no longer reaches it as '
                     . ($entry['phase'] === 'batch' ? 'at the dry run' : 'when the dry run was launched') . ' (' . $entry['note'] . '): the runner does not get it meanwhile'];
+            }
+            if (($entry['holder'] ?? null) !== null) {
+                // the device that carries a target's name in the run's limit now: the run would reach it instead
+                $leave[$entry['holder']] = ['reason' => self::REASON, 'text' => 'it carries the inventory name ' . UntrustedText::line((string) $entry['target']['inventory_name'], 120)
+                    . ' of a target of ' . self::during($entry) . ', which is in progress: the runner does not get it meanwhile'];
             }
         }
 
