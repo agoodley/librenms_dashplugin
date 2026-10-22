@@ -25,8 +25,14 @@ final class FakeWindows implements MaintenanceWindows
         return $id;
     }
 
+    /** Thrown by setEnd() (an error the lifecycle does not expect from LibreNMS). */
+    public ?\Throwable $setEndError = null;
+
     public function setEnd(int $id, int $end): bool
     {
+        if ($this->setEndError !== null) {
+            throw $this->setEndError;
+        }
         if (! isset($this->windows[$id])) {
             return false;
         }

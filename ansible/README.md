@@ -602,7 +602,9 @@ of the list, *First batch* of them), then batches of *Batch size*. Each batch:
    without a fresh backup the batch is refused (the change stops) or goes with a warning, as set;
 2. checks again everything above, then launches its run, limited to the batch's devices, under the same lock and
    one-time token as any launch: a page clicked twice, two pages and the sync command can never launch a batch twice;
-3. when its run ends, records each device's result, sets the end of its window, asks for the backups after it;
+3. when its run ends, records each device's result, sets the end of its window, asks for the backups after it (a step
+   that stops once the batch's end is recorded, its lock taken over or the web server restarted while it waited on
+   Oxidized, is finished by the next one: the window's end, the backups not asked yet, then point 4);
 4. stops the change when the batch reached *Stop at* failed devices (failed, unreachable, unknown and not run count), when the
    plugin lost track of its run or it was stopped or released, when it ran on a host that was not a target, when it
    ran another commit than the dry run, or when the plugin left one of its devices out of the inventory the runner

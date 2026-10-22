@@ -734,6 +734,12 @@ final class ChangeLifecycle
                     $this->batchEnd($change, $number, $run, $now);
                 }
                 break;
+            case 'done':
+            case 'failed':
+            case 'stopped':
+                // its end is recorded, but the step that recorded it ended before it moved the change on
+                $this->batchRecorded($change, $number, $batch, $now);
+                break;
         }
     }
 
@@ -807,8 +813,14 @@ final class ChangeLifecycle
 
             return;
         }
-        $this->finish($change, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line($by, 60)
-            . (in_array($batch['status'] ?? null, ['done', 'failed', 'stopped'], true) ? " after batch $number" : " before batch $number was launched"), $now, $by);
+        if ($batch !== null && in_array($batch['status'], ['done', 'failed', 'stopped'], true)) {
+            // the batch's end is recorded: what its step left is done, and the change ends as that end decides (a last batch
+            // that did its work leaves the change applied, a failed one failed)
+            $this->batchRecorded($change, $number, $batch, $now, $by);
+
+            return;
+        }
+        $this->finish($change, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line($by, 60) . " before batch $number was launched", $now, $by);
     }
 
     // ------------------------------------------------------------------ batches
@@ -1158,16 +1170,63 @@ final class ChangeLifecycle
                 $stop = self::movedText($moved, "by the end of batch $number") . ': the batch may have run on other devices than the ones dry-run';
             }
         }
-        $count = (int) $change['batch_count'];
-        if ($stoppedBy !== null && $run['status'] === RunStatus::STOPPED) {
-            // the stop asked for stopped the batch's run
-            $this->recordBatch($change, $number, $run, 'stopped', null, $now);
-            $this->finish($change, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line($stoppedBy, 60) . " during batch $number", $now, $stoppedBy);
+        $status = $stoppedBy !== null && $run['status'] === RunStatus::STOPPED ? 'stopped' : ($stop === null ? 'done' : 'failed');
+        $this->recordBatch($change, $number, $run, $status, $status === 'failed' ? $stop : null, $now);
+        $this->batchTail($change, $number, $run, $now);
+        $this->afterBatch($change, $number, $status, $status === 'failed' ? $stop : null, $now, $stoppedBy);
+    }
 
-            return;
+    /**
+     * A batch whose end is recorded while its change still applies or stops: the step that recorded it ended before it
+     * moved the change on (another request took its lock over, the web server restarted, a time limit, an error while it
+     * set the end of the batch's window or asked Oxidized for the backups after it). What that step left is done now,
+     * and the change moves on as the end of the batch decided: a step that stopped there never leaves it applying.
+     */
+    private function batchRecorded(array $change, int $number, array $batch, int $now, ?string $stoppedBy = null): void
+    {
+        $run = $batch['run_id'] !== null ? $this->runs->find((int) $batch['run_id']) : null;
+        if ($run !== null) {
+            $this->batchTail($change, $number, $run, $now);
         }
-        $this->recordBatch($change, $number, $run, $stop === null ? 'done' : 'failed', $stop, $now);
-        if ($stop !== null) {
+        $note = UntrustedText::line((string) ($batch['note'] ?? ''), 500);
+        $stop = $batch['status'] !== 'failed' ? null : ($run === null ? "batch $number was not started" . ($note !== '' ? ": $note" : '') : ($note ?: "batch $number failed"));
+        $this->afterBatch($change, $number, $batch['status'], $stop, $now, $stoppedBy ?? (self::stopAsked($change)
+            ? (string) (($change['stop_requested_by'] ?? null) ?: 'an admin') : null));
+    }
+
+    /**
+     * What follows the record of a batch's end: the end of its windows (a settle time after the batch, or after the hold
+     * of a stopped one) and the backups after it that were not asked yet. Done again by a step that finds it undone.
+     */
+    private function batchTail(array $change, int $number, array $run, int $now): void
+    {
+        $id = (int) $change['id'];
+        $batch = $this->changes->batches($id)[$number] ?? [];
+        $ended = self::at($batch['ended_at'] ?? null) ?: (self::at($run['finished_at'] ?? null) ?: $now);
+        $held = ($run['held_until'] ?? null) !== null ? self::at($run['held_until']) : null;
+        $this->closeWindows($change, $number, MaintenanceTimes::closing($ended, $held, $this->settings->settleSeconds), $now);
+        if ($this->settings->backups && $this->backups->enabled()) {
+            $targets = $this->changes->targets($id);
+            $unasked = array_values(array_filter($this->batchDevices($change, $number), fn (int $deviceId) => ($targets[$deviceId]['after_status'] ?? null) === null));
+            if ($unasked) {
+                $this->requestBackups($change, $number, $unasked, 'after', $now);
+            }
+        }
+    }
+
+    /**
+     * Move the change on from a batch whose end is recorded (done, failed: $stop, stopped): end it, wait (after an admin,
+     * a pause) or start the next batch. Each move is a compare-and-set of the change: of two requests, one moves it.
+     */
+    private function afterBatch(array $change, int $number, string $status, ?string $stop, int $now, ?string $stoppedBy): void
+    {
+        $count = (int) $change['batch_count'];
+        $plan = (array) $change['plan'];
+        if ($status === 'stopped') {
+            // the stop asked for stopped the batch's run
+            $this->finish($change, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line((string) ($stoppedBy ?? 'an admin'), 60) . " during batch $number", $now,
+                $stoppedBy);
+        } elseif ($stop !== null) {
             $this->finish($change, ChangeStatus::FAILED, $stop, $now);
         } elseif ($stoppedBy !== null && $number < $count) {
             // the batch's run ended before the stop could stop it: the change ends after it
@@ -1193,8 +1252,7 @@ final class ChangeLifecycle
     }
 
     /**
-     * What a batch's run did: each device's result, the batch's end, its window's end (a settle time after the batch, or
-     * after the hold of a stopped one) and the backups after it.
+     * What a batch's run did: each device's result and the batch's end, said in the timeline (batchTail() follows).
      */
     private function recordBatch(array $change, int $number, array $run, string $status, ?string $stop, int $now): void
     {
@@ -1212,11 +1270,6 @@ final class ChangeLifecycle
         $ended = self::at($run['finished_at'] ?? null) ?: $now;
         $this->changes->updateBatch($id, $number, ['status' => $status, 'ended_at' => Clock::store($ended),
             'failures' => count(BatchOutcome::failed(array_map(fn ($value) => $value['result'], $values))), 'note' => $stop !== null ? UntrustedText::line($stop, 500) : null]);
-        $held = ($run['held_until'] ?? null) !== null ? self::at($run['held_until']) : null;
-        $this->closeWindows($change, $number, MaintenanceTimes::closing($ended, $held, $this->settings->settleSeconds), $now);
-        if ($this->settings->backups && $this->backups->enabled()) {
-            $this->requestBackups($change, $number, $devices, 'after', $now);
-        }
         $this->timeline($change, 'batch', ChangeText::batchEnded($change, $number, (int) $change['batch_count'], (int) $run['id'], $summary, $stop), null, $now);
     }
 

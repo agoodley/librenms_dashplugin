@@ -836,6 +836,125 @@ class ChangeLifecycleTest extends TestCase
         $this->assertCount(1, $this->windows->windows);
     }
 
+    public function testAStepThatStopsOnceABatchsEndIsRecordedIsFinishedByTheNextOne(): void
+    {
+        // batch 1 (501, 502), then batch 2 (503): the step records batch 1's end, then stops while it ends the batch's window or asks
+        // Oxidized for the backups after it (its lock taken over between two requests, an error of Oxidized's client or of LibreNMS).
+        // The next step does what was left, once, and moves the change on
+        foreach (['the lock lost between two backups' => 'lock', 'an error while asking Oxidized' => 'oxidized', 'an error while ending the window' => 'window'] as $when => $how) {
+            $this->setUp();
+            $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 2, 5, 1, false, 0));
+            $this->backups->now = $this->t0 + 50;
+            $this->lifecycle()->apply($id, self::ALICE, [], $this->t0 + 50); // backups fresh: batch 1 launched
+            $this->assertSame('running', $this->changes->batches[$id][1]['status'], $when);
+            $this->endRun($this->batchRun($id, 1), 'success', [501 => 'changed', 502 => 'changed'], [], $this->t0 + 100);
+            $this->backups->now = $this->t0 + 101;
+            $step = $this->lifecycle();
+            match ($how) {
+                'lock' => $this->losesLockAt($step, 2), // a heartbeat before each device's backup: lost before lab-sw2's
+                'oxidized' => $this->backups->onRequest = function (string $node) {
+                    if ($node === 'dev502' && count($this->backups->requests) === 4) {
+                        throw new \RuntimeException('the connection to Oxidized was reset');
+                    }
+                },
+                'window' => $this->windows->setEndError = new \LogicException('LibreNMS: the alert schedule table is locked'),
+            };
+            try {
+                $step->advance($id, $this->t0 + 101);
+                $this->fail("$when: the step goes on");
+            } catch (LockLost|\RuntimeException|\LogicException) {
+            }
+            $this->assertSame(['done', ChangeStatus::APPLYING, 1], [$this->changes->batches[$id][1]['status'], $this->changes->find($id)['status'],
+                (int) $this->changes->find($id)['current_batch']], "$when: the batch's end is recorded, the change not moved on");
+            $this->assertSame(['changed', 'changed'], [$this->changes->targets[$id][501]['result'], $this->changes->targets[$id][502]['result']], $when);
+            $this->assertCount(1, preg_grep('/^Batch 1 of 2 ended/', $this->changes->messages($id)), "$when: said in the timeline");
+            $this->assertSame($how === 'lock' ? 'requested' : null, $this->changes->targets[$id][501]['after_status'], "$when: what was asked is recorded");
+            $this->assertNull($this->changes->targets[$id][502]['after_status'], $when);
+            $this->backups->onRequest = null;
+            $this->windows->setEndError = null;
+
+            $this->backups->now = $this->t0 + 110;
+            $this->lifecycle()->advance($id, $this->t0 + 110);
+            $after = array_column(array_filter($this->backups->requests, fn ($r) => str_ends_with($r['message'], 'after batch 1')), 'node');
+            $this->assertSame(match ($how) {
+                'lock' => ['dev501', 'dev502'], // each asked once
+                'oxidized' => ['dev501', 'dev502', 'dev501', 'dev502'], // nothing of the step that failed was recorded: asked again
+                'window' => ['dev501', 'dev502'],
+            }, $after, "$when: the backups after batch 1 not asked yet are asked");
+            $this->assertSame(['fresh', 'fresh'], [$this->changes->targets[$id][501]['after_status'], $this->changes->targets[$id][502]['after_status']], $when);
+            $this->assertSame($this->t0 + 100 + 600, $this->windows->windows[100]['end'], "$when: batch 1's window ends a settle time after it");
+            $this->assertSame([ChangeStatus::APPLYING, 2, 'running'], [$this->changes->find($id)['status'], (int) $this->changes->find($id)['current_batch'],
+                $this->changes->batches[$id][2]['status']], "$when: the change moved on to batch 2");
+            $this->assertSame([503], end($this->runner->launches)['devices'], $when);
+            $this->assertCount(1, preg_grep('/^Batch 1 of 2 ended/', $this->changes->messages($id)), "$when: said once");
+
+            $this->endRun($this->batchRun($id, 2), 'success', [503 => 'changed'], [], $this->t0 + 200);
+            $this->backups->now = $this->t0 + 201;
+            $this->lifecycle()->advance($id, $this->t0 + 201);
+            $this->assertSame([ChangeStatus::APPLIED, null], [$this->changes->find($id)['status'], $this->changes->find($id)['error']], $when);
+        }
+    }
+
+    public function testAChangeLeftApplyingAfterItsLastBatchEndsAsThatBatchDecided(): void
+    {
+        // its only batch did its work, then the step stopped before the backups after it (its lock lost at the first one)
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 3, 5, 1, false, 0));
+        $this->backups->now = $this->t0 + 50;
+        $this->lifecycle()->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endRun($this->batchRun($id, 1), 'success', array_fill_keys(array_keys(self::TARGETS), 'changed'), [], $this->t0 + 100);
+        $this->backups->now = $this->t0 + 101;
+        $step = $this->lifecycle();
+        $this->losesLockAt($step, 1);
+        try {
+            $step->advance($id, $this->t0 + 101);
+            $this->fail('the step goes on without its lock');
+        } catch (LockLost) {
+        }
+        $this->assertSame(['done', ChangeStatus::APPLYING], [$this->changes->batches[$id][1]['status'], $this->changes->find($id)['status']]);
+
+        // an admin who finds it so stops it: it did all its work, so it is applied, not "stopped after batch 1"; the backups after it are asked
+        $this->assertNull($this->lifecycle()->stop($id, 'alice', $this->t0 + 105));
+        $this->backups->now = $this->t0 + 106;
+        $this->lifecycle()->advance($id, $this->t0 + 106);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::APPLIED, null], [$change['status'], $change['error']]);
+        $this->assertSame(['fresh', 'fresh', 'fresh'], array_values(array_column($this->changes->targets[$id], 'after_status')));
+        $this->assertSame($this->t0 + 100 + 600, $this->windows->windows[100]['end']);
+
+        // a failed batch whose step stopped the same way ends the change failed, with the batch's reason, at the next step
+        $this->setUp();
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $this->backups->now = $this->t0 + 50;
+        $this->lifecycle()->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endRun($this->batchRun($id, 1), 'failed', [501 => 'failed'], [], $this->t0 + 100);
+        $this->backups->now = $this->t0 + 101;
+        $step = $this->lifecycle();
+        $this->losesLockAt($step, 1);
+        try {
+            $step->advance($id, $this->t0 + 101);
+            $this->fail('the step goes on without its lock');
+        } catch (LockLost) {
+        }
+        $batch = $this->changes->batches[$id][1];
+        $this->assertSame(['failed', ChangeStatus::APPLYING], [$batch['status'], $this->changes->find($id)['status']]);
+        $this->backups->now = $this->t0 + 110;
+        $this->lifecycle()->advance($id, $this->t0 + 110);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::FAILED, $batch['note']], [$change['status'], $change['error']]);
+        $this->assertSame('cancelled', $this->changes->batches[$id][2]['status'], 'no further batch');
+        $this->assertSame(['dry_run', 'batch'], array_column($this->runner->launches, 'kind'));
+        $this->assertSame('fresh', $this->changes->targets[$id][501]['after_status']);
+
+        // a batch refused before its launch whose step stopped before it ended the change: ended at the next step
+        $this->setUp();
+        $id = $this->approved(plan: BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, false, 0));
+        $this->changes->batches[$id][1] = array_merge($this->changes->batches[$id][1], ['status' => 'failed', 'note' => 'its dry run expired (Dry run valid setting)']);
+        $this->changes->changes[$id] = array_merge($this->changes->changes[$id], ['status' => ChangeStatus::APPLYING, 'current_batch' => 1]);
+        $this->lifecycle()->advance($id, $this->t0 + 60);
+        $this->assertSame([ChangeStatus::FAILED, 'batch 1 was not started: its dry run expired (Dry run valid setting)'],
+            [$this->changes->find($id)['status'], $this->changes->find($id)['error']]);
+    }
+
     public function testDryRunsAndApprovalsExpire(): void
     {
         $id = $this->approved();
