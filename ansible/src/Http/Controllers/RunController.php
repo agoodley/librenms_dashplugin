@@ -142,7 +142,7 @@ class RunController extends Controller
             'released_by' => $run['released_by'],
             'releasable' => RunLifecycle::releasable($run, time()),
             'held' => RunLifecycle::held($run, time()),
-            'held_until' => Clock::local($run['held_until'] ?? null),
+            'held_until' => Clock::local($run['held_until'] ?? null, 'Y-m-d H:i:s T'),
             'stopped_note' => self::stoppedNote($run, $rows),
             'stopped_command' => RunDiagnosis::leftoverCommand($run),
             'targets' => $targets,
