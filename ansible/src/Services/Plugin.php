@@ -45,14 +45,19 @@ final class Plugin
     }
 
     /**
-     * The runner of a connection (the stored one by default); RunnerError when it is not set up.
+     * The runner of a connection (the stored one by default); RunnerError when it is not set up. Without
+     * $needInventory a connection whose LibreNMS inventory is not chosen yet will do (Test connection lists them).
      */
-    public function runner(?Connection $connection = null): Runner
+    public function runner(?Connection $connection = null, bool $needInventory = true): Runner
     {
         $connection ??= $this->connection();
-        if (! $connection->complete()) {
+        if (! $connection->canConnect()) {
             throw new RunnerError(RunnerError::NOT_CONFIGURED, $this->connections->error()
-                ?? 'The runner connection is not set up: enter the Semaphore UI URL, token, project and inventory on the plugin\'s settings page.');
+                ?? 'The runner connection is not set up: enter the Semaphore UI URL, token and project on the plugin\'s settings page.');
+        }
+        if ($needInventory && ! $connection->complete()) {
+            throw new RunnerError(RunnerError::NOT_CONFIGURED, 'The LibreNMS inventory is not chosen in the plugin settings yet: Test connection lists the '
+                . 'project\'s inventories with their ids.');
         }
         if ($connection->verifyTls && $connection->caBundle !== '' && ! is_readable($connection->caBundle)) {
             throw new RunnerError(RunnerError::NOT_CONFIGURED, "LibreNMS cannot read the CA bundle {$connection->caBundle}: fix the path or its permissions.");

@@ -662,6 +662,35 @@
                     box.appendChild(el('p', null, 'LibreNMS inventory: #' + data.inventory.id + ' ' + data.inventory.name + ' (' + data.inventory.type
                         + (data.inventory.source ? ': ' + data.inventory.source : '') + ')'));
                 }
+                if (data.inventories && data.inventories.length) {
+                    var inventories = el('table', 'table table-condensed ans-table');
+                    inventories.id = 'ans-test-inventories';
+                    append(inventories, el('thead', null, el('tr', null, [el('th', null, 'Inventory of the project'), el('th', null, 'Id'),
+                        el('th', null, 'Type'), el('th', null, 'The LibreNMS one?')])));
+                    var rows = el('tbody');
+                    data.inventories.forEach(function (inventory) {
+                        var verdict = el('td');
+                        if (inventory.chosen) {
+                            append(verdict, el('span', 'label label-' + (inventory.script ? 'success' : 'danger'), inventory.script ? 'chosen' : 'chosen, but it does not run the script'));
+                        } else if (inventory.script) {
+                            var use = el('button', 'btn btn-xs btn-default', 'use #' + inventory.id);
+                            use.type = 'button';
+                            use.addEventListener('click', function () {
+                                byId('ans-inventory').value = inventory.id;
+                                byId('ans-connection-save').focus();
+                            });
+                            append(verdict, [el('span', 'ans-muted', 'runs the plugin\'s script '), use]);
+                        } else {
+                            append(verdict, el('span', 'ans-muted', inventory.file ? 'a file inventory, but not the plugin\'s script' : 'no: not a file inventory'));
+                        }
+                        var row = el('tr', null, [el('td', 'ans-wrap', [inventory.name, inventory.source ? el('div', 'ans-code ans-muted', inventory.source) : null]),
+                            el('td', 'ans-code', '#' + inventory.id), el('td', null, inventory.type), verdict]);
+                        row.setAttribute('data-inventory', inventory.id);
+                        append(rows, row);
+                    });
+                    append(inventories, rows);
+                    box.appendChild(inventories);
+                }
                 var t = el('table', 'table table-condensed ans-table');
                 t.id = 'ans-test-templates';
                 append(t, el('thead', null, el('tr', null, [el('th', null, 'Template'), el('th', null, 'Playbook'), el('th', null, 'Usable by the plugin')])));

@@ -77,7 +77,8 @@
                 <div class="form-group row">
                     <label class="col-sm-4 control-label" for="ans-inventory" style="font-weight: normal">LibreNMS inventory id</label>
                     <div class="col-sm-8"><input id="ans-inventory" type="number" min="1" class="form-control input-sm" style="max-width: 140px" name="inventory" value="{{ $value('inventory') ?: '' }}">
-                        <span class="help-block" style="margin: 2px 0 0; font-size: 12px">the file inventory that runs the plugin's inventory script; only templates with this inventory can be launched</span></div>
+                        <span class="help-block" style="margin: 2px 0 0; font-size: 12px">the file inventory that runs the plugin's inventory script; only templates with this
+                            inventory can be launched. Semaphore UI does not show inventory ids: save without it, then Test connection lists the project's inventories.</span></div>
                 </div>
                 <div class="form-group row">
                     <label class="col-sm-4 control-label" for="ans-verify" style="font-weight: normal">Verify TLS certificates</label>
@@ -97,6 +98,19 @@
                 <button type="submit" class="btn btn-primary btn-sm" id="ans-connection-save"><i class="fa fa-save"></i> Save connection</button>
                 <button type="button" class="btn btn-default btn-sm" id="ans-test-connection" data-url="{{ route('ansible.settings.test') }}"><i class="fa fa-plug"></i> Test connection</button>
                 <span class="ans-muted" style="font-size: 12px">tests the saved connection</span>
+                @php
+                    $check = $a['lastCheck'];
+                @endphp
+                @if($check && ! empty($check['blocked']))
+                    <div class="ans-warning-loud" id="ans-connection-blocked" style="margin-top: 8px">{{ $check['blocked'] }}
+                        <span class="ans-muted">(checked {{ date('Y-m-d H:i', $check['checked_at']) }})</span></div>
+                @elseif($check && $check['error'])
+                    <div class="alert alert-warning" id="ans-connection-check" style="margin: 8px 0 0">The runner could not be asked
+                        ({{ date('Y-m-d H:i', $check['checked_at']) }}): {{ $check['error'] }}</div>
+                @elseif($check)
+                    <p class="ans-muted" id="ans-connection-check" style="margin: 6px 0 0; font-size: 12px">Last check {{ date('Y-m-d H:i', $check['checked_at']) }}:
+                        Semaphore UI {{ $check['version'] ?? '' }}, project "{{ $check['project'] ?? '' }}", the token's role {{ $check['role'] ?: 'none' }}.</p>
+                @endif
                 <div id="ans-test-result" class="ans-test-result"></div>
             </fieldset>
         </form>
@@ -170,7 +184,9 @@
                 <div class="col-sm-8">
                     <select id="ans-setting-allowed_group" class="form-control input-sm" style="max-width: 320px" name="allowed_group">
                         <option value="">Every device</option>
-                        @php($allowed = $setting('allowed_group'))
+                        @php
+                            $allowed = $setting('allowed_group');
+                        @endphp
                         @if($allowed !== '' && ! isset($a['groups'][(int) $allowed]))
                             <option value="{{ $allowed }}" selected>#{{ $allowed }} (no longer exists: no device can be a target)</option>
                         @endif

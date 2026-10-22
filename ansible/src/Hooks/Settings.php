@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsAnsible\Hooks;
 
+use Agoodley\LibrenmsAnsible\Data\ConnectionChecks;
 use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
 use Agoodley\LibrenmsAnsible\Data\FetchRepository;
 use Agoodley\LibrenmsAnsible\Data\PermissionRepository;
@@ -36,7 +37,7 @@ class Settings implements SettingsHook
     {
         // LibreNMS disables a plugin whose hook throws: nothing may escape
         $data = ['admin' => false, 'connection' => null, 'connectionError' => null, 'settings' => PluginSettings::DEFAULTS, 'settingsError' => null,
-            'mapErrors' => [], 'holders' => [], 'candidates' => [], 'groups' => [], 'users' => [], 'fetches' => []];
+            'mapErrors' => [], 'holders' => [], 'candidates' => [], 'groups' => [], 'users' => [], 'fetches' => [], 'lastCheck' => null];
         try {
             $data['admin'] = Access::canView(auth()->user());
             if ($data['admin']) {
@@ -47,6 +48,7 @@ class Settings implements SettingsHook
                 $data['mapErrors'] = $current->platformMap()->errors();
                 $data['connection'] = $plugin->connection()->forPage();
                 $data['connectionError'] = $plugin->connectionError();
+                $data['lastCheck'] = (new ConnectionChecks())->last();
                 $permissions = new PermissionRepository();
                 $data['holders'] = $permissions->holders();
                 $data['candidates'] = $permissions->candidates();

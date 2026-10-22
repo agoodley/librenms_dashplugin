@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 
 use Agoodley\LibrenmsAnsible\AnsibleServiceProvider;
+use Agoodley\LibrenmsAnsible\Data\ConnectionChecks;
 use Agoodley\LibrenmsAnsible\Data\ConnectionRepository;
 use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
 use Agoodley\LibrenmsAnsible\Data\PermissionRepository;
@@ -83,6 +84,8 @@ class SettingsController extends Controller
         $repository->save($connection);
         $this->audit(AuditText::connectionChanged((string) $request->user()->username, $changes), $connection->verifyTls ? 'notice' : 'warning');
         $status = 'The runner connection was saved: ' . implode('; ', $changes) . '.';
+        // ask the runner at once what the token may do, so the page says whether launches are blocked
+        (new ConnectionChecks())->checkNow(new Plugin(), $connection);
         if ($connection->verifyTls && $connection->caBundle !== '' && ! is_readable($connection->caBundle)) {
             $status .= " LibreNMS cannot read the CA bundle {$connection->caBundle}: fix it before testing.";
         } elseif (! $connection->verifyTls) {
@@ -94,37 +97,55 @@ class SettingsController extends Controller
 
     /**
      * POST plugin/ansible/settings/test: test the saved connection: the runner's version, the token's role (and why
-     * launches are blocked when it could change templates or may not run them), the LibreNMS inventory and every
-     * template, usable or not.
+     * launches are blocked when it could change templates or may not run them), the project's inventories (to choose
+     * the LibreNMS one: Semaphore UI does not show their ids) and every template, usable or not. Works before the
+     * LibreNMS inventory is chosen. The result is kept, so the settings page shows a blocked token without a test.
      */
     public function test(): JsonResponse
     {
         $plugin = new Plugin();
         $connection = $plugin->connection();
+        $checks = new ConnectionChecks();
         try {
-            $runner = $plugin->runner($connection);
+            $runner = $plugin->runner($connection, false);
             $health = $runner->health();
+            $checks->save(ConnectionChecks::fromHealth($health, time()));
             $templates = $runner->templates();
+            $inventories = $runner->inventories();
         } catch (RunnerError $e) {
+            $checks->save(ConnectionChecks::failed($e->getMessage(), time()));
+
             return response()->json(['ok' => false, 'error' => $e->getMessage()]);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'error' => $this->failure('connection test', $e)]);
         }
         // a token that could change templates or may not run them: said once, as the reason launches are blocked
         $warnings = [];
-        try {
-            $inventory = $runner->inventory((string) $connection->inventory);
-            $inventoryInfo = ['id' => $inventory->id, 'name' => $inventory->name, 'type' => $inventory->type, 'source' => $inventory->source];
-            if (! $inventory->isFile()) {
-                $warnings[] = "The LibreNMS inventory #{$inventory->id} ({$inventory->name}) is a {$inventory->type} inventory: make it a file inventory "
-                    . 'that runs the plugin\'s inventory script (contrib/librenms_inventory.py), so the runner gets the hosts from LibreNMS.';
+        $chosen = (string) $connection->inventory;
+        $inventoryList = [];
+        foreach ($inventories as $inventory) {
+            $inventoryList[] = ['id' => $inventory->id, 'name' => $inventory->name, 'type' => $inventory->type, 'source' => $inventory->source,
+                'file' => $inventory->isFile(), 'script' => $inventory->isFile() && str_ends_with($inventory->source, 'librenms_inventory.py'),
+                'chosen' => $inventory->id === $chosen];
+        }
+        $inventoryInfo = null;
+        if ($connection->inventory < 1) {
+            $warnings[] = 'Choose the LibreNMS inventory: the file inventory that runs the plugin\'s inventory script (see the list of the project\'s '
+                . 'inventories below), then save the connection.';
+        } else {
+            $found = array_values(array_filter($inventories, fn ($inventory) => $inventory->id === $chosen));
+            if (! $found) {
+                $warnings[] = "The project has no inventory #{$connection->inventory}: choose the LibreNMS inventory among those listed below.";
+            } else {
+                $inventoryInfo = ['id' => $found[0]->id, 'name' => $found[0]->name, 'type' => $found[0]->type, 'source' => $found[0]->source];
+                if (! $found[0]->isFile()) {
+                    $warnings[] = "The LibreNMS inventory #{$found[0]->id} ({$found[0]->name}) is a {$found[0]->type} inventory: make it a file inventory "
+                        . 'that runs the plugin\'s inventory script (contrib/librenms_inventory.py), so the runner gets the hosts from LibreNMS.';
+                }
             }
-        } catch (RunnerError $e) {
-            $inventoryInfo = null;
-            $warnings[] = "The LibreNMS inventory #{$connection->inventory}: " . $e->getMessage();
         }
         $list = [];
-        $review = new TemplateReview($runner, (string) $connection->inventory);
+        $review = new TemplateReview($runner, $chosen);
         foreach ($templates as $template) {
             $reasons = $review->reasons($template);
             $list[] = ['id' => $template->id, 'name' => $template->name, 'playbook' => $template->playbook, 'usable' => ! $reasons,
@@ -139,12 +160,12 @@ class SettingsController extends Controller
             $warnings[] = (string) $inventoryService->inventoryUserProblem();
         } elseif ($inventoryUser['fetch'] === null) {
             $warnings[] = 'The runner has not fetched the inventory with the inventory user ' . $inventoryUser['user']->username . '\'s token yet: '
-                . 'see the setup steps on the Inventory page.';
+                . 'the first run makes it fetch it (see the setup steps on the Inventory page).';
         }
 
         return response()->json(['ok' => true, 'runner' => $runner->name(), 'version' => $health->version, 'project' => $health->project,
             'role' => $health->role, 'admin' => $health->admin, 'too_powerful' => $health->tooPowerful(), 'can_run' => $health->canRun,
-            'blocked' => $health->launchBlock(), 'inventory' => $inventoryInfo,
+            'blocked' => $health->launchBlock(), 'inventory' => $inventoryInfo, 'inventories' => $inventoryList,
             'templates' => $list, 'warnings' => $warnings]);
     }
 

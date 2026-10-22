@@ -161,6 +161,15 @@ class SettingsTest extends TestCase
         $this->assertSame('http://a.example:80', Connection::destination('http://a.example'));
     }
 
+    public function testTheInventoryMayBeChosenAfterATest(): void
+    {
+        $connection = Connection::fromInput(self::input(['inventory' => '']), new Connection(), 'a', 1)['connection'];
+
+        $this->assertSame(0, $connection->inventory);
+        $this->assertTrue($connection->canConnect(), 'Test connection can list the inventories');
+        $this->assertFalse($connection->complete(), 'nothing is launched without the LibreNMS inventory');
+    }
+
     public function testConnectionErrors(): void
     {
         $result = Connection::fromInput(['url' => 'https://user:pw@host/', 'token' => 'a b', 'project' => '0', 'inventory' => 'x', 'ca_bundle' => 'certs.pem',

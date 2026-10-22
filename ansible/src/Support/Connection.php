@@ -26,11 +26,20 @@ final class Connection
     }
 
     /**
-     * Can the plugin talk to the runner (URL, token, project and inventory set)?
+     * Can the plugin launch runs (URL, token, project and the LibreNMS inventory set)?
      */
     public function complete(): bool
     {
-        return $this->url !== '' && $this->token !== '' && $this->project > 0 && $this->inventory > 0;
+        return $this->canConnect() && $this->inventory > 0;
+    }
+
+    /**
+     * Can the plugin ask the runner (URL, token and project set)? Enough to test the connection and list the
+     * project's inventories, among which the LibreNMS one is chosen.
+     */
+    public function canConnect(): bool
+    {
+        return $this->url !== '' && $this->token !== '' && $this->project > 0;
     }
 
     /**
@@ -60,7 +69,9 @@ final class Connection
             $errors['token'] = 'The token is 8 to 512 printable characters without spaces (Semaphore UI shows it once, when it is created).';
         }
         $project = self::positive($input['project'] ?? '', 'project', 'The project id is the number in the project\'s URL in Semaphore UI (/project/<id>/...).', $errors);
-        $inventory = self::positive($input['inventory'] ?? '', 'inventory', 'The inventory id is the number of the LibreNMS inventory in Semaphore UI (Inventory, then its URL or the API).', $errors);
+        // the inventory may wait: Semaphore UI does not show inventory ids, Test connection lists them
+        $inventory = trim((string) ($input['inventory'] ?? '')) === '' ? 0
+            : self::positive($input['inventory'], 'inventory', 'The LibreNMS inventory id is a number (Test connection lists the project\'s inventories with their ids), or empty for now.', $errors);
         if ($caBundle !== '' && (! str_starts_with($caBundle, '/') || str_contains($caBundle, "\0") || strlen($caBundle) > 500)) {
             $errors['ca_bundle'] = 'The CA bundle is the absolute path of a PEM file on the LibreNMS server, or empty for the system CAs.';
         }
