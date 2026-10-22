@@ -82,9 +82,13 @@ final class BackupCheck
     public static function warning(array $missing, bool $refuse, ?string $error): ?string
     {
         if ($missing) {
+            $one = count($missing) === 1;
+
             return 'Oxidized cannot back up ' . implode(', ', array_slice($missing, 0, 10)) . (count($missing) > 10 ? ' and ' . (count($missing) - 10) . ' more' : '')
-                . ($refuse ? ': their batches will be refused (setting Without a fresh backup: refuse). Add them to Oxidized, or make the change without them.'
-                    : ': their batches will go without a backup, with a warning in the eventlog (setting Without a fresh backup: continue with a warning).');
+                . ($refuse ? ': ' . ($one ? 'its batch' : 'their batches') . ' will be refused (setting Without a fresh backup: refuse). Add '
+                    . ($one ? 'it' : 'them') . ' to Oxidized, or make the change without ' . ($one ? 'it' : 'them') . '.'
+                    : ': ' . ($one ? 'its batch' : 'their batches') . ' will go without a backup, with a warning in the eventlog (setting Without a fresh backup: '
+                    . 'continue with a warning).');
         }
 
         return $error !== null ? 'Oxidized could not be asked whether it backs the targets up (' . $error . ')'

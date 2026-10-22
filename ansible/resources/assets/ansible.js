@@ -900,6 +900,11 @@
             } else if (note) {
                 note.parentNode.removeChild(note);
             }
+            // an answer the page holds needs no typing again: its field says so (a Continue with it empty uses the held one)
+            Array.prototype.forEach.call(document.querySelectorAll('#ans-secret-fields .ans-secret-mark'), function (mark) {
+                var held = heldSecrets && !state.final && Object.prototype.hasOwnProperty.call(heldSecrets, mark.getAttribute('data-name'));
+                mark.textContent = held ? '(this page holds it: leave it empty to use it)' : (mark.getAttribute('data-required') === '1' ? '(required)' : '');
+            });
         }
 
         function updateLog(data) {
@@ -1042,9 +1047,9 @@
                 return;
             }
             var secrets = readSecrets();
-            // a Continue with empty fields uses the secret answers this page holds (given at the apply or a continue before)
-            if (action === 'continue' && !Object.keys(secrets).length && heldSecrets) {
-                secrets = heldSecrets;
+            // a Continue uses the secret answers this page holds (given at the apply or a continue before) for the fields left empty
+            if (action === 'continue' && heldSecrets) {
+                secrets = Object.assign({}, heldSecrets, secrets);
             }
             var commentField = byId('ans-approval-comment');
             var body = {secrets: secrets, comment: commentField ? commentField.value : ''};

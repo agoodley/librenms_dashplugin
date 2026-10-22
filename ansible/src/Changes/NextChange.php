@@ -82,10 +82,11 @@ final class NextChange
             }
         }
         $id = (int) $change['id'];
+        // the New change page says "A new change from change #12, <text>: ..."
         $text = $kind === self::PASSED
-            ? "change #$id without the devices its dry run failed on (" . UntrustedText::line(implode(', ', array_map(fn ($d) => self::name($targets[$d]),
+            ? 'without the devices its dry run failed on (' . UntrustedText::line(implode(', ', array_map(fn ($d) => self::name($targets[$d]),
                 self::dryRunFailures($targets))), 300) . ')'
-            : "the remaining devices of change #$id";
+            : 'with its remaining devices';
 
         return ['from' => $id, 'kind' => $kind, 'devices' => $devices, 'canary' => array_values(array_intersect($first, $devices)), 'left_out' => $leftOut,
             'vars' => $vars, 'reference' => (string) ($change['reference'] ?? ''), 'text' => $text];

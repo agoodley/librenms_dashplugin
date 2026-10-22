@@ -1370,6 +1370,9 @@ class ChangeLifecycleTest extends TestCase
             . 'will be refused (setting Without a fresh backup: refuse)', implode("\n", array_column($this->changes->events[$id], 'message')));
         $this->assertStringContainsString('Oxidized has no node for this device, so its batch will be refused', implode("\n", array_column($this->events->of(502), 'message')));
         $this->assertSame([], array_filter(array_column($this->events->of(501), 'message'), fn ($m) => str_contains($m, 'Oxidized')), 'nothing for a device it backs up');
+        $this->assertSame('Oxidized cannot back up lab-sw2 (Oxidized has no node for it): its batch will be refused (setting Without a fresh backup: refuse). Add it to '
+            . 'Oxidized, or make the change without it.', \Agoodley\LibrenmsAnsible\Changes\BackupCheck::warning(['lab-sw2 (Oxidized has no node for it)'], true, null),
+            'one device: its batch');
 
         // Oxidized down: said once, not asked for each device
         $this->backups->unreachable = 'Oxidized cannot be reached (unreachable)';

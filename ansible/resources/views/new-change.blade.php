@@ -43,9 +43,8 @@
         {{ $approvalText }} in batches ({{ $planText }}){{ $around ? ', each batch ' . implode(', ', $around) : '' }}.</p>
 
     @if($prefill)
-        {{-- the text is escaped first, then the change's number becomes a link --}}
-        <div class="alert alert-info" id="ans-prefill-note"><i class="fa fa-copy"></i> A new change with {!! str_replace(e('change #' . $prefill['from']),
-            '<a href="' . e(route('ansible.changes.show', $prefill['from'])) . '">change #' . (int) $prefill['from'] . '</a>', e($prefill['text'])) !!}: its template,
+        <div class="alert alert-info" id="ans-prefill-note"><i class="fa fa-copy"></i> A new change from
+            <a href="{{ route('ansible.changes.show', $prefill['from']) }}">change #{{ (int) $prefill['from'] }}</a>, {{ $prefill['text'] }}: its template,
             answers, reference and first batch are filled in, its devices chosen and listed first. Not a resume: it is dry-run and approved again; secret answers
             are asked again.
             @if($prefill['left_out'])

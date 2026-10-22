@@ -145,12 +145,12 @@ class ChangeRulesTest extends TestCase
         $this->assertSame([503], $prefill['devices'], 'a held device is left out');
         $this->assertStringStartsWith('sw4: held by run #9 until ', $prefill['left_out'][0]);
         $this->assertSame(['interface' => 'Fa0/9', 'description' => 'uplink'], $prefill['vars'], 'the answers, never the secret ones');
-        $this->assertSame(['CHG-7', 'the remaining devices of change #31', []], [$prefill['reference'], $prefill['text'], $prefill['canary']]);
+        $this->assertSame(['CHG-7', 'with its remaining devices', []], [$prefill['reference'], $prefill['text'], $prefill['canary']]);
 
         $targets[502]['dry_result'] = 'unreachable';
         $passed = NextChange::prefill($change, $targets, NextChange::PASSED, []);
         $this->assertSame([501, 503, 504], $passed['devices'], 'without the devices its dry run failed on, in its order');
-        $this->assertSame('change #31 without the devices its dry run failed on (sw2)', $passed['text']);
+        $this->assertSame('without the devices its dry run failed on (sw2)', $passed['text']);
         $targets[502]['dry_result'] = 'changed';
         $this->assertSame([502], NextChange::prefill($change, $targets, NextChange::PASSED, [])['canary'], 'its first batch, when it is among them');
     }
@@ -276,6 +276,8 @@ class ChangeRulesTest extends TestCase
         $this->assertStringContainsString('ansible.approve', (string) ApprovalRules::refusal(ApprovalRules::SECOND, $change, 2, false));
         $this->assertStringContainsString('verified without failures', (string) ApprovalRules::refusal(ApprovalRules::REQUIRED, ['status' => ChangeStatus::DRAFT] + $change, 2, true));
         $this->assertStringContainsString('no longer be approved', (string) ApprovalRules::refusal(ApprovalRules::REQUIRED, ['status' => ChangeStatus::APPLYING] + $change, 2, true));
+        $this->assertSame('Waits for an approval by a second admin with the approve permission (not the requester).', ApprovalRules::waitsFor(ApprovalRules::SECOND));
+        $this->assertSame('Waits for an approval by an admin with the approve permission.', ApprovalRules::waitsFor(ApprovalRules::REQUIRED));
     }
 
     public function testApprovalsExpireAndNeedTheirApprover(): void

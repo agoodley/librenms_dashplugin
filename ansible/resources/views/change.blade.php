@@ -156,7 +156,8 @@
                 @if($secretVars && ($actions['dry_run'] || $actions['apply'] || $actions['continue']))
                     <div class="form-inline" id="ans-secret-fields" style="margin-bottom: 6px">
                         @foreach($secretVars as $var)
-                            <label style="font-weight: normal; margin-right: 8px">{{ $var['label'] }} <span class="ans-code ans-muted">{{ $var['name'] }}</span>@if(! empty($var['required'])) <span class="ans-muted">(required)</span>@endif
+                            <label style="font-weight: normal; margin-right: 8px">{{ $var['label'] }} <span class="ans-code ans-muted">{{ $var['name'] }}</span>
+                                <span class="ans-muted ans-secret-mark" data-name="{{ $var['name'] }}" data-required="{{ ! empty($var['required']) ? 1 : 0 }}">{{ ! empty($var['required']) ? '(required)' : '' }}</span>
                                 <input type="password" class="form-control input-sm ans-secret" name="{{ $var['name'] }}" maxlength="1000" autocomplete="new-password"@if(! empty($var['required'])) data-required="1"@endif></label>
                         @endforeach
                         <span class="ans-help">never stored: sent to the runner with the launch, and kept in this page's memory for the next batches while it stays open</span>
@@ -192,7 +193,7 @@
                 @if($status === ChangeStatus::AWAITING && $canApprove && $approvalRefusal)
                     <p class="ans-help" id="ans-approval-refusal" style="margin-top: 6px">{{ $approvalRefusal }}</p>
                 @elseif($status === ChangeStatus::AWAITING && ! $actions['approve'])
-                    <p class="ans-help" id="ans-approval-waits" style="margin-top: 6px">Waits for {{ ApprovalRules::LABELS[$settings->approval] ?? 'an approval' }} by an admin with the approve permission.</p>
+                    <p class="ans-help" id="ans-approval-waits" style="margin-top: 6px">{{ ApprovalRules::waitsFor($settings->approval) }}</p>
                 @endif
                 @if($noApprover)
                     <div class="alert alert-warning" id="ans-no-approver" style="margin: 6px 0 0"><i class="fa fa-user-times"></i> {{ $noApprover }}
@@ -202,7 +203,7 @@
             </div>
         </div>
     @elseif($status === ChangeStatus::AWAITING)
-        <p class="ans-muted" id="ans-approval-waits">Waits for {{ ApprovalRules::LABELS[$settings->approval] ?? 'an approval' }} by an admin with the approve permission.</p>
+        <p class="ans-muted" id="ans-approval-waits">{{ ApprovalRules::waitsFor($settings->approval) }}</p>
         @if($noApprover)
             <div class="alert alert-warning" id="ans-no-approver"><i class="fa fa-user-times"></i> {{ $noApprover }}
                 An admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#ans-approve-permission">settings page</a> (<em>Approve permission</em>),

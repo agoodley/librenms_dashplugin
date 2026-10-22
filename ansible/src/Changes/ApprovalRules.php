@@ -22,6 +22,15 @@ final class ApprovalRules
     public const LABELS = [self::OFF => 'no approval', self::REQUIRED => 'an approval', self::SECOND => 'an approval from a second admin'];
 
     /**
+     * Who a change awaiting approval waits for, as its page says it.
+     */
+    public static function waitsFor(string $mode): string
+    {
+        return $mode === self::SECOND ? 'Waits for an approval by a second admin with the approve permission (not the requester).'
+            : 'Waits for an approval by an admin with the approve permission.';
+    }
+
+    /**
      * Does a change need an approval before it is applied?
      */
     public static function needed(string $mode): bool
