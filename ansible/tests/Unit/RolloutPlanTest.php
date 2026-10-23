@@ -324,6 +324,16 @@ class RolloutPlanTest extends TestCase
         $this->assertFalse(BlastRadius::compare([512], [512])['core_lost']);
     }
 
+    public function testOnlyABlastRadiusAPreviewGivesIsTakenForOne(): void
+    {
+        $signature = ChangeService::blastSignature(self::make()['plan']->topology);
+        $this->assertTrue(ChangeService::isBlastSignature($signature));
+        $this->assertTrue(ChangeService::isBlastSignature(''), 'a plan of the settings: none');
+        foreach (['zz', strtoupper($signature), $signature . 'a', substr($signature, 1), $signature . "\n", ' ' . $signature, null, 0, 123, true, [$signature], ['x' => 1]] as $value) {
+            $this->assertFalse(ChangeService::isBlastSignature($value), 'not one: ' . json_encode($value));
+        }
+    }
+
     public function testWhatANewChangeKeepsFromItsPreviewIsWhatEachBatchCutsOffAndWhatThatIsMeasuredFrom(): void
     {
         $plan = fn (\Closure $blast) => RolloutPlan::make([501, 502], [], 1, 5, 1, false, 0, self::planner([501, 502]), RolloutPlan::LEAVE, $blast)['plan']->topology;

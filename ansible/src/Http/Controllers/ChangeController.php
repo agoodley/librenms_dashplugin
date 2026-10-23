@@ -214,8 +214,10 @@ class ChangeController extends Controller
     }
 
     /**
-     * POST plugin/ansible/changes {template, devices, vars, canary, reference, request_token}: create the change as a
-     * draft, checked again; its URL, or what prevents it (HTTP 422). A form token that already made a change gives it.
+     * POST plugin/ansible/changes {template, devices, vars, canary, reference, request_token, batches, unplanned,
+     * blast_signature}: create the change as a draft, checked again (also against the batches and the blast radius the
+     * preview showed, when given: a blast_signature that is not one is refused); its URL, or what prevents it (HTTP
+     * 422). A form token that already made a change gives it.
      */
     public function store(Request $request): JsonResponse
     {
@@ -224,9 +226,15 @@ class ChangeController extends Controller
         }
         [$templateId, $devices, $answers, $canary, $reference, $unplanned] = self::input($request);
         $token = is_string($request->input('request_token')) ? $request->input('request_token') : '';
-        // the blast radius the preview showed ("": none, the settings planned it)
-        $blast = $request->input('blast_signature');
-        $blast = is_string($blast) && preg_match('/^([0-9a-f]{64})?$/D', $blast) ? $blast : null;
+        // the blast radius the preview showed ("": none, the settings planned it): one given that is not one is refused, never
+        // taken for none (that would skip the check that the topology did not change since the preview)
+        $blast = null;
+        if ($request->has('blast_signature')) {
+            $blast = $request->input('blast_signature');
+            if (! ChangeService::isBlastSignature($blast)) {
+                return response()->json(['errors' => ['The blast radius of the preview is not one: preview again.']], 422);
+            }
+        }
         $expected = null;
         if (is_array($request->input('batches'))) {
             $expected = [];

@@ -725,7 +725,8 @@ change page and the change's timeline say that **the blast radius is unknown**, 
   said as a warning, with where to set *Core devices* (*Overview → Plugins → Plugin Admin → topology → Settings*).
 * The plan is computed **as the admin who makes the change sees the network** (the topology plugin's pages show them
   the same). The change is created only with the batches and the blast radius its preview showed: when the topology
-  changed in between, *Create* says so and asks for a new preview.
+  changed in between, *Create* says so and asks for a new preview (as it does for a request whose blast radius is not
+  one a preview gives).
 * The plan stays **plain data** in the change, with what the planner said of each batch: its place (hops from the
   core), the monitored devices it cuts off, how many unmanaged neighbors go down with it, the devices left out or
   planned by hand and why, and the names the topology plugin gave them. It is part of the change's fingerprint, so it

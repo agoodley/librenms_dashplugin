@@ -210,6 +210,14 @@ final class ChangeService
     }
 
     /**
+     * Is this a blast radius a preview gives (blastSignature(), or "" for a plan of the settings, which has none)?
+     */
+    public static function isBlastSignature(mixed $value): bool
+    {
+        return is_string($value) && preg_match('/^([0-9a-f]{64})?$/D', $value) === 1;
+    }
+
+    /**
      * Create the change as a draft, checked again. The change of an already used form token is returned as it is.
      *
      * @param  \App\Models\User|object  $user
