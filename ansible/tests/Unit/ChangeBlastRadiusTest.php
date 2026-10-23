@@ -877,6 +877,32 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame([ChangeStatus::PAUSED, 2], [$this->changes->find($id)['status'], count($this->launched())]);
     }
 
+    public function testAContinueGoesWithoutABlastRadiusOnlyForTheReasonThePageShowed(): void
+    {
+        // the page shows batch 3 waiting as the topology plugin is disabled; before the minute's check, it is enabled again and lab-sw2 is
+        // down in LibreNMS. The Continue computes first and finds another reason than the page showed: it is refused, the page shows it
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->error = 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)';
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $shown = $this->seen($id);
+        $this->topology->error = null;
+        $this->topology->skips[502] = 'down';
+
+        $this->assertSame(ChangeLifecycle::SEEN_CHANGED, $lifecycle->resume($id, self::BOB, [], $this->t0 + 220, $shown));
+        $this->assertSame([ChangeStatus::PAUSED, 'blast_unknown'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+        $this->assertSame('the topology plugin can no longer tell what depends on lab-sw2 (down now)', $this->changes->batches[$id][3]['blast']['error'],
+            'the page shows what the Continue found');
+        $this->assertNull($this->changes->batches[$id][3]['blast_override']);
+        $this->assertCount(2, $this->launched());
+
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 230, $this->seen($id)));
+        $this->assertSame('the topology plugin can no longer tell what depends on lab-sw2 (down now)', $this->changes->batches[$id][3]['blast_override']['why']);
+        $this->assertCount(3, $this->launched());
+    }
+
     public function testAContinueGivenForOneBatchDoesNotContinueAnotherWhoseCheckReadsTheSame(): void
     {
         // batches of one leaf switch each, approved to cut off nothing; the topology plugin cannot answer after batch 1. Batch 2 waits, and

@@ -417,8 +417,9 @@ final class ChangeLifecycle
      * Continue a paused change: the next batch after the first one or a pause, the prepared batch with the secret
      * answers, or the batch whose blast radius could not be computed: computed first, it starts as any once it can be,
      * and goes without one (recorded) only while it still cannot; such a Continue names the check the change page
-     * showed ($seen, as for acceptBlast()), and is refused when it changed since. A batch whose blast radius grew is not
-     * continued: an admin accepts the new one (acceptBlast()). Null when it continued, else why not.
+     * showed ($seen, as for acceptBlast()), and is refused when it changed since, also when the check it makes then
+     * finds another reason or another window than the page showed (kept for the page to show). A batch whose blast
+     * radius grew is not continued: an admin accepts the new one (acceptBlast()). Null when it continued, else why not.
      *
      * @param  array{user_id: int, username: string}  $user
      * @param  array<string, string>  $secrets
@@ -457,6 +458,17 @@ final class ChangeLifecycle
                     . ($change['resume_at'] !== null ? Clock::show(self::at($change['resume_at']), 'Y-m-d H:i T') : 'its deadline') . '.'
                 : self::secretsText($missing, 'to continue with batch ' . ($again ? $batch : $batch + 1));
         }
+        // a batch whose blast radius could not be computed: computed first, as the admin who continues it sees the network. Still not:
+        // it goes without one only for what the page showed; another reason, or another window, is shown first (look again)
+        $failure = null;
+        if ($change['waiting'] === 'blast_unknown') {
+            $failure = $this->blastProbe($change, $batch, $user, $now);
+            if ($failure !== null && ! hash_equals(BlastRadius::checkId($failure, $id, $batch), $seen)) {
+                $this->changes->updateBatch($id, $batch, ['blast' => $failure]);
+
+                return self::SEEN_CHANGED;
+            }
+        }
         // a device of the batch busy in another run (or held after a stop) would fail it: refused now, the change keeps waiting
         // (checked and the change moved under the lock of the launches, as at the apply)
         $next = $again ? $batch : $batch + 1;
@@ -481,8 +493,7 @@ final class ChangeLifecycle
         }
         if ($change['waiting'] === 'blast_unknown') {
             $row = $this->changes->batches($id)[$batch] ?? [];
-            // computed first: when it can be (the cause was fixed), the batch starts as any, checked against its blast radius
-            $failure = $this->blastProbe($resumed, $batch, $user, $now);
+            // it can be computed now (the cause was fixed): the batch starts as any, checked against its blast radius
             if ($failure === null) {
                 $this->timeline($resumed, 'blast', "Batch $batch: its blast radius can be computed again; continued by " . UntrustedText::line($user['username'], 60) . '.',
                     $user['username'], $now);
