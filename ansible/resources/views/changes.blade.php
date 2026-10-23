@@ -87,6 +87,10 @@
                         <br><span class="ans-muted">{{ \Agoodley\LibrenmsAnsible\Support\Format::count((int) $change['target_count'], 'device') }} in {{ \Agoodley\LibrenmsAnsible\Support\Format::count((int) $change['batch_count'], 'batch', 'batches') }}</span></td>
                     <td data-label="Dry run">@if($state)<span class="label label-{{ $state[0] }}">{{ $state[1] }}</span>@else<span class="text-muted">-</span>@endif</td>
                     <td data-label="Status"><span class="label label-{{ ChangeStatus::css($change['status']) }}">{{ ChangeStatus::label($change['status']) }}</span>
+                        @if(($change['verification'] ?? null) !== null)
+                            <span class="label label-{{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::css($change['verification']) }} ans-change-verification"
+                                  data-verification="{{ $change['verification'] }}" title="the outcome of its verification">{{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::label($change['verification']) }}</span>
+                        @endif
                         @if(in_array($change['status'], ChangeStatus::RESERVING, true))
                             {{-- the inline form: this view's other @php is inline too (a block @php here would swallow the row) --}}
                             @php($waitText = ChangeStatus::waitingText($change['waiting']))
