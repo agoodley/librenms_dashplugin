@@ -995,6 +995,11 @@
                         : 'Continue with batch ' + (now.currentBatch + 1) + '? Check the devices of the batches so far first.'),
                 accept: 'Accept the new blast radius of batch ' + now.currentBatch + ', as shown above? The batch then starts again, its blast radius checked '
                     + 'once more, and its maintenance window covers what it cuts off. Your acceptance is recorded in the timeline and in the eventlog.',
+                'accept-verification': now.waiting === 'verification'
+                    ? 'Accept the unexpected changes of batch ' + now.currentBatch + ', as shown above? The change then goes on to batch ' + (now.currentBatch + 1)
+                        + '; its outcome becomes "verified with accepted changes". Your acceptance is recorded in the timeline and in the eventlog.'
+                    : 'Go on without the verification of batch ' + now.currentBatch + '? Nothing then tells whether it changed more than intended; the change goes on to batch '
+                        + (now.currentBatch + 1) + ' and its outcome is "not verified". Your decision is recorded in the timeline and in the eventlog.',
                 stop: 'Stop this change? A running batch is stopped as a run\'s stop (the step in progress on each device runs on), no further batch starts, '
                     + 'and the change ends: it cannot be resumed.',
                 cancel: 'Cancel this change? It ends it: nothing is applied.'
@@ -1228,7 +1233,8 @@
             }
             var commentField = byId('ans-approval-comment');
             // an acceptance or a Continue without a blast radius is for the blast radius this page shows: refused when it changed since
-            var body = {secrets: secrets, comment: commentField ? commentField.value : '', blast: current().blast || ''};
+            // an acceptance of a batch's verification likewise names the verification this page shows
+            var body = {secrets: secrets, comment: commentField ? commentField.value : '', blast: current().blast || '', verify: current().verify || ''};
             busy = true;
             button.disabled = true;
             actionState('sending…');

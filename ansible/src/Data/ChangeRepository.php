@@ -20,10 +20,10 @@ final class ChangeRepository implements ChangeStore
 {
     /** JSON columns per table. */
     private const JSON = [
-        'ansible_changes' => ['variables', 'plan', 'dry_run_findings', 'fingerprint_parts'],
+        'ansible_changes' => ['variables', 'plan', 'dry_run_findings', 'fingerprint_parts', 'fix'],
         'ansible_change_targets' => ['dry_counts', 'counts'],
         'ansible_change_diffs' => ['lines'],
-        'ansible_change_batches' => ['blast', 'blast_accepted', 'blast_override'],
+        'ansible_change_batches' => ['blast', 'blast_accepted', 'blast_override', 'verify'],
         'ansible_change_windows' => ['cut_off'],
     ];
 
@@ -33,9 +33,15 @@ final class ChangeRepository implements ChangeStore
     /** Statuses of a batch whose run may fetch the inventory now (InventoryGuard). */
     private const IN_PROGRESS = ['launching', 'running'];
 
-    /** The phase 2 tables, and the columns of ansible_runs it added. */
+    /** The tables of changes (phase 2, and phase 4's states). */
     public const TABLES = ['ansible_changes', 'ansible_change_targets', 'ansible_change_batches', 'ansible_change_approvals', 'ansible_change_windows',
-        'ansible_change_diffs', 'ansible_change_events'];
+        'ansible_change_diffs', 'ansible_change_events', 'ansible_change_states'];
+
+    /**
+     * Most bytes of a state's JSON the plugin keeps (it keeps it compressed: about a tenth). A state of the large test
+     * network (4,922 devices in one spanning tree domain, 10 VLANs) is 2.2 MB of JSON, 0.26 MB compressed.
+     */
+    public const STATE_MAX = 32 * 1024 * 1024;
 
     public function __construct(private readonly Sql $sql = new LaravelSql())
     {
@@ -56,8 +62,9 @@ final class ChangeRepository implements ChangeStore
 
             return SchemaCheck::hasColumns('ansible_runs', ['change_id', 'kind', 'batch', 'context', 'commit_hash', 'proof'])
                 && SchemaCheck::hasColumns('ansible_change_targets', ['backup_check', 'served_hash', 'served_at', 'served_note'])
-                && SchemaCheck::hasColumns('ansible_change_batches', ['blast', 'blast_accepted', 'blast_override'])
-                && SchemaCheck::hasColumns('ansible_change_windows', ['cut_off']);
+                && SchemaCheck::hasColumns('ansible_change_batches', ['blast', 'blast_accepted', 'blast_override', 'verify'])
+                && SchemaCheck::hasColumns('ansible_change_windows', ['cut_off'])
+                && SchemaCheck::hasColumns('ansible_changes', ['fix', 'verification', 'verification_note']);
         } catch (\Throwable) {
             return false;
         }
@@ -237,6 +244,103 @@ final class ChangeRepository implements ChangeStore
         $this->sql->change('UPDATE ' . $this->sql->table('ansible_change_windows') . ' SET ' . implode(', ', $sets) . ' WHERE `id` = ?', array_merge($bindings, [$id]));
     }
 
+    public function saveScope(int $changeId, int $batch, string $phase, array $covered, array $domain, array $names = []): void
+    {
+        $table = $this->sql->table('ansible_change_states');
+        $kept = [];
+        foreach ($names as $deviceId => $name) {
+            $kept[(string) (int) $deviceId] = mb_substr((string) $name, 0, 120);
+        }
+        $values = [self::ids($covered), self::ids($domain), (string) json_encode((object) $kept, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE)];
+        if ($this->sql->change('UPDATE ' . $table . ' SET `covered` = ?, `domain` = ?, `names` = ? WHERE `change_id` = ? AND `batch` = ? AND `phase` = ?',
+            array_merge($values, [$changeId, $batch, $phase])) === 0 && $this->scopeOf($changeId, $batch, $phase) === null) {
+            $this->insert('ansible_change_states', ['change_id' => $changeId, 'batch' => $batch, 'phase' => $phase, 'covered' => $values[0], 'domain' => $values[1],
+                'names' => $values[2]]);
+        }
+    }
+
+    public function scopeOf(int $changeId, int $batch, string $phase): ?array
+    {
+        $rows = $this->sql->select('SELECT `covered`, `domain`, `names`, `taken_at` FROM ' . $this->sql->table('ansible_change_states')
+            . ' WHERE `change_id` = ? AND `batch` = ? AND `phase` = ?', [$changeId, $batch, $phase]);
+        if (! $rows) {
+            return null;
+        }
+        $names = [];
+        foreach ((array) (is_string($rows[0]['names']) ? json_decode($rows[0]['names'], true) : []) as $deviceId => $name) {
+            if (is_string($name) && ctype_digit((string) $deviceId)) {
+                $names[(int) $deviceId] = $name;
+            }
+        }
+
+        return ['covered' => self::idList($rows[0]['covered']), 'domain' => self::idList($rows[0]['domain']), 'names' => $names, 'taken_at' => $rows[0]['taken_at']];
+    }
+
+    /**
+     * {@inheritdoc}
+     *
+     * The state is kept as gzip in base64 ("gz:..."), its scope beside it (its covered devices and domain, for the state after it).
+     */
+    public function saveState(int $changeId, int $batch, string $phase, array $state, ?array $result = null): void
+    {
+        $json = (string) json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        if (strlen($json) > self::STATE_MAX) {
+            throw new \LengthException('the state is ' . round(strlen($json) / 1048576, 1) . ' MB, more than the ' . intdiv(self::STATE_MAX, 1048576) . ' MB the plugin keeps');
+        }
+        $scope = (array) ($state['scope'] ?? []);
+        $covered = array_merge(...array_map(fn ($role) => array_map('intval', (array) ($scope[$role] ?? [])), ['subjects', 'dependents', 'neighbors', 'included']));
+        $this->saveScope($changeId, $batch, $phase, $covered, array_map('intval', (array) ($scope['domain'] ?? [])),
+            array_intersect_key((array) ($state['names'] ?? []), array_flip($covered)));
+        $this->sql->change('UPDATE ' . $this->sql->table('ansible_change_states') . ' SET `taken_at` = ?, `bytes` = ?, `data` = ?, `result` = ? WHERE `change_id` = ? AND `batch` = ? AND `phase` = ?',
+            [Clock::store((int) ($state['taken_at'] ?? time())), strlen($json), 'gz:' . base64_encode((string) gzencode($json, 6)),
+                $result !== null ? json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) : null, $changeId, $batch, $phase]);
+    }
+
+    public function stateOf(int $changeId, int $batch, string $phase): ?array
+    {
+        $rows = $this->sql->select('SELECT `data` FROM ' . $this->sql->table('ansible_change_states') . ' WHERE `change_id` = ? AND `batch` = ? AND `phase` = ?',
+            [$changeId, $batch, $phase]);
+        $data = (string) ($rows[0]['data'] ?? '');
+        if (! str_starts_with($data, 'gz:')) {
+            return null;
+        }
+        $json = @gzdecode((string) base64_decode(substr($data, 3), true), self::STATE_MAX + 1);
+        $state = is_string($json) ? json_decode($json, true) : null;
+
+        return is_array($state) ? $state : null;
+    }
+
+    public function resultOf(int $changeId, int $batch): ?array
+    {
+        $rows = $this->sql->select('SELECT `result` FROM ' . $this->sql->table('ansible_change_states') . " WHERE `change_id` = ? AND `batch` = ? AND `phase` = 'after'",
+            [$changeId, $batch]);
+        $result = isset($rows[0]['result']) ? json_decode((string) $rows[0]['result'], true) : null;
+
+        return is_array($result) ? $result : null;
+    }
+
+    /**
+     * Device ids as kept (a JSON list).
+     *
+     * @param  array<int, mixed>  $ids
+     */
+    private static function ids(array $ids): string
+    {
+        return (string) json_encode(array_values(array_unique(array_map('intval', $ids))));
+    }
+
+    /**
+     * Device ids kept as a JSON list.
+     *
+     * @return int[]
+     */
+    private static function idList(mixed $json): array
+    {
+        $ids = is_string($json) ? json_decode($json, true) : null;
+
+        return is_array($ids) ? array_values(array_map('intval', array_filter($ids, 'is_int'))) : [];
+    }
+
     public function replaceDiffs(int $changeId, int $runId, array $rows): void
     {
         $this->sql->transaction(function () use ($changeId, $runId, $rows): void {
@@ -386,7 +490,7 @@ final class ChangeRepository implements ChangeStore
         $total = (clone $query)->count();
         $rows = $query->orderByDesc('c.id')->forPage(max(1, $page), $perPage)
             ->get(['c.id', 'c.username', 'c.template_id', 'c.template_name', 'c.reference', 'c.status', 'c.target_count', 'c.batch_count', 'c.current_batch',
-                'c.dry_run_state', 'c.waiting', 'c.created_at', 'c.finished_at'])
+                'c.dry_run_state', 'c.waiting', 'c.created_at', 'c.finished_at', 'c.verification'])
             ->map(fn ($r) => (array) $r)->all();
         $names = [];
         if ($rows) {

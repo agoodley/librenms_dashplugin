@@ -62,6 +62,8 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
         // accepting a batch's new blast radius needs the approve permission, or the run permission while the settings ask
         // for no approval: the controller checks which
         Route::post('changes/{id}/accept-blast', [ChangeController::class, 'acceptBlast'])->whereNumber('id')->name('changes.accept-blast');
+        // accepting what a batch's verification found (unexpected changes, or a batch that cannot be verified) follows the same rule
+        Route::post('changes/{id}/accept-verification', [ChangeController::class, 'acceptVerification'])->whereNumber('id')->name('changes.accept-verification');
         // continuing a paused change needs the run permission; a batch whose blast radius cannot be computed, what accepting
         // a new blast radius needs (the controller checks which)
         Route::post('changes/{id}/continue', [ChangeController::class, 'resume'])->whereNumber('id')->name('changes.continue');

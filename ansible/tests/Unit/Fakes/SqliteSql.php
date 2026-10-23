@@ -49,7 +49,8 @@ final class SqliteSql implements Sql
             `current_batch` INTEGER NOT NULL DEFAULT 0, `dry_run_id` INTEGER, `dry_runs` INTEGER NOT NULL DEFAULT 0, `dry_run_state` TEXT, `dry_run_at` TEXT, `dry_run_ended_at` TEXT,
             `dry_run_commit` TEXT, `dry_run_findings` TEXT, `plan_fingerprint` TEXT, `fingerprint_parts` TEXT, `approval_fingerprint` TEXT, `approved_by` TEXT,
             `approved_user_id` INTEGER, `approved_at` TEXT, `applied_by` TEXT, `applied_user_id` INTEGER, `apply_started_at` TEXT, `waiting` TEXT, `resume_at` TEXT,
-            `stop_requested_by` TEXT, `stop_requested_at` TEXT, `error` TEXT, `finished_at` TEXT, `request_token` TEXT UNIQUE, `created_at` TEXT, `updated_at` TEXT)');
+            `stop_requested_by` TEXT, `stop_requested_at` TEXT, `error` TEXT, `finished_at` TEXT, `request_token` TEXT UNIQUE, `created_at` TEXT, `updated_at` TEXT,
+            `fix` TEXT, `verification` TEXT, `verification_note` TEXT)');
         $this->pdo->exec('CREATE TABLE `ansible_change_targets` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `device_id` INTEGER NOT NULL,
             `inventory_name` TEXT NOT NULL, `hostname` TEXT NOT NULL DEFAULT \'\', `display` TEXT NOT NULL DEFAULT \'\', `batch` INTEGER NOT NULL, `position` INTEGER NOT NULL DEFAULT 0,
             `dry_result` TEXT, `dry_counts` TEXT, `result` TEXT, `counts` TEXT, `backup_node` TEXT, `backup_check` TEXT,
@@ -58,7 +59,10 @@ final class SqliteSql implements Sql
             UNIQUE (`change_id`, `device_id`))');
         $this->pdo->exec('CREATE TABLE `ansible_change_batches` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `number` INTEGER NOT NULL,
             `status` TEXT NOT NULL, `run_id` INTEGER, `failures` INTEGER NOT NULL DEFAULT 0, `user_id` INTEGER, `username` TEXT, `started_at` TEXT, `ended_at` TEXT, `note` TEXT,
-            `blast` TEXT, `blast_accepted` TEXT, `blast_override` TEXT, UNIQUE (`change_id`, `number`))');
+            `blast` TEXT, `blast_accepted` TEXT, `blast_override` TEXT, `verify` TEXT, UNIQUE (`change_id`, `number`))');
+        // phase 4: the states of the batches (2026_11_05_000000_ansible_change_verification)
+        $this->pdo->exec('CREATE TABLE `ansible_change_states` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `batch` INTEGER NOT NULL,
+            `phase` TEXT NOT NULL, `covered` TEXT, `domain` TEXT, `names` TEXT, `taken_at` TEXT, `bytes` INTEGER, `data` TEXT, `result` TEXT, UNIQUE (`change_id`, `batch`, `phase`))');
         $this->pdo->exec('CREATE TABLE `ansible_change_approvals` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `user_id` INTEGER NOT NULL,
             `username` TEXT NOT NULL, `decision` TEXT NOT NULL, `comment` TEXT, `fingerprint` TEXT, `dry_run_id` INTEGER, `created_at` TEXT, `voided_at` TEXT, `void_reason` TEXT)');
         $this->pdo->exec('CREATE TABLE `ansible_change_windows` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `batch` INTEGER NOT NULL,

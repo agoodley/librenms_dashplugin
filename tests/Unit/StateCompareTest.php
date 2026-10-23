@@ -81,7 +81,7 @@ class StateCompareTest extends TestCase
         $events = StateCompare::compare($before, $after)['events'];
 
         $this->assertSame([['type' => 'blocking_started', 'category' => 'stp', 'level' => 'info', 'text' => 'acc1 Gi1/0/50 started blocking in VLAN 1 / CST',
-            'devices' => [3]]], $events);
+            'devices' => [3], 'vlans' => [0]]], $events);
     }
 
     public function testADeviceThatWentDownBetweenTheStatesIsSaidAndOneDownBeforeIsNot(): void

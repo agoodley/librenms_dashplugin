@@ -112,6 +112,31 @@ final class ApprovalRules
     }
 
     /**
+     * Why the user may not accept what a batch's verification found (unexpected changes, or that the batch cannot be
+     * verified) so that the change goes on; null when they may. The rule of accepting a new blast radius: an admin holding
+     * the permission acceptPermission() names, not the requester when the settings ask for a second admin.
+     *
+     * @param  array{status: string, waiting?: ?string, user_id: int|string|null}  $change
+     * @param  bool  $holds  the user is an admin holding that permission
+     */
+    public static function acceptVerificationRefusal(string $mode, array $change, int $userId, bool $holds): ?string
+    {
+        if ($mode === self::SECOND && $change['user_id'] !== null && (int) $change['user_id'] === $userId) {
+            return 'The settings need a second admin: you requested this change, so another admin with the approve permission accepts what its batch changed.';
+        }
+        if (! $holds) {
+            return self::acceptPermission($mode) === 'run'
+                ? 'Accepting what a batch changed needs the Ansible plugin\'s run permission (ansible.run) while the settings ask for no approval: an admin grants it on the plugin\'s settings page.'
+                : 'Accepting what a batch changed needs the Ansible plugin\'s approve permission (ansible.approve), as an approval does: an admin grants it on the plugin\'s settings page.';
+        }
+        if ($change['status'] !== ChangeStatus::PAUSED || ! in_array($change['waiting'] ?? null, ['verification', 'verification_unknown'], true)) {
+            return 'Only a change that waits after a batch\'s verification (unexpected changes, or a batch that cannot be verified) has something to accept.';
+        }
+
+        return null;
+    }
+
+    /**
      * Why the user may not continue a batch whose blast radius cannot be computed (a Continue goes without one when it
      * still cannot be computed); null when they may. It is a decision on a blast radius like an acceptance, and follows
      * the same rule: the permission acceptPermission() names (an approver while the settings ask for an approval, an

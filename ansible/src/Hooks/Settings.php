@@ -38,7 +38,7 @@ class Settings implements SettingsHook
         // LibreNMS disables a plugin whose hook throws: nothing may escape
         $data = ['admin' => false, 'connection' => null, 'connectionError' => null, 'settings' => PluginSettings::DEFAULTS, 'settingsError' => null,
             'mapErrors' => [], 'holders' => [], 'candidates' => [], 'approveHolders' => [], 'approveCandidates' => [], 'groups' => [], 'users' => [], 'fetches' => [],
-            'lastCheck' => null, 'mapRows' => [], 'oxidized' => false, 'topology' => 'unknown', 'topologyApi' => null];
+            'lastCheck' => null, 'mapRows' => [], 'oxidized' => false, 'topology' => 'unknown', 'topologyApi' => null, 'verification' => 'unknown'];
         try {
             $data['admin'] = Access::canView(auth()->user());
             if ($data['admin']) {
@@ -61,6 +61,8 @@ class Settings implements SettingsHook
                 $data['topology'] = (new \Agoodley\LibrenmsAnsible\Services\TopologyPlanning())->unavailable();
                 $data['topologyApi'] = class_exists(\Agoodley\LibrenmsAnsible\Services\TopologyPlanning::API)
                     ? (string) constant(\Agoodley\LibrenmsAnsible\Services\TopologyPlanning::API . '::VERSION') : null;
+                // can the topology plugin verify the batches (its verification API)?
+                $data['verification'] = (new \Agoodley\LibrenmsAnsible\Services\TopologyVerification())->unavailable();
                 $data['groups'] = (new DeviceRepository())->deviceGroups();
                 $data['users'] = (new UserRepository())->all();
                 $data['fetches'] = (new FetchRepository())->all();

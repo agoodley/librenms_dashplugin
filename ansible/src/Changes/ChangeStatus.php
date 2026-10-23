@@ -26,8 +26,9 @@ final class ChangeStatus
     public const APPLYING = 'applying';
 
     /**
-     * Waiting between two batches (WAITS): for an admin to continue, for the secret answers, for the pause to end, or before
-     * a batch whose blast radius grew (until an admin accepts it) or cannot be computed.
+     * Waiting between two batches (WAITS): for an admin to continue, for the secret answers, for the pause to end, before
+     * a batch whose blast radius grew (until an admin accepts it) or cannot be computed, or after a batch whose
+     * verification found unexpected changes or could not be made (until an admin accepts it).
      */
     public const PAUSED = 'paused';
 
@@ -59,6 +60,8 @@ final class ChangeStatus
         'timer' => 'pause',
         'blast' => 'waits for its new blast radius to be accepted',
         'blast_unknown' => 'waits: its blast radius cannot be computed',
+        'verification' => 'waits for the unexpected changes of a batch to be accepted',
+        'verification_unknown' => 'waits: a batch cannot be verified',
     ];
 
     public const LABELS = [

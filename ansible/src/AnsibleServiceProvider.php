@@ -50,7 +50,7 @@ class AnsibleServiceProvider extends ServiceProvider
         Clock::useUserZone(fn () => $this->app->runningInConsole() ? null : session('preferences.timezone'));
 
         if ($this->app->runningInConsole()) {
-            $this->commands([SyncCommand::class]);
+            $this->commands([SyncCommand::class, \Agoodley\LibrenmsAnsible\Console\StateCommand::class]);
             $this->callAfterResolving(Schedule::class, fn (Schedule $schedule) => $this->schedule($schedule, $pluginManager));
         }
 

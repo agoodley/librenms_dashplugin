@@ -37,7 +37,7 @@ interface ChangeStore
     public function updateTargets(int $changeId, array $values): void;
 
     /**
-     * The change's batches, their JSON columns decoded (blast, blast_accepted, blast_override).
+     * The change's batches, their JSON columns decoded (blast, blast_accepted, blast_override, verify).
      *
      * @return array<int, array> number (1 is the first) => row
      */
@@ -112,6 +112,41 @@ interface ChangeStore
      * it out for the first time.
      */
     public function served(int $changeId, int $deviceId, ?string $hash, ?string $note, int $at): bool;
+
+    /**
+     * Keep the scope of a batch's state (phase "before" or "after"): the devices whose facts it records (with their
+     * names), and the other spanning tree switches of their domains. The state itself, taken later, keeps it.
+     *
+     * @param  int[]  $covered
+     * @param  int[]  $domain
+     * @param  array<int, string>  $names  of the covered devices
+     */
+    public function saveScope(int $changeId, int $batch, string $phase, array $covered, array $domain, array $names = []): void;
+
+    /**
+     * The scope kept for a batch's state, null when there is none.
+     *
+     * @return array{covered: int[], domain: int[], names: array<int, string>, taken_at: ?string}|null
+     */
+    public function scopeOf(int $changeId, int $batch, string $phase): ?array;
+
+    /**
+     * Keep a batch's state (the topology plugin's verification API's state(), compact), with its scope, and, after the
+     * batch, the comparison with the state before and what it means ($result).
+     *
+     * @throws \LengthException when the state is larger than the plugin keeps (STATE_MAX bytes of JSON)
+     */
+    public function saveState(int $changeId, int $batch, string $phase, array $state, ?array $result = null): void;
+
+    /**
+     * A batch's state as kept, null when there is none (or it cannot be read).
+     */
+    public function stateOf(int $changeId, int $batch, string $phase): ?array;
+
+    /**
+     * The comparison kept with a batch's state after it, and what it means; null when there is none.
+     */
+    public function resultOf(int $changeId, int $batch): ?array;
 
     /**
      * Replace the diffs of the change's dry run.

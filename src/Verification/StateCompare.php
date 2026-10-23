@@ -27,10 +27,12 @@ final class StateCompare
     private const RANKS = [Finding::INFO => 1, Finding::WARNING => 2, Finding::CRITICAL => 3];
 
     /**
-     * @return array{from: int, to: int, events: list<array{type: string, category: string, level: string, text: string, devices: int[]}>,
+     * @return array{from: int, to: int, events: list<array{type: string, category: string, level: string, text: string, devices: int[], vlans?: int[],
+     *     root_before?: ?array{mac: string, device: ?int}, root_after?: ?array{mac: string, device: ?int}}>,
      *     findings: array{new: list<array>, worse: list<array>, changed: list<array>, milder: list<array>, resolved: list<array>, same: int},
      *     devices: array{down: int[], up: int[]}, names: array<int, string>}
-     *     worse, changed and milder: the finding now with "was" (the one before)
+     *     events: a spanning tree event has the VLAN keys it is about, a root bridge event the root before and after (its MAC, and the device
+     *     when it is monitored); worse, changed and milder: the finding now with "was" (the one before)
      */
     public static function compare(array $before, array $after): array
     {
@@ -59,22 +61,77 @@ final class StateCompare
                 continue; // the same fact (a link whose details changed is still that link)
             }
             if ($was !== null) {
-                $rows[] = self::row(++$id, $was, $from - 1, $to);
+                $id++;
+                $rows[$id] = self::row($id, $was, $from - 1, $to);
             }
             if ($now !== null) {
-                $rows[] = self::row(++$id, $now, $to, null);
+                $id++;
+                $rows[$id] = self::row($id, $now, $to, null);
             }
         }
         $text = new FactText($names);
-        $report = ChangeReport::build($rows, $from, $to, $text, [], $nodes);
+        $report = ChangeReport::build(array_values($rows), $from, $to, $text, [], $nodes);
         $events = array_map(fn (array $event) => ['type' => $event['type'], 'category' => $event['category'], 'level' => $event['level'], 'text' => $event['text'],
-            'devices' => $event['devices']], $report['events']);
+            'devices' => $event['devices']] + self::detail($event, $rows), $report['events']);
 
         $findings = self::findings(self::about($before, $domain), self::about($after, $domain));
         $devices = self::devices($before, $after);
 
         return ['from' => $from, 'to' => $to, 'events' => $events, 'findings' => $findings, 'devices' => $devices,
             'names' => self::mentioned($names, $events, $findings, $devices)];
+    }
+
+    /**
+     * What a spanning tree event is about, from the facts it comes from: the VLAN keys whose root bridge, or whose
+     * blocking, changed, and for a root bridge event the root before and after.
+     *
+     * @param  array<int, array>  $rows  id => the period of a fact (row())
+     * @return array{vlans?: int[], root_before?: ?array{mac: string, device: ?int}, root_after?: ?array{mac: string, device: ?int}}
+     */
+    private static function detail(array $event, array $rows): array
+    {
+        if ($event['category'] !== 'stp') {
+            return [];
+        }
+        $before = [];
+        $after = [];
+        foreach ($event['facts'] ?? [] as $rowId) {
+            $row = $rows[$rowId] ?? null;
+            if ($row === null) {
+                continue;
+            }
+            $device = (int) ($row['data']['device'] ?? 0);
+            foreach (FactText::vlans($row['data']) as $vlan) {
+                if ($row['removed_at'] !== null) {
+                    $before[$device][$vlan] = $row['data'];
+                } else {
+                    $after[$device][$vlan] = $row['data'];
+                }
+            }
+        }
+        $vlans = [];
+        $roots = ['root_before' => null, 'root_after' => null];
+        $root = fn (?array $data) => $data === null ? null : ['mac' => (string) ($data['root'] ?? ''),
+            'device' => isset($data['root_device']) ? (int) $data['root_device'] : null];
+        foreach (array_unique([...array_keys($before), ...array_keys($after)]) as $device) {
+            foreach (array_keys(($before[$device] ?? []) + ($after[$device] ?? [])) as $vlan) {
+                $old = $before[$device][$vlan] ?? null;
+                $new = $after[$device][$vlan] ?? null;
+                $rootEvent = str_starts_with($event['type'], 'root_');
+                if ($rootEvent ? ($old !== null && $new !== null && ($old['root'] ?? null) === ($new['root'] ?? null))
+                    : (($old === null) === ($new === null))) {
+                    continue; // the same root bridge in that VLAN, or a port that blocks it before and after
+                }
+                $vlans[$vlan] = true;
+                if ($rootEvent) {
+                    $roots['root_before'] ??= $root($old);
+                    $roots['root_after'] ??= $root($new);
+                }
+            }
+        }
+        ksort($vlans);
+
+        return ['vlans' => array_keys($vlans)] + (str_starts_with($event['type'], 'root_') ? $roots : []);
     }
 
     /**

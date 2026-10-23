@@ -40,6 +40,19 @@ use Agoodley\LibrenmsAnsible\Support\Format;
  *   shrank, the batch goes on and the timeline says so. The batch's maintenance window covers its devices and the
  *   monitored devices it cuts off, as last computed.
  *
+ * - Each batch is verified (phase 4, the topology plugin's verification API): before it starts, the state of the network
+ *   around it is taken (its devices, what it cuts off, their LLDP/CDP neighbors, their spanning tree domains: facts and
+ *   findings), from data LibreNMS discovered again for it (Fresh data: ask) or as it has it (wait), at most the Wait
+ *   for fresh data setting; after it, once its settle time is over and LibreNMS' data of that scope is newer than that
+ *   (a discovery and a poll that started after it; a poll for the rest of the domain), the state is taken again and the
+ *   two compared (VerificationRules): nothing unexpected (verified), unexpected changes (a link gone, a root bridge
+ *   moved, a new single point of failure...), or it cannot be verified (no fresh data within the wait, no topology
+ *   plugin). The settings then pause the change until an admin accepts it (as a new blast radius is accepted), stop
+ *   it, or only record it; the last batch does not pause (nothing is left to hold): the change ends with its outcome
+ *   (verified, verified with accepted changes, not verified), its devices reserved until that last verification is
+ *   done or timed out. Only the sync command takes states (a large analysis, in a process of its own), never a page's
+ *   request; no batch compares data older than its end.
+ *
  * Every write of the change's row is a compare-and-set on its version, and only the request whose write succeeded
  * writes the rest (batches, events); a batch's run has a one-time token, so it is launched once at most. The callers
  * (Services\ChangeFollower) hold a lock per change around advance() and the users' actions.
@@ -73,6 +86,12 @@ final class ChangeLifecycle
     /** Why an acceptance, or a Continue without a blast radius, given for a check the batch no longer has is refused. */
     public const SEEN_CHANGED = 'The blast radius of the batch changed since you loaded the page: look again.';
 
+    /** Why the acceptance of a batch's verification the change page no longer shows is refused. */
+    public const VERIFY_SEEN_CHANGED = 'The verification of the batch changed since you loaded the page: look again.';
+
+    /** What the change waits for while a batch's unexpected changes, or a batch that cannot be verified, wait for an admin. */
+    public const VERIFY_WAITS = ['verification', 'verification_unknown'];
+
     /** A target's record of what the inventory endpoint served the runner (InventoryGuard), cleared when its dry run or batch begins. */
     private const UNSERVED = ['served_hash' => null, 'served_at' => null, 'served_note' => null];
 
@@ -88,6 +107,7 @@ final class ChangeLifecycle
     public function setHeartbeat(?\Closure $heartbeat): void
     {
         $this->heartbeat = $heartbeat;
+        $this->verifier?->setHeartbeat($heartbeat);
     }
 
     private function beat(): void
@@ -106,6 +126,8 @@ final class ChangeLifecycle
         private readonly EventSink $events,
         private readonly ChangeSettings $settings,
         private readonly ?Topology $topology = null,
+        private readonly ?Verifier $verifier = null,
+        private readonly ?DataRefresh $refresh = null,
     ) {
     }
 
@@ -439,6 +461,11 @@ final class ChangeLifecycle
         if ($change['waiting'] === 'blast') {
             return "Batch $batch waits for an admin with the approve permission to accept its new blast radius (it grew since the approval): it does not start "
                 . 'before. Stop the change rather than run it with a blast radius nobody approved.';
+        }
+        if (in_array($change['waiting'], self::VERIFY_WAITS, true)) {
+            return 'The change waits for ' . ApprovalRules::accepter($this->settings->approval) . ' to accept ' . ($change['waiting'] === 'verification'
+                ? "the unexpected changes of batch $batch" : "going on without the verification of batch $batch") . ' (Accept): batch ' . ($batch + 1)
+                . ' does not start before. Stop the change rather than go on with changes nobody accepted.';
         }
         $unknown = $change['waiting'] === 'blast_unknown';
         $problem = $this->runner->userProblem((int) $user['user_id'], 'run');
@@ -932,6 +959,11 @@ final class ChangeLifecycle
 
             return;
         }
+        if ($change['waiting'] === 'verification_unknown') {
+            $this->verifyRecheck($change, $now);
+
+            return;
+        }
         if ($change['waiting'] !== 'timer' || $change['resume_at'] === null || self::at($change['resume_at']) > $now) {
             return;
         }
@@ -997,6 +1029,12 @@ final class ChangeLifecycle
             return; // its stop ends it at its next step
         }
         if ($secrets === null && $this->busyWaits($change, $number, $now)) {
+            return;
+        }
+        // phase 4: the state of the network around the batch first, from fresh data (taken by the sync command, which then starts it)
+        if ($this->beforePending($change, $number, $now)) {
+            $this->beforeStep($change, $number, $now);
+
             return;
         }
         // everything a launch checks, before the window opens and the backups are taken: the dry run, the approval, the users,
@@ -1422,6 +1460,11 @@ final class ChangeLifecycle
     {
         $count = (int) $change['batch_count'];
         $plan = (array) $change['plan'];
+        // phase 4: a batch that did its work is verified before the change moves on (a stop does not wait for it)
+        if ($status === 'done' && $stop === null && $stoppedBy === null && ! $this->verified($change, $number, $now)) {
+            return; // it waits for fresh data, or the change paused or ended on its verification
+        }
+        $change = $this->changes->find((int) $change['id']) ?? $change;
         if ($status === 'stopped') {
             // the stop asked for stopped the batch's run
             $this->finish($change, ChangeStatus::STOPPED, 'stopped by ' . UntrustedText::line((string) ($stoppedBy ?? 'an admin'), 60) . " during batch $number", $now,
@@ -1484,8 +1527,12 @@ final class ChangeLifecycle
         if (ChangeStatus::isFinal($current['status'])) {
             return;
         }
+        // the outcome of its verification, from the batches that ran (null when none ran, or none was verified)
+        $outcome = in_array($status, [ChangeStatus::APPLIED, ChangeStatus::FAILED, ChangeStatus::STOPPED], true) ? VerificationOutcome::of($this->changes->batches($id))
+            : ['outcome' => null, 'note' => null];
         $done = $this->update($current, ['status' => $status, 'finished_at' => Clock::store($now), 'waiting' => null, 'resume_at' => null,
-            'error' => $reason !== null ? UntrustedText::line($reason, 1000) : null]);
+            'error' => $reason !== null ? UntrustedText::line($reason, 1000) : null, 'verification' => $outcome['outcome'],
+            'verification_note' => $outcome['note'] !== null ? UntrustedText::line($outcome['note'], 1000) : null]);
         if ($done === null) {
             return;
         }
@@ -1507,6 +1554,11 @@ final class ChangeLifecycle
             ChangeStatus::FAILED => 'error',
             default => 'warning',
         }, $user);
+        if ($outcome['outcome'] !== null) {
+            $text = VerificationText::outcome($outcome['outcome'], $outcome['note']);
+            $this->timeline($done, 'verify', $text, null, $now);
+            $this->eventAll($done, ChangeText::name($done) . ': ' . lcfirst($text), $outcome['outcome'] === VerificationOutcome::VERIFIED ? 'ok' : 'warning', $user);
+        }
     }
 
     // ------------------------------------------------------------------ checks
@@ -2154,6 +2206,501 @@ final class ChangeLifecycle
         }
 
         return false;
+    }
+
+    // ------------------------------------------------------------------ verification (phase 4)
+
+    /**
+     * Accept what a batch changed that nobody asked for (its verification found unexpected changes), or going on without
+     * its verification (it cannot be verified): the rule of accepting a new blast radius (ApprovalRules::acceptPermission():
+     * an approver while the settings ask for an approval, not the requester with a second admin; an admin with the run
+     * permission while they ask for none). It accepts what the change page showed ($seen: verifyCheckId() of the
+     * verification it showed): refused when the verification changed since. The change goes on as after a verified
+     * batch. Null when it was accepted, else why not.
+     *
+     * @param  array{user_id: int, username: string}  $user
+     * @param  bool  $holds  the user is an admin holding the permission the settings ask for
+     */
+    public function acceptVerification(int $id, array $user, bool $holds, string $comment, int $now, string $seen = ''): ?string
+    {
+        $change = $this->changes->find($id);
+        if ($change === null) {
+            return 'There is no such change.';
+        }
+        $refusal = ApprovalRules::acceptVerificationRefusal($this->settings->approval, $change, (int) $user['user_id'], $holds);
+        if ($refusal !== null) {
+            return $refusal;
+        }
+        $number = (int) $change['current_batch'];
+        $verify = (array) ($this->changes->batches($id)[$number]['verify'] ?? []);
+        if (! in_array($verify['result'] ?? null, ['unexpected', 'unknown'], true)) {
+            return "Batch $number has nothing to accept: reload the page.";
+        }
+        if (! hash_equals(self::verifyCheckId($verify, $id, $number), $seen)) {
+            return self::VERIFY_SEEN_CHANGED;
+        }
+        $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]);
+        if ($resumed === null) {
+            return 'The change changed meanwhile: reload the page.';
+        }
+        $comment = self::comment($comment);
+        $unknown = $verify['result'] === 'unknown';
+        $count = (int) ($verify['counts']['unexpected'] ?? 0);
+        $this->setVerify($id, $number, ['decision' => 'go', 'accepted' => ['by' => mb_substr($user['username'], 0, 255), 'user_id' => (int) $user['user_id'],
+            'at' => Clock::store($now), 'comment' => $comment, 'result' => $verify['result']]]);
+        $this->timeline($resumed, 'verify', VerificationText::accepted($number, $user['username'], $unknown, $count, $comment), $user['username'], $now);
+        $this->eventAll($resumed, VerificationText::acceptedEvent($resumed, $number, $user['username'], $unknown, $count), 'notice', $user['username']);
+        // the change goes on as after a verified batch: the next batch, the wait after the first one, the pause, or its end
+        $this->afterBatch($resumed, $number, 'done', null, $now, null);
+
+        return null;
+    }
+
+    /**
+     * The identity of a batch's verification as the change page shows it (what an acceptance names): its result, when its
+     * state after was taken, what it found unexpected, why it cannot be verified.
+     */
+    public static function verifyCheckId(array $verify, int $changeId, int $number): string
+    {
+        return md5((string) json_encode([$changeId, $number, $verify['result'] ?? null, $verify['after']['taken_at'] ?? null, $verify['error'] ?? null,
+            $verify['top'] ?? [], $verify['counts']['unexpected'] ?? null]));
+    }
+
+    /**
+     * Does batch $number wait for the state before it (taken by the sync command, which then starts the batch)? Verification
+     * switched on, the state not taken yet (nor known to be impossible). The first time, it says so and asks for it: from data
+     * LibreNMS discovers again for it (Fresh data: ask), or as LibreNMS has it (wait). Without the topology plugin's
+     * verification API the batch goes on, not to be verified.
+     */
+    private function beforePending(array $change, int $number, int $now): bool
+    {
+        if (! $this->settings->verify) {
+            return false;
+        }
+        $id = (int) $change['id'];
+        $verify = (array) ($this->changes->batches($id)[$number]['verify'] ?? []);
+        $before = (array) ($verify['before'] ?? []);
+        $status = $before['status'] ?? null;
+        if (in_array($status, ['taken', 'unknown'], true)) {
+            return false;
+        }
+        $why = $this->verifier === null ? 'the topology plugin is not available to this plugin' : $this->verifier->unavailable();
+        if ($why !== null) {
+            $why = UntrustedText::line($why, 300);
+            $this->setVerify($id, $number, ['before' => ['status' => 'unknown', 'error' => $why, 'at' => $now]]);
+            $this->timeline($change, 'verify', "Batch $number will not be verified: $why.", null, $now);
+
+            return false;
+        }
+        // a refresh asked with the previous batch's verification that is older than the wait: asked again (the state before the
+        // batch is never taken from data older than that)
+        if ($status === 'waiting' && $now > (int) ($before['deadline'] ?? 0) && ! empty($before['prefetched'])) {
+            $status = null;
+        }
+        if ($status === null) {
+            $ask = $this->settings->verifyFresh === 'ask';
+            $this->setVerify($id, $number, ['before' => ['status' => $ask ? 'refresh' : 'take', 'since' => $now]]);
+            $this->timeline($change, 'verify', "Before batch $number: the plugin takes the state of the network around it first (its devices, what it cuts off, their "
+                . 'LLDP/CDP neighbors and spanning tree domains), ' . ($ask ? 'from data LibreNMS discovers again for it, at most ' . intdiv($this->settings->verifyWaitSeconds, 60)
+                . ' minutes' : 'from LibreNMS\' data as it is (setting Fresh data: wait)') . '; the batch starts then.', null, $now);
+        }
+
+        return true;
+    }
+
+    /**
+     * The state before batch $number, a step at a time (the sync command only): its scope, the refresh asked for its devices,
+     * the wait for fresh data (at most the wait setting: then it is taken anyway, older than the refresh, and the timeline
+     * says so), the state; then the batch starts. A state that cannot be taken leaves the batch to go on, not to be
+     * verified.
+     */
+    private function beforeStep(array $change, int $number, int $now): void
+    {
+        if ($this->verifier === null || ! $this->verifier->takesStates()) {
+            return; // the sync command takes it
+        }
+        $id = (int) $change['id'];
+        $verify = (array) ($this->changes->batches($id)[$number]['verify'] ?? []);
+        $before = (array) ($verify['before'] ?? []);
+        $user = $this->starter($change, $number);
+        $devices = $this->batchDevices($change, $number);
+        $stale = null;
+        try {
+            if (($before['status'] ?? null) === 'refresh') {
+                $this->beat();
+                $scope = $this->verifier->scope($devices, (int) $user['user_id']);
+                $covered = self::coveredOf($scope);
+                $names = self::namesOf($scope);
+                $this->changes->saveScope($id, $number, 'before', $covered, array_map('intval', (array) ($scope['domain'] ?? [])), $names);
+                $asked = $this->askRefresh($covered);
+                $deadline = $now + $this->settings->verifyWaitSeconds;
+                $this->setVerify($id, $number, ['before' => ['status' => 'waiting', 'since' => (int) ($before['since'] ?? $now), 'asked_at' => $now, 'how' => $asked['how'],
+                    'deadline' => $deadline, 'covered' => count($covered), 'domain' => count((array) ($scope['domain'] ?? []))] + ($asked['error'] !== null ? ['note' => $asked['error']] : [])]);
+                $this->timeline($change, 'verify', "Batch $number: " . VerificationText::asked($asked['how'], self::named($covered, $names), $deadline, 'the state before the batch')
+                    . ($asked['error'] !== null ? ' (' . $asked['error'] . ')' : '') . '.', null, $now);
+
+                return;
+            }
+            if (($before['status'] ?? null) === 'waiting') {
+                $scope = $this->changes->scopeOf($id, $number, 'before') ?? ['covered' => [], 'domain' => [], 'names' => []];
+                $since = (int) ($before['asked_at'] ?? $now);
+                $this->beat();
+                $fresh = Freshness::check($this->verifier->freshness([...$scope['covered'], ...$scope['domain']], (int) $user['user_id']), $scope['covered'], $scope['domain'],
+                    $since, $since);
+                if (! $fresh['fresh'] && $now < (int) ($before['deadline'] ?? 0)) {
+                    $this->setVerify($id, $number, ['before' => ['waiting' => Freshness::waitingText($fresh['waiting'], $scope['names']), 'checked_at' => $now] + $before]);
+
+                    return;
+                }
+                $stale = $fresh['fresh'] ? null : Freshness::waitingText($fresh['waiting'], $scope['names']);
+            }
+            $this->beat();
+            $state = $this->verifier->state($devices, (int) $user['user_id']);
+            $this->changes->saveState($id, $number, 'before', $state);
+            $older = $number === 1 ? 'the Apply' : 'the end of batch ' . ($number - 1);
+            $note = ($before['status'] ?? null) === 'take' ? 'from LibreNMS\' data as it is (setting Fresh data: wait)'
+                : ($stale !== null ? "its data is older than $older: LibreNMS did not discover or poll $stale again within " . intdiv($this->settings->verifyWaitSeconds, 60) . ' minutes'
+                    : 'from fresh data');
+            $this->setVerify($id, $number, ['before' => ['status' => 'taken', 'taken_at' => (int) ($state['taken_at'] ?? $now), 'stale' => $stale !== null, 'note' => $note,
+                'size' => VerificationText::stateSize($state), 'waiting' => null] + $before]);
+            $this->timeline($change, 'verify', "State before batch $number taken (" . VerificationText::stateSize($state) . "), $note.", null, $now);
+        } catch (LockLost $e) {
+            throw $e;
+        } catch (TopologyError|\LengthException|\RuntimeException $e) {
+            $why = UntrustedText::line($e->getMessage(), 300);
+            $this->setVerify($id, $number, ['before' => ['status' => 'unknown', 'error' => "the state before it could not be taken ($why)", 'at' => $now] + $before]);
+            $this->timeline($change, 'verify', "Batch $number will not be verified: the state before it could not be taken ($why).", null, $now);
+        }
+        $this->startBatch($this->changes->find($id) ?? $change, $number, $user, null, $now);
+    }
+
+    /**
+     * Is batch $number's verification done, so that the change goes on (verified, recorded, accepted)? Otherwise it goes
+     * on a step at a time (verifyStep()), and what it found decides (decideVerification()): the change pauses, ends, or
+     * goes on.
+     */
+    private function verified(array $change, int $number, int $now): bool
+    {
+        if (! $this->settings->verify) {
+            return true;
+        }
+        $id = (int) $change['id'];
+        $verify = (array) ($this->changes->batches($id)[$number]['verify'] ?? []);
+        if (($verify['decision'] ?? null) === 'go') {
+            return true;
+        }
+        if (($verify['result'] ?? null) === null) {
+            $this->verifyStep($change, $number, $now);
+            $verify = (array) ($this->changes->batches($id)[$number]['verify'] ?? []);
+            if (($verify['result'] ?? null) === null) {
+                return false; // it waits (the settle time, fresh data, the sync command)
+            }
+        }
+
+        return $this->decideVerification($this->changes->find($id) ?? $change, $number, $verify, $now);
+    }
+
+    /**
+     * A step of the verification after batch $number: the settle time; then (the sync command only) the refresh asked for
+     * what the state before it covered (and for the next batch's devices, whose state before is taken from it); the wait for
+     * fresh data (no comparison on data older than the batch's end and its settle time: past the wait the batch cannot be
+     * verified); the state after it, the comparison and what it means.
+     */
+    private function verifyStep(array $change, int $number, int $now): void
+    {
+        $id = (int) $change['id'];
+        $batch = $this->changes->batches($id)[$number] ?? [];
+        $verify = (array) ($batch['verify'] ?? []);
+        $before = (array) ($verify['before'] ?? []);
+        $after = (array) ($verify['after'] ?? []);
+        if (($before['status'] ?? null) !== 'taken') {
+            $why = (string) (($before['error'] ?? '') ?: 'no state was taken before the batch');
+            $this->verifyResult($change, $number, 'unknown', ['error' => $why, 'event_error' => $why], $now);
+
+            return;
+        }
+        $ended = self::at($batch['ended_at'] ?? null) ?: $now;
+        $due = $ended + $this->settings->settleSeconds;
+        if (! isset($after['status'])) {
+            $after = ['status' => 'settling', 'due' => $due];
+            $this->setVerify($id, $number, ['after' => $after]);
+        }
+        if ($now < $due || $this->verifier === null || ! $this->verifier->takesStates()) {
+            return; // the settle time; the rest is the sync command's
+        }
+        $why = $this->verifier->unavailable();
+        if ($why !== null) {
+            $why = UntrustedText::line($why, 300);
+            $this->verifyResult($change, $number, 'unknown', ['error' => $why, 'event_error' => $why], $now);
+
+            return;
+        }
+        $user = $this->starter($change, $number);
+        $scope = $this->changes->scopeOf($id, $number, 'before') ?? ['covered' => [], 'domain' => [], 'names' => []];
+        try {
+            if ($after['status'] === 'settling') {
+                // fresh data for what the state before covered, and for the next batch's devices (its state before is taken from it)
+                $next = $number < (int) $change['batch_count'] ? $this->prefetchNext($change, $number + 1, $now) : [];
+                $asked = $this->askRefresh(array_values(array_unique([...$scope['covered'], ...$next])));
+                $deadline = $due + $this->settings->verifyWaitSeconds;
+                $this->setVerify($id, $number, ['after' => ['status' => 'waiting', 'due' => $due, 'asked_at' => $now, 'how' => $asked['how'], 'deadline' => $deadline]
+                    + ($asked['error'] !== null ? ['note' => $asked['error']] : [])]);
+                $this->timeline($change, 'verify', "Batch $number: " . VerificationText::asked($asked['how'], self::named($scope['covered'], $scope['names']), $deadline, 'its verification')
+                    . ($asked['error'] !== null ? ' (' . $asked['error'] . ')' : '') . '.', null, $now);
+
+                return;
+            }
+            $this->beat();
+            $fresh = Freshness::check($this->verifier->freshness([...$scope['covered'], ...$scope['domain']], (int) $user['user_id']), $scope['covered'], $scope['domain'],
+                $due, self::at($batch['started_at'] ?? null) ?: $ended);
+            if (! $fresh['fresh']) {
+                $waiting = Freshness::waitingText($fresh['waiting'], $scope['names']);
+                if ($now < (int) ($after['deadline'] ?? 0)) {
+                    $this->setVerify($id, $number, ['after' => ['waiting' => $waiting, 'checked_at' => $now] + $after]);
+
+                    return;
+                }
+                // never compared on data older than the batch's end: it cannot be verified (a pause checks it again every minute)
+                $this->setVerify($id, $number, ['after' => ['status' => 'stale', 'waiting' => $waiting, 'checked_at' => $now] + $after]);
+                $this->verifyResult($change, $number, 'unknown', ['error' => "LibreNMS' data of $waiting is not newer than the end of the batch and its settle time ("
+                    . Clock::text($due) . ') after ' . intdiv($this->settings->verifyWaitSeconds, 60) . ' minutes',
+                    'event_error' => 'LibreNMS\' data of ' . Format::count(count($fresh['waiting']), 'device') . ' is not newer than the end of the batch after '
+                        . intdiv($this->settings->verifyWaitSeconds, 60) . ' minutes'], $now);
+
+                return;
+            }
+            $beforeState = $this->changes->stateOf($id, $number, 'before');
+            if ($beforeState === null) {
+                $this->verifyResult($change, $number, 'unknown', ['error' => 'the state before the batch cannot be read', 'event_error' => 'the state before the batch cannot be read'], $now);
+
+                return;
+            }
+            $this->beat();
+            $state = $this->verifier->state($this->batchDevices($change, $number), (int) $user['user_id'], ['include' => $scope['covered'], 'domain' => $scope['domain']]);
+            $comparison = $this->verifier->compare($beforeState, $state);
+            $evaluation = VerificationRules::evaluate($comparison, $beforeState, $state, FixExpectation::forBatch(is_array($change['fix'] ?? null) ? $change['fix'] : null,
+                $this->batchDevices($change, $number)), $this->settings->verifyMinimum);
+            $this->changes->saveState($id, $number, 'after', $state, ['evaluation' => $evaluation, 'names' => array_slice((array) ($comparison['names'] ?? []), 0, 500, true),
+                'from' => (int) ($comparison['from'] ?? 0), 'to' => (int) ($comparison['to'] ?? 0)]);
+            $this->setVerify($id, $number, ['after' => ['status' => 'done', 'taken_at' => (int) ($state['taken_at'] ?? $now), 'waiting' => null, 'checked_at' => $now] + $after]);
+            $this->verifyResult($change, $number, $evaluation['result'], ['evaluation' => $evaluation], $now);
+        } catch (LockLost $e) {
+            throw $e;
+        } catch (TopologyError|\LengthException|\RuntimeException|\InvalidArgumentException $e) {
+            $why = 'the state after it could not be taken (' . UntrustedText::line($e->getMessage(), 300) . ')';
+            $this->verifyResult($change, $number, 'unknown', ['error' => $why, 'event_error' => $why], $now);
+        }
+    }
+
+    /**
+     * Record what batch $number's verification found: verified, unexpected (with what), unknown (with why). Any decision
+     * taken on an earlier result is dropped: the new one decides.
+     *
+     * @param  array{evaluation?: array, error?: string, event_error?: string}  $found
+     */
+    private function verifyResult(array $change, int $number, string $result, array $found, int $now): void
+    {
+        $evaluation = $found['evaluation'] ?? null;
+        $counts = is_array($evaluation) ? (array) $evaluation['counts'] : [];
+        $byWhat = [];
+        foreach (is_array($evaluation) ? (array) $evaluation['unexpected'] : [] as $entry) {
+            $byWhat[$entry['what']] = ($byWhat[$entry['what']] ?? 0) + 1;
+        }
+        $this->setVerify((int) $change['id'], $number, ['result' => $result, 'decision' => null, 'at' => $now, 'counts' => $counts, 'by_what' => $byWhat,
+            'top' => is_array($evaluation) ? array_map(fn (array $entry) => $entry['text'], array_slice((array) $evaluation['unexpected'], 0, 5)) : [],
+            'error' => isset($found['error']) ? UntrustedText::line($found['error'], 600) : null,
+            'event_error' => isset($found['event_error']) ? UntrustedText::line($found['event_error'], 300) : null]);
+    }
+
+    /**
+     * What the change does after batch $number's verification (once per result): verified, it goes on; unexpected changes
+     * or a batch that cannot be verified pause it (until an admin accepts), stop it, or are only recorded, as the settings
+     * say; the last batch never pauses: the change ends with its outcome. True when the change goes on now.
+     */
+    private function decideVerification(array $change, int $number, array $verify, int $now): bool
+    {
+        $id = (int) $change['id'];
+        $result = (string) $verify['result'];
+        $decision = $verify['decision'] ?? null;
+        $last = $number >= (int) $change['batch_count'];
+        if ($decision === null) {
+            $decision = $result === 'verified' ? 'go'
+                : ($last ? 'last' : ($result === 'unexpected' ? $this->settings->verifyUnexpected : $this->settings->verifyUnknown));
+            if (! in_array($decision, ['go', 'last', 'pause', 'stop', 'record'], true)) {
+                $decision = 'pause';
+            }
+            $this->setVerify($id, $number, ['decision' => in_array($decision, ['last', 'record'], true) ? 'go' : $decision, 'said' => $decision]);
+            $evaluation = $result === 'unexpected' ? ($this->changes->resultOf($id, $number)['evaluation'] ?? null) : null;
+            if ($result === 'verified') {
+                $this->timeline($change, 'verify', VerificationText::verified($number, (array) ($verify['counts'] ?? [])) . '.', null, $now);
+                $this->eventAll($change, VerificationText::verifiedEvent($change, $number), 'info', $this->batchUser($change, $number));
+            } elseif ($result === 'unexpected') {
+                $this->timeline($change, 'verify', VerificationText::unexpected($number, (array) ($evaluation['unexpected'] ?? []), (int) ($verify['counts']['unexpected'] ?? 0),
+                    $decision, ApprovalRules::accepter($this->settings->approval)) . '.', null, $now);
+                $this->eventAll($change, VerificationText::unexpectedEvent($change, $number, (array) ($verify['by_what'] ?? []), $decision), 'warning', $this->batchUser($change, $number));
+            } else {
+                $this->timeline($change, 'verify', VerificationText::unknown($number, (string) ($verify['error'] ?? 'unknown'), $decision,
+                    ApprovalRules::accepter($this->settings->approval)) . '.', null, $now);
+                $this->eventAll($change, VerificationText::unknownEvent($change, $number, (string) (($verify['event_error'] ?? '') ?: 'unknown')), 'warning',
+                    $this->batchUser($change, $number));
+            }
+        }
+        if ($decision === 'go' || $decision === 'last' || $decision === 'record') {
+            return true;
+        }
+        if ($decision === 'stop') {
+            $why = $result === 'unexpected' ? "batch $number made unexpected changes (setting When a batch makes unexpected changes: stop the change)"
+                : "batch $number cannot be verified: " . ($verify['error'] ?? 'unknown') . ' (setting When a batch cannot be verified: stop the change)';
+            $this->finish($change, ChangeStatus::FAILED, $why, $now, null, $result === 'unexpected' ? $why : "batch $number cannot be verified: "
+                . ($verify['event_error'] ?? 'unknown') . ' (setting When a batch cannot be verified: stop the change)');
+
+            return false;
+        }
+        // pause: until an admin accepts (a batch that cannot be verified is checked again every minute meanwhile)
+        $waiting = $result === 'unexpected' ? 'verification' : 'verification_unknown';
+        if ($change['status'] !== ChangeStatus::PAUSED || $change['waiting'] !== $waiting) {
+            $this->update($change, ['status' => ChangeStatus::PAUSED, 'waiting' => $waiting, 'resume_at' => null]);
+        }
+
+        return false;
+    }
+
+    /**
+     * A change paused because batch $number cannot be verified, checked again every minute (the sync command): once its
+     * data is fresh (and the state before it exists), it is verified as any; verified, the change goes on by itself; with
+     * unexpected changes, the settings decide again.
+     */
+    private function verifyRecheck(array $change, int $now): void
+    {
+        $id = (int) $change['id'];
+        $number = (int) $change['current_batch'];
+        $verify = (array) ($this->changes->batches($id)[$number]['verify'] ?? []);
+        $after = (array) ($verify['after'] ?? []);
+        if (($verify['before']['status'] ?? null) !== 'taken' || ! in_array($after['status'] ?? null, ['stale', 'waiting', 'settling'], true)
+            || $this->verifier === null || ! $this->verifier->takesStates() || $now - (int) ($after['checked_at'] ?? 0) < self::BLAST_RECHECK) {
+            return; // nothing to check again (no state before it), or not yet
+        }
+        if (($after['status'] ?? null) === 'stale') {
+            $this->setVerify($id, $number, ['after' => ['status' => 'waiting', 'deadline' => PHP_INT_MAX] + $after]);
+        }
+        $this->verifyStep($change, $number, $now);
+        $verify = (array) ($this->changes->batches($id)[$number]['verify'] ?? []);
+        if (($verify['result'] ?? null) === 'unknown') {
+            $this->setVerify($id, $number, ['decision' => 'pause', 'after' => ['status' => 'stale'] + (array) ($verify['after'] ?? [])]);
+
+            return; // still not
+        }
+        if (($verify['result'] ?? null) === null) {
+            return;
+        }
+        $current = $this->changes->find($id) ?? $change;
+        if ($this->decideVerification($current, $number, $verify, $now)) {
+            $resumed = $this->update($this->changes->find($id) ?? $current, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]);
+            if ($resumed !== null) {
+                $this->afterBatch($resumed, $number, 'done', null, $now, null);
+            }
+        }
+    }
+
+    /**
+     * The scope of the next batch's state before it, taken with this batch's verification so that its refresh is asked
+     * together: its devices to discover again ([] when its state before is already under way).
+     *
+     * @return int[]
+     */
+    private function prefetchNext(array $change, int $next, int $now): array
+    {
+        $id = (int) $change['id'];
+        $verify = (array) ($this->changes->batches($id)[$next]['verify'] ?? []);
+        if (isset($verify['before']['status'])) {
+            return [];
+        }
+        try {
+            $this->beat();
+            $scope = $this->verifier->scope($this->batchDevices($change, $next), (int) $this->starter($change, $next)['user_id']);
+        } catch (TopologyError) {
+            return []; // asked again when the batch starts
+        }
+        $covered = self::coveredOf($scope);
+        $this->changes->saveScope($id, $next, 'before', $covered, array_map('intval', (array) ($scope['domain'] ?? [])), self::namesOf($scope));
+        $this->setVerify($id, $next, ['before' => ['status' => 'waiting', 'since' => $now, 'asked_at' => $now, 'deadline' => $now + $this->settings->verifyWaitSeconds,
+            'how' => $this->settings->verifyFresh === 'ask' ? 'with' : 'wait', 'prefetched' => true, 'covered' => count($covered), 'domain' => count((array) ($scope['domain'] ?? []))]]);
+
+        return $covered;
+    }
+
+    /**
+     * Ask LibreNMS for fresh data of the devices (Fresh data: ask); what was done, and why not when it could not be asked
+     * (the plugin then waits for LibreNMS' own discovery).
+     *
+     * @param  int[]  $devices
+     * @return array{how: string, error: ?string}
+     */
+    private function askRefresh(array $devices): array
+    {
+        if ($this->settings->verifyFresh !== 'ask' || $this->refresh === null || ! $devices) {
+            return ['how' => 'wait', 'error' => null];
+        }
+        try {
+            $this->beat();
+
+            return ['how' => $this->refresh->request($devices)['how'], 'error' => null];
+        } catch (LockLost $e) {
+            throw $e;
+        } catch (\RuntimeException $e) {
+            return ['how' => 'wait', 'error' => 'LibreNMS could not be asked for a discovery: ' . UntrustedText::line($e->getMessage(), 200) . '; the plugin waits for its own'];
+        }
+    }
+
+    /**
+     * Merge values into a batch's verification record.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function setVerify(int $changeId, int $number, array $values): void
+    {
+        $verify = (array) ($this->changes->batches($changeId)[$number]['verify'] ?? []);
+        $this->changes->updateBatch($changeId, $number, ['verify' => array_merge($verify, $values)]);
+    }
+
+    /**
+     * The devices a state's facts record (all of its scope but the domain).
+     *
+     * @return int[]
+     */
+    private static function coveredOf(array $scope): array
+    {
+        return array_values(array_unique(array_map('intval', array_merge(...array_map(fn ($role) => (array) ($scope[$role] ?? []),
+            ['subjects', 'dependents', 'neighbors', 'included'])))));
+    }
+
+    /**
+     * The names a scope gives its covered devices (cleaned: they come from LibreNMS).
+     *
+     * @return array<int, string>
+     */
+    private static function namesOf(array $scope): array
+    {
+        $names = [];
+        foreach ((array) ($scope['names'] ?? []) as $deviceId => $name) {
+            if (is_scalar($name) && preg_match('/^\d{1,10}$/D', (string) $deviceId)) {
+                $names[(int) $deviceId] = UntrustedText::line((string) $name, 120);
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Devices by name, in their order: their name, else "device #N".
+     *
+     * @param  int[]  $devices
+     * @param  array<int, string>  $names
+     * @return string[]
+     */
+    private static function named(array $devices, array $names): array
+    {
+        return array_map(fn ($deviceId) => (string) (($names[(int) $deviceId] ?? '') ?: 'device #' . (int) $deviceId), $devices);
     }
 
     // ------------------------------------------------------------------ maintenance windows

@@ -1,0 +1,246 @@
+<?php
+
+namespace Agoodley\LibrenmsAnsible\Tests\Unit;
+
+use Agoodley\LibrenmsAnsible\Changes\FixAnswers;
+use Agoodley\LibrenmsAnsible\Changes\FixExpectation;
+use Agoodley\LibrenmsAnsible\Changes\Freshness;
+use Agoodley\LibrenmsAnsible\Changes\VerificationOutcome;
+use Agoodley\LibrenmsAnsible\Changes\VerificationRules;
+use PHPUnit\Framework\TestCase;
+
+/**
+ * Phase 4's pure rules: when LibreNMS' data of a batch's scope is fresh (Freshness), what a comparison of its states
+ * means (VerificationRules, with a fix's expectation: FixExpectation), the outcome of a change (VerificationOutcome), and
+ * the fix templates' contract (FixAnswers: the lines a change of fixes sends, every field checked).
+ */
+class VerificationRulesTest extends TestCase
+{
+    private const T = 1_700_000_000;
+
+    // ------------------------------------------------------------------ freshness
+
+    public function testTheBatchsDevicesNeedADiscoveryAndAPollTheDomainAPoll(): void
+    {
+        $state = fn (?int $discovered, ?int $polled, array $more = []) => $more + ['up' => true, 'down_since' => null, 'discovered_at' => $discovered, 'polled_at' => $polled,
+            'discovery_pending' => false];
+        $states = [
+            1 => $state(self::T + 10, self::T + 20),          // fresh
+            2 => $state(self::T - 10, self::T + 20),          // discovered before
+            3 => $state(self::T + 10, self::T + 20, ['discovery_pending' => true]),
+            4 => $state(self::T - 900, self::T + 5),          // domain: a poll is enough
+            5 => $state(self::T - 900, self::T - 5),          // domain, not polled since
+            6 => $state(null, null, ['up' => false, 'down_since' => self::T - 3600]),   // down since before the batch: left out
+            7 => $state(null, null, ['up' => false, 'down_since' => self::T - 60]),     // went down during it
+        ];
+
+        $fresh = Freshness::check($states, [1, 2, 3, 6, 7, 8], [4, 5], self::T, self::T - 300);
+
+        $this->assertFalse($fresh['fresh']);
+        $this->assertSame([2 => 'a discovery', 3 => 'a discovery', 5 => 'a poll'], $fresh['waiting']);
+        $this->assertSame([6], $fresh['left_out']);
+        $this->assertSame([7], $fresh['down']);
+        $this->assertSame([8], $fresh['unknown'], 'a device the API no longer tells about');
+        $this->assertTrue(Freshness::check($states, [1], [4], self::T, self::T)['fresh']);
+        $this->assertSame('lab-sw2 (a discovery), #3 (a discovery) and 1 more', Freshness::waitingText($fresh['waiting'], [2 => 'lab-sw2', 3 => '#3'], 2));
+    }
+
+    // ------------------------------------------------------------------ what a comparison means
+
+    private static function comparison(array $events = [], array $findings = [], array $devices = []): array
+    {
+        return ['events' => $events, 'findings' => $findings + ['new' => [], 'worse' => [], 'changed' => [], 'milder' => [], 'resolved' => [], 'same' => 0],
+            'devices' => $devices + ['down' => [], 'up' => []], 'names' => [1 => 'core1', 2 => 'dist1', 3 => 'acc1', 4 => 'acc2']];
+    }
+
+    private static function event(string $type, string $level, string $text, array $more = []): array
+    {
+        return ['type' => $type, 'category' => str_starts_with($type, 'root') || str_starts_with($type, 'blocking') ? 'stp' : 'links', 'level' => $level, 'text' => $text,
+            'devices' => [3]] + $more;
+    }
+
+    private static function finding(string $identity, string $severity, string $title, array $more = []): array
+    {
+        return $more + ['identity' => $identity, 'analysis' => 'redundancy', 'code' => 'spof_link', 'severity' => $severity, 'title' => $title, 'devices' => [3], 'subjects' => [3],
+            'vlans' => [], 'quiet' => false];
+    }
+
+    public function testWhatNobodyAskedForIsUnexpectedTheRestIsListed(): void
+    {
+        $result = VerificationRules::evaluate(self::comparison([
+            self::event('link_removed', 'warning', 'Link gone: acc1 Gi1/0/49 ↔ dist1 Te1/0/1'),
+            self::event('cable_moved', 'warning', 'acc1 Gi1/0/50 now connects to core2 Te1/0/9 (was core1 Te1/0/2)'),
+            self::event('root_changed', 'warning', 'VLAN 10: root bridge changed from core1 to acc1', ['vlans' => [10], 'root_after' => ['mac' => '00ab03000000', 'device' => 3]]),
+            self::event('blocking_started', 'info', 'acc1 Gi1/0/50 started blocking in VLAN 10', ['vlans' => [10]]),
+            self::event('ospf_lost', 'warning', 'OSPF adjacency lost'),
+            self::event('link_back', 'info', 'Link back: acc2 Gi1/0/49 ↔ dist1 Te1/0/2'),
+            self::event('blocking_stopped', 'info', 'dist1 Te1/0/1 stopped blocking in VLAN 10', ['vlans' => [10]]),
+        ], [
+            'new' => [self::finding('a', 'warning', 'Single link: acc1'), self::finding('b', 'info', 'Single link: acc2'), self::finding('c', 'critical', 'Loop', ['quiet' => true])],
+            'worse' => [self::finding('d', 'critical', 'Single point of failure: dist1', ['was' => ['identity' => 'd0', 'severity' => 'warning', 'devices' => [2]]])],
+            'resolved' => [self::finding('e', 'warning', 'Old finding')],
+        ], ['down' => [4], 'up' => [1]]), [], [], null, 'warning');
+
+        $this->assertSame('unexpected', $result['result']);
+        $this->assertSame(['link_removed', 'cable_moved', 'root_changed', 'blocking_started', 'ospf_lost', 'device_down', 'new', 'worse'], array_column($result['unexpected'], 'type'));
+        $this->assertSame('acc2 went down', $result['unexpected'][5]['text']);
+        $this->assertSame('Worse finding (critical): Single point of failure: dist1 (was warning)', $result['unexpected'][7]['text']);
+        $listed = array_column($result['listed'], 'text', 'type');
+        $this->assertSame(['link_back', 'blocking_stopped', 'device_up', 'new', 'new', 'resolved'], array_column($result['listed'], 'type'));
+        $this->assertSame(['New finding (info): Single link: acc2', 'below'], [$result['listed'][3]['text'], $result['listed'][3]['why']], 'the info finding is below the setting');
+        $this->assertSame(['New finding (critical): Loop', 'quiet'], [$result['listed'][4]['text'], $result['listed'][4]['why']],
+            'a check the topology plugin keeps out of the eventlog never counts');
+        $this->assertSame('Resolved (warning): Old finding', $listed['resolved']);
+        $this->assertSame(8, $result['counts']['unexpected']);
+
+        $this->assertSame('verified', VerificationRules::evaluate(self::comparison([self::event('link_back', 'info', 'Link back')], ['resolved' => [self::finding('e', 'warning', 'x')]]),
+            [], [], null, 'warning')['result']);
+        $this->assertSame('unexpected', VerificationRules::evaluate(self::comparison([], ['new' => [self::finding('b', 'info', 'Single link: acc2')]]), [], [], null, 'info')['result'],
+            'counted from info on');
+        $this->assertSame('verified', VerificationRules::evaluate(self::comparison([], ['new' => [self::finding('a', 'warning', 'x')]]), [], [], null, 'critical')['result']);
+    }
+
+    public function testADescriptionFixExpectsItsFindingsResolved(): void
+    {
+        $fix = FixAnswers::record(FixAnswers::PORT_DESCRIPTIONS, [['id' => 'f1', 'kind' => 'port_descriptions', 'title' => 'Port descriptions of acc1', 'devices' => [3],
+            'resolves' => ['h3'], 'findings' => [['identity' => 'h3', 'code' => 'description_wrong', 'severity' => 'warning', 'title' => 'Port descriptions name the wrong neighbor: acc1',
+                'devices' => [3]]]], ['id' => 'f2', 'kind' => 'port_descriptions', 'title' => 'Port descriptions of acc2', 'devices' => [4], 'resolves' => ['h4'],
+            'findings' => [['identity' => 'h4', 'code' => 'description_missing', 'severity' => 'info', 'title' => 'Inter-switch ports without description: acc2', 'devices' => [4]]]]],
+            ['acc1 Gi1/0/49 dist1 Te1/0/1']);
+        $batch = FixExpectation::forBatch($fix, [3]);
+        $this->assertSame(['kind' => 'port_descriptions', 'resolves' => ['h3' => 'Port descriptions name the wrong neighbor: acc1']], $batch);
+        $this->assertNull(FixExpectation::forBatch(null, [3]));
+
+        $resolved = VerificationRules::evaluate(self::comparison([], ['resolved' => [self::finding('h3', 'warning', 'Port descriptions name the wrong neighbor: acc1')]]), [],
+            ['findings' => []], $batch, 'warning');
+        $this->assertSame('verified', $resolved['result']);
+        $this->assertSame(['Resolved (warning): Port descriptions name the wrong neighbor: acc1'], array_column($resolved['expected'], 'text'));
+
+        $still = VerificationRules::evaluate(self::comparison(), [], ['findings' => ['h3' => self::finding('h3', 'warning', 'Port descriptions name the wrong neighbor: acc1')]],
+            $batch, 'warning');
+        $this->assertSame(["The fix's finding is still there: Port descriptions name the wrong neighbor: acc1"], array_column($still['unexpected'], 'text'));
+
+        // still there in another form (one of two ports fixed): its successor
+        $changed = VerificationRules::evaluate(self::comparison([], ['changed' => [self::finding('h3b', 'warning', 'Port descriptions name the wrong neighbor: acc1',
+            ['was' => ['identity' => 'h3', 'severity' => 'warning', 'devices' => [3]]])]]), [], ['findings' => []], $batch, 'warning');
+        $this->assertSame(['not_resolved'], array_column($changed['unexpected'], 'type'));
+        $this->assertSame([], $changed['listed']);
+    }
+
+    public function testARootFixExpectsTheIntendedRootAndWhatMovesWithIt(): void
+    {
+        $fix = FixAnswers::record(FixAnswers::STP_ROOT_PRIORITY, [['id' => 'r1', 'kind' => 'stp_root_priority', 'title' => 'Root bridge of VLAN 1 / CST, VLAN 10: core1',
+            'vlans' => [0, 10], 'primary' => ['device_id' => 1, 'priority' => 4096, 'mode' => 'pvst', 'instances' => [1, 10], 'mac' => '00AB01000000'],
+            'secondary' => ['device_id' => 2, 'priority' => 8192, 'mode' => 'pvst', 'instances' => [1, 10], 'mac' => '00ab02000000'], 'chosen_from' => 'the designated root bridges',
+            'roots_now' => [0 => ['device_id' => 3, 'mac' => '00ab03000000'], 10 => ['device_id' => 3, 'mac' => '00ab03000000']], 'resolves' => ['p0'],
+            'findings' => [['identity' => 'p0', 'code' => 'root_default_priority', 'severity' => 'warning', 'title' => 'Root bridge acc1 was elected with the default priority',
+                'devices' => [3]]]]], ['core1 pvst 1,10 4096', 'dist1 pvst 1,10 8192']);
+        $expectation = FixExpectation::forBatch($fix, [1]);
+        $this->assertSame([['vlans' => [0, 10], 'primary' => 1, 'primary_mac' => '00ab01000000', 'old_macs' => ['00ab03000000']]], $expectation['roots']);
+
+        $roots = fn (string $mac, ?int $device, array $devices) => [['root' => $mac, 'root_device' => $device, 'vlans' => [0, 10], 'devices' => $devices]];
+        $before = ['roots' => $roots('00ab03000000', 3, [1, 2, 3, 4])];
+        $after = ['roots' => $roots('00ab01000000', 1, [1, 2, 3, 4]), 'findings' => []];
+        $moved = self::comparison([
+            self::event('root_changed', 'warning', 'VLAN 1 / CST, VLAN 10: root bridge changed from acc1 to core1', ['vlans' => [0, 10], 'root_after' => ['mac' => '00ab01000000', 'device' => 1]]),
+            self::event('blocking_started', 'info', 'acc2 Gi1/0/50 started blocking in VLAN 10', ['vlans' => [10]]),
+            self::event('blocking_stopped', 'info', 'acc1 Gi1/0/49 stopped blocking in VLAN 1 / CST', ['vlans' => [0]]),
+            self::event('blocking_started', 'info', 'acc2 Gi1/0/48 started blocking in VLAN 30', ['vlans' => [30]]),
+        ], ['resolved' => [self::finding('p0', 'warning', 'Root bridge acc1 was elected with the default priority')]]);
+
+        $result = VerificationRules::evaluate($moved, $before, $after, $expectation, 'warning');
+
+        $this->assertSame(['root_changed', 'blocking_started', 'blocking_stopped', 'resolved'], array_column($result['expected'], 'type'), 'the root moving and what moves with it');
+        $this->assertSame(['acc2 Gi1/0/48 started blocking in VLAN 30'], array_column($result['unexpected'], 'text'), 'another VLAN is no part of the fix');
+
+        // the intended root not root everywhere: acc2 still sees acc1 in VLAN 10
+        $partly = ['roots' => [['root' => '00ab01000000', 'root_device' => 1, 'vlans' => [0, 10], 'devices' => [1, 2, 3]], ['root' => '00ab01000000', 'root_device' => 1, 'vlans' => [0],
+            'devices' => [4]], ['root' => '00ab03000000', 'root_device' => 3, 'vlans' => [10], 'devices' => [4]]], 'findings' => []];
+        $wrong = VerificationRules::evaluate(self::comparison(), $before, $partly, $expectation, 'warning');
+        $this->assertSame(['VLAN 10: acc2 sees acc1 as root bridge, not core1, the root the fix intends'], array_column($wrong['unexpected'], 'text'));
+
+        // the second batch (the secondary): the root stays, nothing moves; a root that moved elsewhere is not what the fix does
+        $this->assertSame('verified', VerificationRules::evaluate(self::comparison(), $after, $after, FixExpectation::forBatch($fix, [2]), 'warning')['result']);
+        $elsewhere = VerificationRules::evaluate(self::comparison([self::event('root_changed', 'warning', 'VLAN 10: root bridge changed from core1 to dist1', ['vlans' => [10],
+            'root_after' => ['mac' => '00ab02000000', 'device' => 2]])]), $after, ['roots' => [['root' => '00ab02000000', 'root_device' => 2, 'vlans' => [10], 'devices' => [1, 2, 3, 4]],
+            ['root' => '00ab01000000', 'root_device' => 1, 'vlans' => [0], 'devices' => [1, 2, 3, 4]]], 'findings' => []], FixExpectation::forBatch($fix, [2]), 'warning');
+        $this->assertSame(['root_changed', 'root_not_intended'], array_column($elsewhere['unexpected'], 'type'));
+    }
+
+    // ------------------------------------------------------------------ the outcome
+
+    public function testTheOutcomeOfAChangesVerification(): void
+    {
+        $batch = fn (string $status, ?array $verify) => ['status' => $status, 'verify' => $verify];
+        $this->assertSame(['outcome' => 'verified', 'note' => null], VerificationOutcome::of([1 => $batch('done', ['result' => 'verified']), 2 => $batch('done', ['result' => 'verified'])]));
+        $this->assertSame(['outcome' => 'accepted', 'note' => 'what batch 1 changed was accepted'], VerificationOutcome::of([1 => $batch('done', ['result' => 'unexpected',
+            'accepted' => ['by' => 'bob']]), 2 => $batch('done', ['result' => 'verified'])]));
+        $this->assertSame(['outcome' => 'not_verified', 'note' => 'batch 1 made unexpected changes; batch 2 failed'], VerificationOutcome::of([1 => $batch('done', ['result' => 'unexpected']),
+            2 => $batch('failed', ['before' => []])]));
+        $this->assertSame('not_verified', VerificationOutcome::of([1 => $batch('done', ['result' => 'unknown', 'accepted' => ['by' => 'bob']])])['outcome'],
+            'going on without a verification does not make it one');
+        $this->assertSame(['outcome' => null, 'note' => null], VerificationOutcome::of([1 => $batch('cancelled', null)]), 'nothing ran');
+        $this->assertSame(['outcome' => null, 'note' => null], VerificationOutcome::of([1 => $batch('done', null)]), 'not verified at all (verification off)');
+    }
+
+    // ------------------------------------------------------------------ the fix templates' contract
+
+    public function testTheLinesOfDescriptionFixesAreCheckedFieldByField(): void
+    {
+        $hosts = [3 => 'acc1.lab', 4 => 'acc2.lab'];
+        $fix = ['id' => 'f1', 'kind' => 'port_descriptions', 'ports' => [
+            ['device_id' => 3, 'port_id' => 31, 'ifName' => 'Gi1/0/49', 'description' => 'dist1 Te1/0/1'],
+            ['device_id' => 3, 'port_id' => 32, 'ifName' => 'Gi0/0/1 <&"\'>', 'description' => 'dist1 Te1/0/2'],          // a hostile ifName
+            ['device_id' => 3, 'port_id' => 33, 'ifName' => 'Gi1/0/50', 'description' => "x\nusername backdoor"],          // not a description the link check builds
+            ['device_id' => 9, 'port_id' => 91, 'ifName' => 'Gi1/0/1', 'description' => 'acc1 Gi1/0/1'],                   // not a target
+            ['device_id' => 4, 'port_id' => 41, 'ifName' => 'Ethernet1/1', 'description' => '_n_c_d_ _sw_ _ co Gi1/0/1'],
+        ]];
+
+        $built = FixAnswers::lines(FixAnswers::PORT_DESCRIPTIONS, [$fix], $hosts);
+
+        $this->assertSame(['acc1.lab Gi1/0/49 dist1 Te1/0/1', 'acc2.lab Ethernet1/1 _n_c_d_ _sw_ _ co Gi1/0/1'], $built['lines']);
+        $this->assertSame([3, 4], $built['devices']);
+        $this->assertCount(3, $built['errors']);
+        $this->assertStringContainsString('acc1.lab port #32: its interface name is not one the plugin passes to a playbook', $built['errors'][0]);
+        $this->assertStringContainsString('acc1.lab port #33: its description is not one the link check builds', $built['errors'][1]);
+        $this->assertStringContainsString('device #9 port #91: it is not a target of the change', $built['errors'][2]);
+
+        // the check of an answer, as the playbook gets it
+        $this->assertSame([], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, implode("\n", $built['lines']), $hosts));
+        $this->assertSame(['line 1: its host is not a target of the change', 'line 2: its interface name is not one the plugin passes to a playbook (letters, digits and / . _ : -, at most 64)',
+            'line 3: its description is not one the link check builds (letters, digits, spaces and . _ / \\ : + ( ) # @ , -, at most 80)', 'line 4 is not "<host> <interface> <description>"'],
+            FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, "other.lab Gi1/0/1 x\nacc1.lab Gi1/0/1;reload x\nacc1.lab Gi1/0/1 x;y\nacc1.lab Gi1/0/1", $hosts));
+        $this->assertSame(['line 1: its description is not one the link check builds (letters, digits, spaces and . _ / \\ : + ( ) # @ , -, at most 80)'],
+            FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, 'acc1.lab Gi1/0/1 ' . str_repeat('a', 81), $hosts));
+    }
+
+    public function testTheLinesOfRootFixesAreCheckedFieldByField(): void
+    {
+        $hosts = [1 => 'core1.lab', 2 => 'core2.lab'];
+        $fix = ['id' => 'r1', 'kind' => 'stp_root_priority', 'primary' => ['device_id' => 1, 'priority' => 4096, 'mode' => 'pvst', 'instances' => [1, 10, 11, 12, 20, 21]],
+            'secondary' => ['device_id' => 2, 'priority' => 8192, 'mode' => 'mst', 'instances' => [0]]];
+        $this->assertSame(['core1.lab pvst 1,10-12,20,21 4096', 'core2.lab mst 0 8192'], FixAnswers::lines(FixAnswers::STP_ROOT_PRIORITY, [$fix], $hosts)['lines']);
+        $single = ['kind' => 'stp_root_priority', 'primary' => ['device_id' => 1, 'priority' => 4096, 'mode' => 'stp', 'instances' => []], 'secondary' => null];
+        $this->assertSame(['core1.lab stp - 4096'], FixAnswers::lines(FixAnswers::STP_ROOT_PRIORITY, [$single], $hosts)['lines'], 'one instance: "-"');
+
+        foreach ([['mode' => 'rstp'], ['instances' => [0]], ['instances' => [4095]], ['priority' => 4097], ['priority' => 65536], ['priority' => '4096']] as $wrong) {
+            $built = FixAnswers::lines(FixAnswers::STP_ROOT_PRIORITY, [['kind' => 'stp_root_priority', 'primary' => $wrong + $fix['primary'], 'secondary' => null]], $hosts);
+            $this->assertSame([], $built['lines'], json_encode($wrong));
+            $this->assertNotEmpty($built['errors']);
+        }
+
+        $this->assertSame([], FixAnswers::check(FixAnswers::STP_ROOT_PRIORITY, "core1.lab pvst 1,10-12,20,21 4096\ncore2.lab mst 0 8192\ncore2.lab stp - 0", $hosts));
+        $this->assertSame([
+            'line 1: its instances are not a canonical list of VLANs 1-4094',
+            'line 2: its instances are not a canonical list of VLANs 1-4094',
+            'line 3: its priority is not a multiple of 4096 from 0 to 61440',
+            'line 4: its mode is not pvst, mst or stp',
+            'line 5 is not "<host> <mode> <instances> <priority>"',
+            'line 6: its instances are not a canonical list of MST instances 0-4094',
+        ], FixAnswers::check(FixAnswers::STP_ROOT_PRIORITY, "core1.lab pvst 10,1 4096\ncore1.lab pvst 1,2,3 4096\ncore1.lab pvst 1 4095\ncore1.lab rstp 1 4096\n"
+            . "core1.lab pvst 1 4096 extra\ncore2.lab mst 4095 8192", $hosts));
+        $this->assertSame('1,10-12,20,21', FixAnswers::instances('pvst', [21, 20, 12, 11, 10, 1, 10]));
+        $this->assertNull(FixAnswers::instances('pvst', [0]));
+        $this->assertNull(FixAnswers::instances('pvst', ['1']));
+    }
+}

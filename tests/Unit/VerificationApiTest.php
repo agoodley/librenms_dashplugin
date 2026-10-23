@@ -82,6 +82,7 @@ class VerificationApiTest extends TestCase
         $this->assertStringNotContainsString('secret', json_encode($state));
         $this->assertSame([], $api->state([Net::SECRET])['scope']['subjects']);
         $this->assertSame([], $api->scope([Net::SECRET])['subjects']);
+        $this->assertEquals([Net::ACC1 => 'acc1', Net::DIST1 => 'dist1', Net::CORE2 => 'core2'], $api->scope([Net::ACC1, Net::SECRET])['names'], 'the names of what a state of it records');
         $this->assertSame([Net::ACC1], array_keys($api->freshness([Net::ACC1, Net::SECRET])['devices']));
 
         // nor do the fixes: a fix only changes ports of the device of its finding, a fix of a device the user may not see is none
@@ -123,6 +124,10 @@ class VerificationApiTest extends TestCase
         $events = array_column($diff['events'], 'text', 'type');
         $this->assertSame('Link gone: core2 Te1/0/4 ↔ acc1 Gi1/0/50', $events['link_removed']);
         $this->assertStringStartsWith('VLAN 1 / CST: root bridge changed from core1 (00:ab:01:00:00:01) to core2 (00:ab:02:00:00:01)', $events['root_changed']);
+        $root = array_values(array_filter($diff['events'], fn ($event) => $event['type'] === 'root_changed'))[0];
+        $this->assertSame(['vlans' => [0], 'root_before' => ['mac' => Net::MACS[1], 'device' => Net::CORE1], 'root_after' => ['mac' => Net::MACS[2], 'device' => Net::CORE2]],
+            array_intersect_key($root, array_flip(['vlans', 'root_before', 'root_after'])), 'what the root bridge event is about, as data');
+        $this->assertArrayNotHasKey('vlans', array_values(array_filter($diff['events'], fn ($event) => $event['type'] === 'link_removed'))[0]);
         $this->assertSame(['Single link: acc1 Gi1/0/49 ↔ dist1 Te1/0/1'], array_column($diff['findings']['new'], 'title'));
         $this->assertSame(['Single point of failure: dist1'], array_column($diff['findings']['worse'], 'title'), 'the same finding, cutting off one more switch');
         $this->assertSame([3, 5], $diff['findings']['worse'][0]['was']['devices']);
