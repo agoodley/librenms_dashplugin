@@ -1103,7 +1103,8 @@ they change (*Fix: port descriptions, 2 devices*: the reference names the change
 which names no other device; the timeline names the fixes), and what the change is meant to do. The preview and
 *Create* compute the lines again from the findings as they are then, only what the chosen fixes need (a description
 fix: the link check of its devices and their neighbors; a root fix: the spanning tree check of its domain), and
-refuse the change when they are not what the page showed (*The fix changed since you loaded the page: look again.*).
+refuse the change when they are not what the page showed (*The fix changed since you loaded the page: reload the
+page to make the change from the fix as it is now.*).
 The lines are those of the change's targets only: a device the planner leaves out (down, say) takes its fix with it,
 and the preview says so (a root fix whose intended root is left out goes; one whose secondary is, sets the intended
 root alone). From there it is a change like any other: dry-run with its diff, approved, applied in batches, each
