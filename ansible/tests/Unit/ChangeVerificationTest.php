@@ -4,9 +4,11 @@ namespace Agoodley\LibrenmsAnsible\Tests\Unit;
 
 use Agoodley\LibrenmsAnsible\Changes\ApprovalRules;
 use Agoodley\LibrenmsAnsible\Changes\BatchPlan;
+use Agoodley\LibrenmsAnsible\Changes\BlastRadius;
 use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeSettings;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
+use Agoodley\LibrenmsAnsible\Changes\RolloutPlan;
 use Agoodley\LibrenmsAnsible\Changes\TopologyError;
 use Agoodley\LibrenmsAnsible\Changes\VerificationOutcome;
 use Agoodley\LibrenmsAnsible\Changes\VerificationText;
@@ -54,6 +56,9 @@ class ChangeVerificationTest extends TestCase
 
     private FakeRefresh $refresh;
 
+    /** The topology plugin's planning API: what each device cuts off now (a link down makes lab-sw2 cut off lab-sw5 too). */
+    private FakeTopology $topology;
+
     private int $t0;
 
     protected function setUp(): void
@@ -68,6 +73,7 @@ class ChangeVerificationTest extends TestCase
         $this->verifier->neighbors = [510 => [502, 503], 502 => [501, 503, 510, 512]];
         $this->verifier->domain = [501, 511, 512];
         $this->refresh = new FakeRefresh();
+        $this->topology = new FakeTopology();
         $this->t0 = strtotime('2026-10-22 10:00:00 UTC');
         $this->backups->now = $this->t0;
         // LibreNMS' data as it was before the change: discovered and polled an hour ago
@@ -78,7 +84,7 @@ class ChangeVerificationTest extends TestCase
     {
         return new ChangeLifecycle($this->changes, $this->runs, $this->runner, $this->backups, new FakeWindows(), $this->events,
             new ChangeSettings(...$settings + ['approval' => ApprovalRules::SECOND, 'settleSeconds' => 600, 'expectedSeconds' => 3600, 'maintenance' => false,
-                'verify' => true, 'verifyWaitSeconds' => 1800]), new FakeTopology(), $this->verifier, $this->refresh);
+                'verify' => true, 'verifyWaitSeconds' => 1800]), $this->topology, $this->verifier, $this->refresh);
     }
 
     /** A change of lab-sw4 then lab-sw2, dry-run by alice and approved by bob. */
@@ -215,7 +221,9 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame([], $this->launched());
         $this->assertSame(0, $this->verifier->count('scope') + $this->verifier->count('state'), 'a page never takes a scope or a state');
         $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status']);
-        $this->assertStringContainsString('Before batch 1: the plugin takes the state of the network around it first', $this->messages($id));
+        $this->assertStringContainsString('Before batch 1: the plugin takes the state of the network around it (its devices, what it cuts off, their LLDP/CDP neighbors and '
+            . 'spanning tree domains) as the last step before its launch, from data LibreNMS discovers again for it (it waits for that data at most 30 minutes, before the '
+            . 'batch\'s blast radius is checked).', $this->messages($id));
 
         // the sync command: the scope of batch 1, LibreNMS asked to discover it again, then fresh data, then the state and the launch
         $this->sync($id, $this->t0 + 60);
@@ -228,7 +236,7 @@ class ChangeVerificationTest extends TestCase
         $this->sync($id, $this->t0 + 180);
         $this->assertSame([[510]], $this->launched());
         $this->assertSame(['taken', false], [$this->verify($id, 1)['before']['status'], $this->verify($id, 1)['before']['stale']]);
-        $this->assertStringContainsString('State before batch 1 taken (6 devices, 1 fact, 0 findings), from fresh data.', $this->messages($id));
+        $this->assertStringContainsString('State before batch 1 taken right before its launch (6 devices, 1 fact, 0 findings), from fresh data.', $this->messages($id));
 
         // batch 1 ends: its verification waits for the settle time, then asks for fresh data (with batch 2's devices, for its state before)
         $this->endBatch($id, 1, $this->t0 + 300);
@@ -791,7 +799,8 @@ class ChangeVerificationTest extends TestCase
         $this->sync($id, $this->t0 + 60);
         $this->assertSame([[510]], $this->launched());
         $this->assertSame([], $this->refresh->requests, 'LibreNMS is not asked');
-        $this->assertStringContainsString("State before batch 1 taken (6 devices, 1 fact, 0 findings), from LibreNMS' data as it is (setting Fresh data: wait).", $this->messages($id));
+        $this->assertStringContainsString("State before batch 1 taken right before its launch (6 devices, 1 fact, 0 findings), from LibreNMS' data as it is (setting Fresh data: "
+            . 'wait).', $this->messages($id));
 
         // after it, the plugin waits for LibreNMS' own discovery and polling
         $this->endBatch($id, 1, $this->t0 + 300);
@@ -809,6 +818,164 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame([[510]], $this->launched());
         $this->assertSame('unknown', $this->verify($id, 1)['before']['status']);
         $this->assertStringContainsString('Batch 1 will not be verified: the state before it could not be taken (the topology plugin could not compute the scope', $this->messages($id));
+    }
+
+    // ------------------------------------------------------------------ the state before a batch: the last step before its launch
+
+    /** A change of lab-sw4 then lab-sw2, planned by the topology plugin (lab-sw2 cuts off lab-sw6), dry-run by alice and approved by bob. */
+    private function planned(array $fields = []): int
+    {
+        $plan = RolloutPlan::make([510, 502], [], 1, 5, 1, false, 0, RolloutPlanTest::planner([510, 502], 5), RolloutPlan::LEAVE,
+            fn (array $batch) => RolloutPlanTest::blast($batch))['plan'];
+        $this->assertSame([[510], [502]], $plan->batches);
+
+        return $this->approved($fields, $plan);
+    }
+
+    /**
+     * The planned change applied, batch 1 verified at t0 + 1080; lab-sw5's link to lab-sw3 went down after it, so lab-sw2 (batch
+     * 2) cuts off lab-sw5 too: batch 2 waits for an approver to accept its new blast radius.
+     */
+    private function grown(): int
+    {
+        $id = $this->planned();
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->sync($id, $this->t0 + 60);
+        $this->fresh($this->t0 + 90);
+        $this->sync($id, $this->t0 + 120);
+        $this->assertSame([[510]], $this->launched());
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->topology->cuts[502] = [512, 511];
+        $this->fresh($this->t0 + 1000);
+        $this->sync($id, $this->t0 + 1080);
+        $this->assertSame('verified', $this->verify($id, 1)['result']);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'blast'], [$change['status'], $change['waiting']]);
+
+        return $id;
+    }
+
+    public function testTheStateBeforeABatchIsTakenRightBeforeItsLaunchAfterAnAcceptance(): void
+    {
+        $id = $this->grown();
+        $this->assertSame(2, $this->verifier->count('state'), 'no state before batch 2 yet: it is the last step before the launch, after the blast check');
+        $this->assertSame('retake', $this->verify($id, 2)['before']['status'], 'its data was ready; the batch waits: its state is taken when it starts again');
+
+        // the link comes back and LibreNMS discovers it; bob accepts the new blast radius
+        $this->topology->cuts = RolloutPlanTest::CUTS;
+        $this->fresh($this->t0 + 1150);
+        $blast = $this->changes->batches[$id][2]['blast'];
+        $this->assertNull($this->web($this->t0 + 1200)->acceptBlast($id, self::BOB, true, 'ok', $this->t0 + 1200, BlastRadius::checkId($blast, $id, 2)));
+        $this->assertSame([[510]], $this->launched(), 'the acceptance (a page) takes no state: the sync command starts the batch');
+        $requests = count($this->refresh->requests);
+        $this->sync($id, $this->t0 + 1260);
+        $this->assertSame([[510], [502]], $this->launched());
+        $this->assertSame([$this->t0 + 120, $this->t0 + 1080, $this->t0 + 1260], $this->verifier->stateTimes(),
+            'the state before batch 2 taken right before its launch, after the acceptance: the network as it is then');
+        $this->assertSame($requests, count($this->refresh->requests), 'LibreNMS discovered its scope within the wait: not asked again');
+        $this->assertStringContainsString('State before batch 2 taken right before its launch (6 devices, 1 fact, 0 findings), from data LibreNMS discovered and polled within '
+            . 'the last 30 minutes.', $this->messages($id));
+        $this->assertSame(['taken', $this->t0 + 1260], [$this->verify($id, 2)['before']['status'], $this->verify($id, 2)['before']['taken_at']]);
+    }
+
+    public function testALaunchHeldLongerThanTheWaitAsksForFreshDataAgainFirst(): void
+    {
+        $id = $this->grown();
+        // the link comes back; the acceptance comes two hours later, and LibreNMS did not discover the scope meanwhile
+        $this->topology->cuts = RolloutPlanTest::CUTS;
+        $blast = $this->changes->batches[$id][2]['blast'];
+        $this->assertNull($this->web($this->t0 + 8000)->acceptBlast($id, self::BOB, true, 'ok', $this->t0 + 8000, BlastRadius::checkId($blast, $id, 2)));
+        $requests = count($this->refresh->requests);
+        $this->sync($id, $this->t0 + 8060);
+        $this->assertSame([[510]], $this->launched(), 'its data is older than the wait: LibreNMS is asked to discover its scope again first');
+        $this->assertSame([$requests + 1, [502, 501, 503, 510, 512]], [count($this->refresh->requests), end($this->refresh->requests)]);
+        $this->assertStringContainsString('again for the state before the batch, taken again (a discovery job each); the plugin waits for fresh data until', $this->messages($id));
+        $this->sync($id, $this->t0 + 8120);
+        $this->assertSame([[510]], $this->launched(), 'within the wait, only on data newer than the request');
+        $this->fresh($this->t0 + 8150);
+        $this->sync($id, $this->t0 + 8180);
+        $this->assertSame([[510], [502]], $this->launched());
+        $this->assertSame($this->t0 + 8180, $this->verify($id, 2)['before']['taken_at']);
+        $this->assertStringContainsString('State before batch 2 taken right before its launch (6 devices, 1 fact, 0 findings), from fresh data.', $this->messages($id));
+    }
+
+    public function testALaunchHeldLongerThanTheWaitWithoutFreshDataIsTakenAtItsEndSaidOlder(): void
+    {
+        $id = $this->grown();
+        $this->topology->cuts = RolloutPlanTest::CUTS;
+        $blast = $this->changes->batches[$id][2]['blast'];
+        $this->assertNull($this->web($this->t0 + 8000)->acceptBlast($id, self::BOB, true, 'ok', $this->t0 + 8000, BlastRadius::checkId($blast, $id, 2)));
+        $this->sync($id, $this->t0 + 8060);
+        $this->sync($id, $this->t0 + 9861);
+        $this->assertSame([[510], [502]], $this->launched(), 'past the wait, taken anyway');
+        $this->assertTrue($this->verify($id, 2)['before']['stale']);
+        $this->assertMatchesRegularExpression('/State before batch 2 taken right before its launch \(.*\), its data is older than the request for it at 2026-10-22 12:1\d UTC: '
+            . 'LibreNMS did not discover or poll lab-sw2 \(a discovery and a poll\).* again within 30 minutes\./', $this->messages($id));
+    }
+
+    public function testABatchThatWaitedForABusyDeviceTakesItsStateFromDataWithinTheWait(): void
+    {
+        $id = $this->applied();
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->fresh($this->t0 + 1000);
+        // lab-sw2 (batch 2) is busy in another run when batch 2 comes to start: it waits for it
+        $this->runner->busy = [502 => 'busy in run #77, which has not finished'];
+        $this->sync($id, $this->t0 + 1080);
+        $this->assertSame('verified', $this->verify($id, 1)['result']);
+        $this->assertSame([[510]], $this->launched());
+        $this->assertStringContainsString('Batch 2 waits: lab-sw2 is busy in run #77, which has not finished.', $this->messages($id));
+        $this->assertSame('retake', $this->verify($id, 2)['before']['status'], 'its data (asked for with batch 1\'s verification) is checked again when it goes on');
+
+        // free 40 minutes later: LibreNMS' data is older than the wait, it is asked for again first
+        $this->runner->busy = [];
+        $requests = count($this->refresh->requests);
+        $this->sync($id, $this->t0 + 3480);
+        $this->assertSame([[510]], $this->launched());
+        $this->assertSame($requests + 1, count($this->refresh->requests));
+        $this->fresh($this->t0 + 3500);
+        $this->sync($id, $this->t0 + 3540);
+        $this->assertSame([[510], [502]], $this->launched());
+        $this->assertSame($this->t0 + 3540, $this->verify($id, 2)['before']['taken_at'], 'taken right before its launch');
+    }
+
+    public function testALaunchWithSecretAnswersTakesTheStateAgainWhenTheyCameLate(): void
+    {
+        $secret = ['name' => 'key', 'label' => 'Key', 'type' => 'secret', 'value' => '********', 'secret' => true];
+        $id = $this->approved(['has_secrets' => true, 'variables' => [$secret]], BatchPlan::make([510], [], 1, 5, 1, false, 0));
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 50));
+        $this->sync($id, $this->t0 + 60);
+        $this->fresh($this->t0 + 90);
+        $this->sync($id, $this->t0 + 120);
+        // the sync command took the state right before the launch; the launch waits for the secret answers (the page that holds them launches it)
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'secrets', 'prepared'], [$change['status'], $change['waiting'], $this->changes->batches[$id][1]['status']]);
+        $this->assertSame([$this->t0 + 120], $this->verifier->stateTimes());
+        $this->assertSame([], $this->launched());
+        $this->assertFalse(ChangeLifecycle::beforeRetaking($change, $this->changes->batches[$id][1]));
+
+        // they come later than the state counts: it is taken again first, and no launch is offered meanwhile
+        $late = $this->t0 + 120 + ChangeLifecycle::STATE_VALID + 1;
+        $this->assertNull($this->web($late)->resume($id, self::ALICE, ['key' => 's3cret'], $late));
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'secrets'], [$change['status'], $change['waiting']]);
+        $this->assertSame([], $this->launched(), 'not launched on a state older than it counts');
+        $this->assertTrue(ChangeLifecycle::beforeRetaking($change, $this->changes->batches[$id][1]));
+        $this->assertStringContainsString('Batch 1: the secret answers came more than 2 minutes after the state before it (taken at 2026-10-22 10:02 UTC): it is taken again '
+            . 'first, then the change page that holds the answers launches the batch with them.', $this->messages($id));
+        $this->assertGreaterThanOrEqual($late + 1800, Clock::unix($change['resume_at']), 'its wait for them starts again, with the wait for fresh data');
+        $this->web($late + 5)->advance($id, $late + 5);
+        $this->assertSame(1, $this->verifier->count('state'), 'a page takes no state');
+        $this->sync($id, $late + 30);
+        $this->assertSame([$this->t0 + 120, $late + 30], $this->verifier->stateTimes(), 'taken again by the sync command, from data LibreNMS has within the wait');
+        $this->assertFalse(ChangeLifecycle::beforeRetaking($this->changes->find($id), $this->changes->batches[$id][1]));
+
+        // the page that holds the answers launches the batch within seconds
+        $this->assertNull($this->web($late + 32)->resume($id, self::ALICE, ['key' => 's3cret'], $late + 32));
+        $this->assertSame([[510]], $this->launched());
+        $this->assertSame(['key' => 's3cret'], end($this->runner->launches)['secrets']);
+        $this->assertSame(2, $this->verifier->count('state'));
     }
 
     // ------------------------------------------------------------------ stop

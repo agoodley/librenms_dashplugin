@@ -308,7 +308,7 @@ class ChangeController extends Controller
             }
             // light: the change's batches, windows and targets, no run's log but the one the page shows
             $state = $this->live($change);
-            $state['actions'] = $this->actions($request, $change)['actions'];
+            $state['actions'] = $this->actions($request, $change, $state['batches'])['actions'];
         } catch (\Throwable $e) {
             return response()->json(['error' => $this->failure('change refresh', $e)], 500);
         }
@@ -547,7 +547,7 @@ class ChangeController extends Controller
         ['run' => $run, 'batches' => $batches, 'batchRuns' => $batchRuns, 'windows' => $windows, 'targets' => $targets, 'approvals' => $approvals,
             'signature' => $signature, 'pending' => $pending, 'withheld' => $withheld] = $this->live($change);
         ['actions' => $actions, 'approvalRefusal' => $approvalRefusal, 'canRun' => $canRun, 'canApprove' => $canApprove, 'canAccept' => $canAccept,
-            'acceptRefusal' => $acceptRefusal, 'continueRefusal' => $continueRefusal, 'verifyRefusal' => $verifyRefusal] = $this->actions($request, $change);
+            'acceptRefusal' => $acceptRefusal, 'continueRefusal' => $continueRefusal, 'verifyRefusal' => $verifyRefusal] = $this->actions($request, $change, $batches);
         // phase 4: what each batch's verification found (the lists kept with its state after it)
         $verification = [];
         foreach ($batches as $number => $batch) {
@@ -769,10 +769,11 @@ class ChangeController extends Controller
     /**
      * The actions the user may take on the change now (the lifecycle checks each again).
      *
+     * @param  array<int, array>  $batches  the change's batches
      * @return array{actions: array<string, bool>, approvalRefusal: ?string, canRun: bool, canApprove: bool, canAccept: bool, acceptRefusal: ?string,
      *     continueRefusal: ?string, verifyRefusal: ?string}
      */
-    private function actions(Request $request, array $change): array
+    private function actions(Request $request, array $change, array $batches): array
     {
         $user = $request->user();
         $canRun = Access::canRun($user);
@@ -799,8 +800,10 @@ class ChangeController extends Controller
             'apply' => $canRun && $status === ChangeStatus::READY,
             // a batch whose blast radius grew is not continued: its new blast radius is accepted; one whose blast radius cannot be computed is
             // continued by who may accept one (an approver without the run permission too: it then starts as the admin who started it)
+            // a batch whose state before it is taken again (its secret answers came late) is launched once it is, by the page that holds them
             'continue' => $status === ChangeStatus::PAUSED && $change['waiting'] !== 'blast' && ! in_array($change['waiting'], ChangeLifecycle::VERIFY_WAITS, true)
-                && ($change['waiting'] === 'blast_unknown' ? $continueRefusal === null : $canRun),
+                && ($change['waiting'] === 'blast_unknown' ? $continueRefusal === null : $canRun)
+                && ! ChangeLifecycle::beforeRetaking($change, $batches[(int) $change['current_batch']] ?? []),
             'accept' => $canAccept && $status === ChangeStatus::PAUSED && $change['waiting'] === 'blast' && $acceptRefusal === null,
             'accept_verification' => $canAccept && $status === ChangeStatus::PAUSED && in_array($change['waiting'], ChangeLifecycle::VERIFY_WAITS, true) && $verifyRefusal === null,
             'stop' => $canRun && in_array($status, [ChangeStatus::APPLYING, ChangeStatus::PAUSED, ChangeStatus::DRY_RUN], true),

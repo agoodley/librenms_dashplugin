@@ -4,8 +4,8 @@
 @php
     use Agoodley\LibrenmsAnsible\Support\Clock;
     $at = fn ($time) => is_int($time) && $time > 0 ? Clock::show($time, 'Y-m-d H:i:s T') : '';
-    $beforeLabels = ['refresh' => 'to be taken from data LibreNMS discovers again', 'take' => 'to be taken', 'waiting' => 'waits for fresh data', 'taken' => 'taken',
-        'unknown' => 'could not be taken'];
+    $beforeLabels = ['refresh' => 'to be taken from data LibreNMS discovers again', 'take' => 'to be taken right before the launch', 'waiting' => 'waits for fresh data',
+        'ready' => 'to be taken right before the launch', 'retake' => 'to be taken again (the batch waited)', 'taken' => 'taken', 'unknown' => 'could not be taken'];
     $afterLabels = ['settling' => 'settle time', 'waiting' => 'waits for fresh data', 'stale' => 'no fresh data', 'done' => 'compared',
         'incomplete' => 'compared in part', 'missing' => 'devices of its scope missing'];
 @endphp

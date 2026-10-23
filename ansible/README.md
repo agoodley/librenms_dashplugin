@@ -234,9 +234,10 @@ Then:
    old for the verification API* on the settings page and the Fixes page, and on the change page of each batch it
    cannot verify.
 2. **Verify changes** is on by default. With the topology plugin, the first batch of a change applied from then on
-   starts within a minute of *Apply*, from the sync command (its state before it is taken there), once LibreNMS
-   discovered its devices again (*Fresh data: ask*): check that LibreNMS' discovery runs (the discovery cron or the
-   dispatcher service; `./validate.php`), else every batch waits *Wait for fresh data* and then cannot be verified.
+   starts within a minute of *Apply*, from the sync command (its state before it is taken there, right before its
+   launch), once LibreNMS discovered its devices again (*Fresh data: ask*): check that LibreNMS' discovery runs (the
+   discovery cron or the dispatcher service; `./validate.php`), else every batch waits *Wait for fresh data* and then
+   cannot be verified.
    Without the topology plugin (or with one too old for the verification API) a change runs as in phase 3: it is
    *not verified*, and says why.
 3. Changes applied before go on unverified.
@@ -767,14 +768,15 @@ change that is not over (and for the windows and backups of ended changes), so a
 except where it waits for an admin.
 
 **Secret answers** are never stored, so they are not part of the fingerprint or the approval, and the plugin cannot
-launch a batch that needs them on its own. They are asked at the dry run, at *Apply* and at each *Continue*, which are
-refused (changing nothing) while a secret answer the template requires is empty. A batch whose backups are fresh within
-that request launches with them at once; the change page keeps them in its memory (not in the browser's storage) and
-launches each later batch with them while it stays open, as soon as the batch is ready (after its window and backups),
-showing the batch as launched from the page rather than its wait. When it was closed, a batch that needs them waits
-(*waits for the secret answers*, said in the timeline once it has waited 30 seconds) for an admin to continue with them,
-with its maintenance window open and its backups taken: for the *Expected batch time* (maintenance setting, at least 15
-minutes), after which the change ends as failed and the window closes.
+launch a batch that needs them on its own. They are asked at the dry run, at *Apply* and at each *Continue*, which
+are refused (changing nothing) while a secret answer the template requires is empty. A batch whose backups are fresh
+within that request launches with them at once; the change page keeps them in its memory (not in the browser's
+storage) and launches each later batch with them while it stays open, as soon as the batch is ready (after its window
+and backups, and with verification its state before it), showing the batch as launched from the page rather than its
+wait. When it was closed, a batch that needs them waits (*waits for the secret answers*, said in the timeline once it
+has waited 30 seconds) for an admin to continue with them, with its maintenance window open and its backups taken:
+for the *Expected batch time* (maintenance setting, at least 15 minutes), after which the change ends as failed and
+the window closes.
 
 ## Rollout plan and blast radius
 
@@ -973,18 +975,29 @@ went down since is an unexpected change.
 * **wait**: the plugin waits for LibreNMS' own discovery (by default every 6 hours) and polling (every 5 minutes).
 
 The plugin waits at most **Wait for fresh data** (30 minutes); without fresh data by then the batch **cannot be
-verified**. The **first** batch's state before it is taken the same way: *Apply* asks LibreNMS for a discovery of its
-scope and the state is taken once that data is fresh, at most the same wait; then it is taken anyway, and the change
-page and the timeline say that it is older than the Apply. With *wait*, it is taken from LibreNMS' data as it is, and
-said so. A later batch's state before it is taken from the data LibreNMS discovered again for the verification of
-the batch before it (asked for both scopes at once), or asked again when that is older than the wait. The change page
-shows what each wait waits for (*lab-sw4 (a discovery), lab-sw2 (a poll)*).
+verified**.
+
+**The state before a batch is the last step before its launch:** it is taken once the batch's blast radius was
+checked again, its maintenance window opened and its backups taken, so that it is the network the batch then changes.
+Its data is made fresh first, before those checks: *Apply* asks LibreNMS for a discovery of the first batch's scope,
+and the batch goes on once that data is fresh, at most the same wait; then it goes on anyway, and the change page and
+the timeline say that its state is older than the Apply. A later batch's data is the data LibreNMS discovered again
+for the verification of the batch before it (asked for both scopes at once), or asked for again when that is older
+than the wait. With *wait*, the state is taken from LibreNMS' data as it is, and said so. **A launch held after its
+data was ready** (a blast radius that grew or cannot be computed, until an admin accepts it or continues; secret
+answers that come more than 2 minutes after the state) **takes the state again** right before it: from LibreNMS' data
+as it is when LibreNMS discovered and polled the scope within the wait, else LibreNMS is asked for a discovery again
+first, within the wait (with *wait*, the data as it is). So a link that was down when the batch first came to start,
+came back while it waited, and that the batch breaks again, is a link gone. The change page shows what each wait
+waits for (*lab-sw4 (a discovery), lab-sw2 (a poll)*).
 
 Only the sync command takes states, each in a process of its own (`artisan ansible:state`, as the topology plugin
 runs each background check: on a large network a state takes some seconds and a few hundred MB, which never stay in
-the sync command's process). So with verification, *Apply* does not launch the first batch in its request: the sync
-command starts it within a minute, once its state before it is taken. A template's secret answers given at *Apply*
-then reach the runner only while the change page that holds them is open (see [Limitations](#limitations)).
+the sync command's process). So with verification, neither *Apply* nor *Continue* nor an acceptance launches a batch
+in its request: the sync command starts it within a minute, and launches it right after its state before it. A
+template's secret answers then reach the runner only while the change page that holds them is open (see
+[Limitations](#limitations)): it launches the batch within seconds of its state; answers given later (the page was
+closed, an admin enters them again) wait for the state to be taken again, and that page launches the batch then.
 
 ### What stops a batch
 
@@ -1402,10 +1415,11 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
 * **A link that fails while a batch runs is not caught then.** The blast radius is computed only before each batch
   and right before its launch, and the verification compares the states before and after each batch: a link that
   failed during a batch and came back before its state after it is not seen.
-* **A state before a batch taken from older data can miss a problem.** The state before the first batch is taken from
-  data LibreNMS discovered again after the Apply when it can, else (the wait over, or *Fresh data: wait*) from older
-  data: a link that was down at the last discovery, came back since, and that the batch breaks again reads as
-  unchanged (down in both states). The change page and the timeline say when a state is older than the Apply.
+* **A state before a batch taken from older data can miss a problem.** The state before a batch is taken from data
+  LibreNMS discovered again for it when it can, else (the wait over, or *Fresh data: wait*) from older data: a link
+  that was down at the last discovery, came back since, and that the batch breaks again reads as unchanged (down in
+  both states). The change page and the timeline say when a state is older than the Apply (or than the request for
+  fresh data it was taken again from).
 * **The verification sees what LibreNMS discovers and polls:** LLDP/CDP links, port-channels, the spanning tree,
   OSPF and BGP tables, and the topology plugin's checks of them; not traffic, nor a link LLDP/CDP does not report. It
   is as fresh as LibreNMS' last discovery and poll: with *Fresh data: wait* and LibreNMS' default discovery every 6
@@ -1431,9 +1445,10 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   computes only what its fixes need, at its preview and at its creation: a description fix of a switch there 0.3 s
   and 12 MB (the link check of the switch and its neighbors, with the name of every device); a root fix the spanning
   tree check of its domain, which there is the whole network: 12 s and 330 MB.
-* **Secret answers and the first batch:** with verification, the first batch starts from the sync command, so the
-  secret answers given at *Apply* reach it only while the change page that holds them is open, as for any later
-  batch; otherwise it waits for an admin to enter them (for the *Expected batch time*).
+* **Secret answers:** with verification, every batch launches from the sync command (its state before it is the
+  last step before its launch), so the secret answers given at *Apply* or *Continue* reach it only while the change
+  page that holds them is open; otherwise it waits for an admin to enter them (for the *Expected batch time*), and
+  when they come more than 2 minutes after the state, the state is taken again first.
 * The plan and the checks see the network as the admin who makes the change or starts the batch sees it: devices
   outside their view are unknown to the planner (left out, or planned by hand).
 

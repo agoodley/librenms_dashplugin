@@ -32,8 +32,12 @@
         'failed' => 'danger', 'stopped' => 'warning', 'cancelled' => 'default'];
     $batchLabels = ['pending' => 'to do', 'preparing' => 'window and backups', 'prepared' => 'waits for the secret answers', 'launching' => 'launching',
         'running' => 'running', 'done' => 'done', 'failed' => 'failed', 'stopped' => 'stopped', 'cancelled' => 'not run'];
+    // phase 4: a batch whose secret answers came later than its state before it counts: the state is taken again, then the page that holds them launches it
+    $retaking = \Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::beforeRetaking($change, $batches[(int) $change['current_batch']] ?? []);
     $waitText = ['canary' => 'waits for an admin to continue after the first batch',
-        'secrets' => 'waits for the secret answers until ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?') . ' (the plugin never keeps them), then the change ends',
+        'secrets' => $retaking ? 'batch ' . (int) $change['current_batch'] . '\'s state before it is taken again (its secret answers came later than it counts), then the page '
+            . 'that holds them launches it; if none does by ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?') . ', the change ends'
+            : 'waits for the secret answers until ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?') . ' (the plugin never keeps them), then the change ends',
         'timer' => 'pause between batches until ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?'),
         'blast' => 'batch ' . (int) $change['current_batch'] . ' waits for an approver to accept its new blast radius (it grew since the approval)',
         'blast_unknown' => 'batch ' . (int) $change['current_batch'] . ' waits: its blast radius cannot be computed now (checked again every minute: the batch starts '
