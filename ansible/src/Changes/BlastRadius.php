@@ -130,6 +130,38 @@ final class BlastRadius
     }
 
     /**
+     * The identity of a check of a batch's blast radius, as the change page shows it: its state, what the batch cuts off
+     * and what that is measured from, what grew, why it cannot be computed and what the batch's window would cover (not
+     * when it was checked: the check every minute of a batch that waits keeps its identity while it finds the same). An
+     * acceptance, or a Continue without a blast radius, names the check it was given for, and is refused when the
+     * batch's blast radius changed since (the page showed something else).
+     *
+     * @param  array<string, mixed>  $record  the check kept on the batch
+     */
+    public static function checkId(array $record): string
+    {
+        $ids = fn (mixed $list) => self::sortedIds(is_array($list) ? $list : []);
+
+        return substr(hash('sha256', (string) json_encode([(string) ($record['state'] ?? ''), $ids($record['lost'] ?? []),
+            ($record['reference'] ?? 'core') === 'largest part', ! empty($record['core_lost']), $ids($record['added'] ?? []), $ids($record['window'] ?? []),
+            (string) ($record['error'] ?? ''), $ids(array_column(array_filter((array) ($record['unplanned'] ?? []), 'is_array'), 'device_id'))])), 0, 32);
+    }
+
+    /**
+     * Device ids, each once, in order.
+     *
+     * @param  array<int, mixed>  $ids
+     * @return int[]
+     */
+    private static function sortedIds(array $ids): array
+    {
+        $ids = array_values(array_unique(array_map('intval', array_filter($ids, 'is_scalar'))));
+        sort($ids);
+
+        return $ids;
+    }
+
+    /**
      * The devices of a batch's maintenance window: the batch's devices, then the monitored devices it cuts off (each
      * once, none twice).
      *

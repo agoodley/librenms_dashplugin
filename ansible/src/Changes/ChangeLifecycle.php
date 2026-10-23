@@ -70,6 +70,9 @@ final class ChangeLifecycle
      */
     public const BLAST_RECHECK = 60;
 
+    /** Why an acceptance, or a Continue without a blast radius, given for a check the batch no longer has is refused. */
+    public const SEEN_CHANGED = 'The blast radius of the batch changed since you loaded the page: look again.';
+
     /** A target's record of what the inventory endpoint served the runner (InventoryGuard), cleared when its dry run or batch begins. */
     private const UNSERVED = ['served_hash' => null, 'served_at' => null, 'served_note' => null];
 
@@ -249,12 +252,14 @@ final class ChangeLifecycle
      * was made, without one): an admin with the approve permission (not the requester when the settings ask for a second
      * admin), or, while the settings ask for no approval, with the run permission (ApprovalRules::acceptPermission())
      * accepts what it cuts off now, which the batch is held to from then on, and the batch starts again (its blast radius
-     * computed once more). Null when it was accepted, else why not.
+     * computed once more). It accepts the blast radius the change page showed ($seen: BlastRadius::checkId() of the
+     * check it showed): when the batch's blast radius changed since (another admin accepted it, the batch started again
+     * and grew once more), the acceptance is refused. Null when it was accepted, else why not.
      *
      * @param  array{user_id: int, username: string}  $user
      * @param  bool  $holds  the user is an admin holding the permission the settings ask for
      */
-    public function acceptBlast(int $id, array $user, bool $holds, string $comment, int $now): ?string
+    public function acceptBlast(int $id, array $user, bool $holds, string $comment, int $now, string $seen = ''): ?string
     {
         $change = $this->changes->find($id);
         if ($change === null) {
@@ -268,6 +273,9 @@ final class ChangeLifecycle
         $blast = $this->changes->batches($id)[$number]['blast'] ?? null;
         if (! is_array($blast) || ($blast['state'] ?? null) !== 'grew') {
             return 'Batch ' . $number . ' has no new blast radius to accept: reload the page.';
+        }
+        if (! hash_equals(BlastRadius::checkId($blast), $seen)) {
+            return self::SEEN_CHANGED;
         }
         $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]);
         if ($resumed === null) {
@@ -404,13 +412,14 @@ final class ChangeLifecycle
     /**
      * Continue a paused change: the next batch after the first one or a pause, the prepared batch with the secret
      * answers, or the batch whose blast radius could not be computed: computed first, it starts as any once it can be,
-     * and goes without one (recorded) only while it still cannot. A batch whose blast radius grew is not continued: an
-     * admin accepts the new one (acceptBlast()). Null when it continued, else why not.
+     * and goes without one (recorded) only while it still cannot; such a Continue names the check the change page
+     * showed ($seen, as for acceptBlast()), and is refused when it changed since. A batch whose blast radius grew is not
+     * continued: an admin accepts the new one (acceptBlast()). Null when it continued, else why not.
      *
      * @param  array{user_id: int, username: string}  $user
      * @param  array<string, string>  $secrets
      */
-    public function resume(int $id, array $user, #[\SensitiveParameter] array $secrets, int $now): ?string
+    public function resume(int $id, array $user, #[\SensitiveParameter] array $secrets, int $now, string $seen = ''): ?string
     {
         $change = $this->changes->find($id);
         if ($change === null) {
@@ -427,6 +436,12 @@ final class ChangeLifecycle
         $problem = $this->runner->userProblem((int) $user['user_id'], 'run');
         if ($problem !== null) {
             return 'You may not continue the change: ' . $problem . '.';
+        }
+        if ($change['waiting'] === 'blast_unknown') {
+            $record = $this->changes->batches($id)[$batch]['blast'] ?? null;
+            if (! is_array($record) || ! hash_equals(BlastRadius::checkId($record), $seen)) {
+                return self::SEEN_CHANGED;
+            }
         }
         // the batch the change waits to start again (with the secret answers, or without a blast radius), else the next one
         $again = in_array($change['waiting'], ['secrets', 'blast_unknown'], true);

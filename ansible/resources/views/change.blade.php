@@ -598,6 +598,8 @@
             'prepare' => implode(' and ', array_filter([$settings->maintenance ? 'maintenance window' : null, $settings->backups && $oxidized ? 'backups' : null])),
             'currentBatch' => (int) $change['current_batch'],
             'waiting' => $change['waiting'],
+            // the check of the blast radius this page shows, which Accept and Continue name (refused when it changed since)
+            'blast' => $blastCheck,
             'hasSecrets' => (bool) $secretVars,
             'dryRuns' => (int) $change['dry_runs'],
         ];

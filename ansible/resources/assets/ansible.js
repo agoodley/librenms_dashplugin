@@ -1206,7 +1206,8 @@
                 secrets = Object.assign({}, heldSecrets, secrets);
             }
             var commentField = byId('ans-approval-comment');
-            var body = {secrets: secrets, comment: commentField ? commentField.value : ''};
+            // an acceptance or a Continue without a blast radius is for the blast radius this page shows: refused when it changed since
+            var body = {secrets: secrets, comment: commentField ? commentField.value : '', blast: current().blast || ''};
             busy = true;
             button.disabled = true;
             actionState('sending…');

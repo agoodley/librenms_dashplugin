@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 use Agoodley\LibrenmsAnsible\Changes\ApprovalRules;
 use Agoodley\LibrenmsAnsible\Changes\BackupCheck;
 use Agoodley\LibrenmsAnsible\Changes\BackupState;
+use Agoodley\LibrenmsAnsible\Changes\BlastRadius;
 use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\ChangeText;
@@ -300,6 +301,7 @@ class ChangeController extends Controller
             'id' => $id, 'status' => $change['status'], 'label' => ChangeStatus::label($change['status']), 'css' => ChangeStatus::css($change['status']),
             'final' => ChangeStatus::isFinal($change['status']), 'version' => (int) $change['version'], 'pending' => $state['pending'],
             'waiting' => $change['waiting'], 'waiting_text' => ChangeStatus::waitingText($change['waiting']), 'current_batch' => (int) $change['current_batch'],
+            'blast_check' => self::blastCheck($change, $state['batches']),
             'error' => $change['error'] !== null ? Clock::localize($change['error']) : null,
             'actions' => $state['actions'], 'signature' => $state['signature'], 'log' => $log,
         ]);
@@ -341,9 +343,10 @@ class ChangeController extends Controller
     }
 
     /**
-     * POST plugin/ansible/changes/{id}/accept-blast {comment}: accept the new blast radius of the batch that waits because
-     * it grew. It needs the permission the approval setting asks for (ApprovalRules::acceptPermission()): the approve
-     * permission, or the run permission while the settings ask for no approval.
+     * POST plugin/ansible/changes/{id}/accept-blast {comment, blast}: accept the new blast radius of the batch that waits
+     * because it grew, as the change page showed it (blast: the check's identity, BlastRadius::checkId(); refused when it
+     * changed since). It needs the permission the approval setting asks for (ApprovalRules::acceptPermission()): the
+     * approve permission, or the run permission while the settings ask for no approval.
      */
     public function acceptBlast(Request $request, int $id): JsonResponse
     {
@@ -354,7 +357,9 @@ class ChangeController extends Controller
             return response()->json(['error' => ApprovalRules::acceptRefusal($mode, ['status' => ChangeStatus::PAUSED, 'waiting' => 'blast', 'user_id' => null], 0, false)], 403);
         }
 
-        return $this->act($id, fn (ChangeLifecycle $lifecycle) => $lifecycle->acceptBlast($id, $user, $holds, self::comment($request), time()));
+        $seen = self::seen($request);
+
+        return $this->act($id, fn (ChangeLifecycle $lifecycle) => $lifecycle->acceptBlast($id, $user, $holds, self::comment($request), time(), $seen));
     }
 
     /**
@@ -377,14 +382,26 @@ class ChangeController extends Controller
     }
 
     /**
-     * POST plugin/ansible/changes/{id}/continue {secrets}: continue a paused change.
+     * POST plugin/ansible/changes/{id}/continue {secrets, blast}: continue a paused change (blast: for a batch whose blast
+     * radius cannot be computed, the identity of the check the change page showed, as for acceptBlast()).
      */
     public function resume(Request $request, int $id): JsonResponse
     {
         $user = self::user($request);
         $secrets = $this->secrets($request, $id);
+        $seen = self::seen($request);
 
-        return $this->act($id, fn (ChangeLifecycle $lifecycle) => $lifecycle->resume($id, $user, $secrets, time()));
+        return $this->act($id, fn (ChangeLifecycle $lifecycle) => $lifecycle->resume($id, $user, $secrets, time(), $seen));
+    }
+
+    /**
+     * The identity of the check of a blast radius the change page showed (BlastRadius::checkId()), "" for none.
+     */
+    private static function seen(Request $request): string
+    {
+        $seen = $request->input('blast');
+
+        return is_string($seen) && preg_match('/^[0-9a-f]{32}$/D', $seen) ? $seen : '';
     }
 
     /**
@@ -506,7 +523,7 @@ class ChangeController extends Controller
             'approvals' => $approvals, 'windows' => $windows, 'events' => $events, 'signature' => $signature,
             'diffs' => $diffs, 'unattributed' => $unattributed, 'secretVars' => $secretVars, 'settings' => $settings, 'canRun' => $canRun, 'canApprove' => $canApprove,
             'approvalRefusal' => $approvalRefusal, 'canAccept' => $canAccept, 'acceptRefusal' => $acceptRefusal, 'actions' => $actions, 'pending' => $pending, 'withheld' => $withheld,
-            'laterBusy' => $laterBusy, 'topology' => $topology, 'blast' => $blast,
+            'laterBusy' => $laterBusy, 'topology' => $topology, 'blast' => $blast, 'blastCheck' => self::blastCheck($change, $batches),
             'topologyPlanned' => \Agoodley\LibrenmsAnsible\Changes\BatchPlan::isTopology($change['plan'] ?? null),
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
             'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($settings->approval, $change) : null,
@@ -623,6 +640,20 @@ class ChangeController extends Controller
 
             return [];
         }
+    }
+
+    /**
+     * The identity of the check of the blast radius the change waits for (it grew, or cannot be computed), which an
+     * acceptance or a Continue names (BlastRadius::checkId()); null when it waits for no such check.
+     *
+     * @param  array<int, array>  $batches
+     */
+    public static function blastCheck(array $change, array $batches): ?string
+    {
+        $record = $batches[(int) $change['current_batch']]['blast'] ?? null;
+
+        return $change['status'] === ChangeStatus::PAUSED && in_array($change['waiting'], ['blast', 'blast_unknown'], true) && is_array($record)
+            ? BlastRadius::checkId($record) : null;
     }
 
     /**

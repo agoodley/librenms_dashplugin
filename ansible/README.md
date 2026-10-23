@@ -758,7 +758,10 @@ it cuts off with those approved, or accepted since:
   anyway (a change applied without an approval says *since the change was made* and *planned* where others say *since
   the approval* and *approved*). That is recorded in the timeline and in the eventlog of the change's devices, and the batch starts again
   (its blast radius computed once more, and held to what was accepted from then on). *Continue* does not start it,
-  and a batch whose blast radius grows again waits again. With *When the blast radius grew: refuse the batch*, the
+  and a batch whose blast radius grows again waits again. An acceptance is for the blast radius the page showed: when
+  it changed since the page was loaded (two approvers accepted at the same moment, and the batch grew again meanwhile),
+  the plugin refuses it (*the blast radius of the batch changed since you loaded the page: look again*), and the page
+  shows the new one. With *When the blast radius grew: refuse the batch*, the
   change ends as failed instead. Found right before the launch (after the backups), it stops the launch the same way,
   and the window opened for the batch closes.
 * **It shrank:** the batch goes on, and the timeline says what it no longer cuts off.
@@ -774,7 +777,8 @@ it cuts off with those approved, or accepted since:
   its blast radius. *Continue* (an admin with the run permission) computes it first, too; only if it still cannot be
   computed does the batch go without one, recorded in the timeline and in the eventlog, its window then covering its
   devices and the devices approved (or accepted) as cut off, with what it cuts off now as far as the topology plugin
-  can tell. A device of a batch planned by hand, which the topology plugin could not tell about when the change was
+  can tell; like an acceptance, it is refused when why it cannot be computed, or what the window would cover, changed
+  since the page was loaded. A device of a batch planned by hand, which the topology plugin could not tell about when the change was
   made either, changes nothing: the batch is held to what was approved for it. A blast radius that grew is said first,
   also while a device is skipped: an approver accepts it, then the batch waits for the admin's decision. With *When
   the blast radius cannot be computed: refuse the batch*, the change ends.
