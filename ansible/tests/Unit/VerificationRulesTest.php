@@ -153,6 +153,10 @@ class VerificationRulesTest extends TestCase
         $result = VerificationRules::evaluate($moved, $before, $after, $expectation, 'warning');
 
         $this->assertSame(['root_changed', 'blocking_started', 'blocking_stopped', 'resolved'], array_column($result['expected'], 'type'), 'the root moving and what moves with it');
+        $named = VerificationRules::evaluate(self::comparison([], ['resolved' => [self::finding('p0', 'warning', 'Root bridge acc1 was elected with the default priority',
+            ['analysis' => 'stp', 'vlans' => [10, 0]])]]), $before, $after, $expectation, 'warning');
+        $this->assertSame('Resolved (warning): VLAN 1 / CST, VLAN 10: Root bridge acc1 was elected with the default priority', $named['expected'][0]['text'],
+            'a spanning tree finding with its VLANs');
         $this->assertSame(['acc2 Gi1/0/48 started blocking in VLAN 30'], array_column($result['unexpected'], 'text'), 'another VLAN is no part of the fix');
 
         // the intended root not root everywhere: acc2 still sees acc1 in VLAN 10

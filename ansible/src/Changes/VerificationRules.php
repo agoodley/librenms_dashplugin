@@ -250,7 +250,9 @@ final class VerificationRules
      */
     private static function findingText(string $kind, array $finding): string
     {
-        $title = UntrustedText::line((string) ($finding['title'] ?? ''), 300);
+        // a spanning tree finding with its VLANs: two VLANs' findings can have the same title
+        $vlans = ($finding['analysis'] ?? null) === 'stp' ? array_values(array_filter((array) ($finding['vlans'] ?? []), 'is_int')) : [];
+        $title = ($vlans ? FixAnswers::vlanText($vlans) . ': ' : '') . UntrustedText::line((string) ($finding['title'] ?? ''), 300);
         $severity = (string) ($finding['severity'] ?? '');
         $was = (array) ($finding['was'] ?? []);
 
