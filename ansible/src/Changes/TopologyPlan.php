@@ -20,6 +20,20 @@ final class TopologyPlan
     /** Most characters of a stored device name. */
     private const NAME_MAX = 120;
 
+    /** How the topology plugin chose a core device, in words (its planning API's core_modes). */
+    public const CORE_MODES = [
+        'configured' => 'the Core devices setting',
+        'stp_preferred_roots' => 'the designated root bridges',
+        'stp' => 'the spanning tree root',
+        'automatic' => 'a guess: the most central switches',
+    ];
+
+    /** Most core devices kept with a plan (the core of every part of the network the admin sees). */
+    private const CORE_MAX = 200;
+
+    /** Where an admin sets the topology plugin's core. */
+    public const CORE_SETTING = 'Core devices in the topology plugin\'s settings (Overview, Plugins, Plugin Admin, topology, Settings)';
+
     /**
      * @param  string  $api  the version of the topology plugin's planning API that planned it
      * @param  array<int, array{tier: int|string|null, hand: bool, lost: int[], network: int, unmanaged: int, reference: string,
@@ -27,13 +41,70 @@ final class TopologyPlan
      *     tier: hops from the core (1: cabled to a core device), CORE, or null for a batch planned by hand
      * @param  list<array{device_id: int, reason: string}>  $leftOut  devices chosen for the change that the planner could not plan, left out of it
      * @param  array<int, string>  $names  device_id => name, for the devices it mentions
+     * @param  int[]  $core  the core devices the plan is measured from (of every part of the network the admin sees)
+     * @param  array<int, string>  $coreModes  core device => how the topology plugin chose it (CORE_MODES)
      */
     public function __construct(
         public readonly string $api,
         public readonly array $batches,
         public readonly array $leftOut = [],
         public readonly array $names = [],
+        public readonly array $core = [],
+        public readonly array $coreModes = [],
     ) {
+    }
+
+    /**
+     * The core the plan is measured from, in words: "lab-sw1 (the Core devices setting)"; "" when none was given.
+     */
+    public function coreText(int $max = 8): string
+    {
+        $groups = [];
+        foreach ($this->core as $deviceId) {
+            $groups[$this->coreModes[$deviceId] ?? ''][] = $deviceId;
+        }
+        $parts = [];
+        foreach ($groups as $mode => $devices) {
+            $parts[] = BlastRadius::listText($devices, $this->names, $max, '') . (isset(self::CORE_MODES[$mode]) ? ' (' . self::CORE_MODES[$mode] . ')' : '');
+        }
+
+        return implode('; ', $parts);
+    }
+
+    /**
+     * Is (part of) the core a guess of the topology plugin, rather than set in its settings or by the spanning tree?
+     */
+    public function coreGuessed(): bool
+    {
+        return in_array('automatic', $this->coreModes, true);
+    }
+
+    /**
+     * Does the plan start with the core (the planner put the first batch in the core's tier)?
+     */
+    public function startsWithCore(): bool
+    {
+        return ($this->batches[0]['tier'] ?? null) === self::CORE && ! ($this->batches[0]['hand'] ?? false);
+    }
+
+    /**
+     * What a plan measured from this core should make the admin check, in words ([] when nothing): a first batch of the
+     * core (the batches cannot go from the edge to the core), a core the topology plugin guessed.
+     *
+     * @return string[]
+     */
+    public function coreWarnings(): array
+    {
+        $warnings = [];
+        if ($this->startsWithCore()) {
+            $warnings[] = 'The first batch is of the core the topology plugin measures from (' . $this->coreText() . '): the batches do not go from the edge to the '
+                . 'core. Check the core' . ($this->coreGuessed() ? '' : ', or choose devices beyond it') . '.';
+        }
+        if ($this->coreGuessed()) {
+            $warnings[] = 'The core is a guess of the topology plugin (the most central switches): set ' . self::CORE_SETTING . ' for the plan to be measured from yours.';
+        }
+
+        return $warnings;
     }
 
     /**
@@ -79,7 +150,12 @@ final class TopologyPlan
             $names[(string) $deviceId] = $name; // a JSON object, whatever the ids
         }
 
-        return ['api' => $this->api, 'batches' => $this->batches, 'left_out' => $this->leftOut, 'names' => $names];
+        $modes = [];
+        foreach ($this->coreModes as $deviceId => $mode) {
+            $modes[(string) $deviceId] = $mode;
+        }
+
+        return ['api' => $this->api, 'batches' => $this->batches, 'left_out' => $this->leftOut, 'names' => $names, 'core' => $this->core, 'core_modes' => (object) $modes];
     }
 
     /**
@@ -106,8 +182,42 @@ final class TopologyPlan
                 $names[(int) $deviceId] = self::name($name);
             }
         }
+        [$core, $modes] = self::coreOf($data['core'] ?? [], $data['core_modes'] ?? []);
 
-        return new self(mb_substr($data['api'], 0, 16), $batches, $leftOut, $names);
+        return new self(mb_substr($data['api'], 0, 16), $batches, $leftOut, $names, $core, $modes);
+    }
+
+    /**
+     * The core devices and how each was chosen, checked (a plan of an earlier version has none).
+     *
+     * @return array{0: int[], 1: array<int, string>}
+     *
+     * @throws \InvalidArgumentException
+     */
+    public static function coreOf(mixed $core, mixed $modes): array
+    {
+        if (is_object($modes)) {
+            $modes = (array) $modes;
+        }
+        if (! is_array($core) || ! array_is_list($core) || ! is_array($modes)) {
+            throw new \InvalidArgumentException('the core of the topology part of the batch plan is not one');
+        }
+        $ids = [];
+        foreach (array_slice($core, 0, self::CORE_MAX) as $deviceId) {
+            if (! is_int($deviceId) || $deviceId < 1) {
+                throw new \InvalidArgumentException('the core of the topology part of the batch plan has a device that is not one');
+            }
+            $ids[] = $deviceId;
+        }
+        $ids = array_values(array_unique($ids));
+        $checked = [];
+        foreach ($modes as $deviceId => $mode) {
+            if (preg_match('/^\d{1,10}$/D', (string) $deviceId) && in_array((int) $deviceId, $ids, true) && is_string($mode) && isset(self::CORE_MODES[$mode])) {
+                $checked[(int) $deviceId] = $mode;
+            }
+        }
+
+        return [$ids, $checked];
     }
 
     /**

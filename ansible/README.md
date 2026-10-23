@@ -709,6 +709,11 @@ change page and the change's timeline say that **the blast radius is unknown**, 
   data*, *no path to the core now*, *unknown to the topology plugin (or not visible)*. The admin **leaves them out**
   of the change (the default; the timeline lists them) or puts them **in final batches planned by hand** (of at most
   *Batch size*), marked *planned by hand: nothing tells what depends on them*: their blast radius is unknown.
+* **The core the plan is measured from** (the core devices of the parts of the network of the chosen devices) is named
+  on the preview, the change page and in the creation's timeline, with how the topology plugin chose it: its *Core
+  devices* setting, the designated root bridges, the spanning tree root, or a guess (the most central switches). A
+  guessed core, or a plan whose first batch is of the core (the batches then cannot go from the edge to the core), is
+  said as a warning, with where to set *Core devices* (*Overview → Plugins → Plugin Admin → topology → Settings*).
 * The plan is computed **as the admin who makes the change sees the network** (the topology plugin's pages show them
   the same). The change is created only with the batches and the blast radius its preview showed: when the topology
   changed in between, *Create* says so and asks for a new preview.

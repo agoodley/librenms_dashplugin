@@ -676,9 +676,14 @@
                     + (planner.why || 'the topology plugin does not plan them') + '. Nothing tells what each batch cuts off while it runs.']);
                 return unknown;
             }
+            // the core the plan is measured from: a guess of the topology plugin, or a core at the start of the plan, is said in the notes below
+            var coreLine = planner.core_text ? el('div', 'ans-help', 'Measured from the core: ' + planner.core_text + '.') : null;
+            if (coreLine) {
+                coreLine.id = 'ans-preview-core';
+            }
             append(box, el('div', 'panel-heading', [el('strong', null, 'Rollout plan and blast radius'), ' ',
                 el('span', 'text-muted', '(the topology plugin: farthest from the core first, the core last, never two devices that back each other up in one batch; '
-                    + 'what each batch cuts off is approved with the change and checked again before it starts)')]));
+                    + 'what each batch cuts off is approved with the change and checked again before it starts)'), coreLine]));
             var rows = el('tbody');
             batches.forEach(function (batch) {
                 var blast = batch.blast || {};

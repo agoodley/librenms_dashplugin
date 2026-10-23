@@ -64,8 +64,8 @@ class RolloutPlanTest extends TestCase
             }
         }
 
-        return ['version' => '1.0', 'batches' => $batches, 'skipped' => $skipped, 'core' => [501],
-            'names' => array_intersect_key(self::NAMES, array_flip($devices)), 'role_hidden' => []];
+        return ['version' => '1.1', 'batches' => $batches, 'skipped' => $skipped, 'core' => [501], 'core_modes' => [501 => 'configured'],
+            'names' => array_intersect_key(self::NAMES, array_flip([...$devices, 501])), 'role_hidden' => []];
     }
 
     /**
@@ -120,7 +120,9 @@ class RolloutPlanTest extends TestCase
         $this->assertSame([2, 2, 1, 1, 'core'], array_column($plan->topology->batches, 'tier'));
         $this->assertSame([[], [], [512], [513, 514], []], array_column($plan->topology->batches, 'lost'), 'lab-sw2 cuts off lab-sw6, lab-sw3 lab-sw7 and lab-sw8');
         $this->assertSame([1, 6, 2, 3, 0], array_column($plan->topology->batches, 'unmanaged'));
-        $this->assertSame(['lab-sw6', 'lab-sw7', 'lab-sw8'], array_values($plan->topology->names), 'the devices it cuts off are named');
+        $this->assertSame(['lab-sw1', 'lab-sw6', 'lab-sw7', 'lab-sw8'], array_values($plan->topology->names), 'the devices it cuts off, and the core, are named');
+        $this->assertSame([[501], [501 => 'configured']], [$plan->topology->core, $plan->topology->coreModes], 'the core the plan is measured from, and how it was chosen');
+        $this->assertSame('lab-sw1 (the Core devices setting)', $plan->topology->coreText());
         $this->assertSame([], $made['left_out']);
         $this->assertSame([], $made['notes']);
         $this->assertSame([1, true, 0], [$plan->stopAt, $plan->waitAfterFirst, $plan->pauseMinutes], 'the settings of batches');
@@ -328,6 +330,48 @@ class RolloutPlanTest extends TestCase
             . 'batch 5 (lab-sw1): no other monitored device; batch 6 (lab-dead): planned by hand, unknown', $plan->topology->summary($plan->batches, self::NAMES));
         $this->assertStringEndsWith('batch 2 (lab-sw5, lab-sw6, lab-sw7, lab-sw8): no other monitored device, and 6 unmanaged neighbors; and 4 more batches (on the change page)',
             $plan->topology->summary($plan->batches, self::NAMES, 2));
+    }
+
+    public function testAPlanThatStartsWithTheCoreOrOnAGuessedCoreIsSaid(): void
+    {
+        // the topology plugin guessed every chosen switch as its core: the canary is a core switch
+        $planner = ['version' => '1.1', 'batches' => [['number' => 1, 'tier' => 'core', 'devices' => [501, 502, 503], 'lost' => [], 'network' => 0, 'unmanaged' => 0,
+            'reference' => 'largest part', 'simulate' => null]], 'skipped' => [], 'core' => [501, 502, 503],
+            'core_modes' => [501 => 'automatic', 502 => 'automatic', 503 => 'automatic'], 'names' => array_intersect_key(self::NAMES, array_flip([501, 502, 503])), 'role_hidden' => []];
+        $made = RolloutPlan::make([501, 502, 503], [], 1, 5, 1, true, 0, $planner, RolloutPlan::LEAVE, fn (array $batch) => self::blast($batch));
+
+        $this->assertSame([[501], [502, 503]], $made['plan']->batches);
+        $this->assertTrue($made['plan']->topology->startsWithCore());
+        $this->assertTrue($made['plan']->topology->coreGuessed());
+        $this->assertSame('lab-sw1, lab-sw2, lab-sw3 (a guess: the most central switches)', $made['plan']->topology->coreText());
+        $this->assertSame(['The first batch is of the core the topology plugin measures from (lab-sw1, lab-sw2, lab-sw3 (a guess: the most central switches)): the '
+            . 'batches do not go from the edge to the core. Check the core.',
+            'The core is a guess of the topology plugin (the most central switches): set Core devices in the topology plugin\'s settings (Overview, Plugins, '
+            . 'Plugin Admin, topology, Settings) for the plan to be measured from yours.'], $made['notes']);
+
+        // set in the settings, and the plan starts beyond it: nothing to say
+        $this->assertSame([], self::make()['plan']->topology->coreWarnings());
+    }
+
+    public function testTheCoreIsKeptWithThePlanAndAnEarlierPlanHasNone(): void
+    {
+        $plan = self::make()['plan'];
+        $data = json_decode((string) json_encode($plan->toArray()), true);
+        $this->assertSame([501], $data['topology']['core']);
+        $this->assertSame(['501' => 'configured'], $data['topology']['core_modes']);
+        $back = BatchPlan::topologyPart($data);
+        $this->assertSame([[501], [501 => 'configured']], [$back->core, $back->coreModes]);
+
+        // a plan stored before the core was kept
+        unset($data['topology']['core'], $data['topology']['core_modes']);
+        $earlier = BatchPlan::topologyPart($data);
+        $this->assertSame([[], [], ''], [$earlier->core, $earlier->coreModes, $earlier->coreText()]);
+        $this->assertSame([], $earlier->coreWarnings());
+
+        // a mode it does not know is dropped; a core that is not a list of devices is refused
+        $this->assertSame([[501], []], TopologyPlan::coreOf([501], ['501' => 'telepathy']));
+        $this->expectException(\InvalidArgumentException::class);
+        TopologyPlan::coreOf(['lab-sw1'], []);
     }
 
     public function testTiersAndReasonsInWords(): void

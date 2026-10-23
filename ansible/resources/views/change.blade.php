@@ -309,8 +309,12 @@
                 <div class="panel-heading"><strong>Batches</strong> <span class="text-muted">({{ \Agoodley\LibrenmsAnsible\Support\Format::count(count($targets), 'device') }}; stops at {{ $plan['stop_at'] ?? 1 }} failed {{ ($plan['stop_at'] ?? 1) == 1 ? 'device' : 'devices' }} in a batch{{ ! empty($plan['wait_after_first']) && count($batches) > 1 ? '; waits for an admin after the first batch' : '' }}{{ ! empty($plan['pause_minutes']) ? '; ' . $plan['pause_minutes'] . ' min between batches' : '' }})</span>
                     @if($topology)
                         <div class="ans-help" id="ans-batches-planner">Planned by the topology plugin: farthest from the core first, the core last, never two devices that back each other up in one batch.
-                            What each batch cuts off was approved with the change; it is computed again before the batch starts and right before its launch, and a batch that would
-                            cut off more waits for an approver.</div>
+                            What each batch cuts off was computed when the change was made, and is part of what is dry-run and approved; it is computed again before the batch starts and
+                            right before its launch, and a batch that would cut off more waits for an admin to accept it.
+                            @if($topology->coreText() !== '')<span id="ans-batches-core">Measured from the core: {{ $topology->coreText() }}.</span>@endif</div>
+                        @foreach($topology->coreWarnings() as $warning)
+                            <div class="ans-help text-warning ans-core-warning">{{ $warning }}</div>
+                        @endforeach
                     @elseif($topologyPlanned)
                         <div class="ans-help text-danger" id="ans-batches-unreadable">The topology plugin's part of this change's plan cannot be read: its batches do not start.</div>
                     @else

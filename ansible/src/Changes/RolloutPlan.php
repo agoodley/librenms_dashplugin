@@ -46,6 +46,11 @@ final class RolloutPlan
         $ticked = array_values(array_intersect(array_unique(array_map('intval', $canary)), $deviceIds));
         [$planned, $skipped] = self::read($planner, $deviceIds);
         $names = BlastRadius::names($planner);
+        // the core the plan is measured from, of the parts of the network of these devices, and how the topology plugin chose
+        // it (its planning API's core_modes, since 1.1; its core names the core of every part the admin sees)
+        $modes = is_array($planner['core_modes'] ?? null) ? $planner['core_modes'] : [];
+        [$core, $coreModes] = TopologyPlan::coreOf(array_values(array_filter(array_map(fn ($id) => preg_match('/^\d{1,10}$/D', (string) $id) ? (int) $id : 0,
+            array_keys($modes)))), $modes);
         $notes = [];
 
         // the canary from the planner's first batch, the rest of that batch after it
@@ -105,8 +110,10 @@ final class RolloutPlan
             $names += $answer['names'];
             array_push($mentioned, ...$answer['blast']['lost'], ...array_column($answer['blast']['skipped'], 'device_id'));
         }
+        array_push($mentioned, ...$core);
         $topology = new TopologyPlan(mb_substr((string) $planner['version'], 0, 16), $entries, $leftOut,
-            array_intersect_key($names, array_flip(array_unique($mentioned))));
+            array_intersect_key($names, array_flip(array_unique($mentioned))), $core, $coreModes);
+        array_push($notes, ...$topology->coreWarnings());
         $plan = new BatchPlan($batches, max(1, $stopAt), $waitAfterFirst, max(0, $pauseMinutes), BatchPlan::TOPOLOGY, $topology);
         $problem = $plan->problem(array_merge(...$batches));
         if ($problem !== null) {

@@ -139,8 +139,11 @@ final class ChangeService
         $leftOut = array_map(fn (array $entry) => $entry + ['name' => (string) (($names[$entry['device_id']] ?? '') ?: '#' . $entry['device_id']),
             'text' => TopologyPlan::reasonText($entry['reason'])], $made['left_out']);
 
+        // the core the plan is measured from (none from a planning API before 1.1)
+        $core = $made['plan']?->topology !== null ? $made['plan']->topology->coreText() : '';
+
         return ['plan' => $made['plan'], 'used' => true, 'error' => $made['error'], 'api' => (string) ($answer['version'] ?? ''), 'left_out' => $leftOut,
-            'notes' => $made['notes']] + $result;
+            'notes' => $made['notes'], 'core_text' => $core] + $result;
     }
 
     /**
@@ -282,8 +285,10 @@ final class ChangeService
         $planner = $preview['planner'] ?? [];
         if ($batches->topology !== null) {
             $displays = array_map(fn (array $target) => (string) (($target['display'] ?? '') ?: ($target['name'] ?? '')), $plan->targets);
+            $core = $batches->topology->coreText();
             $this->changes->addEvent($id, 'created', 'What each batch cuts off while it runs, as the topology plugin computed it when the change was made (checked again before each batch): '
-                . $batches->topology->summary($batches->batches, array_filter($displays)) . '.', (string) $user->username, time());
+                . $batches->topology->summary($batches->batches, array_filter($displays)) . '.' . ($core !== '' ? ' Measured from the core: ' . $core . '.' : '')
+                . implode('', array_map(fn (string $warning) => ' ' . $warning, $batches->topology->coreWarnings())), (string) $user->username, time());
         }
         if ($batches->topology !== null && $batches->topology->leftOut) {
             $this->changes->addEvent($id, 'created', 'Left out, as the topology plugin cannot plan them (nothing tells what depends on them): '
