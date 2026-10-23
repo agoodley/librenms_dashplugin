@@ -23,6 +23,12 @@ final class VerificationRules
     public const UNEXPECTED_EVENTS = ['cable_moved', 'link_removed', 'unmanaged_new', 'lag_member_removed', 'root_changed', 'root_gone', 'blocking_started',
         'ospf_lost', 'bgp_lost'];
 
+    /**
+     * The spanning tree check's findings that a root bridge moving brings (LibreNMS' eventlog of the root and root port
+     * changes, the topology changes): what a root priority fix does, while the root is the intended one.
+     */
+    public const ROOT_MOVE_FINDINGS = ['root_changed', 'root_port_changed', 'tc_recent'];
+
     /** The severities findings count from (the "Count findings from" setting), lowest first. */
     public const SEVERITIES = ['info' => 1, 'warning' => 2, 'critical' => 3];
 
@@ -49,21 +55,21 @@ final class VerificationRules
         $fixVlans = array_values(array_unique(array_merge([], ...array_map(fn (array $root) => array_map('intval', (array) ($root['vlans'] ?? [])), $roots))));
 
         // the events: a root bridge that moved to the fix's intended root, in its VLANs, is what the fix does; so are the ports that start
-        // or stop blocking in those VLANs as the root moves
+        // or stop blocking in those VLANs while the root is the intended one (the root moving, or the secondary's priority, changes
+        // which ports block)
         $events = array_values(array_filter((array) ($comparison['events'] ?? []), 'is_array'));
-        $rootMoved = false;
-        foreach ($events as $event) {
-            if (($event['type'] ?? null) === 'root_changed' && self::toIntended($event, $roots)) {
-                $rootMoved = true;
-            }
+        $otherRoots = [];
+        foreach ($roots as $root) {
+            array_push($otherRoots, ...self::otherRoots($before, $after, $root, $names));
         }
+        $rootIntended = $roots && ! $otherRoots;
         foreach ($events as $event) {
             $entry = self::entry('event', (string) ($event['type'] ?? ''), (string) ($event['level'] ?? 'info'), (string) ($event['text'] ?? ''), (array) ($event['devices'] ?? []));
             $vlans = array_map('intval', (array) ($event['vlans'] ?? []));
             $inFix = $roots && $vlans && ! array_diff($vlans, $fixVlans);
             if ($entry['type'] === 'root_changed' && self::toIntended($event, $roots)) {
                 $result['expected'][] = $entry;
-            } elseif ($rootMoved && $inFix && in_array($entry['type'], ['blocking_started', 'blocking_stopped'], true)) {
+            } elseif ($rootIntended && $inFix && in_array($entry['type'], ['blocking_started', 'blocking_stopped'], true)) {
                 $result['expected'][] = $entry;
             } elseif (in_array($entry['type'], self::UNEXPECTED_EVENTS, true)) {
                 $result['unexpected'][] = $entry;
@@ -88,6 +94,11 @@ final class VerificationRules
                 $entry = self::entry('finding', $kind, (string) ($finding['severity'] ?? 'info'), self::findingText($kind, $finding), (array) ($finding['devices'] ?? []));
                 if (isset($finding['was']['identity']) && isset($resolves[(string) $finding['was']['identity']])) {
                     continue; // a finding of the fix that is still there, in another form: said below
+                }
+                if ($rootIntended && ($finding['analysis'] ?? null) === 'stp' && in_array($finding['code'] ?? null, self::ROOT_MOVE_FINDINGS, true)) {
+                    $result['expected'][] = $entry; // the root bridge and root ports changing as the fix moves the root
+
+                    continue;
                 }
                 $counts = (self::SEVERITIES[$finding['severity'] ?? ''] ?? 0) >= $rank && empty($finding['quiet']);
                 $result[$counts ? 'unexpected' : 'listed'][] = $entry + ($counts ? [] : ['why' => ! empty($finding['quiet']) ? 'quiet' : 'below']);
@@ -126,9 +137,7 @@ final class VerificationRules
                         . UntrustedText::line((string) ($still['title'] ?? $title), 300), (array) ($still['devices'] ?? []));
                 }
             }
-            foreach ($roots as $root) {
-                array_push($result['unexpected'], ...self::otherRoots($before, $after, $root, $names));
-            }
+            array_push($result['unexpected'], ...$otherRoots);
         }
         // a fix is verified by the check that found its findings: without it in both states nothing says that they were resolved
         $unchecked = null;

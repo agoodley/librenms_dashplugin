@@ -167,6 +167,17 @@ class VerificationRulesTest extends TestCase
             'root_after' => ['mac' => '00ab02000000', 'device' => 2]])]), $after, ['roots' => [['root' => '00ab02000000', 'root_device' => 2, 'vlans' => [10], 'devices' => [1, 2, 3, 4]],
             ['root' => '00ab01000000', 'root_device' => 1, 'vlans' => [0], 'devices' => [1, 2, 3, 4]]], 'findings' => []], FixExpectation::forBatch($fix, [2]), 'warning');
         $this->assertSame(['root_changed', 'root_not_intended'], array_column($elsewhere['unexpected'], 'type'));
+
+        // what LibreNMS reports as the root moves (its eventlog of root and root port changes: the spanning tree check's findings) and the
+        // ports the secondary's priority makes block are the fix's doing while the root is the intended one; in any other change they count
+        $rootChanged = ['identity' => 'rc', 'analysis' => 'stp', 'code' => 'root_changed', 'severity' => 'warning', 'title' => 'Root bridge changes detected', 'devices' => [1, 2, 3, 4],
+            'subjects' => [1, 2, 3, 4], 'vlans' => [], 'quiet' => false];
+        $withFinding = self::comparison([self::event('blocking_started', 'info', 'acc1 Gi1/0/50 started blocking in VLAN 10', ['vlans' => [10]])], ['new' => [$rootChanged]]);
+        $secondary = VerificationRules::evaluate($withFinding, $after, $after, FixExpectation::forBatch($fix, [2]), 'warning');
+        $this->assertSame(['verified', ['blocking_started', 'new']], [$secondary['result'], array_column($secondary['expected'], 'type')]);
+        $this->assertSame('unexpected', VerificationRules::evaluate($withFinding, $after, $after, null, 'warning')['result'], 'no fix: the root changes count');
+        $this->assertSame(['blocking_started', 'new', 'root_not_intended'], array_values(array_unique(array_column(VerificationRules::evaluate($withFinding, $before, $partly, $expectation,
+            'warning')['unexpected'], 'type'))), 'the root not the intended one everywhere: they count too');
     }
 
     // ------------------------------------------------------------------ the outcome
