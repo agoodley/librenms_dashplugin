@@ -53,9 +53,9 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit {
          * @param  int[]|null  $visible
          * @param  string[]  $denied  model classes the user's role may not view
          */
-        private static function api(RedundancyFixture $net, ?array $visible = null, array $denied = []): Planning
+        private static function api(RedundancyFixture $net, ?array $visible = null, array $denied = [], string $core = 'core1 core2'): Planning
         {
-            return Planning::withRepository(self::repository($net, $visible, $denied), new PluginSettings(['redundancy_core' => 'core1 core2']));
+            return Planning::withRepository(self::repository($net, $visible, $denied), new PluginSettings(['redundancy_core' => $core]));
         }
 
         private static function repository(RedundancyFixture $net, ?array $visible, array $denied): TopologyRepository
@@ -160,9 +160,29 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit {
             $this->assertSame('plugin/topology/l2?fail=d%3A5%2Cd%3A6', $plan['batches'][0]['simulate'], 'the L2 map with the batch failed');
             $this->assertSame([], $plan['skipped']);
             $this->assertSame([self::C1, self::C2], $plan['core']);
+            $this->assertSame([self::C1 => 'configured', self::C2 => 'configured'], $plan['core_modes'], 'from the Core devices setting');
             $this->assertSame('acc3', $plan['names'][self::A3]);
             $this->assertSame('ap1', $plan['names'][self::AP], 'the devices it cuts off are named too');
             $this->assertSame([], $plan['role_hidden']);
+        }
+
+        public function testTheCoreSaysHowItWasChosen(): void
+        {
+            // without Core devices (nor designated root bridges or a spanning tree root) the core is a guess: the most central switches
+            $plan = self::api(self::network(), null, [], '')->rollout([self::D1, self::A1]);
+            $this->assertNotSame([], $plan['core']);
+            $this->assertSame(array_fill_keys($plan['core'], 'automatic'), $plan['core_modes']);
+
+            // another part of the network, with its own core: core names it, core_modes only the core of the planned devices' part
+            $net = self::network();
+            $net->device(40, 'branch1')->device(41, 'branch2')->link(40, 'Gi0/1', 41, 'Gi0/1');
+            $plan = self::api($net)->rollout([self::D1, self::A1]);
+            $this->assertSame([self::C1 => 'configured', self::C2 => 'configured'], $plan['core_modes'], 'the core their plan is measured from');
+            $this->assertNotEmpty(array_intersect([40, 41], $plan['core']), 'the branch\'s own core is in core');
+            $this->assertSame([self::C1, self::C2], array_values(array_intersect($plan['core'], [self::C1, self::C2])));
+            $branch = self::api($net)->rollout([41]);
+            $this->assertSame(['automatic'], array_values(array_unique($branch['core_modes'])), 'a branch without a configured core: a guess');
+            $this->assertSame([], array_intersect(array_keys($branch['core_modes']), [self::C1, self::C2]));
         }
 
         public function testABlastRadiusIsTheFailureSimulation(): void
@@ -251,6 +271,8 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit {
             $this->assertContains(['device_id' => self::D1, 'reason' => RolloutPlanner::UNKNOWN, 'text' => 'unknown, disabled or not visible'], $plan['skipped'],
                 'said as a device that does not exist is said');
             $this->assertArrayNotHasKey(self::D1, $plan['names']);
+            $this->assertSame([], array_diff(array_keys($plan['core_modes']), [self::C1, self::C2, self::D2, self::A1, self::A2, self::AP, self::A3]),
+                'nor tells how a core device out of their sight was chosen');
 
             $blast = $api->blastRadius([self::D1]);
             $this->assertSame([], $blast['devices'], 'not failed: a user cannot probe what a device out of their sight cuts off');

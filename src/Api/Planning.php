@@ -35,7 +35,7 @@ use LibreNMS\Interfaces\Plugins\PluginManagerInterface;
 final class Planning
 {
     /** Version of this API ("major.minor"). */
-    public const VERSION = '1.0';
+    public const VERSION = '1.1';
 
     /** Most devices one call takes (more: \InvalidArgumentException). */
     public const MAX_DEVICES = 5000;
@@ -128,20 +128,24 @@ final class Planning
      * @param  int[]  $deviceIds  the devices to plan; one listed twice counts once, one outside the scope is skipped (unknown)
      * @return array{version: string, batches: list<array{number: int, tier: int|string, devices: int[], lost: int[], network: int, unmanaged: int,
      *     reference: string, simulate: ?string}>, skipped: list<array{device_id: int, reason: string, text: string}>, core: int[],
-     *     names: array<int, string>, role_hidden: string[]}
+     *     core_modes: array<int, string>, names: array<int, string>, role_hidden: string[]}
      *     batches in the order to run them: tier (hops from the core, or CORE), devices, lost (the monitored devices it cuts off
      *     the core, switches, routers and firewalls first), network (how many of them are switches, routers or firewalls),
      *     unmanaged (how many unmanaged neighbors go down with it), reference ('core', or 'largest part' when it takes down
      *     every core device of its part of the network: the largest piece left carries on), simulate (the path of the L2 map
      *     with the batch failed, relative to LibreNMS' URL; null for more than SIMULATE_LIMIT devices); skipped: the devices
      *     it cannot plan, with the reason (UNKNOWN, DOWN, ISOLATED or UNCONNECTED) and its text; core: the core
-     *     devices; names: the name of every device of the answer the scope sees; role_hidden: what the user's LibreNMS role
+     *     devices of every part of the network the scope sees; core_modes (since 1.1): the core devices of the parts of the
+     *     planned devices (what their plan is measured from), each with how it was chosen: 'configured' (the Core devices
+     *     setting), 'stp_preferred_roots' (the designated root bridges), 'stp' (the spanning tree root) or 'automatic' (a
+     *     guess: the most central switches of its part); names: the name of every device of the answer
+     *     the scope sees; role_hidden: what the user's LibreNMS role
      *     may not view of the data the plan reads (LLDP/CDP links, ports): with any, the plan is incomplete
      */
     public function rollout(array $deviceIds, int $batchSize = 0): array
     {
         $deviceIds = self::ids($deviceIds);
-        $answer = ['version' => self::VERSION, 'batches' => [], 'skipped' => [], 'core' => [], 'names' => [], 'role_hidden' => $this->roleHidden()];
+        $answer = ['version' => self::VERSION, 'batches' => [], 'skipped' => [], 'core' => [], 'core_modes' => [], 'names' => [], 'role_hidden' => $this->roleHidden()];
         if (! $deviceIds) {
             return $answer; // never the whole network: the planner plans every device of its filter without picked ones
         }
@@ -160,6 +164,7 @@ final class Planning
             $named[] = (int) $skipped['device_id'];
         }
         $answer['core'] = array_values(array_filter(array_map('intval', $plan['core']), fn (int $id) => $this->repo->canSee($id)));
+        $answer['core_modes'] = array_intersect_key((array) ($plan['core_modes'] ?? []), array_flip($answer['core']));
         $answer['names'] = $this->names([...$named, ...$answer['core']]);
 
         return $answer;

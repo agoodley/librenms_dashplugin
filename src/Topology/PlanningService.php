@@ -65,6 +65,7 @@ class PlanningService
             'skipped' => $plan['skipped'],
             'devices' => $info,
             'core' => $core,
+            'core_modes' => $this->coreModes($devices),
             'advice' => $advice,
             'summary' => [
                 'devices' => array_sum($sizes),
@@ -326,6 +327,35 @@ class PlanningService
     private static function ids(array $ids): array
     {
         return array_values(array_unique(array_filter(array_map('intval', array_filter($ids, 'is_scalar')), fn ($id) => $id > 0)));
+    }
+
+    /**
+     * How the core devices of the parts of the network of $deviceIds (the core they are measured from) were chosen:
+     * device_id => 'configured' (the Core devices setting), 'stp_preferred_roots' (the designated root bridges), 'stp'
+     * (the spanning tree root) or 'automatic' (the most central switches of a part without any of these).
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, string>
+     */
+    public function coreModes(array $deviceIds): array
+    {
+        $nodes = $this->analyzer()->nodes();
+        $setting = $this->analyzer()->coreSetting();
+        $partOf = $this->analyzer()->parts();
+        $parts = [];
+        foreach ($deviceIds as $deviceId) {
+            if (isset($partOf['d:' . (int) $deviceId])) {
+                $parts[$partOf['d:' . (int) $deviceId]] = true;
+            }
+        }
+        $modes = [];
+        foreach ($this->analyzer()->coreNodes() as $node => $mode) {
+            if (isset($nodes[$node]['device_id']) && isset($parts[$partOf[$node] ?? -1])) {
+                $modes[(int) $nodes[$node]['device_id']] = $mode === 'configured' && $setting === 'stp_preferred_roots' ? 'stp_preferred_roots' : (string) $mode;
+            }
+        }
+
+        return $modes;
     }
 
     /**

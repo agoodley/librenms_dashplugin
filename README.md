@@ -663,19 +663,23 @@ if (class_exists(Planning::class) && (int) Planning::VERSION === 1) {   // insta
 * **`rollout(array $deviceIds, int $batchSize = 0)`** is the plan of `api/rollout` for picked devices: `batches` in the
   order to run them (farthest from the core first, the core last, never two devices that back each other up in one
   batch), each with its `number`, `tier` (hops from the core, 1 for a switch cabled to a core device, or `core`),
-  `devices`, `lost` (the monitored devices it cuts off the core, switches first), `network` (how many of them are
+  `devices`, `lost` (the monitored devices it cuts off from the core, switches first), `network` (how many of them are
   switches, routers or firewalls), `unmanaged` (how many unmanaged neighbors go down with it), `reference` (`core`, or
   `largest part` when the batch takes down every core device of its part of the network) and `simulate` (the path of
   the L2 map with the batch failed, relative to LibreNMS' URL; null for more than 50 devices); `skipped`: the devices
-  it cannot plan, with the `reason` (`unknown`, `down`, `isolated`: no LLDP/CDP neighbor, `unconnected`: no path to
-  the core now) and its `text`; `core`: the core devices; `names`: the name of every device of the answer.
+  it cannot plan, with the `reason` (`unknown`: unknown, disabled or not visible, `down`, `isolated`: no LLDP/CDP
+  neighbor, `unconnected`: no path to the core now) and its `text`; `core`: the core devices of every part of the
+  network the user sees (not only of the parts of the devices planned); `core_modes` (since 1.1): the core devices of
+  the parts of the planned devices, which their plan is measured from, each with how it was chosen: `configured` (the
+  *Core devices* setting), `stp_preferred_roots` (the designated root bridges), `stp` (the spanning tree root) or
+  `automatic` (a guess: the most central switches of its part); `names`: the name of every device of the answer.
 * **`blastRadius(array $deviceIds)`** is the failure simulation of `api/simulate` for these devices going down
   together, on top of what is down already: `devices` (those failed), `lost`, `network`, `unmanaged` and `reference` as
   for a batch, `skipped` (the devices it cannot tell anything about, as above: what depends on them is unknown, so it
   is not in `lost`), `names` and `simulate`.
 * Both answer `version` and `role_hidden`: what the user's LibreNMS role may not view of the data they read (LLDP/CDP
-  links, ports); with anything there the answer is incomplete. At most 5,000 devices per call; none plans nothing
-  (never the whole network).
+  links, ports); with anything there the answer is incomplete. At most 5,000 devices per call (more throw an
+  `InvalidArgumentException`); none plans nothing (never the whole network).
 * **Scope.** `forUser($user)` sees what that LibreNMS user may see, as the plugin's pages show it to them: a device
   outside it is `unknown`, never planned, failed or named, and a link to it is an unmanaged neighbor. `system()` sees
   every enabled device, like the topology history, and only in console commands: anywhere else it throws a
