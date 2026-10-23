@@ -52,6 +52,54 @@ final class FixChange
     }
 
     /**
+     * The fixes as they apply to the change's targets, once the planner left devices out (they are no targets): a description
+     * fix of a device left out goes, and a root fix whose intended root is left out (its secondary alone would become the
+     * root); one whose secondary is left out keeps its intended root alone. What went, in words, for the preview.
+     *
+     * @param  list<array>  $fixes
+     * @param  int[]  $targets  the change's targets
+     * @param  array<int, string>  $names  device => name
+     * @return array{fixes: list<array>, dropped: string[]}
+     */
+    public static function forTargets(string $kind, array $fixes, array $targets, array $names = []): array
+    {
+        $isTarget = array_fill_keys(array_map('intval', $targets), true);
+        $name = fn (int $id) => UntrustedText::line((string) (($names[$id] ?? '') ?: "device #$id"), 80);
+        $kept = [];
+        $dropped = [];
+        foreach ($fixes as $fix) {
+            $title = UntrustedText::line((string) ($fix['title'] ?? ''), 200);
+            if ($kind === FixAnswers::STP_ROOT_PRIORITY) {
+                $primary = (int) ($fix['primary']['device_id'] ?? 0);
+                $secondary = isset($fix['secondary']['device_id']) ? (int) $fix['secondary']['device_id'] : null;
+                if (! isset($isTarget[$primary])) {
+                    $dropped[] = "$title (its intended root " . $name($primary) . ' is left out)';
+
+                    continue;
+                }
+                if ($secondary !== null && ! isset($isTarget[$secondary])) {
+                    $dropped[] = 'the secondary ' . $name($secondary) . " of $title (left out: the intended root is set alone)";
+                    $fix['secondary'] = null;
+                    $fix['devices'] = [$primary];
+                }
+                $kept[] = $fix;
+
+                continue;
+            }
+            $devices = array_map('intval', (array) ($fix['devices'] ?? []));
+            $out = array_values(array_filter($devices, fn (int $id) => ! isset($isTarget[$id])));
+            if ($out) {
+                $dropped[] = "$title (" . implode(', ', array_map($name, $out)) . ' left out)';
+
+                continue;
+            }
+            $kept[] = $fix;
+        }
+
+        return ['fixes' => $kept, 'dropped' => $dropped];
+    }
+
+    /**
      * The devices the fixes change, in their order (the root priority fixes: the intended roots, then their secondaries).
      *
      * @param  list<array>  $fixes

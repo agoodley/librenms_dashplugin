@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsAnsible\Tests\Unit;
 
+use Agoodley\LibrenmsAnsible\Changes\FixAnswers;
 use Agoodley\LibrenmsAnsible\Changes\FixChange;
 use Agoodley\LibrenmsAnsible\Changes\FixFilter;
 use Agoodley\LibrenmsAnsible\Changes\RolloutPlan;
@@ -66,6 +67,32 @@ class FixChangeTest extends TestCase
         $fixes = self::answer()['fixes'];
         $fixes[2]['findings'] = [['identity' => 'r', 'devices' => [503]]];
         $this->assertSame([self::D2, self::R1], array_column(FixFilter::ofDevices($fixes, [512, 503]), 'id'), 'a fix of one of them, or of a finding about one');
+    }
+
+    public function testTheFixesOfDevicesThePlannerLeavesOutGo(): void
+    {
+        $fixes = self::answer()['fixes'];
+        $names = [501 => 'lab-sw1', 502 => 'lab-sw2', 512 => 'lab-sw6'];
+        // lab-sw6 down, left out by the planner: its description fix goes, lab-sw2's stays
+        $kept = FixChange::forTargets('port_descriptions', [$fixes[0], $fixes[1]], [502], $names);
+        $this->assertSame([self::D1], array_column($kept['fixes'], 'id'));
+        $this->assertSame(['Port descriptions of lab-sw6 (lab-sw6 left out)'], $kept['dropped']);
+        $this->assertSame(['fixes' => [$fixes[0]], 'dropped' => []], FixChange::forTargets('port_descriptions', [$fixes[0]], [502, 512], $names), 'nothing left out');
+
+        // a root fix: its secondary left out, the intended root is set alone; its intended root left out, the fix goes (the secondary alone would
+        // become the root)
+        $secondaryOut = FixChange::forTargets('stp_root_priority', [$fixes[2]], [501], $names);
+        $this->assertSame([[501], null], [$secondaryOut['fixes'][0]['devices'], $secondaryOut['fixes'][0]['secondary']]);
+        $this->assertStringStartsWith('the secondary lab-sw2 of Root bridge of VLAN 1 / CST, VLAN 10', $secondaryOut['dropped'][0]);
+        $this->assertSame([[501], []], FixChange::rootBatches($secondaryOut['fixes']));
+        $primaryOut = FixChange::forTargets('stp_root_priority', [$fixes[2]], [502], $names);
+        $this->assertSame([], $primaryOut['fixes']);
+        $this->assertStringEndsWith('(its intended root lab-sw1 is left out)', $primaryOut['dropped'][0]);
+
+        // the lines then built are those of the targets only
+        $lines = FixAnswers::lines('stp_root_priority', [['kind' => 'stp_root_priority', 'primary' => ['device_id' => 501, 'priority' => 4096, 'mode' => 'pvst', 'instances' => [1, 10]],
+            'secondary' => null]], [501 => 'lab-sw1.netops.lab']);
+        $this->assertSame(['lab-sw1.netops.lab pvst 1,10 4096'], $lines['lines']);
     }
 
     public function testTheDevicesOfTheFixes(): void

@@ -144,15 +144,6 @@ final class ChangeService
             if ($problem !== null) {
                 $plan->errors[] = ucfirst($problem) . '.';
             }
-            if (! $draft['errors'] && $plan->targets) {
-                $interfaces = $draft['kind'] === FixAnswers::PORT_DESCRIPTIONS ? $this->inventory->interfaces(array_keys($plan->targets)) : null;
-                foreach (FixAnswers::check($draft['kind'], implode("\n", $draft['lines']), array_map(fn (array $target) => (string) $target['name'], $plan->targets), $interfaces) as $error) {
-                    $plan->errors[] = 'The fix\'s ' . $error . '.';
-                }
-            }
-            if ($reference === '') {
-                $reference = 'Fix: ' . $draft['title'];
-            }
         }
         // secret answers are given at the dry run and the apply, not now
         foreach ($plan->template?->surveyVars ?? [] as $var) {
@@ -181,6 +172,29 @@ final class ChangeService
                 $batches = $this->settings->batchPlan($ordered, $chosen);
             }
             unset($planner['plan'], $planner['error']);
+        }
+        if ($draft !== null) {
+            // the fix's lines are those of the change's targets only, once the planner left devices out: a line of another device in
+            // the approved answer would reach a playbook (a delegate_to) outside the change, its windows and its blast radius
+            $kept = FixChange::forTargets($draft['kind'], $draft['fixes'], array_keys($plan->targets), $draft['names']);
+            if ($kept['dropped']) {
+                $built = FixAnswers::lines($draft['kind'], $kept['fixes'], array_map(fn (array $target) => (string) $target['name'], $plan->targets));
+                $draft = ['fixes' => $kept['fixes'], 'lines' => $built['lines'], 'devices' => array_values(array_intersect($draft['devices'], array_keys($plan->targets)))] + $draft;
+                $plan->values[$draft['variable']] = implode("\n", $built['lines']);
+                array_push($plan->errors, ...array_map(fn (string $error) => 'The fix\'s ' . $error . '.', $built['errors']));
+                $plan->warnings[] = 'Left out, as the topology plugin\'s planner leaves their devices out (the change\'s lines are those of its targets only): '
+                    . implode('; ', array_slice($kept['dropped'], 0, 20)) . (count($kept['dropped']) > 20 ? '; ...' : '') . '.';
+            }
+            // the lines pass the contract's checks for the change's targets
+            if (! $draft['errors'] && $plan->targets) {
+                $interfaces = $draft['kind'] === FixAnswers::PORT_DESCRIPTIONS ? $this->inventory->interfaces(array_keys($plan->targets)) : null;
+                foreach (FixAnswers::check($draft['kind'], implode("\n", $draft['lines']), array_map(fn (array $target) => (string) $target['name'], $plan->targets), $interfaces) as $error) {
+                    $plan->errors[] = 'The fix\'s ' . $error . '.';
+                }
+            }
+            if ($reference === '') {
+                $reference = 'Fix: ' . $draft['title'];
+            }
         }
         if ($ordered ?? []) {
             // the targets Oxidized cannot back up, known now rather than when their batch is refused
