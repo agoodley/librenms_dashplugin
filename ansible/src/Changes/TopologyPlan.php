@@ -289,7 +289,7 @@ final class TopologyPlan
             'down' => 'down now',
             'isolated' => 'no LLDP/CDP neighbors: no topology data',
             'unconnected' => 'no path to the core now',
-            'unknown' => 'unknown to the topology plugin (or not visible)',
+            'unknown' => 'unknown, disabled or not visible',
             default => $reason,
         };
     }

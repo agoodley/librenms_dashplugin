@@ -164,9 +164,10 @@ class RolloutPlanTest extends TestCase
         $this->assertSame([null, true, []], [$last['tier'], $last['hand'], $last['lost']]);
         $this->assertSame([['device_id' => 504, 'reason' => 'down'], ['device_id' => 509, 'reason' => 'isolated']], $last['skipped'], 'nothing tells what depends on them');
         $this->assertSame([], $hand['left_out']);
-        $this->assertSame('6 batches: 1, then 4, then 1, then 1, then 1, then 2 devices, planned by the topology plugin (the last 1 by hand); stops at 1 failed device in a batch; '
+        $this->assertSame('6 batches: 1, then 4, then 1, then 1, then 1, then 2 devices, planned by the topology plugin (the last batch by hand); stops at 1 failed device in a batch; '
             . 'waits for an admin to continue after the first batch', $hand['plan']->describe());
         $this->assertSame([[504], [509]], array_slice(self::make($devices, size: 1, unplanned: RolloutPlan::HAND)['plan']->batches, -2), 'within the batch size');
+        $this->assertStringContainsString('planned by the topology plugin (the last 2 batches by hand)', self::make($devices, size: 1, unplanned: RolloutPlan::HAND)['plan']->describe());
     }
 
     public function testWithNothingThePlannerCanPlan(): void

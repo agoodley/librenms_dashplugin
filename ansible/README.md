@@ -714,7 +714,7 @@ change page and the change's timeline say that **the blast radius is unknown**, 
   else its first *First batch* devices; the rest of that batch follows as the second. A device ticked *first* that the
   planner puts later stays in its place, and the preview says so.
 * **Devices the planner cannot plan** are listed with the reason: *down now*, *no LLDP/CDP neighbors: no topology
-  data*, *no path to the core now*, *unknown to the topology plugin (or not visible)*. The admin **leaves them out**
+  data*, *no path to the core now*, *unknown, disabled or not visible*. The admin **leaves them out**
   of the change (the default; the timeline lists them) or puts them **in final batches planned by hand** (of at most
   *Batch size*), marked *planned by hand: nothing tells what depends on them*: their blast radius is unknown.
 * **The core the plan is measured from** (the core devices of the parts of the network of the chosen devices) is named

@@ -706,18 +706,28 @@
                 if (!blast.hand && blast.unmanaged) {
                     append(down, el('div', 'ans-help', 'and ' + blast.unmanaged + ' unmanaged neighbor' + (blast.unmanaged === 1 ? '' : 's') + ' (phones, access points...)'));
                 }
+                if (!blast.hand && blast.reference && blast.reference !== 'core') {
+                    append(down, el('div', 'ans-help', 'no core device of its part is left: counted from the largest piece that stays together'));
+                }
+                down.setAttribute('data-label', 'Down while it runs');
                 var simulate = el('td');
                 if (blast.simulate && !blast.hand) {
                     var sim = el('a', 'btn btn-xs btn-default', [el('i', 'fa fa-bolt'), ' Simulate']);
                     sim.href = blast.simulate;
                     sim.target = '_blank';
+                    sim.rel = 'noopener';
                     sim.title = 'The topology plugin\'s failure simulation of this batch on the L2 map';
                     append(simulate, sim);
                 }
-                var row = el('tr', null, [el('td', null, String(batch.number) + (batch.number === 1 && plan.batches.length > 1 ? ' (canary)' : '')),
-                    el('td', 'ans-wrap', batch.devices.map(function (d) {
+                // labelled cells: stacked at phone width, a device the batch cuts off must not read like one of its devices
+                var labelled = function (cell, label) {
+                    cell.setAttribute('data-label', label);
+                    return cell;
+                };
+                var row = el('tr', null, [labelled(el('td', null, String(batch.number) + (batch.number === 1 && batches.length > 1 ? ' (canary)' : '')), 'Batch'),
+                    labelled(el('td', 'ans-wrap', batch.devices.map(function (d) {
                         return d.display;
-                    }).join(', ')), el('td', null, blast.tier_text || ''), down, simulate]);
+                    }).join(', ')), 'Devices'), labelled(el('td', null, blast.tier_text || ''), 'Where'), down, simulate]);
                 row.setAttribute('data-batch', batch.number);
                 append(rows, row);
             });

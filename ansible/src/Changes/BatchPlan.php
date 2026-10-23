@@ -257,7 +257,7 @@ final class BatchPlan
         $text = count($sizes) . (count($sizes) === 1 ? ' batch' : ' batches') . ': ' . implode(', then ', $sizes) . ' ' . (end($sizes) === 1 ? 'device' : 'devices');
         if ($this->topology !== null) {
             $hand = count(array_filter($this->topology->batches, fn (array $batch) => $batch['hand']));
-            $text .= ', planned by the topology plugin' . ($hand ? " (the last $hand by hand)" : '');
+            $text .= ', planned by the topology plugin' . ($hand ? ' (' . ($hand === 1 ? 'the last batch' : "the last $hand batches") . ' by hand)' : '');
         }
         $text .= '; stops at ' . $this->stopAt . ' failed ' . ($this->stopAt === 1 ? 'device' : 'devices') . ' in a batch';
         if ($this->waitAfterFirst && count($sizes) > 1) {

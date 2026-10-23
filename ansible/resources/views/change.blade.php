@@ -59,14 +59,16 @@
         $currentBatch = $batches[(int) $change['current_batch']] ?? null;
         $preparing = implode(' and ', array_filter([$settings->maintenance ? 'maintenance window' : null, $settings->backups && $oxidized ? 'backups' : null]));
         $waits = ($currentBatch['status'] ?? null) === 'pending' && str_starts_with((string) ($currentBatch['note'] ?? ''), 'waits: ');
+        // a batch blocked by its blast radius (it grew, or cannot be computed) waits: it is not about to start
+        $blocked = $status === ChangeStatus::PAUSED && in_array($change['waiting'], ['blast', 'blast_unknown'], true) && ($currentBatch['status'] ?? null) === 'pending';
         $logNote = $final || $currentBatch === null ? 'no batch was launched' : 'batch ' . (int) $change['current_batch'] . ($waits
-            ? ' ' . Clock::localize((string) $currentBatch['note']) : ': ' . match ($currentBatch['status']) { // "batch 2 waits: lab-sw3 is busy in run #92 ..."
+            ? ' ' . Clock::localize((string) $currentBatch['note']) : ': ' . ($blocked ? (string) ChangeStatus::waitingText($change['waiting']) : match ($currentBatch['status']) { // "batch 2 waits: lab-sw3 is busy in run #92 ..."
             'pending' => 'about to start',
             'preparing' => 'preparing' . ($preparing !== '' ? " ($preparing)" : ''),
             'prepared' => 'waits for the secret answers',
             'launching' => 'being launched',
             default => $batchLabels[$currentBatch['status']] ?? (string) $currentBatch['status'],
-        });
+        }));
     }
 @endphp
 
@@ -193,7 +195,7 @@
                 @if((int) ($waitBlast['unmanaged'] ?? 0) > 0) and {{ (int) $waitBlast['unmanaged'] }} unmanaged {{ (int) $waitBlast['unmanaged'] === 1 ? 'neighbor' : 'neighbors' }}@endif:
                 <strong>{{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['added'] ?? []), $names) }}</strong> {{ count((array) ($waitBlast['added'] ?? [])) === 1 ? 'was' : 'were' }} not
                 {{ $heldWord }} ({{ $heldWord }}: {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['held'] ?? []), $names) }}).
-                @if(! empty($waitBlast['simulate']))<a href="{{ url($waitBlast['simulate']) }}" class="btn btn-xs btn-default" id="ans-blast-grew-simulate"><i class="fa fa-bolt"></i> Simulate it on the L2 map</a>@endif
+                @if(! empty($waitBlast['simulate']))<a href="{{ url($waitBlast['simulate']) }}" class="btn btn-xs btn-default" id="ans-blast-grew-simulate" target="_blank" rel="noopener"><i class="fa fa-bolt"></i> Simulate it on the L2 map</a>@endif
                 <div style="font-weight: normal; margin-top: 4px">{{ ucfirst(ApprovalRules::accepter($settings->approval)) }} accepts the new blast radius
                     (recorded in the timeline and the eventlog), and the batch starts again; or stop the change. Computed {{ $local($waitBlast['at'] ?? null) }}, as {{ $waitBatch['username'] ?: 'the admin who starts the batch' }} sees the network.</div>
             </div>
@@ -318,7 +320,17 @@
                     @elseif($topologyPlanned)
                         <div class="ans-help text-danger" id="ans-batches-unreadable">The topology plugin's part of this change's plan cannot be read: its batches do not start.</div>
                     @else
-                        <div class="ans-help" id="ans-blast-unknown-note"><i class="fa fa-question-circle"></i> Blast radius unknown: these batches were planned by the plugin's settings, not by the topology plugin.</div>
+                        @php
+                            // why the settings planned them, as the change's creation recorded it
+                            $unknownWhy = null;
+                            foreach ($events as $event) {
+                                if (preg_match('/^The blast radius of its batches is unknown: they were planned by the settings, as (.+)\.$/s', (string) $event['message'], $found)) {
+                                    $unknownWhy = $found[1];
+                                    break;
+                                }
+                            }
+                        @endphp
+                        <div class="ans-help" id="ans-blast-unknown-note"><i class="fa fa-question-circle"></i> Blast radius unknown: these batches were planned by the plugin's settings, not by the topology plugin{{ $unknownWhy !== null ? ', as ' . $unknownWhy : '' }}.</div>
                     @endif
                 </div>
                 <div class="table-responsive">
@@ -349,7 +361,7 @@
                                         @if($approvedBlast['unmanaged'] > 0)<div class="ans-help">and {{ $approvedBlast['unmanaged'] }} unmanaged {{ $approvedBlast['unmanaged'] === 1 ? 'neighbor' : 'neighbors' }} (phones, access points...)</div>@endif
                                         @if($approvedBlast['reference'] !== 'core')<div class="ans-help">no core device of its part is left: counted from the largest piece that stays together</div>@endif
                                     @endif
-                                    @if($approvedBlast !== null && $approvedBlast['simulate'])<div><a href="{{ $approvedBlast['simulate'] }}" class="ans-blast-simulate" title="The topology plugin's failure simulation of this batch on the L2 map, on the network as it is now"><i class="fa fa-bolt"></i> Simulate</a></div>@endif
+                                    @if($approvedBlast !== null && $approvedBlast['simulate'] && ! $approvedBlast['hand'])<div><a href="{{ $approvedBlast['simulate'] }}" class="ans-blast-simulate" target="_blank" rel="noopener" title="The topology plugin's failure simulation of this batch on the L2 map, on the network as it is now"><i class="fa fa-bolt"></i> Simulate</a></div>@endif
                                     @if($accepted)
                                         <div class="ans-help ans-blast-accepted text-warning">accepted by {{ $accepted['by'] ?? '?' }} {{ $local($accepted['at'] ?? null) }}: {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', (array) ($accepted['lost'] ?? [])), $names) }}</div>
                                     @endif
