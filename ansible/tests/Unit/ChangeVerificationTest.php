@@ -267,6 +267,25 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame(1, $this->verifier->count('compare') - 1, 'one comparison per batch');
     }
 
+    public function testThePluginSendsTheTopologyPluginTheDevicesOfAScopeOnlyNeverItsDomain(): void
+    {
+        $id = $this->applied();
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->fresh($this->t0 + 1000);
+        $this->sync($id, $this->t0 + 1080);
+        $this->assertSame('verified', $this->verify($id, 1)['result']);
+
+        // the freshness of the scope before and after batch 1: lab-sw4 and its neighbors, the topology plugin adding their spanning tree domain (of
+        // any size: a call takes at most 5000 devices, a domain may have more)
+        $asked = array_values(array_map(fn (array $call) => $call[1], array_filter($this->verifier->calls, fn (array $call) => $call[0] === 'freshness')));
+        $this->assertSame([[510, 502, 503], [510, 502, 503], [502, 501, 503, 510, 512]], $asked, 'before batch 1, after it, before batch 2: lab-sw5, of the domain only, never');
+        $this->assertSame([true, true, true], $this->verifier->domains);
+        $this->assertSame(['include' => [510, 502, 503]], $this->verifier->covers[1], 'the state after it: what the state before it covered');
+        // what each waits for still names the domain's switches (a poll)
+        $this->assertSame([501, 511, 512], $this->changes->scopeOf($id, 1, 'before')['domain']);
+    }
+
     public function testOnlyTheSyncCommandTakesStates(): void
     {
         $id = $this->applied();

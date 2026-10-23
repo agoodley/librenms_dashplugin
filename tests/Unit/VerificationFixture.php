@@ -122,7 +122,9 @@ final class VerificationFixture implements Sources
 
     public function visible(array $ids): array
     {
-        return array_values(array_unique(array_map('intval', array_filter($ids, fn ($id) => in_array((int) $id, $this->visible, true)))));
+        $visible = array_flip($this->visible);
+
+        return array_values(array_unique(array_map('intval', array_filter($ids, fn ($id) => isset($visible[(int) $id])))));
     }
 
     public function neighbors(array $ids): array
@@ -148,11 +150,14 @@ final class VerificationFixture implements Sources
         return array_values(array_unique(array_merge([], ...array_map(fn (int $id) => $this->dependentsOf[$id] ?? [], $ids))));
     }
 
+    /** @var int[]|null the spanning tree domain of every switch, when the test gives one (a large one, say) */
+    public ?array $domain = null;
+
     public function stpDomain(array $ids): array
     {
         $this->calls[] = ['stpDomain', $ids];
 
-        return array_intersect($ids, array_keys(self::MACS)) ? array_keys(self::MACS) : [];
+        return array_intersect($ids, array_keys(self::MACS)) ? ($this->domain ?? array_keys(self::MACS)) : [];
     }
 
     public function facts(array $ids, array $rootIds, ?array $nameIds): array

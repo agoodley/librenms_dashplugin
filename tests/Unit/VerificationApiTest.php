@@ -117,8 +117,8 @@ class VerificationApiTest extends TestCase
         $api = Verification::withSources($net);
         $after = $api->state([Net::ACC1], Verification::cover($before));
 
-        $this->assertSame(['include' => [Net::ACC1, Net::DIST1, Net::CORE2], 'domain' => [Net::CORE1, Net::ACC2, Net::FAR1]], Verification::cover($before),
-            'the state before: acc1 and its neighbors (secret is not one), the rest of the domain');
+        $this->assertSame(['include' => [Net::ACC1, Net::DIST1, Net::CORE2]], Verification::cover($before), 'the state before: acc1 and its neighbors (secret is not one)');
+        $this->assertSame([Net::CORE1, Net::ACC2, Net::FAR1], $after['scope']['domain'], 'the rest of the domain, which the state after finds itself');
         $this->assertSame([Net::CORE2], $after['scope']['included'], 'the state after covers what the state before covered: core2 is no neighbor any more');
 
         $diff = $api->compare($before, $after);
@@ -281,6 +281,34 @@ class VerificationApiTest extends TestCase
         $this->assertSame(['subjects' => [], 'dependents' => [], 'neighbors' => [], 'included' => [], 'domain' => []], $state['scope']);
         $this->assertSame([], $state['facts']);
         $this->assertSame([], $net->calls, 'nothing read');
+    }
+
+    public function testAnL2DomainOfMoreSwitchesThanACallTakesIsTheApisToFind(): void
+    {
+        $net = new Net();
+        // acc1's domain: 5,100 switches more (the most a call takes is 5,000 devices)
+        $big = range(1001, 6100);
+        $net->domain = [...array_keys(Net::MACS), ...$big];
+        $net->visible = [...$net->visible, ...$big];
+        foreach ($big as $id) {
+            $net->states[$id] = ['up' => true, 'down_since' => null, 'discovered_at' => 1_700_000_000, 'polled_at' => 1_700_000_200, 'discovery_pending' => false];
+        }
+        $api = Verification::withSources($net);
+
+        $before = $api->state([Net::ACC1]);
+        $this->assertCount(5103, $before['scope']['domain']);
+        $this->assertSame(['include' => [Net::ACC1, Net::DIST1, Net::CORE2]], Verification::cover($before), 'the devices it covers, never its domain');
+        $after = $api->state([Net::ACC1], Verification::cover($before));
+        $this->assertSame($before['scope']['domain'], $after['scope']['domain'], 'the state after finds the same domain itself');
+
+        $fresh = $api->freshness([Net::ACC1, Net::DIST1, Net::CORE2], ['domain' => true]);
+        $this->assertCount(5106, $fresh['devices'], 'the devices given and every switch of their domain');
+        $this->assertSame(array_values(array_diff($net->domain, [Net::ACC1, Net::DIST1, Net::CORE2, Net::SECRET])), $fresh['domain']);
+        $this->assertSame([], $api->freshness([Net::ACC1])['domain'], 'without the option, the devices given only');
+        $this->assertSame([Net::ACC1], array_keys($api->freshness([Net::ACC1])['devices']));
+
+        $this->expectExceptionObject(new \InvalidArgumentException('at most 5000 devices per call'));
+        $api->freshness($big, ['domain' => true]);
     }
 
     public function testMoreDevicesThanAllowedAreRefused(): void

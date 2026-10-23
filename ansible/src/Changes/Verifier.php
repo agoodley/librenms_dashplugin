@@ -30,14 +30,15 @@ interface Verifier
 
     /**
      * How fresh LibreNMS' data of the devices is now (those the user may see): device => up, down_since, discovered_at,
-     * polled_at, discovery_pending.
+     * polled_at, discovery_pending; with $domain, of the other spanning tree switches of their L2 domains too, which the
+     * topology plugin finds (of any size: the devices given are at most 5000).
      *
      * @param  int[]  $deviceIds
      * @return array<int, array{up: bool, down_since: ?int, discovered_at: ?int, polled_at: ?int, discovery_pending: bool}>
      *
      * @throws TopologyError
      */
-    public function freshness(array $deviceIds, int $userId): array;
+    public function freshness(array $deviceIds, int $userId, bool $domain = false): array;
 
     /**
      * The scope a state of the devices covers now: subjects, dependents, neighbors, included, domain.

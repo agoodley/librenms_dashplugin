@@ -954,8 +954,11 @@ Of the first three it records what the topology history records: each link (unma
 reports them), port-channel member, blocked port, OSPF adjacency and BGP session. Of the domains, the root bridge
 each switch sees in each VLAN. Of all of them, the findings of the topology plugin's enabled background checks
 (spanning tree, links and VLANs, redundancy, routing) about any device of the scope, with the findings history's
-identities, and how fresh LibreNMS' data of each device is. The state after a batch covers at least what the one
-before it covered, and the comparison is made over what both cover: a device that came into view is not a new link.
+identities, and how fresh LibreNMS' data of each device is. The state after a batch covers at least the devices the
+one before it covered (the first three), and the spanning tree domains of those as they are then; the comparison is
+made over what both cover: a device that came into view is not a new link. The plugin sends the topology plugin the
+devices of the first three only, at most 5,000: a batch with more (one that cuts off thousands of devices) cannot be
+verified. The topology plugin finds the domains itself, of any size.
 
 ### Fresh data
 

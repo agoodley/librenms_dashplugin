@@ -36,7 +36,8 @@ use LibreNMS\Interfaces\Plugins\PluginManagerInterface;
  *    description the link check builds from the LLDP/CDP neighbor, LinkAnalyzer::cleanDescription()) and the
  *    spanning tree root priority (the intended root from the designated root bridges or the configured core, its
  *    priority and the secondary's, per VLAN and mode). Each fix names the findings it resolves.
- *  - scope() and freshness(): the scope of a state, and how fresh the data of devices is, without a state.
+ *  - scope() and freshness(): the scope of a state, and how fresh the data of devices is (and of their L2 domains), without
+ *    a state.
  *
  * Scoped as the plugin's pages: forUser() sees what that LibreNMS user may see (a device outside it is never in a
  * scope, a fact, a finding or a name; a link to it is an unmanaged neighbor named as LLDP/CDP reports it); system()
@@ -143,24 +144,27 @@ final class Verification
     }
 
     /**
-     * What a later state must cover too, to compare with this one: pass it as state()'s options.
+     * What a later state must cover too, to compare with this one: pass it as state()'s options. The devices whose facts
+     * the state recorded; their spanning tree domain is the one state() finds for them when it is taken (of any size).
      *
-     * @return array{include: int[], domain: int[]} include: the devices whose facts the state recorded; domain: its spanning tree domain
+     * @return array{include: int[]}
      */
     public static function cover(array $state): array
     {
-        return ['include' => StateCompare::covered($state), 'domain' => array_values(array_map('intval', (array) (($state['scope'] ?? [])['domain'] ?? [])))];
+        return ['include' => StateCompare::covered($state)];
     }
 
     /**
      * The state of the devices and of what is around them now.
      *
      * @param  int[]  $deviceIds  the subjects (the devices of a batch, say); those the scope may not see are left out
-     * @param  array{include?: int[], domain?: int[], dependents?: bool}  $options  include: devices whose facts the state records too, domain:
-     *                                                                               spanning tree switches it covers too (to compare it with an
-     *                                                                               earlier state, pass cover() of that state); dependents: add
-     *                                                                               the devices whose path to the core depends on the subjects
-     *                                                                               (default true)
+     * @param  array{include?: int[], domain?: int[], dependents?: bool}  $options  include: devices whose facts the state records too (to
+     *                                                                               compare it with an earlier state, pass cover() of that
+     *                                                                               state); domain: spanning tree switches it covers too, besides
+     *                                                                               the L2 domains it finds for the devices it covers (of any
+     *                                                                               size); dependents: add the devices whose path to the core
+     *                                                                               depends on the subjects (default true). At most MAX_DEVICES
+     *                                                                               subjects, and as many included devices
      * @return array{version: string, taken_at: int, scope: array{subjects: int[], dependents: int[], neighbors: int[], included: int[], domain: int[]},
      *     devices: array<int, array{role: string, up: bool, down_since: ?int, discovered_at: ?int, polled_at: ?int, discovery_pending: bool}>,
      *     facts: array<string, array{kind: string, key: string, a: ?int, b: ?int, text: string, data: array}>,
@@ -268,14 +272,21 @@ final class Verification
 
     /**
      * How fresh LibreNMS' data of these devices is now (the devices the scope may see): whether each is up, since when it
-     * is down, when its last discovery and its last poll started, whether a discovery is pending.
+     * is down, when its last discovery and its last poll started, whether a discovery is pending. Option domain (true):
+     * also of the other spanning tree switches of their L2 domains, which the API finds (of any size: at most MAX_DEVICES
+     * are the devices given), listed in domain.
      *
      * @param  int[]  $deviceIds
-     * @return array{version: string, devices: array<int, array{up: bool, down_since: ?int, discovered_at: ?int, polled_at: ?int, discovery_pending: bool}>}
+     * @param  array{domain?: bool}  $options
+     * @return array{version: string, devices: array<int, array{up: bool, down_since: ?int, discovered_at: ?int, polled_at: ?int, discovery_pending: bool}>,
+     *     domain: int[]}
      */
-    public function freshness(array $deviceIds): array
+    public function freshness(array $deviceIds, array $options = []): array
     {
-        return ['version' => self::VERSION, 'devices' => $this->sources->deviceStates($this->sources->visible(self::ids($deviceIds)))];
+        $ids = $this->sources->visible(self::ids($deviceIds));
+        $domain = $ids && ! empty($options['domain']) ? array_values(array_diff($this->sources->visible($this->sources->stpDomain($ids)), $ids)) : [];
+
+        return ['version' => self::VERSION, 'devices' => $this->sources->deviceStates([...$ids, ...$domain]), 'domain' => $domain];
     }
 
     /**

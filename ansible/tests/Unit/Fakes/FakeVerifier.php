@@ -52,6 +52,12 @@ final class FakeVerifier implements Verifier
     /** @var list<array{0: string, 1: int[], 2: int, 3: int}> method, devices, user, time */
     public array $calls = [];
 
+    /** @var list<array> the cover of each state taken (what it covers besides its own scope: an earlier state's), in order */
+    public array $covers = [];
+
+    /** @var bool[] whether each freshness asked for the devices' domain too, in order */
+    public array $domains = [];
+
     public ?\Closure $heartbeat = null;
 
     public function unavailable(): ?string
@@ -69,11 +75,14 @@ final class FakeVerifier implements Verifier
         $this->heartbeat = $heartbeat;
     }
 
-    public function freshness(array $deviceIds, int $userId): array
+    public function freshness(array $deviceIds, int $userId, bool $domain = false): array
     {
         $this->record('freshness', $deviceIds, $userId);
+        $this->domains[] = $domain;
         $states = [];
-        foreach (array_diff(array_map('intval', $deviceIds), $this->gone) as $deviceId) {
+        // with their domain: the other spanning tree switches the test gives, as the topology plugin finds them
+        $ids = array_map('intval', $deviceIds);
+        foreach (array_diff(array_values(array_unique([...$ids, ...($domain && $ids ? $this->domain : [])])), $this->gone) as $deviceId) {
             $states[(int) $deviceId] = ($this->devices[(int) $deviceId] ?? []) + ['up' => true, 'down_since' => null, 'discovered_at' => $this->discoveredAt,
                 'polled_at' => $this->polledAt, 'discovery_pending' => false];
         }
@@ -91,6 +100,7 @@ final class FakeVerifier implements Verifier
     public function state(array $deviceIds, int $userId, array $cover = []): array
     {
         $this->record('state', $deviceIds, $userId);
+        $this->covers[] = $cover;
         $scope = $this->scopeOf($deviceIds, (array) ($cover['include'] ?? []));
         $devices = [];
         foreach ([...$scope['subjects'], ...$scope['neighbors'], ...$scope['included'], ...$scope['domain']] as $deviceId) {

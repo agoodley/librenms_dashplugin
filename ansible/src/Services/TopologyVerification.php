@@ -89,9 +89,10 @@ final class TopologyVerification implements Verifier
         $this->heartbeat = $heartbeat;
     }
 
-    public function freshness(array $deviceIds, int $userId): array
+    public function freshness(array $deviceIds, int $userId, bool $domain = false): array
     {
-        $answer = $this->call('read how fresh LibreNMS\' data is', fn () => ($this->api)::forUser(self::user($userId))->freshness(self::ids($deviceIds)));
+        $answer = $this->call('read how fresh LibreNMS\' data is', fn () => ($this->api)::forUser(self::user($userId))->freshness(self::ids($deviceIds),
+            $domain ? ['domain' => true] : []));
         $states = [];
         foreach ((array) ($answer['devices'] ?? []) as $deviceId => $state) {
             if (is_array($state) && preg_match('/^\d{1,10}$/D', (string) $deviceId)) {

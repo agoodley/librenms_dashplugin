@@ -2496,9 +2496,7 @@ final class ChangeLifecycle
                     return true;
                 }
                 $scope = $this->beforeScope($change, $number, $user);
-                $this->beat();
-                $fresh = Freshness::check($this->verifier->freshness([...$scope['covered'], ...$scope['domain']], (int) $user['user_id']), $scope['covered'], $scope['domain'],
-                    $now - $wait, $now - $wait);
+                $fresh = $this->freshOf($scope, $user, $now - $wait, $now - $wait);
                 if ($fresh['fresh']) {
                     $this->setVerify($id, $number, ['before' => ['status' => 'ready', 'stale' => false, 'recent' => true, 'waiting' => null, 'checked_at' => $now] + $before]);
 
@@ -2523,9 +2521,7 @@ final class ChangeLifecycle
             // waiting for data newer than the request, at most the wait
             $scope = $this->changes->scopeOf($id, $number, 'before') ?? ['covered' => [], 'domain' => [], 'names' => []];
             $since = (int) ($before['asked_at'] ?? $now);
-            $this->beat();
-            $fresh = Freshness::check($this->verifier->freshness([...$scope['covered'], ...$scope['domain']], (int) $user['user_id']), $scope['covered'], $scope['domain'],
-                $since, $since);
+            $fresh = $this->freshOf($scope, $user, $since, $since);
             if (! $fresh['fresh'] && $now < (int) ($before['deadline'] ?? 0)) {
                 $this->setVerify($id, $number, ['before' => ['waiting' => Freshness::waitingText($fresh['waiting'], $scope['names']), 'checked_at' => $now] + $before]);
 
@@ -2544,6 +2540,22 @@ final class ChangeLifecycle
 
             return true;
         }
+    }
+
+    /**
+     * How fresh LibreNMS' data of a scope is since $since (Freshness::check()): the devices it covers need a discovery and
+     * a poll, the other spanning tree switches of their L2 domains a poll; the topology plugin finds the domains now (of
+     * any size: only the covered devices are sent).
+     *
+     * @param  array{covered: int[], domain: int[], names: array<int, string>}  $scope
+     * @param  array{user_id: int, username: string}  $user
+     */
+    private function freshOf(array $scope, array $user, int $since, int $downBefore): array
+    {
+        $this->beat();
+        $states = $this->verifier->freshness($scope['covered'], (int) $user['user_id'], true);
+
+        return Freshness::check($states, $scope['covered'], array_values(array_diff(array_keys($states), $scope['covered'])), $since, $downBefore);
     }
 
     /**
@@ -2720,9 +2732,7 @@ final class ChangeLifecycle
 
                 return;
             }
-            $this->beat();
-            $fresh = Freshness::check($this->verifier->freshness([...$scope['covered'], ...$scope['domain']], (int) $user['user_id']), $scope['covered'], $scope['domain'],
-                $due, self::at($batch['started_at'] ?? null) ?: $ended);
+            $fresh = $this->freshOf($scope, $user, $due, self::at($batch['started_at'] ?? null) ?: $ended);
             if ($fresh['unknown']) {
                 // a device of its scope LibreNMS no longer has as that admin sees it (disabled, deleted, no longer visible to them): never
                 // verified on less than its scope (checked again every minute: it may come back)
@@ -2758,7 +2768,8 @@ final class ChangeLifecycle
                 return;
             }
             $this->beat();
-            $state = $this->verifier->state($this->batchDevices($change, $number), (int) $user['user_id'], ['include' => $scope['covered'], 'domain' => $scope['domain']]);
+            // with what the state before it covered (the topology plugin finds their spanning tree domain again, of any size)
+            $state = $this->verifier->state($this->batchDevices($change, $number), (int) $user['user_id'], ['include' => $scope['covered']]);
             $comparison = $this->verifier->compare($beforeState, $state);
             $evaluation = VerificationRules::evaluate($comparison, $beforeState, $state, FixExpectation::forBatch(is_array($change['fix'] ?? null) ? $change['fix'] : null,
                 $this->batchDevices($change, $number)), $this->settings->verifyMinimum);

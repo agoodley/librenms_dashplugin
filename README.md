@@ -739,8 +739,9 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
   whether a rediscovery is pending; `checks`: the `enabled` checks, those that `failed` (each with its error in one
   line, never SQL: the details are in LibreNMS' log), the kinds of facts that could not be read (`facts_failed`) and
   why (`facts_errors`); `names`, `taken_at`, `version` and `role_hidden`. Compact: identities, texts and the few details the
-  comparison needs, never raw rows. Options: `include` and `domain` (pass `cover()` of an earlier state, so that the
-  later one covers all it did), `dependents` (default true).
+  comparison needs, never raw rows. Options: `include` (pass `cover()` of an earlier state, so that the later one covers
+  all it did: the devices it recorded the facts of; the state finds their L2 domains itself, of any size), `domain`
+  (other spanning tree switches to cover too), `dependents` (default true).
 * **`compare(array $before, array $after)`** (pure: it reads only the two states): `events` in the words of the
   Changes page (`cable_moved`, `link_removed`, `root_changed`, `blocking_started`, `ospf_lost`, `bgp_lost`, ... with
   `level`, `text` and `devices`; a spanning tree event has its `vlans`, a root bridge event `root_before` and
@@ -764,12 +765,14 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
   their LLDP/CDP neighbors, which knows the name of every device the user sees, as a description may name any; the
   spanning tree check of their L2 domains); of every device when none are given. Option `kinds`
   (`PORT_DESCRIPTIONS`, `STP_ROOT_PRIORITY`): only those are computed.
-* **`scope()`** and **`freshness()`**: a state's scope, and the devices' freshness, without a state. `cover($state)`:
-  what a later state must cover too.
+* **`scope()`** and **`freshness()`**: a state's scope, and the devices' freshness, without a state; option `domain`
+  (true) of `freshness()`: of the other spanning tree switches of their L2 domains too, listed in `domain`, which the
+  API finds (of any size). `cover($state)`: what a later state must cover too (`include`).
 * **Scope.** `forUser($user)` sees what that LibreNMS user may see, as the plugin's pages show it to them: a device
   outside it is never in a scope, a fact, a finding, a fix or a name, and a link to it is an unmanaged neighbor named as
   LLDP/CDP reports it. `system()` sees every enabled device and only in console commands (anywhere else it throws a
-  `LogicException`). At most 5,000 devices per call; none is an empty scope, never the whole network.
+  `LogicException`). At most 5,000 devices per call (subjects, devices included, devices asked for: a scope's L2 domains
+  are the API's to find, of any size); none is an empty scope, never the whole network.
 * **Availability and versions** as for the planning API: `Verification::unavailable()`, `PlanningUnavailable`,
   `VERSION` `major.minor`. One instance builds its analyses once: take one state per instance.
 * **Cost.** A state runs the background checks over its scope and reads the facts of its devices. On the large test
