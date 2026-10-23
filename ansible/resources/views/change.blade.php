@@ -415,10 +415,10 @@
                         <div class="ans-help" id="ans-blast-unknown-note"><i class="fa fa-question-circle"></i> Blast radius unknown: these batches were planned by the plugin's settings, not by the topology plugin{{ $unknownWhy !== null ? '. When the change was made: ' . $unknownWhy : '' }}.</div>
                     @endif
                 </div>
-                @if($topology && ! $topology->allByHand() && $topology->coreWarnings())
-                    {{-- what the admin should check of the core, in the warning's colour (as the preview says it) --}}
+                @if($topology && ! $topology->allByHand() && $topology->coreWarnings(($change['fix']['kind'] ?? null) === 'stp_root_priority'))
+                    {{-- what the admin should check of the core, in the warning's colour (as the preview says it); a root priority fix starts with the core on purpose --}}
                     <div class="panel-body" id="ans-core-warnings" style="padding-bottom: 0">
-                        @foreach($topology->coreWarnings() as $warning)
+                        @foreach($topology->coreWarnings(($change['fix']['kind'] ?? null) === 'stp_root_priority') as $warning)
                             <p class="ans-help text-warning ans-core-warning">{{ $warning }}</p>
                         @endforeach
                     </div>

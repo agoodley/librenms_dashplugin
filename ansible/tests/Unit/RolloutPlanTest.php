@@ -455,6 +455,10 @@ class RolloutPlanTest extends TestCase
             'The core is a guess of the topology plugin (the most central switches): set Core devices in the topology plugin\'s settings (Overview, Plugins, '
             . 'Plugin Admin, topology, Settings) for the plan to be measured from yours.'], $made['notes']);
 
+        // a change that starts with the core on purpose (a root priority fix: its intended root is a core device) is not warned of that
+        $this->assertSame(['The core is a guess of the topology plugin (the most central switches): set Core devices in the topology plugin\'s settings (Overview, Plugins, '
+            . 'Plugin Admin, topology, Settings) for the plan to be measured from yours.'], $made['plan']->topology->coreWarnings(true));
+
         // set in the settings, and the plan starts beyond it: nothing to say
         $this->assertSame([], self::make()['plan']->topology->coreWarnings());
     }

@@ -486,7 +486,8 @@ final class ChangeService
             $core = $batches->topology->coreText();
             $this->changes->addEvent($id, 'created', 'What each batch cuts off while it runs, as the topology plugin computed it when the change was made (checked again before each batch): '
                 . $batches->topology->summary($batches->batches, array_filter($displays)) . '.' . ($core !== '' ? ' Measured from the core: ' . $core . '.' : '')
-                . implode('', array_map(fn (string $warning) => ' ' . $warning, $batches->topology->coreWarnings())), (string) $user->username, time());
+                . implode('', array_map(fn (string $warning) => ' ' . $warning, $batches->topology->coreWarnings(($draft['kind'] ?? null) === FixAnswers::STP_ROOT_PRIORITY))),
+                (string) $user->username, time());
         }
         if ($batches->topology !== null && $batches->topology->leftOut) {
             $this->changes->addEvent($id, 'created', 'Left out, as the topology plugin cannot plan them (nothing tells what depends on them): '
