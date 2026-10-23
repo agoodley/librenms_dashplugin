@@ -20,6 +20,8 @@ IS-IS, MPLS and IPsec, forwarding, ARP and 802.1X tables, syslog, transceiver se
 Change automation with Ansible (changes made with reviewed templates of Semaphore UI on LibreNMS devices: a proven
 dry run with the diff per device, an approval, batches that stop at the first failures, Oxidized backups and
 maintenance windows, an audit log) is a separate plugin in this repository: see [ansible/README.md](ansible/README.md).
+With this plugin it plans its batches with the rollout planner and checks what each batch cuts off before it runs,
+through the planning API.
 
 ![Layer 2 map](docs/images/l2-map.png)
 

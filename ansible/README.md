@@ -5,17 +5,22 @@ Change [LibreNMS](https://www.librenms.org) devices from the LibreNMS pages with
 (`--check --diff`): the plugin proves from Ansible's log that the dry run was one, and shows what would change on each
 device. It is **approved**, by a second admin when the settings ask for it, then **applied in batches**: a first batch
 on its own, then the others, stopping at the first failures, each batch with an **Oxidized backup** of its devices
-before and after it and a **LibreNMS maintenance window**. What was applied is exactly what was dry-run and approved:
-the same template as the runner has it, the same commit, the same devices and answers. Everything goes to an audit log
-and to each device's eventlog. This is phases 1 and 2 of
+before and after it and a **LibreNMS maintenance window**. With the [topology plugin](../README.md) the batches follow
+its **rollout plan** (farthest from the core first, the core last, never two devices that back each other up in one
+batch), and what each batch cuts off while it runs, its **blast radius**, is approved with the change and computed
+again before the batch starts: a batch that would cut off more than was approved waits for an approver, and its
+maintenance window also covers the devices it cuts off. What was applied is exactly what was dry-run and approved:
+the same template as the runner has it, the same commit, the same devices and answers, the same batches. Everything
+goes to an audit log and to each device's eventlog. This is phases 1, 2 and 3 of
 [change automation with Ansible](../ROADMAP.md#change-automation-with-ansible).
 
 * **Changes:** every change with its template, devices, reference, dry run and status, with filters.
 * **New change:** a template, the target devices and the first batch, the survey answers and a reference (a ticket
-  number); the preview shows exactly what the change will be, batch by batch.
-* **Change:** its dry run per device with the diff of what would change, the approvals, the batches with their runs,
-  the backups and the maintenance windows, the live log and a timeline; *Run the dry run*, *Approve*, *Reject*,
-  *Apply*, *Continue*, *Stop* and *Cancel*.
+  number); the preview shows exactly what the change will be, batch by batch, and with the topology plugin what each
+  batch cuts off.
+* **Change:** its dry run per device with the diff of what would change, the approvals, the batches with their runs
+  and their blast radius, the backups and the maintenance windows, the live log and a timeline; *Run the dry run*,
+  *Approve*, *Reject*, *Apply*, *Continue*, *Accept the new blast radius*, *Stop* and *Cancel*.
 * **Runs:** each run of a change (its dry run or a batch) with live status, per-device result and the Ansible log.
 * **Inventory:** what the runner gets from LibreNMS, the devices left out and why, and the setup steps.
 * An **Ansible** panel on each device's overview page, and **Settings** in Plugin Admin.
@@ -33,6 +38,14 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
 | Changes | A dry run: what would change on each device |
 |---|---|
 | ![Changes](docs/images/changes.png) | ![Dry run](docs/images/change-dry-run.png) |
+
+| New change planned by the topology plugin: what each batch cuts off | A batch waits: its blast radius grew since the approval |
+|---|---|
+| ![New change planned by the topology plugin](docs/images/new-change-topology.png) | ![Blast radius grew](docs/images/change-blast-grew.png) |
+
+| A batch's maintenance window in LibreNMS: its device and the devices it cuts off | The change applied: each batch's blast radius checked, accepted or shrunk |
+|---|---|
+| ![Maintenance window of a batch](docs/images/change-blast-window.png) | ![Applied with blast radius checks](docs/images/change-blast-applied.png) |
 
 | An approval | Backups and maintenance windows of a change |
 |---|---|
@@ -64,6 +77,7 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
 * [Permissions](#permissions)
 * [Using it](#using-it)
 * [How a change works](#how-a-change-works)
+* [Rollout plan and blast radius](#rollout-plan-and-blast-radius)
 * [How runs work](#how-runs-work)
 * [Safety](#safety)
 * [Semaphore UI behaviour the plugin relies on](#semaphore-ui-behaviour-the-plugin-relies-on)
@@ -91,6 +105,11 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
   [Oxidized and maintenance windows](#oxidized-and-maintenance-windows).
 * The runner must reach LibreNMS over HTTP(S) (it fetches the inventory from it), and LibreNMS must reach the runner's
   API and Oxidized's.
+* For the rollout plan and the blast radius (optional): the [topology plugin](../README.md) of this repository, with
+  its [planning API](../README.md#planning-api-for-other-plugins) 1.x, installed and enabled in LibreNMS, and what it
+  needs: LibreNMS' LLDP/CDP discovery of the devices and their ports, and the core devices in its settings (*Core
+  devices*, else its guess). Without it the settings plan the batches, as in phase 2. See [Rollout plan and blast
+  radius](#rollout-plan-and-blast-radius).
 
 ## Installation
 
@@ -127,7 +146,7 @@ The plugin keeps its data in tables of its own: the changes (`ansible_changes`, 
 runner's inventory fetches (`ansible_inventory_fetches`) and its settings, the runner connection encrypted
 (`ansible_config`). The migrations also create the permissions `ansible.run` and `ansible.approve`. `./validate.php`
 then warns that the schema "has extra migrations (2026_10_24_000000_create_ansible_tables, ...,
-2026_11_01_000000_ansible_changes)": those are the plugin's migrations (`database/migrations`), and the warning stays
+2026_11_04_000000_ansible_change_blast)": those are the plugin's migrations (`database/migrations`), and the warning stays
 while the plugin is installed. Do not delete their rows from the `migrations` table, and never apply validate.php's
 offer to drop the `ansible_*` tables: they hold the audit log.
 
@@ -159,6 +178,17 @@ than the one the plugin ships.
 7. Check the settings of batches (first batch, batch size, *Stop at*, *Wait after the first batch*).
 
 The runs of phase 1 stay in the audit log as they were.
+
+**From phase 2**, `./lnms migrate` adds the columns of the blast radius. Then:
+
+1. With the topology plugin installed and enabled, new changes are planned by it (*Plan with the topology plugin*, on
+   by default): check its *Core devices* setting and that LibreNMS discovers the LLDP/CDP neighbors of your devices;
+   its *Rollout Planner* page shows what it plans. The devices it cannot plan are left out of a new change unless the
+   admin puts them in a batch planned by hand.
+2. Changes made before keep their plan: their blast radius is unknown, and they go on as in phase 2.
+3. A batch whose blast radius grew waits for an admin with the approve permission (not the requester with a second
+   admin), one whose blast radius cannot be computed for an admin with the run permission; or set *When the blast
+   radius grew* and *When the blast radius cannot be computed* to *refuse the batch*.
 
 **Removing:**
 
@@ -337,13 +367,19 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | Maintenance behavior | LibreNMS' default | skip, mute or run alerts in the window |
 | Expected batch time | 60 min | the end of a window when it opens; the plugin moves it while the batch runs; also how long a batch waits for the secret answers, at least 15 min (5–1440) |
 | Settle time | 10 min | a window ends this long after its batch (0–1440) |
+| *Rollout plan and blast radius* | | the part says whether the topology plugin can plan now, and why not |
+| Plan with the topology plugin | on | a new change plans its batches with the topology plugin's rollout planner when it can (installed, enabled in LibreNMS, planning API 1.x), and approves what each batch cuts off; off, or without it, the settings above plan them and the blast radius is unknown |
+| When the blast radius grew | pause for an approver | a batch that would cut off devices that were not approved waits for an admin with the approve permission to accept the new blast radius; or *refuse the batch*: the change ends |
+| When the blast radius cannot be computed | pause for an admin | a batch whose blast radius cannot be computed (the topology plugin disabled, an error) waits for an admin with the run permission to continue it without one; or *refuse the batch* |
 | *Run permission*, *Approve permission* | | who may prepare and apply changes, and who may approve them ([Permissions](#permissions)) |
 
 A setting that cannot be used is refused with the reason, and nothing is saved: a platform mapping line that cannot
 be read, a device group or user that does not exist, a number out of its range. When the stored settings cannot be
 read, the plugin launches nothing and its inventory endpoint answers with an error, rather than fall back to defaults
-that may reach more devices. A change keeps the batch plan it was created with; the approval, backup and window
-settings apply to what it does next.
+that may reach more devices. A change keeps the batch plan it was created with (and whether the topology plugin
+planned it); the approval, backup, window and blast radius settings apply to what it does next.
+
+![The Rollout plan and blast radius part of the settings](docs/images/settings-topology.png)
 
 The default platform mapping, for platforms whose LibreNMS os names and Ansible collections were both checked:
 
@@ -377,7 +413,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   `ansible.approve`. An admin grants them on the settings page. Admins do not get them automatically: an admin without
   them sees everything, but no buttons, and the plugin answers 403 to such requests.
 * With *an approval*, an approver may approve their own change; with *an approval from a second admin*, the requester
-  never may, whoever holds the approve permission. An approval counts only while its approver still is an admin with
+  never may, whoever holds the approve permission. The same goes for **accepting a new blast radius** of a batch that
+  would cut off more than was approved: it needs the approve permission, never the requester with a second admin.
+  **Continuing a batch whose blast radius cannot be computed** needs the run permission, like *Continue*. An approval counts only while its approver still is an admin with
   the approve permission, and a batch is launched only while the admin who launches it (who applied the change or
   continued it) still holds the run permission.
 * Any LibreNMS admin can grant either permission, also to themselves: it is an explicit, logged opt-in (each grant and
@@ -405,8 +443,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   reserved by a change being applied, not visible to the inventory user, no usable address). Tick **first** on the
   devices of the first batch (the canary), or the first devices of the list form it. Answer the survey variables
   (secret ones are asked later), give a **reference** (a ticket number), then **Preview**: the template, the targets
-  with their batches, the refused devices, the answers and the limit. **Create the change** checks everything again;
-  nothing runs yet.
+  with their batches, the refused devices, the answers and the limit. With the topology plugin the batches are its
+  rollout plan, each with where it is and what it cuts off while it runs (a link to its simulation on the L2 map), and
+  the devices it cannot plan, to leave out or to put in a final batch planned by hand. **Create the change** checks
+  everything again; nothing runs yet.
 * **Change:** **Run the dry run** (with the secret answers, when the template has some): Ansible runs the playbook with
   `--check --diff`; the page shows, per device, the dry run's result and the diffs of what would change. A dry run the
   plugin cannot prove to be one is shown in red, *NOT PROVEN*, with why: it may have changed the devices, and it can be
@@ -414,7 +454,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   or **Reject**s; approvers find the changes that wait for them on the Changes page, with the status filter *Awaiting
   approval*. **Apply** starts the first batch: its maintenance window, the backups, then its run; after it the change
   waits for **Continue** (when *Wait after the first batch* is on), and the next batches follow on their own until the
-  last, or until one fails. An Apply or a Continue while a device of the batch is busy in another unfinished run (or
+  last, or until one fails. A batch whose blast radius grew since the approval waits for an approver's **Accept the
+  new blast radius**, one whose blast radius cannot be computed for an admin's **Continue** without it (see [Rollout
+  plan and blast radius](#rollout-plan-and-blast-radius)). An Apply or a Continue while a device of the batch is busy in another unfinished run (or
   held after a stop) is refused and changes nothing: the change stays ready, or waiting (checked under the lock of the
   launches, so a run launched meanwhile is seen). A batch the plugin starts on its own (after the previous one, after a
   pause) whose device is busy in a run that began before the apply waits for it, pending, at most the *Expected batch
@@ -451,8 +493,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 * **Eventlog:** each target gets entries (type `ansible`) for every step of a change: created, the dry run launched and
   what it found for that device ("would change", or an error when it is not proven to be a dry run), the approval
   asked for and given, the apply, its maintenance window, its backups (each fresh one with the version Oxidized keeps,
-  each missing one with why; the change's timeline lists them too), its batch launched and ended, and how the change
-  ended; and, as in phase 1, the start and end of each run with its result and counters. The severity follows the
+  each missing one with why; the change's timeline lists them too), its batch launched and ended, a batch's blast
+  radius that grew or cannot be computed, its acceptance or the decision to go on without one, and how the change
+  ended; a device a batch cuts off gets an entry when the batch's window covers it, with why; and, as in phase 1, the start and end of each run with its result and counters. The severity follows the
   result. The reference is the change's address (`plugin/ansible/changes/12`) or the run's, and the entries carry the
   user who did the step (in LibreNMS' *User* column): who launched the dry run, approved, rejected, applied, continued,
   stopped, cancelled or released; for a step the plugin takes on its own (a window, a backup, a batch's end), the admin
@@ -469,7 +512,7 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 | Awaiting approval | its dry run is verified; the settings need an approval |
 | Ready to apply | approved (or the settings need none) |
 | Applying | a batch is being prepared (window, backups) or runs |
-| Paused | it waits: for an admin after the first batch, for the end of a pause between batches, or for the secret answers of the next batch |
+| Paused | it waits: for an admin after the first batch, for the end of a pause between batches, for the secret answers of the next batch, for an approver to accept a batch's blast radius that grew, or for an admin to continue a batch whose blast radius cannot be computed |
 | Stopping | an admin stopped it; the runner is stopping its batch |
 | Applied, Failed, Stopped, Rejected, Cancelled | it ended; failed: a batch reached *Stop at* (that many failed devices), or the plugin stopped it because what was approved no longer holds (see below) |
 
@@ -553,8 +596,9 @@ When the dry run launches, the plugin takes a **fingerprint** of what it runs: t
 (playbook, inventory, repository and its branch, variable groups with their values hashed, CLI arguments, survey, limit
 settings), the targets with their inventory names, **how the runner reaches each target** (the `ansible_*` variables
 the inventory gives its host: `ansible_host`, the overwrite IP else the hostname, and `ansible_network_os`,
-`ansible_connection` and become from the platform mapping), the answers (not the secret ones) and the batch plan. The
-change page shows the address each device was dry-run at. An approval binds that fingerprint, the dry run and the
+`ansible_connection` and become from the platform mapping), the answers (not the secret ones) and the batch plan (with
+what each batch cuts off, when the topology plugin planned it). The change page shows the address each device was
+dry-run at. An approval binds that fingerprint, the dry run and the
 commit the dry run ran. Before an approval, the apply and **every batch** (and again right before its launch) the
 plugin reads the template from the runner and the devices from LibreNMS again and compares; and it checks that:
 
@@ -604,17 +648,22 @@ runner fetches the inventory) and the Inventory page show such a device as withh
 
 ### Batches
 
-A change's batches are fixed when it is created: the first batch (the devices ticked *first*, else the first devices
-of the list, *First batch* of them), then batches of *Batch size*. Each batch:
+A change's batches are fixed when it is created: with the topology plugin, its rollout plan (see [Rollout plan and
+blast radius](#rollout-plan-and-blast-radius)); else the first batch (the devices ticked *first*, else the first
+devices of the list, *First batch* of them), then batches of *Batch size*. Each batch:
 
-1. opens its maintenance window and asks Oxidized for the backups before it, and waits for them (*Backup timeout*);
-   without a fresh backup the batch is refused (the change stops) or goes with a warning, as set;
-2. checks again everything above, then launches its run, limited to the batch's devices, under the same lock and
-   one-time token as any launch: a page clicked twice, two pages and the sync command can never launch a batch twice;
-3. when its run ends, records each device's result, sets the end of its window, asks for the backups after it (a step
+1. computes its blast radius again, when the topology plugin planned it: a batch that would cut off a device that was
+   not approved, or whose blast radius cannot be computed, does not start (see below);
+2. opens its maintenance window (on its devices and the devices it cuts off) and asks Oxidized for the backups before
+   it, and waits for them (*Backup timeout*); without a fresh backup the batch is refused (the change stops) or goes
+   with a warning, as set;
+3. checks again everything above and its blast radius, then launches its run, limited to the batch's devices, under
+   the same lock and one-time token as any launch: a page clicked twice, two pages and the sync command can never
+   launch a batch twice;
+4. when its run ends, records each device's result, sets the end of its window, asks for the backups after it (a step
    that stops once the batch's end is recorded, its lock taken over or the web server restarted while it waited on
-   Oxidized, is finished by the next one: the window's end, the backups not asked yet, then point 4);
-4. stops the change when the batch reached *Stop at* failed devices (failed, unreachable, unknown and not run count), when the
+   Oxidized, is finished by the next one: the window's end, the backups not asked yet, then point 5);
+5. stops the change when the batch reached *Stop at* failed devices (failed, unreachable, unknown and not run count), when the
    plugin lost track of its run or it was stopped or released, when it ran on a host that was not a target, when it
    ran another commit than the dry run, or when the plugin left one of its devices out of an inventory the runner
    fetched (see above); else waits after the first batch for *Continue* (when set), or for *Pause between batches*,
@@ -633,6 +682,112 @@ showing the batch as launched from the page rather than its wait. When it was cl
 (*waits for the secret answers*, said in the timeline once it has waited 30 seconds) for an admin to continue with them,
 with its maintenance window open and its backups taken: for the *Expected batch time* (maintenance setting, at least 15
 minutes), after which the change ends as failed and the window closes.
+
+## Rollout plan and blast radius
+
+With the [topology plugin](../README.md) of this repository installed and enabled, the plugin plans the batches of a
+new change with its rollout planner and approves what each batch cuts off, through the topology plugin's
+[planning API](../README.md#planning-api-for-other-plugins) (version 1.x): it never reads the topology plugin's tables
+or other classes. Without it (not installed, disabled in *Plugin Admin*, a planning API of another major version) or
+with *Plan with the topology plugin* off, the settings plan the batches as in phase 2, and the new change page, the
+change page and the change's timeline say that **the blast radius is unknown**, and why.
+
+### The plan
+
+* **The planner's order:** the devices farthest from the core first, the core last, and never two devices that back
+  each other up in one batch (two distribution switches an access switch is dual-homed to, say), within *Batch size*.
+  The first batch (the canary) is taken from the planner's first batch: the devices ticked *first* that are in it,
+  else its first *First batch* devices; the rest of that batch follows as the second. A device ticked *first* that the
+  planner puts later stays in its place, and the preview says so.
+* **Devices the planner cannot plan** are listed with the reason: *down now*, *no LLDP/CDP neighbors: no topology
+  data*, *no path to the core now*, *unknown to the topology plugin (or not visible)*. The admin **leaves them out**
+  of the change (the default; the timeline lists them) or puts them **in final batches planned by hand** (of at most
+  *Batch size*), marked *planned by hand: nothing tells what depends on them*: their blast radius is unknown.
+* The plan is computed **as the admin who makes the change sees the network** (the topology plugin's pages show them
+  the same). The change is created only with the batches and the blast radius its preview showed: when the topology
+  changed in between, *Create* says so and asks for a new preview.
+* The plan stays **plain data** in the change, with what the planner said of each batch: its place (hops from the
+  core), the monitored devices it cuts off, how many unmanaged neighbors go down with it, the devices left out or
+  planned by hand and why, and the names the topology plugin gave them. It is part of the change's fingerprint, so it
+  is **part of what is dry-run and approved**, and never changes afterwards: a plan altered in the database voids the
+  dry run (*the change is no longer what was dry-run (the batch plan)*).
+
+### The blast radius
+
+What goes down while a batch runs: the **monitored devices that lose their path to the core** while the batch's
+devices are down, linked to their pages, and the **unmanaged neighbors** that go down with them (phones, access points:
+LLDP/CDP neighbors LibreNMS does not monitor), counted. A batch that takes down every core device of its part of the
+network (the core's own batch) is measured from the largest part that stays together. The new change page, the change
+page (so approvers see it before they approve) and the timeline show it per batch, with **Simulate**: the topology
+plugin's failure simulation of the batch on the L2 map, on the network as it is now.
+
+### Computed again before each batch
+
+Before each batch starts (before its window opens and its backups are taken) and again right before its launch, the
+plugin computes the batch's blast radius **on the network as it is then**, as the admin who starts the batch (who
+applied the change or continued it) sees it, also when the sync command starts it, and compares the monitored devices
+it cuts off with those approved, or accepted since:
+
+* **It grew** (it would cut off a device that was not approved: a redundant link went down since): **the batch does
+  not start.** The change pauses, its page names the devices that were not approved and links the simulation, and an
+  admin with the approve permission (never the requester with a second admin) **accepts the new blast radius**, with
+  a comment; that is recorded in the timeline and in the eventlog of the change's devices, and the batch starts again
+  (its blast radius computed once more, and held to what was accepted from then on). *Continue* does not start it,
+  and a batch whose blast radius grows again waits again. With *When the blast radius grew: refuse the batch*, the
+  change ends as failed instead. Found right before the launch (after the backups), it stops the launch the same way,
+  and the window opened for the batch closes.
+* **It shrank:** the batch goes on, and the timeline says what it no longer cuts off.
+* **It cannot be computed** (the topology plugin disabled meanwhile, an error, a LibreNMS role that may not view the
+  links): **the batch does not start either**, and the change page says why. An admin with the run permission may
+  *Continue* it without a blast radius, recorded in the timeline and in the eventlog: its window then covers its
+  devices and the devices approved (or accepted) as cut off. With *When the blast radius cannot be computed: refuse
+  the batch*, the change ends.
+
+Unmanaged neighbors are counted, not compared: a phone more or less does not stop a batch. A change planned by the
+settings has no approved blast radius, and goes as in phase 2.
+
+### Maintenance windows cover what a batch cuts off
+
+A batch's maintenance window covers its devices and **the monitored devices it cuts off** as computed before the batch,
+set again right before its launch: LibreNMS lists them under the window's devices (*Map To*), and the window's notes
+name them (*Also the devices the batch cuts off (no path to the core while it runs): lab-sw5, lab-sw6.*). The eventlog
+of each such device says why it is under maintenance (*maintenance window #223 covers this device until ...: it loses
+its path to the core while batch 3 (lab-sw2) runs*), and that it no longer is when the batch no longer cuts it off
+right before its launch. The windows keep phase 2's rules: moved while the batch runs, closed a settle time after it,
+on every end. A batch planned by the settings has a window on its devices only, and so has one planned by hand, unless
+the topology plugin has learned meanwhile what it cuts off: then it waits for an approver like any batch whose blast
+radius grew.
+
+### An example: the lab
+
+```text
+                lab-sw1 (core)
+               /              \
+         lab-sw2               lab-sw3
+         /  |  \              /  |  \
+        /   |   lab-sw4 -----'   |   lab-sw7, lab-sw8
+       /    '---lab-sw5 ---------'
+  lab-sw6
+```
+
+lab-sw2 and lab-sw3 are cabled to the core lab-sw1; lab-sw4 and lab-sw5 are dual-homed to both; lab-sw6 hangs on
+lab-sw2 only, lab-sw7 and lab-sw8 on lab-sw3; phones and access points on the access switches. A change on the eight
+switches (and lab-dead, which is down: left out) is planned as:
+
+| Batch | Devices | Where | Cuts off while it runs |
+|---|---|---|---|
+| 1 (canary) | lab-sw4 | 2 hops from the core | no other monitored device, 1 unmanaged neighbor |
+| 2 | lab-sw5, lab-sw6, lab-sw7, lab-sw8 | 2 hops from the core | no other monitored device, 6 unmanaged neighbors |
+| 3 | lab-sw2 | 1 hop from the core | lab-sw6, 2 unmanaged neighbors |
+| 4 | lab-sw3 | 1 hop from the core | lab-sw7, lab-sw8, 3 unmanaged neighbors |
+| 5 | lab-sw1 | the core | no other monitored device (the rest stays together) |
+
+lab-sw2 and lab-sw3 are never in one batch: lab-sw4 and lab-sw5 would lose both uplinks. After the approval, lab-sw5's
+link to lab-sw3 goes down: before batch 3 the plugin finds that lab-sw2 now also cuts off lab-sw5, and the change
+waits. A second admin accepts; batch 3 runs with a window on lab-sw2, lab-sw5 and lab-sw6, and the eventlog of
+lab-sw5 and lab-sw6 says why they are under maintenance. Meanwhile lab-sw7 got a second uplink, to lab-sw2: batch 4
+now cuts off lab-sw8 only, goes on (*its blast radius shrank since the approval: it no longer cuts off lab-sw7*), and
+its window covers lab-sw3 and lab-sw8.
 
 ## How runs work
 
@@ -737,6 +892,16 @@ released has stopped by then.
   that no longer counts, a refused backup. A batch is launched once at most; a stopped change launches nothing more.
 * **Approvals** only from admins with the approve permission, never from the requester with a second admin, never for
   a dry run that is unverified, failed or expired; approvals expire.
+* **No batch starts with a blast radius larger than what was approved** unless an admin with the approve permission
+  accepted the new one (never the requester with a second admin), and none while its blast radius cannot be computed
+  unless an admin with the run permission continued it explicitly; both are recorded in the timeline and the
+  eventlog. The blast radius is computed before each batch and again right before its launch.
+* **The planner's batches are the ones applied:** the plan is fixed when the change is created, is part of what is
+  dry-run and approved, and the batches launch their own devices, in their order.
+* **A batch's maintenance window covers its devices and every monitored device the blast radius computed right before
+  its launch says it cuts off**, nothing else, and closes like every window.
+* **The topology plugin answers as the admin sees the network:** the plugin asks its planning API as the LibreNMS user
+  who makes the change or starts the batch (scoped like the topology pages), never with its console-only system scope.
 * **Maintenance windows and backups** are always ended or recorded: a window ends with its batch plus the settle time,
   or at once when its batch never ran; a removed window is recorded; a backup is fresh, failed, or recorded as not
   possible, never left unknown.
@@ -881,12 +1046,20 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   fails on its connection after an earlier task succeeded counts as failed, not unreachable.
 * A run page shows at most *Output size* of the log (its start and its end); the runner keeps all of it.
 * The target list loads every device of LibreNMS at once (fine for thousands of devices, slow for many more).
+* **The blast radius is only as good as LibreNMS' LLDP/CDP data and the core definition** (the topology plugin's *Core
+  devices*, or its guess): a link LibreNMS does not see does not exist for the planner, a wrong core makes a wrong
+  plan, and unmanaged neighbors are those LLDP/CDP reports. **Devices without neighbors cannot be planned**: they are
+  left out or planned by hand, with an unknown blast radius.
+* **Port states are as LibreNMS last polled them:** a link that went down since its last poll is still up for the
+  planner, so the check right before a launch is only as fresh as the polling. While a batch runs its blast radius is
+  not computed again: a link that goes down meanwhile is caught before the next batch.
+* The plan and the checks see the network as the admin who makes the change or starts the batch sees it: devices
+  outside their view are unknown to the planner (left out, or planned by hand).
 
 ## Later phases
 
-See [ROADMAP.md](../ROADMAP.md#change-automation-with-ansible): a rollout plan and the blast radius from the topology
-plugin, the maintenance window also covering what each batch cuts off (phase 3); verification of the topology before
-and after (phase 4).
+See [ROADMAP.md](../ROADMAP.md#change-automation-with-ansible): verification of the topology before and after a change
+(phase 4).
 
 Other LibreNMS inventory plugins for Ansible exist (e.g. `0uwl/librenms-inventory-plugin`); they do not map LibreNMS'
 os to `ansible_network_os` or clean the network data, which is why this plugin builds its own.
