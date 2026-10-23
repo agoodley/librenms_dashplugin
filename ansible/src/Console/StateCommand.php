@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsAnsible\Console;
 
 use Agoodley\LibrenmsAnsible\Services\TopologyVerification;
 use Agoodley\LibrenmsAnsible\Support\ErrorText;
+use Agoodley\LibrenmsAnsible\Support\MemoryLimit;
 use App\Models\User;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -30,7 +31,7 @@ class StateCommand extends Command
         if (! is_array($request) || ! in_array($request['what'] ?? null, ['scope', 'state'], true) || ! is_int($request['user_id'] ?? null) || ! is_array($request['devices'] ?? null)) {
             return $this->answer(['error' => 'not a request of the sync command']);
         }
-        self::raiseMemory();
+        MemoryLimit::raise(self::MEMORY_MB);
         try {
             $api = TopologyVerification::API;
             if (! class_exists($api)) {
@@ -59,27 +60,5 @@ class StateCommand extends Command
             \Symfony\Component\Console\Output\OutputInterface::OUTPUT_RAW);
 
         return isset($answer['error']) ? self::FAILURE : self::SUCCESS;
-    }
-
-    /**
-     * LibreNMS' php_memory_limit (MB) when it is set, else MEMORY_MB, unless PHP already allows more.
-     */
-    private static function raiseMemory(): void
-    {
-        $configured = class_exists(\App\Facades\LibrenmsConfig::class) ? \App\Facades\LibrenmsConfig::get('php_memory_limit') : null;
-        $wanted = (is_numeric($configured) && (int) $configured > 0 ? (int) $configured : self::MEMORY_MB) * 1048576;
-        $current = trim((string) ini_get('memory_limit'));
-        if ($current === '-1') {
-            return;
-        }
-        $bytes = (int) $current * match (strtolower(substr($current, -1))) {
-            'g' => 1073741824,
-            'm' => 1048576,
-            'k' => 1024,
-            default => 1,
-        };
-        if ($bytes < $wanted) {
-            ini_set('memory_limit', (string) $wanted);
-        }
     }
 }

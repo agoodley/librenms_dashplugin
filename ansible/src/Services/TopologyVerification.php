@@ -7,6 +7,7 @@ use Agoodley\LibrenmsAnsible\Changes\TopologyError;
 use Agoodley\LibrenmsAnsible\Changes\Verifier;
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Support\ErrorText;
+use Agoodley\LibrenmsAnsible\Support\MemoryLimit;
 use App\Models\User;
 use Illuminate\Support\Facades\Log;
 
@@ -30,6 +31,9 @@ final class TopologyVerification implements Verifier
 
     /** The major version of the verification API this plugin speaks. */
     public const MAJOR = 1;
+
+    /** Memory of a request that lists the fixes when LibreNMS sets no php_memory_limit (MB). */
+    public const FIXES_MEMORY_MB = 1024;
 
     /** Seconds a scope or a state may take in its process (a state of the large test network takes about 16). */
     public const TIMEOUT = 600;
@@ -125,6 +129,9 @@ final class TopologyVerification implements Verifier
      */
     public function fixes(array $deviceIds, int $userId): array
     {
+        // the link and spanning tree checks of the whole network the user sees: some hundred MB on a large one
+        MemoryLimit::raise(self::FIXES_MEMORY_MB);
+
         return $this->call('list the fixes', fn () => ($this->api)::forUser(self::user($userId))->fixes(self::ids($deviceIds)));
     }
 
