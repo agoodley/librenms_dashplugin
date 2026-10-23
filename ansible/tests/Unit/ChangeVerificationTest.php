@@ -567,6 +567,39 @@ class ChangeVerificationTest extends TestCase
             . 'batch, does not see it in LibreNMS (disabled, or not visible to them))', $this->messages($id));
     }
 
+    // ------------------------------------------------------------------ who starts a batch
+
+    public function testABatchAnotherAdminContinuedToIsStartedAndVerifiedAsThem(): void
+    {
+        // a wait for an admin after the first batch: bob (an approver who holds the run permission too) continues the change
+        $id = $this->approved([], BatchPlan::make(array_keys(self::TARGETS), [], 1, 5, 1, true, 0));
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->sync($id, $this->t0 + 60);
+        $this->fresh($this->t0 + 90);
+        $this->sync($id, $this->t0 + 120);
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->fresh($this->t0 + 1000);
+        $this->sync($id, $this->t0 + 1080);
+        $this->assertSame([ChangeStatus::PAUSED, 'canary'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+
+        $this->assertNull($this->web($this->t0 + 1100)->resume($id, self::BOB, [], $this->t0 + 1100));
+        $this->assertSame([[510]], $this->launched(), 'the Continue (a page) takes no state: batch 2 waits for the state before it');
+        $batch = $this->changes->batches[$id][2];
+        $this->assertSame([2, 'bob'], [(int) $batch['user_id'], $batch['username']], 'who continued it is recorded on the batch at once');
+
+        // alice, who applied the change, loses the run permission meanwhile: batch 2 is bob's, the sync command starts it as him
+        $this->runner->userProblems[self::ALICE['user_id']] = 'no longer holds the run permission (ansible.run)';
+        $this->fresh($this->t0 + 1130);
+        $this->sync($id, $this->t0 + 1160);
+        $this->assertSame([[510], [502]], $this->launched());
+        $this->assertSame('bob', end($this->runner->launches)['user'], 'launched by bob');
+        $this->assertStringContainsString('Batch 2 of 2 launched by bob', $this->messages($id));
+        $states = array_values(array_filter($this->verifier->calls, fn (array $call) => $call[0] === 'state'));
+        $this->assertSame(2, end($states)[2], 'its state before it taken as bob sees the network');
+        $this->assertSame('taken', $this->verify($id, 2)['before']['status']);
+    }
+
     // ------------------------------------------------------------------ decided at Apply
 
     /** @return array<string, array{string}> why the topology plugin's verification API is not there at the Apply */

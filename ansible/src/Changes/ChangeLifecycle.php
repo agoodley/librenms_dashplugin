@@ -1044,6 +1044,9 @@ final class ChangeLifecycle
         if (self::stopAsked($this->changes->find($id) ?? $change)) {
             return; // its stop ends it at its next step
         }
+        // who starts it, recorded before anything makes it wait (the state before it, a device busy in another run): the sync
+        // command that goes on with it starts it as them, checks their run permission and names them as its launcher
+        $this->recordStarter($id, $number, $user);
         if ($secrets === null && $this->busyWaits($change, $number, $now)) {
             return;
         }
@@ -1122,6 +1125,20 @@ final class ChangeLifecycle
             $this->followBackups($id, $now);
         }
         $this->backupsBefore($change, $number, $now);
+    }
+
+    /**
+     * Record on batch $number who starts it (starter() from then on), when it is not recorded yet.
+     *
+     * @param  array{user_id: int, username: string}  $user
+     */
+    private function recordStarter(int $changeId, int $number, array $user): void
+    {
+        $batch = $this->changes->batches($changeId)[$number] ?? [];
+        $username = mb_substr($user['username'], 0, 255);
+        if ((int) ($batch['user_id'] ?? 0) !== (int) $user['user_id'] || (string) ($batch['username'] ?? '') !== $username) {
+            $this->changes->updateBatch($changeId, $number, ['user_id' => (int) $user['user_id'], 'username' => $username]);
+        }
     }
 
     /**
