@@ -964,6 +964,10 @@
         var busy = false;
         var timer = null;
         var reloading = null;
+        // a refusal stays shown while the page puts its new state in place (the poll replaces the action bar with the rest of the
+        // page: a refused Continue often changes what the page shows), for some polls or until the next action
+        var refusal = null;
+        var REFUSAL_POLLS = 15;
         // the page's config as it is now (the page's refresh brings a new one)
         function current() {
             var node = byId('ans-change-config');
@@ -1008,7 +1012,14 @@
             }
         }
 
-        function actionState(text, css) {
+        // what the last action did, next to the buttons; a refusal (keep) is shown again after each refresh of the page, for
+        // REFUSAL_POLLS polls or until the next action
+        function actionState(text, css, keep) {
+            refusal = keep ? {text: text, css: css, polls: REFUSAL_POLLS} : null;
+            paintActionState(text, css);
+        }
+
+        function paintActionState(text, css) {
             var node = byId('ans-action-state');
             if (node) {
                 node.className = css || 'ans-muted';
@@ -1135,6 +1146,9 @@
                 if (fresher.over) {
                     heldSecrets = null;
                 }
+                if (refusal) {
+                    paintActionState(refusal.text, refusal.css);
+                }
                 showHeld();
                 scroll();
             }).catch(function () {
@@ -1161,7 +1175,7 @@
                 busy = false;
                 if (result.status !== 200) {
                     heldSecrets = null;
-                    actionState(result.body.error || 'The launch failed.', 'text-danger');
+                    actionState(result.body.error || 'The launch failed.', 'text-danger', true);
                 }
                 refreshPage();
             });
@@ -1184,6 +1198,9 @@
                 }
                 var settle = data.signature !== state.signature ? refreshPage() : Promise.resolve();
                 settle.then(function () {
+                    if (refusal && --refusal.polls <= 0) {
+                        refusal = null;
+                    }
                     autoContinue(data);
                     var over = data.final && !data.pending;
                     var stateNode = byId('ans-log-state');
@@ -1237,7 +1254,7 @@
                     });
                 } else {
                     button.disabled = false;
-                    actionState(result.body.error || 'The request failed.', 'text-danger');
+                    actionState(result.body.error || 'The request failed.', 'text-danger', true);
                 }
             });
         }
