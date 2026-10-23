@@ -330,9 +330,6 @@
                             What each batch cuts off was computed when the change was made, and is part of what is dry-run and approved; it is computed again before the batch starts and
                             right before its launch, and a batch that would cut off more waits for an admin to accept it.
                             @if($topology->coreText() !== '')<span id="ans-batches-core">Measured from the core: {{ $topology->coreText() }}.</span>@endif</div>
-                        @foreach($topology->coreWarnings() as $warning)
-                            <div class="ans-help text-warning ans-core-warning">{{ $warning }}</div>
-                        @endforeach
                     @elseif($topologyPlanned)
                         <div class="ans-help text-danger" id="ans-batches-unreadable">The topology plugin's part of this change's plan cannot be read: its batches do not start.</div>
                     @else
@@ -349,6 +346,14 @@
                         <div class="ans-help" id="ans-blast-unknown-note"><i class="fa fa-question-circle"></i> Blast radius unknown: these batches were planned by the plugin's settings, not by the topology plugin{{ $unknownWhy !== null ? ', as ' . $unknownWhy : '' }}.</div>
                     @endif
                 </div>
+                @if($topology && $topology->coreWarnings())
+                    {{-- what the admin should check of the core, in the warning's colour (as the preview says it) --}}
+                    <div class="panel-body" id="ans-core-warnings" style="padding-bottom: 0">
+                        @foreach($topology->coreWarnings() as $warning)
+                            <p class="ans-help text-warning ans-core-warning">{{ $warning }}</p>
+                        @endforeach
+                    </div>
+                @endif
                 <div class="table-responsive">
                 <table class="table table-condensed ans-table ans-stack" id="ans-batches">
                     <thead><tr><th>Batch</th><th>Devices</th>@if($topology)<th>Down while it runs</th>@endif<th>State</th><th>Run</th><th>Results</th><th>When</th></tr></thead>
