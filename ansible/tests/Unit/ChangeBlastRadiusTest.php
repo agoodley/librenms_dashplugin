@@ -166,8 +166,8 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertStringContainsString('lab-sw2. Also the devices the batch cuts off (no path to the core while it runs): lab-sw6. The plugin closes it after the batch.',
             $this->windows->windows[102]['notes']);
         $sw6 = array_column($this->events->of(512), 'message');
-        $this->assertNotEmpty(preg_grep('/^Ansible change #1 \(CHG-1\), batch 3: maintenance window #102 covers this device until .*: it loses its path to the core while batch 3 \(lab-sw2\) runs$/', $sw6),
-            'the eventlog of a device cut off says why it is under maintenance');
+        $this->assertNotEmpty(preg_grep('/^Ansible change #1 \(CHG-1\), batch 3 cuts this device off from the core while it runs: maintenance window #102 covers it until \d{4}-/', $sw6),
+            'the eventlog of a device cut off says why it is under maintenance, naming the batch by its number only');
         $this->assertStringContainsString('Maintenance window #102 opened for batch 3 until', $this->messages($id));
         $this->assertMatchesRegularExpression('/^Batch 3 of 5 launched by alice \(run #\d+\): while it runs it cuts off lab-sw6 and 2 unmanaged neighbors\.$/m', $this->messages($id),
             'the timeline says what each batch cuts off while it runs');
@@ -204,6 +204,58 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame([], $this->topology->calls);
     }
 
+    public function testNoEventlogEntryNamesADeviceOtherThanItsOwn(): void
+    {
+        // LibreNMS shows a device's eventlog to whoever may see that device: what phase 3 writes there counts the other devices
+        // the batch is about, it never names them. Every step: grew and accepted, shrank, cut off and covered by windows,
+        // cannot be computed and continued, refused.
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->cuts[502] = [512, 511];
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $this->assertNull($lifecycle->acceptBlast($id, self::BOB, true, 'ok', $this->t0 + 300));
+        $this->topology->cuts[503] = [514];
+        $this->endBatch($id, 3, $this->t0 + 400);
+        $this->assertSame('shrank', $this->changes->batches[$id][4]['blast']['state']);
+        $this->topology->error = 'an error';
+        $this->endBatch($id, 4, $this->t0 + 500);
+        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 600));
+        $this->endBatch($id, 5, $this->t0 + 700);
+        $lifecycle->advance($id, $this->t0 + 5000);
+        $this->assertSame(ChangeStatus::APPLIED, $this->changes->find($id)['status']);
+
+        $this->topology->error = null;
+        $this->topology->cuts = RolloutPlanTest::CUTS;
+        $refused = $this->approved(self::plan([502]));
+        $this->topology->cuts[502] = [512, 511];
+        $this->lifecycle(['refuseGrownBlast' => true])->apply($refused, self::ALICE, [], $this->t0 + 6000);
+        $this->assertSame(ChangeStatus::FAILED, $this->changes->find($refused)['status']);
+        $this->assertStringContainsString('lab-sw5', (string) $this->changes->find($refused)['error'], 'the change page names it');
+
+        $names = RolloutPlanTest::NAMES;
+        $this->assertGreaterThan(80, count($this->events->entries));
+        foreach ($this->events->entries as $entry) {
+            foreach ($names as $deviceId => $name) {
+                if ($deviceId !== $entry['device']) {
+                    $this->assertStringNotContainsString($name, $entry['message'], "the eventlog of device {$entry['device']} names $name");
+                }
+            }
+        }
+        // and still says what happened, in counts
+        $sw5 = implode("\n", array_column($this->events->of(511), 'message'));
+        $this->assertStringContainsString('batch 3 cuts this device off from the core while it runs: maintenance window #102 covers it until', $sw5);
+        $sw2 = implode("\n", array_column($this->events->of(502), 'message'));
+        $this->assertStringContainsString('it would now cut off 1 more device than approved (2 devices and 3 unmanaged neighbors in all)', $sw2);
+        $this->assertStringContainsString("failed, template 'Port description': batch 1 was not started: its blast radius grew since the approval: it would now cut off "
+            . '1 more device than approved (setting When the blast radius grew: refuse the batch)', $sw2);
+        $sw3 = implode("\n", array_column($this->events->of(503), 'message'));
+        $this->assertStringContainsString('batch 4: its blast radius shrank since the approval: it cuts off 1 device fewer; it goes on', $sw3);
+        $sw1 = implode("\n", array_column($this->events->of(501), 'message'));
+        $this->assertStringContainsString('batch 5: continued by alice without a blast radius (it cannot be computed: an error); its maintenance window covers its devices and no other device', $sw1);
+    }
+
     public function testAChangePlannedByThePluginsSettingsHasNoBlastCheck(): void
     {
         $id = $this->approved(BatchPlan::make([501, 502, 503], [], 1, 5, 1, false, 0));
@@ -237,7 +289,9 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertStringContainsString('Batch 3: its blast radius grew since the approval: it would now also cut off lab-sw5 (approved: lab-sw6). The batch does not start '
             . 'until an admin with the approve permission (not the requester) accepts the new blast radius.', $this->messages($id));
         $this->assertSame('warning', end($this->events->entries)['severity']);
-        $this->assertStringContainsString('would now also cut off lab-sw5', end($this->events->entries)['message'], 'in the eventlog of the targets');
+        $this->assertSame('Ansible change #1 (CHG-1), batch 3: its blast radius grew since the approval: it would now cut off 1 more device than approved (2 devices and 3 '
+            . 'unmanaged neighbors in all). The batch does not start until an admin with the approve permission (not the requester) accepts the new blast radius.',
+            end($this->events->entries)['message'], 'in the eventlog of the targets, in counts');
 
         // nothing moves it on but an approver's acceptance
         $lifecycle->advance($id, $this->t0 + 300);
@@ -256,8 +310,10 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame('bob', $this->changes->batches[$id][3]['blast_accepted']['by']);
         $this->assertStringContainsString('Batch 3: its new blast radius accepted by bob: it cuts off lab-sw6, lab-sw5 and 3 unmanaged neighbors: "the uplink is being fixed"',
             $this->messages($id));
-        $this->assertNotEmpty(preg_grep('/covers this device until .*: it loses its path to the core while batch 3 \(lab-sw2\) runs$/', array_column($this->events->of(511), 'message')),
+        $this->assertNotEmpty(preg_grep('/batch 3 cuts this device off from the core while it runs: maintenance window #102 covers it until/', array_column($this->events->of(511), 'message')),
             'lab-sw5\'s eventlog says why it is under maintenance');
+        $this->assertNotEmpty(preg_grep('/^Ansible change #1 \(CHG-1\), batch 3: its new blast radius accepted by bob: it cuts off 2 devices and 3 unmanaged neighbors: "the uplink is being fixed"$/',
+            array_column($this->events->of(502), 'message')));
 
         foreach ([3, 4, 5] as $number) {
             $this->endBatch($id, $number, $this->t0 + 4000 + 100 * $number);
@@ -561,7 +617,7 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame([503, 513, 514], $this->windows->windows[103]['devices'], 'the window covers lab-sw8 again');
         $this->assertSame([513, 514], $this->changes->windows[4]['cut_off']);
         $this->assertStringContainsString('Maintenance window #103 of batch 4 now covers what the batch cuts off right before its launch: also lab-sw8.', $this->messages($id));
-        $this->assertNotEmpty(preg_grep('/batch 4: maintenance window #103 covers this device until/', array_column($this->events->of(514), 'message')));
+        $this->assertNotEmpty(preg_grep('/batch 4 cuts this device off from the core while it runs: maintenance window #103 covers it until/', array_column($this->events->of(514), 'message')));
     }
 
     // ------------------------------------------------------------------ the rest of the lifecycle around the waits

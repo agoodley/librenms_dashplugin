@@ -9,6 +9,7 @@ use Agoodley\LibrenmsAnsible\Runs\RunResults;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Runs\RunStore;
 use Agoodley\LibrenmsAnsible\Support\Clock;
+use Agoodley\LibrenmsAnsible\Support\Format;
 
 /**
  * The life of a change, as transitions on a ChangeStore: users start the dry run, approve or reject, apply, continue
@@ -280,7 +281,9 @@ final class ChangeLifecycle
         $text = ChangeText::blastAccepted($resumed, $number, $user['username'], BlastRadius::text(['lost' => $lost, 'unmanaged' => (int) ($blast['unmanaged'] ?? 0)],
             $this->blastNames($resumed, $number)), $comment);
         $this->timeline($resumed, 'blast', $text, $user['username'], $now);
-        $this->eventAll($resumed, $text, 'notice', $user['username']);
+        // the eventlog of each target counts the devices: it names no other device
+        $this->eventAll($resumed, ChangeText::blastAcceptedEvent($resumed, $number, $user['username'], count($lost), (int) ($blast['unmanaged'] ?? 0), $comment),
+            'notice', $user['username']);
         // started as the admin who started it before (who applied the change or continued it to this batch)
         $this->startBatch($resumed, $number, $this->starter($resumed, $number), null, $now);
 
@@ -474,7 +477,8 @@ final class ChangeLifecycle
             $text = ChangeText::blastOverride($resumed, $batch, $user['username'], $why, BlastRadius::listText($this->heldLost($resumed, $batch), $this->blastNames($resumed, $batch)),
                 is_array($row['blast_accepted'] ?? null));
             $this->timeline($resumed, 'blast', $text, $user['username'], $now);
-            $this->eventAll($resumed, $text, 'warning', $user['username']);
+            $this->eventAll($resumed, ChangeText::blastOverrideEvent($resumed, $batch, $user['username'], $why, count($this->heldLost($resumed, $batch)),
+                is_array($row['blast_accepted'] ?? null)), 'warning', $user['username']);
             $this->startBatch($resumed, $batch, $user, $secrets, $now);
 
             return null;
@@ -1417,7 +1421,7 @@ final class ChangeLifecycle
      * End a change: its remaining batches are cancelled, the windows of batches that never ran close now, the eventlog
      * of every target says how it ended.
      */
-    private function finish(array $change, string $status, ?string $reason, int $now, ?string $user = null): void
+    private function finish(array $change, string $status, ?string $reason, int $now, ?string $user = null, ?string $eventReason = null): void
     {
         $id = (int) $change['id'];
         $current = $this->changes->find($id) ?? $change;
@@ -1441,7 +1445,8 @@ final class ChangeLifecycle
             }
         }
         $this->timeline($done, $status, ChangeText::outcome($status, $reason !== null ? UntrustedText::line($reason, 1000) : null), null, $now);
-        $this->eventAll($done, ChangeText::finished($done, $status, $reason), match ($status) {
+        // the eventlog of each target gets the reason without other devices' names, when it has them ($eventReason)
+        $this->eventAll($done, ChangeText::finished($done, $status, $eventReason ?? $reason), match ($status) {
             ChangeStatus::APPLIED => 'ok',
             ChangeStatus::FAILED => 'error',
             default => 'warning',
@@ -1828,8 +1833,9 @@ final class ChangeLifecycle
             // said once: not again right before the launch when its start said the same
             $text = ChangeText::blastShrank($change, $number, BlastRadius::listText($diff['removed'], $record['names']), $record['accepted']);
             $this->timeline($change, 'blast', $text . ($atLaunch ? ' (right before its launch)' : '') . '; it goes on.', null, $now);
+            $event = ChangeText::blastShrankEvent($change, $number, count($diff['removed']), $record['accepted']);
             foreach ($devices as $deviceId) {
-                $this->events->write($text, $deviceId, 'info', ChangeText::reference($id), $user['username']);
+                $this->events->write($event, $deviceId, 'info', ChangeText::reference($id), $user['username']);
             }
         }
 
@@ -1935,20 +1941,25 @@ final class ChangeLifecycle
         $grew = $waiting === 'blast';
         $refuse = $grew ? $this->settings->refuseGrownBlast : $this->settings->refuseUnknownBlast;
         $names = (array) ($record['names'] ?? []) + $this->blastNames($change, $number);
+        // the change page and its timeline name the devices; the eventlog of each target counts them (it names no other device)
         if ($grew) {
-            $why = 'its blast radius grew since ' . ChangeText::held($change, ! empty($record['accepted']))[0] . ': it would now also cut off '
-                . BlastRadius::listText((array) $record['added'], $names);
-            $text = ChangeText::blastGrew($change, $number, BlastRadius::listText((array) $record['added'], $names),
+            [$since, $word] = ChangeText::held($change, ! empty($record['accepted']));
+            $added = (array) $record['added'];
+            $why = "its blast radius grew since $since: it would now also cut off " . BlastRadius::listText($added, $names);
+            $eventWhy = "its blast radius grew since $since: it would now cut off " . Format::count(count($added), 'more device', 'more devices') . " than $word";
+            $text = ChangeText::blastGrew($change, $number, BlastRadius::listText($added, $names),
                 BlastRadius::listText((array) $record['held'], $names), $refuse, ! empty($record['accepted']), ApprovalRules::accepter($this->settings->approval));
+            $event = ChangeText::blastGrewEvent($change, $number, count($added), count((array) ($record['lost'] ?? [])), (int) ($record['unmanaged'] ?? 0), $refuse,
+                ! empty($record['accepted']), ApprovalRules::accepter($this->settings->approval));
         } else {
-            $why = 'its blast radius cannot be computed now (' . $record['error'] . ')';
-            $text = ChangeText::blastUnknown($change, $number, (string) $record['error'], $refuse);
+            $why = $eventWhy = 'its blast radius cannot be computed now (' . $record['error'] . ')';
+            $text = $event = ChangeText::blastUnknown($change, $number, (string) $record['error'], $refuse);
         }
         if ($refuse) {
+            $setting = ' (setting ' . ($grew ? 'When the blast radius grew' : 'When the blast radius cannot be computed') . ': refuse the batch)';
             $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($why, 500), 'blast' => $record]);
             $this->timeline($change, 'blast', $text, null, $now);
-            $this->finish($change, ChangeStatus::FAILED, "batch $number was not started: $why (setting " . ($grew ? 'When the blast radius grew' : 'When the blast radius cannot be computed')
-                . ': refuse the batch)', $now);
+            $this->finish($change, ChangeStatus::FAILED, "batch $number was not started: $why$setting", $now, null, "batch $number was not started: $eventWhy$setting");
 
             return;
         }
@@ -1964,7 +1975,7 @@ final class ChangeLifecycle
             }
         }
         $this->timeline($paused, 'blast', $text, null, $now);
-        $this->eventAll($paused, $text, 'warning', $this->batchUser($paused, $number));
+        $this->eventAll($paused, $event, 'warning', $this->batchUser($paused, $number));
     }
 
     /**
@@ -2062,7 +2073,7 @@ final class ChangeLifecycle
             $this->events->write(ChangeText::windowOpened($change, $number, $scheduleId, $end), $deviceId, 'info', ChangeText::reference($id), $this->batchUser($change, $number));
         }
         foreach ($cutOff as $deviceId) {
-            $this->events->write(ChangeText::windowCutOff($change, $number, $scheduleId, $end, implode(', ', $names)), $deviceId, 'info', ChangeText::reference($id),
+            $this->events->write(ChangeText::windowCutOff($change, $number, $scheduleId, $end), $deviceId, 'info', ChangeText::reference($id),
                 $this->batchUser($change, $number));
         }
 
@@ -2114,7 +2125,7 @@ final class ChangeLifecycle
                 null, $now);
             $until = self::at($window['ends_at'] ?? null);
             foreach ($added as $deviceId) {
-                $this->events->write(ChangeText::windowCutOff($change, $number, (int) $window['schedule_id'], $until, implode(', ', $names)), $deviceId, 'info',
+                $this->events->write(ChangeText::windowCutOff($change, $number, (int) $window['schedule_id'], $until), $deviceId, 'info',
                     ChangeText::reference($id), $this->batchUser($change, $number));
             }
             foreach ($removed as $deviceId) {

@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsAnsible\Changes;
 
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Support\Clock;
+use Agoodley\LibrenmsAnsible\Support\Format;
 
 /**
  * Texts the plugin writes about a change outside its page: the eventlog of each target and the change's timeline.
@@ -236,15 +237,74 @@ final class ChangeText
             . '); its maintenance window covers its devices and the devices ' . self::held($change, $accepted)[1] . ' as cut off: ' . UntrustedText::line($covered, 300);
     }
 
+    // ------------------------------------------------------------------ the eventlog of phase 3: no other device named
+    // LibreNMS shows a device's eventlog to whoever may see that device: its entries say what happened in counts, with the
+    // change and batch numbers, and never name another device (the change page, its timeline and the window's notes do)
+
     /**
-     * Eventlog entry of a device a batch cuts off, when the batch's maintenance window starts to cover it.
-     *
-     * @param  string  $batchDevices  the batch's devices, in words
+     * Devices in words, by their count: "2 devices and 3 unmanaged neighbors", "no other monitored device".
      */
-    public static function windowCutOff(array $change, int $batch, int $scheduleId, int $until, string $batchDevices): string
+    public static function devicesCount(int $devices, int $unmanaged = 0): string
     {
-        return self::name($change) . ", batch $batch: maintenance window #$scheduleId covers this device until " . Clock::text($until) . ': it loses its path to the core '
-            . 'while batch ' . $batch . ' (' . UntrustedText::line($batchDevices, 300) . ') runs';
+        $text = $devices > 0 ? Format::count($devices, 'device') : 'no other monitored device';
+
+        return $text . ($unmanaged > 0 ? ($devices > 0 ? ' and ' : ', and ') . Format::count($unmanaged, 'unmanaged neighbor') : '');
+    }
+
+    /**
+     * Eventlog entry of a batch whose blast radius grew: it does not start.
+     *
+     * @param  int  $added  the devices it would now cut off that it was not held to
+     * @param  int  $lost  the monitored devices it would cut off in all
+     */
+    public static function blastGrewEvent(array $change, int $batch, int $added, int $lost, int $unmanaged, bool $refused, bool $accepted, string $accepter): string
+    {
+        [$since, $word] = self::held($change, $accepted);
+
+        return self::name($change) . ", batch $batch: its blast radius grew since $since: it would now cut off " . Format::count($added, 'more device', 'more devices')
+            . " than $word (" . self::devicesCount($lost, $unmanaged) . ' in all). '
+            . ($refused ? 'The batch is refused (setting When the blast radius grew: refuse the batch).'
+                : "The batch does not start until $accepter accepts the new blast radius.");
+    }
+
+    /**
+     * Eventlog entry of a batch whose blast radius shrank: it goes on.
+     */
+    public static function blastShrankEvent(array $change, int $batch, int $removed, bool $accepted): string
+    {
+        return self::name($change) . ", batch $batch: its blast radius shrank since " . self::held($change, $accepted)[0] . ': it cuts off '
+            . Format::count($removed, 'device fewer', 'devices fewer') . '; it goes on';
+    }
+
+    /**
+     * Eventlog entry of an admin's acceptance of a batch's new blast radius.
+     */
+    public static function blastAcceptedEvent(array $change, int $batch, string $by, int $lost, int $unmanaged, string $comment): string
+    {
+        return self::name($change) . ", batch $batch: its new blast radius accepted by " . self::user($by) . ': it cuts off ' . self::devicesCount($lost, $unmanaged)
+            . self::comment($comment);
+    }
+
+    /**
+     * Eventlog entry of an admin's decision to continue a batch whose blast radius cannot be computed.
+     *
+     * @param  int  $covered  the devices approved (or accepted) as cut off, which its window covers
+     */
+    public static function blastOverrideEvent(array $change, int $batch, string $by, string $why, int $covered, bool $accepted): string
+    {
+        return self::name($change) . ", batch $batch: continued by " . self::user($by) . ' without a blast radius (it cannot be computed: ' . UntrustedText::line($why, 300)
+            . '); its maintenance window covers its devices and ' . ($covered > 0 ? 'the ' . Format::count($covered, 'device') . ' ' . self::held($change, $accepted)[1]
+                . ' as cut off' : 'no other device');
+    }
+
+    /**
+     * Eventlog entry of a device a batch cuts off, when the batch's maintenance window starts to cover it (it names the
+     * batch by its number only).
+     */
+    public static function windowCutOff(array $change, int $batch, int $scheduleId, int $until): string
+    {
+        return self::name($change) . ", batch $batch cuts this device off from the core while it runs: maintenance window #$scheduleId covers it until "
+            . Clock::text($until);
     }
 
     /**

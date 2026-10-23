@@ -509,7 +509,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   asked for and given, the apply, its maintenance window, its backups (each fresh one with the version Oxidized keeps,
   each missing one with why; the change's timeline lists them too), its batch launched and ended, a batch's blast
   radius that grew or cannot be computed, its acceptance or the decision to go on without one, and how the change
-  ended; a device a batch cuts off gets an entry when the batch's window covers it, with why; and, as in phase 1, the start and end of each run with its result and counters. The severity follows the
+  ended; a device a batch cuts off gets an entry when the batch's window covers it, with why (entries name no other device:
+  the blast radius entries count the devices); and, as in phase 1, the start and end of each run with its result and counters. The severity follows the
   result. The reference is the change's address (`plugin/ansible/changes/12`) or the run's, and the entries carry the
   user who did the step (in LibreNMS' *User* column): who launched the dry run, approved, rejected, applied, continued,
   stopped, cancelled or released; for a step the plugin takes on its own (a window, a backup, a batch's end), the admin
@@ -783,9 +784,11 @@ approval).
 A batch's maintenance window covers its devices and **the monitored devices it cuts off** as computed before the batch,
 set again right before its launch: LibreNMS lists them under the window's devices (*Map To*), and the window's notes
 name them (*Also the devices the batch cuts off (no path to the core while it runs): lab-sw5, lab-sw6.*). The eventlog
-of each such device says why it is under maintenance (*maintenance window #223 covers this device until ...: it loses
-its path to the core while batch 3 (lab-sw2) runs*), and that it no longer is when the batch no longer cuts it off
-right before its launch. The windows keep phase 2's rules: moved while the batch runs, closed a settle time after it,
+of each such device says why it is under maintenance (*Ansible change #12 (CHG-1234), batch 3 cuts this device off from
+the core while it runs: maintenance window #223 covers it until ...*), and that it no longer is when the batch no longer
+cuts it off right before its launch. LibreNMS shows a device's eventlog to whoever may see that device, so the plugin's
+entries there never name another device: they say what a batch cuts off, grew or shrank by in counts (*it would now
+cut off 1 more device than approved*), and the change page, its timeline and the window's notes name the devices. The windows keep phase 2's rules: moved while the batch runs, closed a settle time after it,
 on every end. A batch planned by the settings has a window on its devices only, and so has one planned by hand, unless
 the topology plugin has learned meanwhile what it cuts off: then it waits like any batch whose blast radius grew.
 
