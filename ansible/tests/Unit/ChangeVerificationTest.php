@@ -837,6 +837,46 @@ class ChangeVerificationTest extends TestCase
         $this->assertStringContainsString('Verification: verified (batch 1 on data older than the Apply before it)', $this->messages($id));
     }
 
+    public function testDevicesNoDiscoveryOfWhichStartedAreAskedForAgainTwiceAtMost(): void
+    {
+        $id = $this->approved();
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->sync($id, $this->t0 + 60);
+        $this->assertSame([[510, 502, 503]], $this->refresh->requests);
+        // every device discovered and polled since, but lab-sw4: a discovery of it was running when LibreNMS was asked, and took the request up
+        $this->fresh($this->t0 + 90);
+        $this->verifier->devices[510] = ['discovered_at' => $this->t0 + 30];
+        $this->sync($id, $this->t0 + 120);
+        $this->assertCount(1, $this->refresh->requests, 'not before ' . ChangeLifecycle::REASK_AFTER . ' seconds');
+        $this->sync($id, $this->t0 + 250);
+        $this->assertSame([510], $this->refresh->requests[1], 'asked again: lab-sw4 alone');
+        $this->assertStringContainsString('Batch 1: no discovery of lab-sw4 started since LibreNMS was asked at 2026-10-22 10:01 UTC: it was asked again for the state before the batch.',
+            $this->messages($id));
+        $this->sync($id, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 440);
+        $this->assertCount(3, $this->refresh->requests, 'once more, ' . ChangeLifecycle::REASK_AFTER . ' seconds after');
+        $this->sync($id, $this->t0 + 700);
+        $this->sync($id, $this->t0 + 1000);
+        $this->assertCount(3, $this->refresh->requests, 'twice at most: then the wait runs');
+        $this->assertSame([], $this->launched());
+        // its discovery after the request: the state is taken, from fresh data (newer than the first request)
+        $this->verifier->devices[510] = ['discovered_at' => $this->t0 + 1010];
+        $this->sync($id, $this->t0 + 1020);
+        $this->assertSame([[510]], $this->launched());
+        $this->assertFalse($this->verify($id, 1)['before']['stale']);
+
+        // after a batch too, and never with Fresh data: wait (nothing is asked then)
+        $this->endBatch($id, 1, $this->t0 + 1100);
+        $this->sync($id, $this->t0 + 1800);
+        $asked = count($this->refresh->requests);
+        $this->fresh($this->t0 + 1850);
+        $this->verifier->devices = [503 => ['discovered_at' => $this->t0 + 1650]];
+        $this->sync($id, $this->t0 + 2000);
+        $this->assertSame([503], $this->refresh->requests[$asked], 'lab-sw3, no discovery of which started since the request for the verification');
+        $this->assertStringContainsString('Batch 1: no discovery of lab-sw3 started since LibreNMS was asked at 2026-10-22 10:30 UTC: it was asked again for its verification.',
+            $this->messages($id));
+    }
+
     public function testWithFreshDataWaitTheStateBeforeIsTakenFromTheDataAsItIs(): void
     {
         $this->settings = ['verifyFresh' => 'wait'];

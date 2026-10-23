@@ -977,6 +977,10 @@ went down since is an unexpected change.
   discovery: one of a few modules would push the device's next full discovery back by the discovery interval.
 * **wait**: the plugin waits for LibreNMS' own discovery (by default every 6 hours) and polling (every 5 minutes).
 
+A device of which no discovery started within 3 minutes of the request is asked for again, twice at most: a discovery
+already running when LibreNMS was asked takes the request up and ends with older data, and LibreNMS' scheduler drops a
+discovery job for a device that has one queued; the data still counts from the first request.
+
 The plugin waits at most **Wait for fresh data** (30 minutes); without fresh data by then the batch **cannot be
 verified**.
 

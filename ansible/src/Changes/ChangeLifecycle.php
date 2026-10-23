@@ -108,6 +108,16 @@ final class ChangeLifecycle
     /** What the change waits for while a batch's unexpected changes, or a batch that cannot be verified, wait for an admin. */
     public const VERIFY_WAITS = ['verification', 'verify_unknown'];
 
+    /**
+     * Seconds after a request for fresh data (or after it was asked again) when the devices no discovery of which started
+     * since are asked for again: a discovery already running when it was asked takes the request up and ends with older
+     * data, a discovery job of LibreNMS' scheduler for a device that has one queued is dropped as a duplicate.
+     */
+    public const REASK_AFTER = 180;
+
+    /** Times a request for fresh data is asked again so, at most. */
+    public const REASKS = 2;
+
     /** What a state's record says once a step of it succeeded: no failure to try again (beforeFailed(), verifyStep()). */
     private const NO_FAILURE = ['failed_since' => null, 'failed' => null, 'failed_at' => null, 'retry_until' => null];
 
@@ -2533,8 +2543,9 @@ final class ChangeLifecycle
             $since = (int) ($before['asked_at'] ?? $now);
             $fresh = $this->freshOf($scope, $user, $since, $since);
             if (! $fresh['fresh'] && $now < (int) ($before['deadline'] ?? 0)) {
+                $again = $this->reask($change, $number, $before, $fresh['waiting'], $scope['names'], 'the state before the batch', $now);
                 $this->setVerify($id, $number, ['before' => ['waiting' => Freshness::waitingText($fresh['waiting'], $scope['names']), 'checked_at' => $now]
-                    + self::NO_FAILURE + $before]);
+                    + $again + self::NO_FAILURE + $before]);
 
                 return false;
             }
@@ -2803,7 +2814,8 @@ final class ChangeLifecycle
             if (! $fresh['fresh']) {
                 $waiting = Freshness::waitingText($fresh['waiting'], $scope['names']);
                 if ($now < (int) ($after['deadline'] ?? 0)) {
-                    $this->setVerify($id, $number, ['after' => ['waiting' => $waiting, 'checked_at' => $now] + self::NO_FAILURE + $after]);
+                    $again = $this->reask($change, $number, $after, $fresh['waiting'], $scope['names'], 'its verification', $now);
+                    $this->setVerify($id, $number, ['after' => ['waiting' => $waiting, 'checked_at' => $now] + $again + self::NO_FAILURE + $after]);
 
                     return;
                 }
@@ -3031,6 +3043,32 @@ final class ChangeLifecycle
             'how' => $this->settings->verifyFresh === 'ask' ? 'with' : 'wait', 'prefetched' => true, 'covered' => count($covered), 'domain' => count((array) ($scope['domain'] ?? []))]]);
 
         return $covered;
+    }
+
+    /**
+     * The devices of a wait for fresh data that still wait for a discovery REASK_AFTER seconds after the request (or after
+     * it was asked again), none of which started since: LibreNMS is asked again for them, at most REASKS times (Fresh
+     * data: ask), rather than the wait running out. What to merge into the wait's record ([] when not asked again).
+     *
+     * @param  array<string, mixed>  $record  the wait's record (asked_at, how, reasks, reasked_at)
+     * @param  array<int, string>  $waiting  device => what it waits for (Freshness::check())
+     * @param  array<int, string>  $names
+     * @return array<string, int>
+     */
+    private function reask(array $change, int $number, array $record, array $waiting, array $names, string $for, int $now): array
+    {
+        $asks = (int) ($record['reasks'] ?? 0);
+        $since = (int) ($record['reasked_at'] ?? ($record['asked_at'] ?? $now));
+        $devices = array_keys(array_filter($waiting, fn (string $what) => str_contains($what, 'a discovery')));
+        if ($this->settings->verifyFresh !== 'ask' || $this->refresh === null || ($record['how'] ?? 'wait') === 'wait' || $asks >= self::REASKS
+            || $now - $since < self::REASK_AFTER || ! $devices) {
+            return [];
+        }
+        $asked = $this->askRefresh($devices);
+        $this->timeline($change, 'verify', "Batch $number: no discovery of " . VerificationText::list(self::named($devices, $names)) . ' started since LibreNMS was asked at '
+            . Clock::text($since) . ($asked['error'] === null ? ': it was asked again for ' . $for : ': ' . $asked['error']) . '.', null, $now);
+
+        return ['reasks' => $asks + 1, 'reasked_at' => $now];
     }
 
     /**
