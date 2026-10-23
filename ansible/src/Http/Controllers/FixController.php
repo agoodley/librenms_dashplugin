@@ -63,8 +63,10 @@ class FixController extends Controller
             }
             $entry = ['id' => $fix['id'], 'kind' => $fix['kind'], 'title' => UntrustedText::line((string) ($fix['title'] ?? ''), 300),
                 'devices' => array_map(fn ($id) => ['device_id' => (int) $id, 'name' => $name($id)], (array) ($fix['devices'] ?? [])),
+                // a spanning tree finding with its VLANs (two VLANs' findings can have the same title)
                 'findings' => array_map(fn (array $f) => ['identity' => self::identity($f['identity'] ?? null), 'severity' => (string) ($f['severity'] ?? ''),
-                    'title' => UntrustedText::line((string) ($f['title'] ?? ''), 300),
+                    'title' => (($f['analysis'] ?? null) === 'stp' && array_filter((array) ($f['vlans'] ?? []), 'is_int') ? FixAnswers::vlanText(array_filter((array) $f['vlans'], 'is_int')) . ': ' : '')
+                        . UntrustedText::line((string) ($f['title'] ?? ''), 300),
                     'devices' => array_map(fn ($id) => (int) $id, (array) ($f['devices'] ?? []))], array_values(array_filter((array) ($fix['findings'] ?? []), 'is_array')))];
             if ($fix['kind'] === FixAnswers::PORT_DESCRIPTIONS) {
                 $entry['ports'] = array_map(fn (array $port) => ['device' => $name($port['device_id'] ?? 0), 'interface' => UntrustedText::line((string) ($port['ifName'] ?? ''), 80),

@@ -1497,7 +1497,9 @@
                 window.location.assign(newChange + '?fix=' + encodeURIComponent(kind) + '&ids=' + ids.join(',') + '&scope=' + Object.keys(scope).join(','));
             });
             var rows = el('tbody');
-            entries.forEach(function (fix) {
+            // a large network has many fixes of a kind: the first ones are shown, the others on demand (and the one a link names)
+            var SHOWN = 12;
+            entries.forEach(function (fix, index) {
                 var box_ = el('input');
                 box_.type = 'checkbox';
                 box_.className = 'ans-fix-check';
@@ -1522,8 +1524,13 @@
                     return d.name;
                 }).join(', '))]), el('td', 'ans-wrap', changes(fix)), el('td', 'ans-wrap', findings(fix))]);
                 row.setAttribute('data-fix', fix.id);
+                if (index >= SHOWN) {
+                    row.classList.add('ans-fix-more');
+                    row.hidden = true;
+                }
                 if (hasWanted(fix)) {
-                    row.className = 'info ans-fix-wanted';
+                    row.classList.add('info', 'ans-fix-wanted');
+                    row.hidden = false;
                     wantedRow = row;
                     if (!box_.disabled) {
                         box_.checked = true;
@@ -1535,9 +1542,22 @@
             var table = el('table', 'table table-condensed ans-table ans-stack');
             append(table, [el('thead', null, el('tr', null, [el('th', null, ''), el('th', null, 'Fix'), el('th', null, 'What it changes'), el('th', null, 'Findings it resolves')])), rows]);
             refresh();
+            var others = rows.querySelectorAll('tr.ans-fix-more[hidden]').length;
+            var more = null;
+            if (others) {
+                more = el('button', 'btn btn-xs btn-default', 'Show the other ' + others);
+                more.type = 'button';
+                more.id = 'ans-fixes-more-' + kind;
+                more.addEventListener('click', function () {
+                    rows.querySelectorAll('tr.ans-fix-more').forEach(function (hiddenRow) {
+                        hiddenRow.hidden = false;
+                    });
+                    more.remove();
+                });
+            }
             append(box, [el('div', 'panel-heading', [el('strong', null, LABELS[kind] + ' (' + entries.length + ')'), ' ', templateText]),
-                el('div', 'table-responsive', table), el('div', 'panel-body', [button, ' ', el('span', 'ans-help', canRun ? 'opens a new change: nothing runs before its dry run'
-                    : 'making a change needs the run permission')])]);
+                el('div', 'table-responsive', table), el('div', 'panel-body', [more, more ? ' ' : null, button, ' ', el('span', 'ans-help', canRun
+                    ? 'opens a new change: nothing runs before its dry run' : 'making a change needs the run permission')])]);
             return box;
         }
 
