@@ -316,9 +316,15 @@ final class Verification
         if ($ids === []) {
             return ['version' => self::VERSION, 'fixes' => [], 'not_fixable' => [], 'names' => [], 'role_hidden' => $this->sources->roleHidden()];
         }
+        // the link check runs over every device the user sees, as on its page, and its fixes are kept for these devices at the
+        // end: a description is wrong when it names another monitored device, which may be anywhere in the network
         $links = array_map(fn (array $finding) => $finding + ['identity' => FindingHistory::hash('links', $finding), 'analysis' => 'links'],
-            array_values(array_filter($this->sources->linkFindings($ids), fn (array $finding) => in_array($finding['code'], FixBuilder::CODES[FixBuilder::PORT_DESCRIPTIONS], true)
+            array_values(array_filter($this->sources->linkFindings(null), fn (array $finding) => in_array($finding['code'], FixBuilder::CODES[FixBuilder::PORT_DESCRIPTIONS], true)
                 && $this->visibleFinding($finding))));
+        if ($ids !== null) {
+            $wanted = array_fill_keys($ids, true);
+            $links = array_values(array_filter($links, fn (array $finding) => array_intersect_key(array_flip(array_map('intval', $finding['devices'])), $wanted)));
+        }
         $ports = [];
         foreach ($links as $finding) {
             array_push($ports, ...array_keys((array) ($finding['fix']['ports'] ?? [])));

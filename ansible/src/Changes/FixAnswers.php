@@ -130,12 +130,18 @@ final class FixAnswers
      * against the contract; [] when nothing is.
      *
      * @param  array<int, string>  $hosts  device_id => inventory name of the targets
+     * @param  array<int, string[]>|null  $interfaces  device_id => the names of its ports as LibreNMS knows them (ifName): a
+     *                                                 description's interface must be one of its host's (not checked when null)
      * @return string[]
      */
-    public static function check(string $kind, string $answer, array $hosts): array
+    public static function check(string $kind, string $answer, array $hosts, ?array $interfaces = null): array
     {
         $errors = [];
         $names = array_flip(array_map('strval', $hosts));
+        $ports = [];
+        foreach ($interfaces ?? [] as $deviceId => $list) {
+            $ports[(int) $deviceId] = array_fill_keys(array_map('strval', (array) $list), true);
+        }
         $lines = preg_split('/\n/', str_replace("\r\n", "\n", $answer)) ?: [];
         if (count($lines) > self::LINES_MAX) {
             return ['More than ' . self::LINES_MAX . ' lines.'];
@@ -154,7 +160,9 @@ final class FixAnswers
                 }
                 [$host, $interface, $description] = $parts;
                 $problem = (isset($names[$host]) && preg_match(self::HOST, $host) ? null : 'its host is not a target of the change')
-                    ?? self::interfaceProblem($interface) ?? self::descriptionProblem($description);
+                    ?? self::interfaceProblem($interface)
+                    ?? ($interfaces === null || isset($ports[(int) $names[$host]][$interface]) ? null : 'its interface is not a port of its host in LibreNMS')
+                    ?? self::descriptionProblem($description);
             } elseif ($kind === self::STP_ROOT_PRIORITY) {
                 $parts = explode(' ', $line);
                 if (count($parts) !== 4) {

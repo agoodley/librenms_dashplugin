@@ -90,7 +90,7 @@ final class PluginSettings
         'backup_timeout_minutes' => [1, 120],
         'maintenance_minutes' => [5, 1440],
         'settle_minutes' => [0, 1440],
-        'verify_wait_minutes' => [5, 1440],
+        'verify_wait_minutes' => [1, 1440],
     ];
 
     /** Names of the settings in messages and the eventlog. */
@@ -243,6 +243,8 @@ final class PluginSettings
                 'platform_map' => 'platform mapping: ' . self::mapChanges($before->platformMap(), $this->platformMap()),
                 'allowed_group' => 'allowed device group ' . self::name($old, $groups, 'every device') . ' → ' . self::name($new, $groups, 'every device'),
                 'inventory_user' => 'inventory user ' . self::name($old, $users, 'not chosen') . ' → ' . self::name($new, $users, 'not chosen'),
+                'fix_template_port_descriptions', 'fix_template_stp_root_priority' => self::LABELS[$key] . ' ' . ($old === '' ? 'none' : "#$old") . ' → '
+                    . ($new === '' ? 'none' : "#$new"),
                 default => self::LABELS[$key] . ' ' . (self::CHOICES[$key][$old] ?? $old) . ' → ' . (self::CHOICES[$key][$new] ?? $new),
             };
         }

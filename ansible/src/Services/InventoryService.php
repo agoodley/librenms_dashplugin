@@ -35,6 +35,17 @@ final class InventoryService
     }
 
     /**
+     * The names of these devices' ports as LibreNMS knows them (ifName).
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, string[]>
+     */
+    public function interfaces(array $deviceIds): array
+    {
+        return $this->devices->interfaces($deviceIds);
+    }
+
+    /**
      * The inventory a LibreNMS user gets: only the devices that user may see.
      *
      * @param  User  $user

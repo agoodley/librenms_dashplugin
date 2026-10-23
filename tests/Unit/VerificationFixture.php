@@ -176,6 +176,8 @@ final class VerificationFixture implements Sources
 
     public function linkFindings(?array $ids): array
     {
+        $this->calls[] = ['linkFindings', $ids];
+
         return $this->findings['links'];
     }
 

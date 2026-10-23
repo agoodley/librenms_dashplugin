@@ -119,6 +119,19 @@ class ChangeController extends Controller
         $plugin = new Plugin();
         $connection = $plugin->connection();
         $templateId = is_string($request->query('template')) ? mb_substr($request->query('template'), 0, 64) : '';
+        // a new change made from fixes (?fix=KIND&ids=ID,...&scope=DEVICE,...: the Fixes page): its template, devices and lines, computed now
+        $fix = null;
+        if (is_string($request->query('fix')) && in_array($request->query('fix'), \Agoodley\LibrenmsAnsible\Changes\FixAnswers::KINDS, true)) {
+            $split = fn (mixed $value, string $pattern) => array_values(array_filter(explode(',', is_string($value) ? mb_substr($value, 0, 40000) : ''),
+                fn (string $part) => preg_match($pattern, $part) === 1));
+            try {
+                $fix = $this->changeService()->fixDraft((string) $request->query('fix'), array_slice($split($request->query('ids'), '/^[0-9a-f]{40}$/D'), 0, 200),
+                    array_map('intval', array_slice($split($request->query('scope'), '/^\d{1,10}$/D'), 0, self::MAX_DEVICES)), (int) $request->user()->user_id);
+            } catch (\Throwable $e) {
+                $fix = ['errors' => [$this->failure('new change from fixes', $e)], 'template' => null, 'lines' => [], 'devices' => []];
+            }
+            $templateId = (string) ($fix['template'] ?? '');
+        }
         // a new change made from an earlier one (?from=ID&devices=remaining|passed): its template, answers, reference, first batch and devices
         $prefill = null;
         $kind = $request->query('devices');
@@ -144,7 +157,7 @@ class ChangeController extends Controller
             }
         }
         $data = ['usable' => [], 'unusable' => [], 'template' => null, 'templateReasons' => [], 'templateNotes' => [], 'runnerError' => null, 'blocked' => [],
-            'prefill' => $prefill,
+            'prefill' => $prefill, 'fix' => $fix,
             'device' => ctype_digit((string) $request->query('device', '')) ? (int) $request->query('device') : null,
             'requestToken' => bin2hex(random_bytes(16)), 'maxTargets' => $this->settings()->maxTargets(), 'assetVersion' => self::assetVersion(),
             'groups' => [], 'locations' => [], 'planText' => $this->settings()->batchRule(), 'changeSettings' => $this->settings()->changeSettings(),
@@ -209,7 +222,7 @@ class ChangeController extends Controller
         [$templateId, $devices, $answers, $canary, $reference, $unplanned] = self::input($request);
         try {
             return response()->json(ChangeService::forPage($this->changeService()->preview($templateId, $devices, $answers, $canary, $reference, $unplanned,
-                (int) $request->user()->user_id)));
+                (int) $request->user()->user_id, self::fixInput($request))));
         } catch (\Throwable $e) {
             return response()->json(['error' => $this->failure('preview', $e)], 500);
         }
@@ -244,7 +257,8 @@ class ChangeController extends Controller
             }
         }
         try {
-            $result = $this->changeService()->create($request->user(), $templateId, $devices, $answers, $canary, $reference, $token, $expected, $unplanned, $blast);
+            $result = $this->changeService()->create($request->user(), $templateId, $devices, $answers, $canary, $reference, $token, $expected, $unplanned, $blast,
+                self::fixInput($request));
         } catch (\Throwable $e) {
             return response()->json(['errors' => [$this->failure('new change', $e)]], 500);
         }
@@ -920,6 +934,31 @@ class ChangeController extends Controller
         return [is_scalar($template) ? mb_substr((string) $template, 0, 64) : '', $ids($request->input('devices')), $answers, $ids($request->input('canary')),
             is_string($request->input('reference')) ? mb_substr($request->input('reference'), 0, 1000) : '',
             $request->input('unplanned') === RolloutPlan::HAND ? RolloutPlan::HAND : RolloutPlan::LEAVE];
+    }
+
+    /**
+     * The fixes a preview or create request is made from (the new change page of the Fixes page): {kind, ids, scope, lines}, the
+     * lines as the page showed them; null for a change that is no fix. Anything of another shape is dropped.
+     *
+     * @return array{kind: string, ids: string[], scope: int[], lines: ?string[]}|null
+     */
+    private static function fixInput(Request $request): ?array
+    {
+        $fix = $request->input('fix');
+        if (! is_array($fix) || ! is_string($fix['kind'] ?? null)) {
+            return null;
+        }
+        $ids = array_values(array_filter(array_slice(is_array($fix['ids'] ?? null) ? $fix['ids'] : [], 0, 200), fn ($id) => is_string($id) && preg_match('/^[0-9a-f]{40}$/D', $id)));
+        $scope = [];
+        foreach (array_slice(is_array($fix['scope'] ?? null) ? $fix['scope'] : [], 0, self::MAX_DEVICES) as $id) {
+            if ((is_int($id) || (is_string($id) && ctype_digit($id))) && (int) $id > 0) {
+                $scope[] = (int) $id;
+            }
+        }
+        $lines = is_array($fix['lines'] ?? null) ? array_values(array_map(fn ($line) => mb_substr((string) $line, 0, 1000),
+            array_filter(array_slice($fix['lines'], 0, \Agoodley\LibrenmsAnsible\Changes\FixAnswers::LINES_MAX + 1), 'is_string'))) : null;
+
+        return ['kind' => mb_substr($fix['kind'], 0, 40), 'ids' => $ids, 'scope' => array_values(array_unique($scope)), 'lines' => $lines];
     }
 
     /**

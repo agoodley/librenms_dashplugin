@@ -7,6 +7,8 @@ use Agoodley\LibrenmsAnsible\Changes\FixExpectation;
 use Agoodley\LibrenmsAnsible\Changes\Freshness;
 use Agoodley\LibrenmsAnsible\Changes\VerificationOutcome;
 use Agoodley\LibrenmsAnsible\Changes\VerificationRules;
+use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
+use Agoodley\LibrenmsAnsible\Runner\SurveyVar;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -212,6 +214,47 @@ class VerificationRulesTest extends TestCase
             FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, "other.lab Gi1/0/1 x\nacc1.lab Gi1/0/1;reload x\nacc1.lab Gi1/0/1 x;y\nacc1.lab Gi1/0/1", $hosts));
         $this->assertSame(['line 1: its description is not one the link check builds (letters, digits, spaces and . _ / \\ : + ( ) # @ , -, at most 80)'],
             FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, 'acc1.lab Gi1/0/1 ' . str_repeat('a', 81), $hosts));
+
+        // the interface must be a port of its host as LibreNMS knows it
+        $interfaces = [3 => ['Gi1/0/49', 'Gi1/0/50'], 4 => ['Ethernet1/1']];
+        $this->assertSame([], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, implode("\n", $built['lines']), $hosts, $interfaces));
+        $this->assertSame(['line 1: its interface is not a port of its host in LibreNMS', 'line 2: its interface is not a port of its host in LibreNMS'],
+            FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, "acc1.lab Ethernet1/1 dist1 Te1/0/1\nacc2.lab Gi1/0/49 dist1 Te1/0/1", $hosts, $interfaces));
+    }
+
+    public function testAHostileNeighborNameReachesAPlaybookOnlyAsTheLinkChecksDescription(): void
+    {
+        // the name and port a hostile switch sends by LLDP/CDP, as the topology plugin's link check cleans them for a description
+        // (LinkAnalyzer::cleanDescription: anything outside its characters becomes "_", spaces are single, at most 80)
+        $hostile = "evil-sw\nusername backdoor privilege 15 secret 0 x\nend Gi0/1;reload";
+        $clean = 'evil-sw_username backdoor privilege 15 secret 0 x_end Gi0/1_reload';
+        $hosts = [5 => 'lab-sw5.netops.lab'];
+        $port = ['device_id' => 5, 'port_id' => 510, 'ifName' => 'Fa0/10', 'current' => 'lab-sw7 Fa0/12'];
+
+        $built = FixAnswers::lines(FixAnswers::PORT_DESCRIPTIONS, [['id' => 'f', 'kind' => 'port_descriptions', 'ports' => [$port + ['description' => $clean]]]], $hosts);
+        $this->assertSame(['lab-sw5.netops.lab Fa0/10 ' . $clean], $built['lines'], 'one line, its one field the cleaned text');
+        $this->assertSame([], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, implode("\n", $built['lines']), $hosts, [5 => ['Fa0/10']]));
+
+        // the raw text never: a fix that would carry it is refused, and an answer with it fails the check line by line
+        $raw = FixAnswers::lines(FixAnswers::PORT_DESCRIPTIONS, [['id' => 'f', 'kind' => 'port_descriptions', 'ports' => [$port + ['description' => $hostile]]]], $hosts);
+        $this->assertSame([], $raw['lines']);
+        $this->assertStringContainsString('its description is not one the link check builds', $raw['errors'][0]);
+        $this->assertSame(['line 2: its host is not a target of the change', 'line 3 is not "<host> <interface> <description>"'],
+            FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, 'lab-sw5.netops.lab Fa0/10 ' . $hostile, $hosts, [5 => ['Fa0/10']]));
+    }
+
+    public function testAFixTemplateMustHaveTheContractsVariable(): void
+    {
+        $template = fn (array $vars) => new RunnerTemplate('211', 'Fix <descriptions>', '', 'lnms4_port_descriptions.yml', 'ansible', '', '1', true, [], [], '', $vars);
+        $var = fn (string $name, string $type) => new SurveyVar($name, $name, '', $type, $type, true);
+
+        $this->assertNull(FixAnswers::templateProblem($template([$var('port_descriptions', 'text')]), FixAnswers::PORT_DESCRIPTIONS));
+        $this->assertSame('template #211 (Fix <descriptions>) has no survey variable stp_priorities, which the fix templates\' contract asks for (see the plugin\'s README, Fixes)',
+            FixAnswers::templateProblem($template([$var('port_descriptions', 'text')]), FixAnswers::STP_ROOT_PRIORITY));
+        $this->assertSame('the survey variable port_descriptions of template #211 (Fix <descriptions>) is of type string, not text (several lines), as the fix templates\' contract asks',
+            FixAnswers::templateProblem($template([$var('port_descriptions', 'string')]), FixAnswers::PORT_DESCRIPTIONS));
+        $this->assertSame('the runner has no such template', FixAnswers::templateProblem(null, FixAnswers::PORT_DESCRIPTIONS));
+        $this->assertSame('there is no fix of that kind', FixAnswers::templateProblem($template([]), 'reboot'));
     }
 
     public function testTheLinesOfRootFixesAreCheckedFieldByField(): void

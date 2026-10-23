@@ -9,6 +9,7 @@
         @if($active === 'change')
             <li class="active"><a href="#"><i class="fa fa-random fa-fw"></i> Change #{{ $changeId }}</a></li>
         @endif
+        <li class="{{ $active === 'fixes' ? 'active' : '' }}"><a href="{{ route('ansible.fixes') }}" id="ans-nav-fixes"><i class="fa fa-wrench fa-fw"></i> Fixes</a></li>
         <li class="{{ $active === 'runs' ? 'active' : '' }}"><a href="{{ route('ansible.runs') }}"><i class="fa fa-list fa-fw"></i> Runs</a></li>
         @if($active === 'run')
             <li class="active"><a href="#"><i class="fa fa-terminal fa-fw"></i> Run #{{ $runId }}</a></li>

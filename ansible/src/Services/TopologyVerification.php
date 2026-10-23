@@ -114,6 +114,20 @@ final class TopologyVerification implements Verifier
         return $state;
     }
 
+    /**
+     * The findings whose fix is clear, as the user sees the network (the verification API's fixes()): of these devices, every
+     * device the user sees when none are given. Asked in the request itself (the Fixes page and a new change from fixes).
+     *
+     * @param  int[]  $deviceIds
+     * @return array<string, mixed>
+     *
+     * @throws TopologyError
+     */
+    public function fixes(array $deviceIds, int $userId): array
+    {
+        return $this->call('list the fixes', fn () => ($this->api)::forUser(self::user($userId))->fixes(self::ids($deviceIds)));
+    }
+
     public function compare(array $before, array $after): array
     {
         return $this->call('compare the states of the batch', fn () => ($this->api)::system()->compare($before, $after));

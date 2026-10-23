@@ -3,6 +3,7 @@
 use Agoodley\LibrenmsAnsible\AnsibleServiceProvider;
 use Agoodley\LibrenmsAnsible\Http\Controllers\AssetController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\ChangeController;
+use Agoodley\LibrenmsAnsible\Http\Controllers\FixController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\InventoryController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\TargetController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\RunController;
@@ -28,6 +29,10 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
         Route::get('api/runs', [RunController::class, 'list'])->name('api.runs');
         Route::get('runs/{id}', [RunController::class, 'show'])->whereNumber('id')->name('runs.show');
         Route::get('api/runs/{id}', [RunController::class, 'poll'])->whereNumber('id')->name('api.runs.show');
+
+        // the topology plugin's findings whose fix is clear (phase 4); making a change of them needs the run permission
+        Route::get('fixes', [FixController::class, 'index'])->name('fixes');
+        Route::get('api/fixes', [FixController::class, 'list'])->name('api.fixes');
 
         Route::get('inventory', [InventoryController::class, 'show'])->name('inventory');
         Route::get('inventory/download', [InventoryController::class, 'download'])->name('inventory.download');

@@ -370,7 +370,7 @@
             @if($section === 'ans-verify-form')
                 @include('ansible::partials.settings-answer', ['failed' => 'Nothing was saved:'])
             @endif
-            <p class="help-block" id="ans-verify-intro">@if(($a['verification'] ?? 'unknown') === null)The topology plugin offers its verification API: each batch can be
+            <p class="help-block" id="ans-verify-intro">@if(array_key_exists('verification', $a) && $a['verification'] === null)The topology plugin offers its verification API: each batch can be
                 verified, and its Fixes page lists the findings whose fix is clear.@else<span class="text-warning"><i class="fa fa-exclamation-triangle"></i> The topology plugin
                 cannot verify now: {{ $a['verification'] }}.</span> With Verify changes on, every batch is then not verified, and with "When a batch cannot be verified: pause"
                 each change waits for an admin after its first batch: switch verification off, or choose "only record it", while the topology plugin is not there.@endif

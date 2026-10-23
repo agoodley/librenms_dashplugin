@@ -215,8 +215,11 @@ class VerificationApiTest extends TestCase
         $this->assertSame('the designated root bridges', $root['chosen_from']);
         $this->assertSame([], $fixes['not_fixable']);
 
-        // of some devices: the fixes of those devices and of the findings about them
+        // of some devices: the fixes of those devices and of the findings about them; the link check still runs over the whole
+        // network (a description is wrong when it names a monitored device, wherever that is)
+        $net->calls = [];
         $this->assertSame(['port_descriptions'], array_column(Verification::withSources($net)->fixes([Net::ACC1])['fixes'], 'kind'));
+        $this->assertSame([['linkFindings', null]], array_values(array_filter($net->calls, fn (array $call) => $call[0] === 'linkFindings')));
         $this->assertSame(['stp_root_priority'], array_column(Verification::withSources($net)->fixes([Net::CORE1])['fixes'], 'kind'));
     }
 
