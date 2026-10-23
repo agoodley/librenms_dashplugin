@@ -273,6 +273,31 @@ final class VerificationRules
     }
 
     /**
+     * What a comparison could not compare, in words ("the links of the network and the redundancy check"), null when it
+     * compared everything (the verification API's skipped: the kinds of facts and the checks either state could not read).
+     *
+     * @param  array{facts?: string[], checks?: string[]}  $skipped
+     */
+    public static function skippedText(array $skipped): ?string
+    {
+        $words = ['link' => 'the links', 'lag' => 'the port-channels', 'stp_blocked' => 'the blocked ports', 'stp_root' => 'the root bridges', 'ospf' => 'the OSPF adjacencies',
+            'bgp' => 'the BGP sessions'];
+        $parts = [];
+        foreach (array_slice(array_values(array_filter((array) ($skipped['facts'] ?? []), 'is_string')), 0, 10) as $kind) {
+            $parts[] = $words[$kind] ?? 'the ' . UntrustedText::line(str_replace('_', ' ', $kind), 40);
+        }
+        foreach (array_slice(array_values(array_filter((array) ($skipped['checks'] ?? []), 'is_string')), 0, 10) as $check) {
+            $parts[] = 'the ' . UntrustedText::line($check === 'stp' ? 'spanning tree' : $check, 40) . ' check';
+        }
+        if (! $parts) {
+            return null;
+        }
+        $last = array_pop($parts);
+
+        return ($parts ? implode(', ', $parts) . ' and ' : '') . $last;
+    }
+
+    /**
      * A VLAN key as the topology plugin says it ("VLAN 1 / CST", "VLAN 10").
      */
     public static function vlanLabel(int $key): string

@@ -282,8 +282,9 @@ final class Verification
      *
      * @return array{version: string, from: int, to: int, events: list<array{type: string, category: string, level: string, text: string, devices: int[]}>,
      *     findings: array{new: list<array>, worse: list<array>, changed: list<array>, milder: list<array>, resolved: list<array>, same: int},
-     *     devices: array{down: int[], up: int[]}, names: array<int, string>}
-     *     events: in the Changes page's words (ChangeReport::TYPES); worse, changed, milder: the finding now with "was"
+     *     devices: array{down: int[], up: int[]}, names: array<int, string>, skipped: array{facts: string[], checks: string[]}}
+     *     events: in the Changes page's words (ChangeReport::TYPES); worse, changed, milder: the finding now with "was"; skipped: the kinds of
+     *     facts and the checks not compared, as either state could not read them (a caller must not take the rest for all of it)
      *
      * @throws \InvalidArgumentException when a state is not one of this API's major version
      */

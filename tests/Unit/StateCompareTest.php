@@ -108,4 +108,36 @@ class StateCompareTest extends TestCase
         $this->assertSame([3, 2], StateCompare::covered(self::state(self::T)));
         $this->assertSame([1, 3, 2], StateCompare::domain(self::state(self::T)));
     }
+
+    public function testWhatEitherStateCouldNotReadIsNotComparedAndSaidSo(): void
+    {
+        $ports = [31 => ['port_id' => 31, 'device_id' => 3, 'ifName' => 'Gi1/0/49'], 21 => ['port_id' => 21, 'device_id' => 2, 'ifName' => 'Te1/0/1']];
+        $link = (new FactCollector(self::NAMES, $ports))->links([['local_device_id' => 3, 'local_port_id' => 31, 'remote_device_id' => 2, 'remote_port_id' => 21,
+            'remote_hostname' => 'dist1', 'remote_port' => 'Te1/0/1', 'remote_platform' => 'C9300', 'remote_version' => '', 'protocol' => 'lldp']]);
+        $spof = ['s' => self::finding('spof_device', 'warning', [2, 3], [2])];
+        $route = ['r' => ['analysis' => 'routing', 'code' => 'ospf_down', 'label' => 'x', 'severity' => 'warning', 'title' => 'OSPF of acc1', 'devices' => [3],
+            'subjects' => [3], 'vlans' => [], 'quiet' => false]];
+        $checks = fn (array $failed = [], array $factsFailed = [], array $enabled = ['redundancy', 'routing']) => ['checks' => ['enabled' => $enabled, 'failed' => $failed,
+            'facts_failed' => $factsFailed]];
+        $before = $checks() + self::state(self::T, $link, $spof + $route);
+
+        // the links could not be read after the batch, and the redundancy check failed: no "link gone", no finding "resolved"
+        $after = $checks(['redundancy' => 'the redundancy check failed (see logs/librenms.log)'], [FactCollector::LINK]) + self::state(self::T + 600, [], $route);
+        $compared = StateCompare::compare($before, $after);
+        $this->assertSame([], $compared['events']);
+        $this->assertSame([], $compared['findings']['resolved']);
+        $this->assertSame(1, $compared['findings']['same'], 'the routing finding, which both read');
+        $this->assertSame(['facts' => [FactCollector::LINK], 'checks' => ['redundancy']], $compared['skipped']);
+
+        // a check enabled in one state only (an admin switched it on between them): its findings are not new
+        $after = $checks([], [], ['redundancy', 'routing', 'links']) + self::state(self::T + 600, $link, $spof + $route + ['l' => ['analysis' => 'links',
+            'code' => 'description_wrong', 'label' => 'x', 'severity' => 'warning', 'title' => 'Port descriptions of acc1', 'devices' => [3], 'subjects' => [3], 'vlans' => [],
+            'quiet' => false]]);
+        $compared = StateCompare::compare($before, $after);
+        $this->assertSame([], $compared['findings']['new']);
+        $this->assertSame(['facts' => [], 'checks' => ['links']], $compared['skipped']);
+
+        // both read everything: nothing skipped
+        $this->assertSame(['facts' => [], 'checks' => []], StateCompare::compare($before, $checks() + self::state(self::T + 600, $link, $spof + $route))['skipped']);
+    }
 }

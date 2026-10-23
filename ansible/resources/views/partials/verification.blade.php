@@ -6,7 +6,8 @@
     $at = fn ($time) => is_int($time) && $time > 0 ? Clock::show($time, 'Y-m-d H:i:s T') : '';
     $beforeLabels = ['refresh' => 'to be taken from data LibreNMS discovers again', 'take' => 'to be taken', 'waiting' => 'waits for fresh data', 'taken' => 'taken',
         'unknown' => 'could not be taken'];
-    $afterLabels = ['settling' => 'settle time', 'waiting' => 'waits for fresh data', 'stale' => 'no fresh data', 'done' => 'compared'];
+    $afterLabels = ['settling' => 'settle time', 'waiting' => 'waits for fresh data', 'stale' => 'no fresh data', 'done' => 'compared',
+        'incomplete' => 'compared in part'];
 @endphp
 <div class="panel panel-default" id="ans-verification">
     <div class="panel-heading"><strong>Verification</strong> <span class="text-muted">(the topology plugin's state of the network around each batch, before it and after it on fresh
@@ -30,7 +31,7 @@
                     @if(($before['status'] ?? null) === 'unknown')<div class="ans-help text-warning">{{ $before['error'] ?? '' }}</div>@endif
                 </td>
                 <td class="ans-wrap ans-verify-after" data-label="After" data-state="{{ $after['status'] ?? '' }}">
-                    {{ $afterLabels[$after['status'] ?? ''] ?? '-' }}@if(($after['status'] ?? null) === 'done') {{ $at($after['taken_at'] ?? null) }}@endif
+                    {{ $afterLabels[$after['status'] ?? ''] ?? '-' }}@if(in_array($after['status'] ?? null, ['done', 'incomplete'], true)) {{ $at($after['taken_at'] ?? null) }}@endif
                     @if(($after['status'] ?? null) === 'settling')<div class="ans-help">until {{ $at($after['due'] ?? null) }}</div>@endif
                     @if(in_array($after['status'] ?? null, ['waiting', 'stale'], true))
                         <div class="ans-help">data newer than {{ $at($after['due'] ?? null) }}{{ ($after['deadline'] ?? 0) < PHP_INT_MAX ? ', waits until ' . $at($after['deadline'] ?? null) : '' }}{{ ($after['waiting'] ?? null) ? ': ' . $after['waiting'] : '' }}</div>

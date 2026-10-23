@@ -83,6 +83,12 @@ final class ChangeLifecycle
      */
     public const BLAST_RECHECK = 60;
 
+    /**
+     * Seconds between two new states after a batch whose comparison was incomplete (the topology plugin could not read a
+     * part of the network in one of its states): each takes a state again, which costs more than a check of freshness.
+     */
+    public const INCOMPLETE_RECHECK = 300;
+
     /** Why an acceptance, or a Continue without a blast radius, given for a check the batch no longer has is refused. */
     public const SEEN_CHANGED = 'The blast radius of the batch changed since you loaded the page: look again.';
 
@@ -2482,7 +2488,17 @@ final class ChangeLifecycle
                 $this->batchDevices($change, $number)), $this->settings->verifyMinimum);
             $this->changes->saveState($id, $number, 'after', $state, ['evaluation' => $evaluation, 'names' => array_slice((array) ($comparison['names'] ?? []), 0, 500, true),
                 'from' => (int) ($comparison['from'] ?? 0), 'to' => (int) ($comparison['to'] ?? 0)]);
-            $this->setVerify($id, $number, ['after' => ['status' => 'done', 'taken_at' => (int) ($state['taken_at'] ?? $now), 'waiting' => null, 'checked_at' => $now] + $after]);
+            // what either state could not read is not compared: nothing unexpected in the rest is no verification of the batch
+            $skipped = VerificationRules::skippedText((array) ($comparison['skipped'] ?? []));
+            $incomplete = $evaluation['result'] === 'verified' && $skipped !== null;
+            $this->setVerify($id, $number, ['after' => ['status' => $incomplete ? 'incomplete' : 'done', 'taken_at' => (int) ($state['taken_at'] ?? $now), 'waiting' => null,
+                'checked_at' => $now] + $after]);
+            if ($incomplete) {
+                $why = "the topology plugin could not read $skipped in the state before or after it (see logs/librenms.log); nothing else that was compared changed";
+                $this->verifyResult($change, $number, 'unknown', ['evaluation' => $evaluation, 'error' => $why, 'event_error' => $why], $now);
+
+                return;
+            }
             $this->verifyResult($change, $number, $evaluation['result'], ['evaluation' => $evaluation], $now);
         } catch (LockLost $e) {
             throw $e;
@@ -2576,17 +2592,21 @@ final class ChangeLifecycle
         $number = (int) $change['current_batch'];
         $verify = (array) ($this->changes->batches($id)[$number]['verify'] ?? []);
         $after = (array) ($verify['after'] ?? []);
-        if (($verify['before']['status'] ?? null) !== 'taken' || ! in_array($after['status'] ?? null, ['stale', 'waiting', 'settling'], true)
-            || $this->verifier === null || ! $this->verifier->takesStates() || $now - (int) ($after['checked_at'] ?? 0) < self::BLAST_RECHECK) {
+        $incomplete = ($after['status'] ?? null) === 'incomplete';
+        if (($verify['before']['status'] ?? null) !== 'taken' || ! in_array($after['status'] ?? null, ['stale', 'waiting', 'settling', 'incomplete'], true)
+            || $this->verifier === null || ! $this->verifier->takesStates()
+            || $now - (int) ($after['checked_at'] ?? 0) < ($incomplete ? self::INCOMPLETE_RECHECK : self::BLAST_RECHECK)) {
             return; // nothing to check again (no state before it), or not yet
         }
-        if (($after['status'] ?? null) === 'stale') {
+        if (in_array($after['status'] ?? null, ['stale', 'incomplete'], true)) {
+            // a state after it, taken again: once the data is fresh (it was, for an incomplete comparison) and the topology plugin reads it all
             $this->setVerify($id, $number, ['after' => ['status' => 'waiting', 'deadline' => PHP_INT_MAX] + $after]);
         }
         $this->verifyStep($change, $number, $now);
         $verify = (array) ($this->changes->batches($id)[$number]['verify'] ?? []);
         if (($verify['result'] ?? null) === 'unknown') {
-            $this->setVerify($id, $number, ['decision' => 'pause', 'after' => ['status' => 'stale'] + (array) ($verify['after'] ?? [])]);
+            $status = ($verify['after']['status'] ?? null) === 'incomplete' ? 'incomplete' : 'stale';
+            $this->setVerify($id, $number, ['decision' => 'pause', 'after' => ['status' => $status] + (array) ($verify['after'] ?? [])]);
 
             return; // still not
         }

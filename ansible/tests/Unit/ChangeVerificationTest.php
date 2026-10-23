@@ -427,6 +427,33 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame([[510], [502]], $this->launched());
     }
 
+    public function testAComparisonThatCouldNotReadEverythingIsNoVerification(): void
+    {
+        $id = $this->applied();
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->fresh($this->t0 + 1000);
+        // the topology plugin could not read the links in one of the states, and its redundancy check failed: nothing else changed
+        $this->verifier->comparison = ['skipped' => ['facts' => ['link'], 'checks' => ['redundancy']]];
+        $this->sync($id, $this->t0 + 1080);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'verification_unknown'], [$change['status'], $change['waiting']], 'not verified: what was not compared may have changed');
+        $this->assertSame(['unknown', 'incomplete'], [$this->verify($id, 1)['result'], $this->verify($id, 1)['after']['status']]);
+        $this->assertStringContainsString('Batch 1 cannot be verified: the topology plugin could not read the links and the redundancy check in the state before or after it',
+            $this->messages($id));
+        $this->assertSame([[510]], $this->launched());
+
+        // a new state after it every 5 minutes: once the topology plugin reads everything, the batch is verified and the change goes on
+        $this->sync($id, $this->t0 + 1200);
+        $this->assertSame(2, $this->verifier->count('state'), 'not before 5 minutes');
+        $this->verifier->comparison = [];
+        $this->sync($id, $this->t0 + 1400);
+        $this->assertSame([$this->t0 + 120, $this->t0 + 1080, $this->t0 + 1400, $this->t0 + 1400], $this->verifier->stateTimes(),
+            'before batch 1, after it (incomplete), after it again, before batch 2');
+        $this->assertSame('verified', $this->verify($id, 1)['result']);
+        $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status']);
+    }
+
     public function testWithoutTheTopologyPluginTheBatchesAreNotVerified(): void
     {
         $this->verifier->unavailable = 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)';

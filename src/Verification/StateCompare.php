@@ -19,7 +19,9 @@ use Agoodley\LibrenmsTopology\Stp\Finding;
  * Only what both states cover is compared (the second is taken with the first's cover(): it covers all the first does,
  * unless a device left the scope meanwhile): the facts of the devices both recorded the facts of, the root bridges of
  * the switches of both domains, and the findings about a device of both scopes. A finding about a device only one of
- * them covers is not compared: the other state did not look.
+ * them covers is not compared: the other state did not look. Nor is what either state could not read: a kind of fact
+ * whose reading failed, a check that failed or was not enabled in both (its findings would read as new, or resolved);
+ * the comparison names them (skipped), so that a caller does not take the rest for all of it.
  */
 final class StateCompare
 {
@@ -30,9 +32,10 @@ final class StateCompare
      * @return array{from: int, to: int, events: list<array{type: string, category: string, level: string, text: string, devices: int[], vlans?: int[],
      *     root_before?: ?array{mac: string, device: ?int}, root_after?: ?array{mac: string, device: ?int}}>,
      *     findings: array{new: list<array>, worse: list<array>, changed: list<array>, milder: list<array>, resolved: list<array>, same: int},
-     *     devices: array{down: int[], up: int[]}, names: array<int, string>}
+     *     devices: array{down: int[], up: int[]}, names: array<int, string>, skipped: array{facts: string[], checks: string[]}}
      *     events: a spanning tree event has the VLAN keys it is about, a root bridge event the root before and after (its MAC, and the device
-     *     when it is monitored); worse, changed and milder: the finding now with "was" (the one before)
+     *     when it is monitored); worse, changed and milder: the finding now with "was" (the one before); skipped: the kinds of facts and the
+     *     checks not compared, as either state could not read them
      */
     public static function compare(array $before, array $after): array
     {
@@ -41,10 +44,11 @@ final class StateCompare
         $names = (array) ($after['names'] ?? []) + (array) ($before['names'] ?? []);
         $covered = array_fill_keys(array_intersect(self::covered($before), self::covered($after)), true);
         $domain = array_fill_keys(array_intersect(self::domain($before), self::domain($after)), true);
+        $skipped = self::skipped($before, $after);
 
         // the facts both cover, as periods that ended (gone) or started (new) between the two states; a spanning tree fact
         // whose VLANs changed is both (its data are its VLANs), as the snapshot records it
-        $facts = [self::facts($before, $names, $covered, $domain), self::facts($after, $names, $covered, $domain)];
+        $facts = [self::facts($before, $names, $covered, $domain, $skipped['facts']), self::facts($after, $names, $covered, $domain, $skipped['facts'])];
         $rows = [];
         $id = 0;
         $nodes = [];
@@ -74,11 +78,31 @@ final class StateCompare
         $events = array_map(fn (array $event) => ['type' => $event['type'], 'category' => $event['category'], 'level' => $event['level'], 'text' => $event['text'],
             'devices' => $event['devices']] + self::detail($event, $rows), $report['events']);
 
-        $findings = self::findings(self::about($before, $domain), self::about($after, $domain));
+        $findings = self::findings(self::about($before, $domain, $skipped['checks']), self::about($after, $domain, $skipped['checks']));
         $devices = self::devices($before, $after);
 
         return ['from' => $from, 'to' => $to, 'events' => $events, 'findings' => $findings, 'devices' => $devices,
-            'names' => self::mentioned($names, $events, $findings, $devices)];
+            'names' => self::mentioned($names, $events, $findings, $devices), 'skipped' => $skipped];
+    }
+
+    /**
+     * What the two states cannot be compared on: the kinds of facts either could not read, and the checks that failed in
+     * either or were not enabled in both.
+     *
+     * @return array{facts: string[], checks: string[]}
+     */
+    private static function skipped(array $before, array $after): array
+    {
+        $checks = [(array) ($before['checks'] ?? []), (array) ($after['checks'] ?? [])];
+        $facts = array_values(array_unique(array_map('strval', [...(array) ($checks[0]['facts_failed'] ?? []), ...(array) ($checks[1]['facts_failed'] ?? [])])));
+        $enabled = [array_map('strval', (array) ($checks[0]['enabled'] ?? [])), array_map('strval', (array) ($checks[1]['enabled'] ?? []))];
+        $failed = array_map('strval', [...array_keys((array) ($checks[0]['failed'] ?? [])), ...array_keys((array) ($checks[1]['failed'] ?? []))]);
+        $notBoth = array_merge(array_diff($enabled[0], $enabled[1]), array_diff($enabled[1], $enabled[0]));
+        $checksSkipped = array_values(array_unique([...$failed, ...$notBoth]));
+        sort($facts);
+        sort($checksSkipped);
+
+        return ['facts' => $facts, 'checks' => $checksSkipped];
     }
 
     /**
@@ -166,20 +190,25 @@ final class StateCompare
      * @param  array<int, string>  $names
      * @param  array<int, true>  $covered
      * @param  array<int, true>  $domain
+     * @param  string[]  $skipped  the kinds of facts not compared
      * @return array<string, array{kind: string, key: string, device_a: ?int, device_b: ?int, data: array}>
      */
-    private static function facts(array $state, array $names, array $covered, array $domain): array
+    private static function facts(array $state, array $names, array $covered, array $domain, array $skipped = []): array
     {
         $facts = [];
+        $skip = array_fill_keys($skipped, true);
         foreach ((array) ($state['facts'] ?? []) as $hash => $fact) {
             $a = isset($fact['a']) ? (int) $fact['a'] : null;
             $b = isset($fact['b']) ? (int) $fact['b'] : null;
+            if (isset($skip[(string) ($fact['kind'] ?? '')])) {
+                continue;
+            }
             if (($a !== null && isset($covered[$a])) || ($b !== null && isset($covered[$b]))) {
                 $facts[(string) $hash] = ['kind' => (string) $fact['kind'], 'key' => (string) $fact['key'], 'device_a' => $a, 'device_b' => $b,
                     'data' => (array) $fact['data']];
             }
         }
-        foreach ((array) ($state['roots'] ?? []) as $group) {
+        foreach (isset($skip[FactCollector::STP_ROOT]) ? [] : (array) ($state['roots'] ?? []) as $group) {
             $root = (string) $group['root'];
             $owner = isset($group['root_device']) ? (int) $group['root_device'] : null;
             foreach ((array) $group['devices'] as $deviceId) {
@@ -198,15 +227,18 @@ final class StateCompare
     }
 
     /**
-     * A state's findings about one of these devices, each with its identity.
+     * A state's findings about one of these devices, each with its identity (but those of the checks not compared).
      *
      * @param  array<int, true>  $devices
+     * @param  string[]  $skipped  the checks not compared
      * @return array<string, array>
      */
-    private static function about(array $state, array $devices): array
+    private static function about(array $state, array $devices, array $skipped = []): array
     {
-        return array_filter((array) ($state['findings'] ?? []), fn ($finding) => (bool) array_intersect_key(array_flip(array_map('intval', (array) ($finding['devices'] ?? []))),
-            $devices));
+        $skip = array_fill_keys($skipped, true);
+
+        return array_filter((array) ($state['findings'] ?? []), fn ($finding) => ! isset($skip[(string) ($finding['analysis'] ?? '')])
+            && (bool) array_intersect_key(array_flip(array_map('intval', (array) ($finding['devices'] ?? []))), $devices));
     }
 
     /**
