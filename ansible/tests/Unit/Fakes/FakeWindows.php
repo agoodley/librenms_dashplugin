@@ -40,4 +40,15 @@ final class FakeWindows implements MaintenanceWindows
 
         return true;
     }
+
+    public function setDevices(int $id, array $deviceIds, string $notes): bool
+    {
+        if (! isset($this->windows[$id])) {
+            return false;
+        }
+        $this->windows[$id]['devices'] = array_values($deviceIds);
+        $this->windows[$id]['notes'] = $notes;
+
+        return true;
+    }
 }

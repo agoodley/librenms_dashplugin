@@ -48,7 +48,6 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
             Route::post('changes', [ChangeController::class, 'store'])->name('changes.store');
             Route::post('changes/{id}/dry-run', [ChangeController::class, 'dryRun'])->whereNumber('id')->name('changes.dry-run');
             Route::post('changes/{id}/apply', [ChangeController::class, 'apply'])->whereNumber('id')->name('changes.apply');
-            Route::post('changes/{id}/continue', [ChangeController::class, 'resume'])->whereNumber('id')->name('changes.continue');
             Route::post('changes/{id}/stop', [ChangeController::class, 'stop'])->whereNumber('id')->name('changes.stop');
             Route::post('changes/{id}/cancel', [ChangeController::class, 'cancel'])->whereNumber('id')->name('changes.cancel');
             Route::post('runs/{id}/stop', [RunController::class, 'stop'])->whereNumber('id')->name('runs.stop');
@@ -59,6 +58,13 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
             Route::post('changes/{id}/approve', [ChangeController::class, 'approve'])->whereNumber('id')->name('changes.approve');
             Route::post('changes/{id}/reject', [ChangeController::class, 'reject'])->whereNumber('id')->name('changes.reject');
         });
+
+        // accepting a batch's new blast radius needs the approve permission, or the run permission while the settings ask
+        // for no approval: the controller checks which
+        Route::post('changes/{id}/accept-blast', [ChangeController::class, 'acceptBlast'])->whereNumber('id')->name('changes.accept-blast');
+        // continuing a paused change needs the run permission; a batch whose blast radius cannot be computed, what accepting
+        // a new blast radius needs (the controller checks which)
+        Route::post('changes/{id}/continue', [ChangeController::class, 'resume'])->whereNumber('id')->name('changes.continue');
     });
 
 // The inventory the runner pulls (contrib/librenms_inventory.py): read only, a LibreNMS API token (X-Auth-Token

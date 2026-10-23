@@ -30,6 +30,9 @@ final class FakeChangeRunner implements ChangeRunner
     /** @var array<int, string> user id => why they may not run or approve */
     public array $userProblems = [];
 
+    /** @var array<string, string> "user_id:permission" => why that user may not use that permission (any other: as $userProblems) */
+    public array $permissionProblems = [];
+
     /** @var array<int, int> device => run that changed it since the dry run */
     public array $changed = [];
 
@@ -224,7 +227,7 @@ final class FakeChangeRunner implements ChangeRunner
 
     public function userProblem(int $userId, string $permission): ?string
     {
-        return $this->userProblems[$userId] ?? null;
+        return $this->permissionProblems["$userId:$permission"] ?? $this->userProblems[$userId] ?? null;
     }
 
     public function changedSince(array $deviceIds, int $since, int $changeId): array

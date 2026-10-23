@@ -64,6 +64,81 @@ final class ApprovalRules
     }
 
     /**
+     * The permission accepting a batch's new blast radius needs (it grew since the change was approved or made, so the
+     * batch does not start): the approve permission while the settings ask for an approval, as for the approval itself;
+     * the run permission while they ask for none, as for Continue, so that a team without approvers is not stuck.
+     *
+     * @return string 'approve' or 'run'
+     */
+    public static function acceptPermission(string $mode): string
+    {
+        return $mode === self::OFF ? 'run' : 'approve';
+    }
+
+    /**
+     * Who accepts a batch's new blast radius, in words.
+     */
+    public static function accepter(string $mode): string
+    {
+        return match ($mode) {
+            self::OFF => 'an admin with the run permission',
+            self::SECOND => 'an admin with the approve permission (not the requester)',
+            default => 'an admin with the approve permission',
+        };
+    }
+
+    /**
+     * Why the user may not accept the new blast radius of a change's batch now; null when they may: an admin holding
+     * the permission acceptPermission() names, and not the requester when the settings ask for a second admin.
+     *
+     * @param  array{status: string, waiting?: ?string, user_id: int|string|null}  $change
+     * @param  bool  $holds  the user is an admin holding that permission
+     */
+    public static function acceptRefusal(string $mode, array $change, int $userId, bool $holds): ?string
+    {
+        if (! $holds) {
+            return self::acceptPermission($mode) === 'run'
+                ? 'Accepting a new blast radius needs the Ansible plugin\'s run permission (ansible.run) while the settings ask for no approval: an admin grants it on the plugin\'s settings page.'
+                : 'Accepting a new blast radius needs the Ansible plugin\'s approve permission (ansible.approve): an admin grants it on the plugin\'s settings page.';
+        }
+        if ($change['status'] !== ChangeStatus::PAUSED || ($change['waiting'] ?? null) !== 'blast') {
+            return 'Only a change whose batch waits because its blast radius grew can have the new blast radius accepted.';
+        }
+        if ($mode === self::SECOND && $change['user_id'] !== null && (int) $change['user_id'] === $userId) {
+            return 'The settings need a second admin: you requested this change, so another admin with the approve permission accepts its new blast radius.';
+        }
+
+        return null;
+    }
+
+    /**
+     * Why the user may not continue a batch whose blast radius cannot be computed (a Continue goes without one when it
+     * still cannot be computed); null when they may. It is a decision on a blast radius like an acceptance, and follows
+     * the same rule: the permission acceptPermission() names (an approver while the settings ask for an approval, an
+     * admin with the run permission while they ask for none), and not the requester when the settings ask for a second
+     * admin.
+     *
+     * @param  array{user_id: int|string|null}  $change
+     * @param  bool  $holds  the user is an admin holding that permission
+     */
+    public static function continueRefusal(string $mode, array $change, int $userId, bool $holds): ?string
+    {
+        // the requester never may while the settings ask for a second admin, whatever they hold: said first (a permission granted
+        // would not let them)
+        if ($mode === self::SECOND && $change['user_id'] !== null && (int) $change['user_id'] === $userId) {
+            return 'The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.';
+        }
+        if (! $holds) {
+            return self::acceptPermission($mode) === 'run'
+                ? 'Continuing a batch whose blast radius cannot be computed needs the Ansible plugin\'s run permission (ansible.run): an admin grants it on the plugin\'s settings page.'
+                : 'While the settings ask for an approval, continuing a batch whose blast radius cannot be computed needs the Ansible plugin\'s approve permission '
+                    . '(ansible.approve), as accepting a new blast radius does: an admin grants it on the plugin\'s settings page.';
+        }
+
+        return null;
+    }
+
+    /**
      * Why the change's approval does not count now; null when it does (or none is needed).
      *
      * @param  array{user_id: int|string|null, approved_user_id: int|string|null, approved_at: ?string}  $change

@@ -49,7 +49,7 @@ class SettingsController extends Controller
         }
         $result = PluginSettings::fromInput($input, $before, $groups, $users);
         $anchor = array_key_exists('inventory_user', $input) && count($input) === 1 ? 'ans-inventory-user'
-            : (in_array($request->input('section'), ['ans-changes-form', 'ans-backups-form'], true) ? (string) $request->input('section') : 'ans-settings-form');
+            : (in_array($request->input('section'), ['ans-changes-form', 'ans-backups-form', 'ans-topology-form'], true) ? (string) $request->input('section') : 'ans-settings-form');
         if ($result['settings'] === null) {
             return $this->back($anchor)->with('ansible_errors', $result['errors'])->with('ansible_old_settings', $input);
         }
@@ -204,12 +204,15 @@ class SettingsController extends Controller
             return $this->back($section)->with('ansible_status', $action === 'grant' ? "{$user['username']} already holds the $what permission." : "{$user['username']} does not hold the $what permission.");
         }
         $by = (string) $request->user()->username;
-        $can = $permission === Access::APPROVE ? 'approve and reject changes' : 'create, dry-run, apply and stop changes, and stop runs';
+        $can = $permission === Access::APPROVE ? 'approve and reject changes, accept the new blast radius of a batch that grew, and continue one whose blast radius '
+            . 'cannot be computed (while the settings ask for an approval)' : 'create, dry-run, apply and stop changes, and stop runs';
         if ($action === 'grant') {
             $name = (string) $repository->grant($userId, $permission);
             $this->audit(AuditText::permissionGranted($by, $name, $permission));
 
-            return $this->back($section)->with('ansible_status', "$name may now $can.");
+            return $this->back($section)->with('ansible_status', "$name may now $can."
+                . ($permission === Access::APPROVE ? '' : " While Approval is off, $name may also accept the new blast radius of a batch that grew, and continue one "
+                    . 'whose blast radius cannot be computed.'));
         }
         $name = (string) $repository->revoke($userId, $permission);
         $this->audit(AuditText::permissionRevoked($by, $name, $permission));

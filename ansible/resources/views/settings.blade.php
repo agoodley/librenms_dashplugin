@@ -11,8 +11,8 @@
     $errors_ = session('ansible_errors', []);
     // the part the admin saved: the page returns to its anchor, and shows the answer there
     $section = (string) session('ansible_section', '');
-    $section = in_array($section, ['ans-connection-form', 'ans-inventory-user', 'ans-settings-form', 'ans-changes-form', 'ans-backups-form', 'ans-permission',
-        'ans-approve-permission'], true) ? $section : '';
+    $section = in_array($section, ['ans-connection-form', 'ans-inventory-user', 'ans-settings-form', 'ans-changes-form', 'ans-backups-form', 'ans-topology-form',
+        'ans-permission', 'ans-approve-permission'], true) ? $section : '';
     $invalid = fn (string $key) => isset($errors_[$key]) ? ' ans-invalid' : '';
     $describedBy = fn (string $key) => isset($errors_[$key]) ? new \Illuminate\Support\HtmlString('aria-invalid="true" aria-describedby="ans-error-' . e($key) . '"') : '';
     $fieldError = fn (string $key) => isset($errors_[$key])
@@ -51,6 +51,21 @@
         ['maintenance_behavior', 'Maintenance behavior', 'what LibreNMS does with the alerts of the devices in the window'],
         ['maintenance_minutes', 'Expected batch time (minutes)', 'the window\'s end when it opens; the plugin moves it while the batch runs. Also how long a batch waits for the secret answers (at least 15 min)'],
         ['settle_minutes', 'Settle time (minutes)', 'the window closes this long after its batch ended (for polling and alerts to settle)'],
+    ];
+    // phase 3: the rollout plan and the blast radius from the topology plugin
+    $topologyFields = [
+        ['topology_plan', 'Plan with the topology plugin', 'a new change plans its batches with the topology plugin\'s rollout planner (farthest from the core first, the core last, never '
+            . 'two devices that back each other up in one batch, within the batch size, the first batch taken from its first one) and approves what each batch cuts off; '
+            . 'off, or without the topology plugin, the settings above plan them and the blast radius is unknown'],
+        ['blast_grew', 'When the blast radius grew', 'before each batch and right before its launch its blast radius is computed again: when it would cut off devices that '
+            . 'were not approved (a redundant link went down since), or now takes down every core device of its part (approved with one left standing), the batch does '
+            . 'not start, and the change waits for an admin to accept the new one (recorded): one with the approve permission (not the requester with a second admin), or '
+            . 'with the run permission while Approval is off; or the change ends'],
+        ['blast_unknown', 'When the blast radius cannot be computed', 'the topology plugin disabled, an error, or a device of the batch it can no longer tell about (down '
+            . 'in LibreNMS, its LLDP/CDP neighbors gone): the batch does not start; it is checked again every minute and starts on its own once its blast radius can be '
+            . 'computed. Meanwhile an admin may continue it, as one accepts a new blast radius (with the approve permission, not the requester with a second admin; '
+            . 'with the run permission while Approval is off): Continue computes it first, and only while it still cannot be computed does the batch go without one '
+            . '(recorded; its window then covers the devices approved or accepted as cut off). Or the change ends'],
     ];
 @endphp
 
@@ -278,7 +293,10 @@
 
     @foreach([['ans-changes-form', 'Changes', $changeFields, 'How a change is approved and applied: its dry run, its approval and its batches. A change keeps the batch plan it was created with.', 'ans-changes-save'],
         ['ans-backups-form', 'Backups and maintenance windows', $backupFields, ($a['oxidized'] ? 'LibreNMS uses Oxidized: the plugin asks it for a backup before and after each batch.'
-            : 'LibreNMS does not use Oxidized now (oxidized.enabled, oxidized.url): no backups are made, whatever is set here.') . ' The maintenance windows are LibreNMS\' own (Alerts, Maintenance).', 'ans-backups-save']]
+            : 'LibreNMS does not use Oxidized now (oxidized.enabled, oxidized.url): no backups are made, whatever is set here.') . ' The maintenance windows are LibreNMS\' own (Alerts, Maintenance).', 'ans-backups-save'],
+        ['ans-topology-form', 'Rollout plan and blast radius', $topologyFields, ($a['topology'] === null ? 'The topology plugin is installed, enabled and offers its planning API (version '
+            . $a['topologyApi'] . '): new changes can be planned with it, and each batch\'s maintenance window also covers the devices it cuts off.'
+            : 'The topology plugin cannot plan now: ' . $a['topology'] . '. New changes are planned by the settings above, and their blast radius is unknown.'), 'ans-topology-save']]
         as [$formId, $legend, $fields, $intro, $saveId])
         <form method="post" action="{{ route('ansible.settings.runs') }}" id="{{ $formId }}">
             @csrf
@@ -289,6 +307,11 @@
                     @include('ansible::partials.settings-answer', ['failed' => 'Nothing was saved:'])
                 @endif
                 <p class="help-block">{{ $intro }} Saved by the plugin; each change goes to the eventlog.</p>
+                @if($formId === 'ans-topology-form' && $a['topology'] !== 'the topology plugin is not installed')
+                    <p class="help-block" id="ans-topology-links">The core the plans are measured from is the topology plugin's
+                        <a href="{{ url('plugin/settings/topology') }}">Core devices</a> setting (empty: it guesses the core, and the plans say so); its
+                        <a href="{{ url('plugin/topology/rollout') }}">Rollout Planner</a> shows what it would plan.</p>
+                @endif
                 @foreach($fields as [$name, $label, $help])
                     <div class="form-group row">
                         <label class="col-sm-4 control-label" for="ans-setting-{{ $name }}" style="font-weight: normal">{{ $label }}</label>
@@ -320,8 +343,9 @@
             @if($section === 'ans-permission')
                 @include('ansible::partials.settings-answer', ['failed' => 'Nothing was changed:'])
             @endif
-            <p class="help-block">LibreNMS admins see the changes, the runs and the inventory; to create, dry-run, apply and stop changes (and stop runs) they also need this permission
-                (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::PERMISSION }}</span>). It is given to each user directly:
+            <p class="help-block">LibreNMS admins see the changes, the runs and the inventory; to create, dry-run, apply, continue and stop changes (and stop runs) they also need this permission
+                (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::PERMISSION }}</span>). While Approval is off, they also accept with it the new blast radius
+                of a batch that grew, and continue one whose blast radius cannot be computed. It is given to each user directly:
                 LibreNMS' role editor keeps only its own permissions, so a role would lose it the next time it is saved. Any LibreNMS admin can
                 grant it, also to themselves: it is an explicit opt-in, written to the eventlog with who granted or revoked it, not a separation
                 of duties between admins.</p>
@@ -366,8 +390,11 @@
                 @include('ansible::partials.settings-answer', ['failed' => 'Nothing was changed:'])
             @endif
             <p class="help-block">To approve or reject a change after its verified dry run, a LibreNMS admin needs this permission
-                (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::APPROVE }}</span>), given to each user directly like the run permission and written to the eventlog.
-                With "an approval from a second admin" (Changes, above) the requester of a change can never approve it, whoever holds this permission.</p>
+                (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::APPROVE }}</span>), given to each user directly like the run permission and written to the eventlog;
+                while an approval is asked for, also to accept the new blast radius of a batch that grew since the approval, and to continue one whose blast radius
+                cannot be computed (an approver without the run permission launches nothing: the batch starts as the admin who started it).
+                With "an approval from a second admin" (Changes, above) the requester of a change can never approve it, accept its new blast radius or continue it without one,
+                whoever holds this permission.</p>
             <table class="table table-condensed ans-table" id="ans-approve-holders" style="max-width: 700px">
                 <thead><tr><th>User</th><th>Name</th><th></th></tr></thead>
                 <tbody>

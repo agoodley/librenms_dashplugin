@@ -69,7 +69,8 @@ final class MemoryChangeStore implements ChangeStore
         }
         foreach ($plan->batches as $index => $devices) {
             $this->batches[$id][$index + 1] = ['change_id' => $id, 'number' => $index + 1, 'status' => 'pending', 'run_id' => null, 'failures' => 0,
-                'started_at' => null, 'ended_at' => null, 'note' => null, 'user_id' => null, 'username' => null];
+                'started_at' => null, 'ended_at' => null, 'note' => null, 'user_id' => null, 'username' => null, 'blast' => null, 'blast_accepted' => null,
+                'blast_override' => null];
         }
 
         return $id;
@@ -152,7 +153,7 @@ final class MemoryChangeStore implements ChangeStore
     {
         $id = count($this->windows) + 1;
         $this->windows[$id] = ['opened_at' => Clock::store($row['opened_at']), 'ends_at' => Clock::store($row['ends_at']), 'closed_at' => null, 'closing' => false,
-            'error' => null] + $row;
+            'error' => null, 'cut_off' => ($row['cut_off'] ?? []) ? array_values($row['cut_off']) : null] + $row;
 
         return $id;
     }

@@ -36,11 +36,19 @@
         $approvalText = [\Agoodley\LibrenmsAnsible\Changes\ApprovalRules::OFF => 'then, as the settings ask for no approval, applied',
             \Agoodley\LibrenmsAnsible\Changes\ApprovalRules::SECOND => 'approved by a second admin (not the requester) with the approve permission, then applied'][$changeSettings->approval]
             ?? 'approved by an admin with the approve permission, then applied';
-        $around = array_filter([$changeSettings->maintenance ? 'in a LibreNMS maintenance window' : null,
+        $around = array_filter([$changeSettings->maintenance ? 'in a LibreNMS maintenance window' . ($topologyWhy === null ? ' that also covers the devices it cuts off' : '') : null,
             $changeSettings->backups && $oxidized ? 'with Oxidized backups before and after it' : null]);
     @endphp
     <p class="ans-help" style="margin: 0 0 6px" id="ans-new-change-intro">A change is dry-run first (<span class="ans-code">--check --diff</span>, with the diff per device),
-        {{ $approvalText }} in batches ({{ $planText }}){{ $around ? ', each batch ' . implode(', ', $around) : '' }}.</p>
+        {{ $approvalText }} in batches ({{ $planText }}){{ $around ? ', each batch ' . implode(', ', $around) : '' }}.
+        @if($topologyWhy === null)
+            <span id="ans-new-change-topology">The topology plugin plans the batches: farthest from the core first, the core last, never two devices that back each other up in one
+                batch, the first batch taken from its first one; the preview shows what each batch cuts off while it runs, which is approved with the change and checked again
+                before the batch starts.</span>
+        @else
+            <span id="ans-new-change-no-topology">The topology plugin does not plan the batches ({{ $topologyWhy }}): the blast radius of each batch is unknown.</span>
+        @endif
+    </p>
 
     @if($prefill)
         <div class="alert alert-info" id="ans-prefill-note"><i class="fa fa-copy"></i> A new change from
@@ -102,7 +110,7 @@
             <div class="alert alert-info" style="margin-top: 8px; padding: 6px 10px"><i class="fa fa-info-circle"></i> {{ $template->name }} {{ $note }}.</div>
         @endforeach
 
-        <h4 class="ans-step"><span class="badge">2</span> Targets <small class="text-muted">at most {{ $maxTargets }} per change · tick "first" to choose the first batch (the canary)</small></h4>
+        <h4 class="ans-step"><span class="badge">2</span> Targets <small class="text-muted">at most {{ $maxTargets }} per change · tick "first" to choose the first batch (the canary){{ $topologyWhy === null ? ', among the devices of the planner\'s first batch' : '' }}</small></h4>
         <div class="ans-filterbar" id="ans-target-filters">
             <label>Device group
                 <select class="form-control" id="ans-filter-group">
@@ -193,9 +201,11 @@
                 'template' => $template->id,
                 'requestToken' => $requestToken,
                 'device' => $device,
-                'prefill' => $prefill !== null ? ['devices' => $prefill['devices'], 'canary' => $prefill['canary']] : null,
+                'prefill' => $prefill !== null ? ['devices' => $prefill['devices'], 'canary' => $prefill['canary'], 'unplanned' => $prefill['unplanned'] ?? 'leave'] : null,
                 'maxTargets' => $maxTargets,
                 'deviceUrl' => url('device'),
+                // the topology plugin plans the batches (the first batch comes from its first one)
+                'topology' => $topologyWhy === null,
             ];
         @endphp
         {{-- @json() splits its argument on commas: it gets one variable --}}

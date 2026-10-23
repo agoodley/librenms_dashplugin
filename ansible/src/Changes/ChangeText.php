@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsAnsible\Changes;
 
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Support\Clock;
+use Agoodley\LibrenmsAnsible\Support\Format;
 
 /**
  * Texts the plugin writes about a change outside its page: the eventlog of each target and the change's timeline.
@@ -152,8 +153,213 @@ final class ChangeText
             'canary' => 'for an admin to continue after the first batch',
             'secrets' => 'for an admin to enter the secret answers again (the plugin never keeps them)'
                 . ($until !== null ? ' until ' . Clock::text($until) . ', then the change ends' : ''),
+            'blast' => 'for an approver to accept its new blast radius (it grew since the approval)',
+            'blast_unknown' => 'for an admin to continue it without a blast radius (it cannot be computed now)',
             default => 'until ' . ($until !== null ? Clock::text($until) : 'the pause ends') . ' (pause between batches)',
         };
+    }
+
+    /**
+     * What a batch's blast radius is held to, in words: [since when, its name]: since an admin accepted it ("accepted"),
+     * since the approval ("approved"), or, for a change applied without an approval, since the change was made
+     * ("planned").
+     *
+     * @param  array{approved_at?: ?string}  $change
+     * @return array{0: string, 1: string}
+     */
+    public static function held(array $change, bool $accepted): array
+    {
+        return match (true) {
+            $accepted => ['it was accepted', 'accepted'],
+            ($change['approved_at'] ?? null) !== null => ['the approval', 'approved'],
+            default => ['the change was made', 'planned'],
+        };
+    }
+
+    /** What a blast radius measured from the largest piece left takes down, after what it cuts off. */
+    public const LARGEST_PART = ', measured from the largest piece left (it takes down every core device of its part)';
+
+    /** A batch that now takes down every core device of its part, while it was held to leave one standing. */
+    private const CORE_LOST = 'it now takes down every core device of its part, so what it cuts off is measured from the largest piece left';
+
+    /**
+     * How a blast radius grew, in words: "it would now also cut off lab-sw5", "it now takes down every core device of its
+     * part, so what it cuts off is measured from the largest piece left[, and it would also cut off lab-sw5]".
+     *
+     * @param  string  $added  the devices it cuts off now that it was not held to, in words ("" for none)
+     */
+    public static function grewText(string $added, bool $coreLost): string
+    {
+        return match (true) {
+            $coreLost && $added !== '' => self::CORE_LOST . ', and it would also cut off ' . UntrustedText::line($added, 400),
+            $coreLost => self::CORE_LOST,
+            default => 'it would now also cut off ' . UntrustedText::line($added, 400),
+        };
+    }
+
+    /**
+     * grewText() in counts, for the eventlog: "it would now cut off 2 more devices than approved".
+     */
+    public static function grewCount(int $added, bool $coreLost, string $word): string
+    {
+        $more = 'cut off ' . Format::count($added, 'more device', 'more devices') . " than $word";
+
+        return match (true) {
+            $coreLost && $added > 0 => self::CORE_LOST . ", and it would $more",
+            $coreLost => self::CORE_LOST,
+            default => "it would now $more",
+        };
+    }
+
+    /**
+     * A batch's blast radius grew since the approval (or the acceptance, or the change was made): it does not start.
+     *
+     * @param  string  $added  the devices it cuts off now that it was not held to, in words ("" for none: it now takes down every core device of its part)
+     * @param  string  $held  what it was held to cut off, in words
+     * @param  bool  $accepted  the blast radius it is held to was accepted by an admin since
+     * @param  string  $accepter  who accepts the new one (ApprovalRules::accepter())
+     * @param  bool  $coreLost  it now takes down every core device of its part, while it was held to leave one standing
+     */
+    public static function blastGrew(array $change, int $batch, string $added, string $held, bool $refused, bool $accepted = false,
+        string $accepter = 'an admin with the approve permission', bool $coreLost = false): string
+    {
+        [$since, $word] = self::held($change, $accepted);
+
+        return self::name($change) . ", batch $batch: its blast radius grew since $since: " . self::grewText($added, $coreLost)
+            . " ($word: " . UntrustedText::line($held, 300) . '). '
+            . ($refused ? 'The batch is refused (setting When the blast radius grew: refuse the batch).'
+                : "The batch does not start until $accepter accepts the new blast radius.");
+    }
+
+    /**
+     * A batch's blast radius cannot be computed now: it does not start.
+     */
+    public static function blastUnknown(array $change, int $batch, string $why, bool $refused): string
+    {
+        return self::name($change) . ", batch $batch: its blast radius cannot be computed now (" . UntrustedText::line($why, 300) . '). '
+            . ($refused ? 'The batch is refused (setting When the blast radius cannot be computed: refuse the batch).'
+                : 'The batch does not start until its blast radius can be computed again (checked every minute), or an admin continues it, without one '
+                    . 'if it still cannot be computed.');
+    }
+
+    /**
+     * A batch's blast radius shrank since the approval (or the acceptance, or the change was made): it goes on.
+     */
+    public static function blastShrank(array $change, int $batch, string $removed, bool $accepted = false): string
+    {
+        return self::name($change) . ", batch $batch: its blast radius shrank since " . self::held($change, $accepted)[0] . ': it no longer cuts off '
+            . UntrustedText::line($removed, 400);
+    }
+
+    /**
+     * An approver accepted a batch's new blast radius.
+     *
+     * @param  string  $lost  what it cuts off now, in words
+     */
+    public static function blastAccepted(array $change, int $batch, string $by, string $lost, string $comment): string
+    {
+        return self::name($change) . ", batch $batch: its new blast radius accepted by " . self::user($by) . ': it cuts off ' . UntrustedText::line($lost, 400)
+            . self::comment($comment);
+    }
+
+    /**
+     * An admin continued a batch whose blast radius cannot be computed.
+     *
+     * @param  string  $covered  the devices approved as cut off, which its window covers, in words
+     */
+    public static function blastOverride(array $change, int $batch, string $by, string $why, string $covered, bool $accepted = false): string
+    {
+        return self::name($change) . ", batch $batch: continued by " . self::user($by) . ' without a blast radius (it cannot be computed: ' . UntrustedText::line($why, 300)
+            . '); its maintenance window covers its devices and the devices ' . self::coveredWord($change, $accepted) . ' as cut off: ' . UntrustedText::line($covered, 300);
+    }
+
+    /**
+     * What the window of a batch continued without a blast radius covers, in words: "approved" (or "planned"), and
+     * "or accepted" once a new blast radius was accepted (it covers both).
+     */
+    private static function coveredWord(array $change, bool $accepted): string
+    {
+        return self::held($change, false)[1] . ($accepted ? ' or accepted' : '');
+    }
+
+    // ------------------------------------------------------------------ the eventlog of phase 3: no other device named
+    // LibreNMS shows a device's eventlog to whoever may see that device: its entries say what happened in counts, with the
+    // change and batch numbers, and never name another device (the change page, its timeline and the window's notes do)
+
+    /**
+     * Devices in words, by their count: "2 devices and 3 unmanaged neighbors", "no other monitored device".
+     */
+    public static function devicesCount(int $devices, int $unmanaged = 0): string
+    {
+        $text = $devices > 0 ? Format::count($devices, 'device') : 'no other monitored device';
+
+        return $text . ($unmanaged > 0 ? ($devices > 0 ? ' and ' : ', and ') . Format::count($unmanaged, 'unmanaged neighbor') : '');
+    }
+
+    /**
+     * Eventlog entry of a batch whose blast radius grew: it does not start.
+     *
+     * @param  int  $added  the devices it would now cut off that it was not held to
+     * @param  int  $lost  the monitored devices it would cut off in all
+     * @param  bool  $coreLost  as for blastGrew()
+     */
+    public static function blastGrewEvent(array $change, int $batch, int $added, int $lost, int $unmanaged, bool $refused, bool $accepted, string $accepter,
+        bool $coreLost = false): string
+    {
+        [$since, $word] = self::held($change, $accepted);
+
+        return self::name($change) . ", batch $batch: its blast radius grew since $since: " . self::grewCount($added, $coreLost, $word)
+            . ' (' . self::devicesCount($lost, $unmanaged) . ' in all). '
+            . ($refused ? 'The batch is refused (setting When the blast radius grew: refuse the batch).'
+                : "The batch does not start until $accepter accepts the new blast radius.");
+    }
+
+    /**
+     * Eventlog entry of a batch whose blast radius shrank: it goes on.
+     */
+    public static function blastShrankEvent(array $change, int $batch, int $removed, bool $accepted): string
+    {
+        return self::name($change) . ", batch $batch: its blast radius shrank since " . self::held($change, $accepted)[0] . ': it cuts off '
+            . Format::count($removed, 'device fewer', 'devices fewer') . '; it goes on';
+    }
+
+    /**
+     * Eventlog entry of an admin's acceptance of a batch's new blast radius.
+     */
+    public static function blastAcceptedEvent(array $change, int $batch, string $by, int $lost, int $unmanaged, string $comment): string
+    {
+        return self::name($change) . ", batch $batch: its new blast radius accepted by " . self::user($by) . ': it cuts off ' . self::devicesCount($lost, $unmanaged)
+            . self::comment($comment);
+    }
+
+    /**
+     * Eventlog entry of an admin's decision to continue a batch whose blast radius cannot be computed.
+     *
+     * @param  int  $covered  the devices approved (or accepted) as cut off, which its window covers
+     */
+    public static function blastOverrideEvent(array $change, int $batch, string $by, string $why, int $covered, bool $accepted): string
+    {
+        return self::name($change) . ", batch $batch: continued by " . self::user($by) . ' without a blast radius (it cannot be computed: ' . UntrustedText::line($why, 300)
+            . '); its maintenance window covers its devices and ' . ($covered > 0 ? 'the ' . Format::count($covered, 'device') . ' ' . self::coveredWord($change, $accepted)
+                . ' as cut off' : 'no other device');
+    }
+
+    /**
+     * Eventlog entry of a device a batch cuts off, when the batch's maintenance window starts to cover it (it names the
+     * batch by its number only).
+     */
+    public static function windowCutOff(array $change, int $batch, int $scheduleId, int $until): string
+    {
+        return self::name($change) . ", batch $batch cuts this device off from the core while it runs: maintenance window #$scheduleId covers it until "
+            . Clock::text($until);
+    }
+
+    /**
+     * Eventlog entry of a device a batch no longer cuts off, taken out of its window before the batch's launch.
+     */
+    public static function windowUncovered(array $change, int $batch, int $scheduleId): string
+    {
+        return self::name($change) . ", batch $batch: maintenance window #$scheduleId no longer covers this device: the batch no longer cuts it off";
     }
 
     /**
@@ -260,15 +466,19 @@ final class ChangeText
     }
 
     /**
-     * The notes of a batch's maintenance window: who opened it, why, and where to look.
+     * The notes of a batch's maintenance window: who opened it, why, the batch's devices and those it cuts off, and
+     * where to look.
      *
      * @param  string[]  $devices  the batch's devices (display names)
+     * @param  string[]  $cutOff  the monitored devices the batch cuts off, which the window covers too (display names)
      */
-    public static function windowNotes(array $change, int $batch, int $batches, array $devices, string $url): string
+    public static function windowNotes(array $change, int $batch, int $batches, array $devices, string $url, array $cutOff = []): string
     {
         return 'Opened by the LibreNMS Ansible plugin for ' . self::name($change) . ", batch $batch of $batches (template "
             . self::quote($change['template_name']) . ', requested by ' . self::user($change['username']) . '): '
             . UntrustedText::line(implode(', ', array_slice($devices, 0, 20)), 600) . (count($devices) > 20 ? ', ...' : '')
+            . ($cutOff ? '. Also the devices the batch cuts off (no path to the core while it runs): '
+                . UntrustedText::line(implode(', ', array_slice($cutOff, 0, 20)), 600) . (count($cutOff) > 20 ? ', ...' : '') : '')
             . ". The plugin closes it after the batch. $url";
     }
 

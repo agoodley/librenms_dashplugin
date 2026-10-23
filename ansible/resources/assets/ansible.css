@@ -32,7 +32,9 @@
 .ans-refusal { color: #b85c00; font-size: 12px; }
 .ans-step { margin: 18px 0 8px; font-size: 16px; }
 .ans-step .badge { background: #1f6fb2; margin-right: 6px; }
-.ans-help { margin: 2px 0 0; font-size: 12px; color: #6c757d; }
+.ans-help { margin: 2px 0 0; font-size: 12px; }
+/* a help text that warns (text-warning, text-danger) keeps the warning's colour, in light and dark mode: only the others are grey */
+.ans-help:not(.text-warning, .text-danger, .text-success) { color: #6c757d; }
 .ans-error-text { color: #c0392b; font-size: 12px; margin-top: 2px; }
 .ans-targets-wrap { max-height: 460px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; }
 .ans-targets-wrap table { margin-bottom: 0; }
@@ -53,6 +55,13 @@
 .ans-settings .form-control.ans-invalid { border-color: #c0392b; box-shadow: inset 0 1px 1px rgba(0, 0, 0, .075), 0 0 0 1px rgba(192, 57, 43, .35); }
 .ans-test-result { margin-top: 10px; }
 .ans-warning-loud { border: 2px solid #c0392b; background: #fbeeec; color: #5a1a13; padding: 8px 10px; border-radius: 4px; font-weight: 600; margin: 8px 0; }
+/* links in it: readable on its background (the default link blue is not, 4.0:1) */
+.ans-warning-loud a:not(.btn) { color: #8a1c10; text-decoration: underline; }
+/* phase 3: a device a batch would now cut off that was not approved */
+.ans-warning-loud a.ans-blast-added { font-weight: 700; }
+/* muted and help texts at 4.5:1 at least on LibreNMS' light panels and their headings (#777 is 4.48:1 on white) */
+.ans-page .text-muted { color: #6c757d; }
+.ans-page .panel-heading .ans-help:not(.text-warning, .text-danger, .text-success) { color: #5f666d; }
 .ans-device-panel .panel-heading .pull-right .btn { margin-left: 4px; }
 .ans-device-panel .ans-device-runs { margin-bottom: 0; border: 0; }
 .ans-device-panel .ans-device-runs.table-responsive > .table > thead > tr > th,
@@ -103,7 +112,7 @@
 html.dark .ans-filterbar { background: #24272c; border-color: #3a3f45; }
 html.dark .ans-filterbar label, html.dark .ans-card h4 { color: #b0b8be; }
 html.dark .ans-card { background: #1d2024; border-color: #3a3f45; }
-html.dark .ans-card p, html.dark .ans-muted, html.dark .ans-help, html.dark .ans-page .text-muted, html.dark .ans-device-panel .text-muted,
+html.dark .ans-card p, html.dark .ans-muted, html.dark .ans-help:not(.text-warning, .text-danger, .text-success), html.dark .ans-page .text-muted, html.dark .ans-device-panel .text-muted,
 html.dark .ans-settings .text-muted, html.dark .ans-settings .help-block { color: #b0b8be; }
 html.dark .ans-refusal { color: #f0a35e; }
 html.dark .ans-error-text, html.dark .ans-settings .ans-field-error { color: #f08a80; }
@@ -113,6 +122,10 @@ html.dark .ans-targets-wrap thead th { background: #2a2e33; }
 html.dark .ans-targets tr.ans-refused td { color: #8f979e; }
 html.dark .ans-targets tr.ans-selected td { background: rgba(110, 168, 222, 0.16); }
 html.dark .ans-warning-loud { background: #3a1f1c; border-color: #f08a80; color: #f6d5d1; }
+html.dark .ans-warning-loud a:not(.btn) { color: #ffd2cc; }
+/* LibreNMS' dark red text (#ee5f5b) is 3.9:1 on a panel: the plugin's own, as its errors */
+html.dark .ans-page .text-danger { color: #f08a80; }
+html.dark .ans-page .panel-heading .ans-help:not(.text-warning, .text-danger, .text-success) { color: #b0b8be; }
 html.dark .ans-log { background: #111214; color: #d8dade; }
 html.dark .ans-page .alert-warning, html.dark .ans-settings .alert-warning { color: #2b1a00; }
 /* LibreNMS' dark alerts are saturated colours with white text (2.1-3.3:1): dark text on all of them, as on the warning */

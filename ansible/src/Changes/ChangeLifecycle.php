@@ -9,6 +9,7 @@ use Agoodley\LibrenmsAnsible\Runs\RunResults;
 use Agoodley\LibrenmsAnsible\Runs\RunStatus;
 use Agoodley\LibrenmsAnsible\Runs\RunStore;
 use Agoodley\LibrenmsAnsible\Support\Clock;
+use Agoodley\LibrenmsAnsible\Support\Format;
 
 /**
  * The life of a change, as transitions on a ChangeStore: users start the dry run, approve or reject, apply, continue
@@ -31,6 +32,13 @@ use Agoodley\LibrenmsAnsible\Support\Clock;
  *   admin after the first batch, for the secret answers (never kept), or a pause.
  * - Stop stops the running batch (phase 1's stop and hold) and cancels the rest. Windows the plugin opened are always
  *   closed and backups it asked for always recorded, whatever the change's end.
+ * - A change planned by the topology plugin (RolloutPlan) carries each batch's approved blast radius. Before a batch
+ *   starts, and again right before its launch, its blast radius is computed again on the network as it is then (as the
+ *   admin who starts it sees it): when it grew (devices would be cut off that were not approved, or accepted since), the
+ *   batch does not start and the change pauses until an approver accepts the new one (or ends, as set); when it cannot
+ *   be computed, the batch does not start either, until an admin continues it without one (or the change ends); when it
+ *   shrank, the batch goes on and the timeline says so. The batch's maintenance window covers its devices and the
+ *   monitored devices it cuts off, as last computed.
  *
  * Every write of the change's row is a compare-and-set on its version, and only the request whose write succeeded
  * writes the rest (batches, events); a batch's run has a one-time token, so it is launched once at most. The callers
@@ -55,6 +63,15 @@ final class ChangeLifecycle
      * (in its memory) launches it with them within seconds, and then it never waited.
      */
     public const SECRETS_ANNOUNCE = 30;
+
+    /**
+     * Seconds between two checks of a batch whose blast radius could not be computed (the page's poll and the sync command
+     * check it again: once it can be computed, the batch starts as any).
+     */
+    public const BLAST_RECHECK = 60;
+
+    /** Why an acceptance, or a Continue without a blast radius, given for a check the batch no longer has is refused. */
+    public const SEEN_CHANGED = 'The blast radius of the batch changed since you loaded the page: look again.';
 
     /** A target's record of what the inventory endpoint served the runner (InventoryGuard), cleared when its dry run or batch begins. */
     private const UNSERVED = ['served_hash' => null, 'served_at' => null, 'served_note' => null];
@@ -88,6 +105,7 @@ final class ChangeLifecycle
         private readonly MaintenanceWindows $windows,
         private readonly EventSink $events,
         private readonly ChangeSettings $settings,
+        private readonly ?Topology $topology = null,
     ) {
     }
 
@@ -230,6 +248,62 @@ final class ChangeLifecycle
     }
 
     /**
+     * Accept the new blast radius of a batch that does not start because it grew since the approval (or since the change
+     * was made, without one): an admin with the approve permission (not the requester when the settings ask for a second
+     * admin), or, while the settings ask for no approval, with the run permission (ApprovalRules::acceptPermission())
+     * accepts what it cuts off now, which the batch is held to from then on, and the batch starts again (its blast radius
+     * computed once more). It accepts the blast radius the change page showed ($seen: BlastRadius::checkId() of the
+     * check it showed): when the batch's blast radius changed since (another admin accepted it, the batch started again
+     * and grew once more), the acceptance is refused. Null when it was accepted, else why not.
+     *
+     * @param  array{user_id: int, username: string}  $user
+     * @param  bool  $holds  the user is an admin holding the permission the settings ask for
+     */
+    public function acceptBlast(int $id, array $user, bool $holds, string $comment, int $now, string $seen = ''): ?string
+    {
+        $change = $this->changes->find($id);
+        if ($change === null) {
+            return 'There is no such change.';
+        }
+        $refusal = ApprovalRules::acceptRefusal($this->settings->approval, $change, (int) $user['user_id'], $holds);
+        if ($refusal !== null) {
+            return $refusal;
+        }
+        $number = (int) $change['current_batch'];
+        $blast = $this->changes->batches($id)[$number]['blast'] ?? null;
+        if (! is_array($blast) || ($blast['state'] ?? null) !== 'grew') {
+            return 'Batch ' . $number . ' has no new blast radius to accept: reload the page.';
+        }
+        if (! hash_equals(BlastRadius::checkId($blast, $id, $number), $seen)) {
+            return self::SEEN_CHANGED;
+        }
+        $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]);
+        if ($resumed === null) {
+            return 'The change changed meanwhile: reload the page.';
+        }
+        $comment = self::comment($comment);
+        // what it cuts off now; while a device of the batch is skipped (what depends on it is unknown), also what the batch was held to:
+        // the check's window. An acceptance never drops a device the batch was held to without the blast radius that says so
+        $lost = array_values(array_unique(array_map('intval', (array) (empty($blast['unplanned']) ? ($blast['lost'] ?? []) : ($blast['window'] ?? $blast['lost'] ?? [])))));
+        $previous = $this->changes->batches($id)[$number]['blast_accepted'] ?? null;
+        $all = array_values(array_unique([...array_map('intval', (array) (is_array($previous) ? ($previous['all'] ?? $previous['lost'] ?? []) : [])), ...$lost]));
+        $reference = ($blast['reference'] ?? 'core') === 'largest part' ? 'largest part' : 'core';
+        $this->changes->updateBatch($id, $number, ['blast_accepted' => ['lost' => $lost, 'all' => $all, 'unmanaged' => (int) ($blast['unmanaged'] ?? 0), 'reference' => $reference,
+            'added' => array_values(array_map('intval', (array) ($blast['added'] ?? []))), 'by' => mb_substr($user['username'], 0, 255),
+            'user_id' => (int) $user['user_id'], 'at' => Clock::store($now), 'comment' => $comment]]);
+        $text = ChangeText::blastAccepted($resumed, $number, $user['username'], BlastRadius::text(['lost' => $lost, 'unmanaged' => (int) ($blast['unmanaged'] ?? 0)],
+            $this->blastNames($resumed, $number)) . ($reference === 'largest part' ? ChangeText::LARGEST_PART : ''), $comment);
+        $this->timeline($resumed, 'blast', $text, $user['username'], $now);
+        // the eventlog of each target counts the devices: it names no other device
+        $this->eventAll($resumed, ChangeText::blastAcceptedEvent($resumed, $number, $user['username'], count($lost), (int) ($blast['unmanaged'] ?? 0), $comment),
+            'notice', $user['username']);
+        // started as the admin who started it before (who applied the change or continued it to this batch)
+        $this->startBatch($resumed, $number, $this->starter($resumed, $number), null, $now);
+
+        return null;
+    }
+
+    /**
      * Apply a change that is ready (verified dry run, approved when needed): everything is checked again, then the first
      * batch starts. Null when it started, else why not.
      *
@@ -340,13 +414,19 @@ final class ChangeLifecycle
     }
 
     /**
-     * Continue a paused change: the next batch after the first one or a pause, or the prepared batch with the secret
-     * answers. Null when it continued, else why not.
+     * Continue a paused change: the next batch after the first one or a pause, the prepared batch with the secret
+     * answers, or the batch whose blast radius could not be computed (by whom an acceptance may be given:
+     * ApprovalRules::continueRefusal(); an approver without the run permission starts it as the admin who started it
+     * before, as an acceptance does): computed first, it starts as any once it can be,
+     * and goes without one (recorded) only while it still cannot; such a Continue names the check the change page
+     * showed ($seen, as for acceptBlast()), and is refused when it changed since, also when the check it makes then
+     * finds another reason or another window than the page showed (kept for the page to show). A batch whose blast
+     * radius grew is not continued: an admin accepts the new one (acceptBlast()). Null when it continued, else why not.
      *
      * @param  array{user_id: int, username: string}  $user
      * @param  array<string, string>  $secrets
      */
-    public function resume(int $id, array $user, #[\SensitiveParameter] array $secrets, int $now): ?string
+    public function resume(int $id, array $user, #[\SensitiveParameter] array $secrets, int $now, string $seen = ''): ?string
     {
         $change = $this->changes->find($id);
         if ($change === null) {
@@ -355,30 +435,66 @@ final class ChangeLifecycle
         if ($change['status'] !== ChangeStatus::PAUSED) {
             return 'Only a paused change can be continued.';
         }
+        $batch = (int) $change['current_batch'];
+        if ($change['waiting'] === 'blast') {
+            return "Batch $batch waits for an admin with the approve permission to accept its new blast radius (it grew since the approval): it does not start "
+                . 'before. Stop the change rather than run it with a blast radius nobody approved.';
+        }
+        $unknown = $change['waiting'] === 'blast_unknown';
         $problem = $this->runner->userProblem((int) $user['user_id'], 'run');
-        if ($problem !== null) {
+        if ($unknown) {
+            // a decision on a blast radius, as an acceptance: an approver while the settings ask for an approval (never the requester with
+            // a second admin), an admin with the run permission while they ask for none
+            $mode = $this->settings->approval;
+            $refusal = ApprovalRules::continueRefusal($mode, $change, (int) $user['user_id'],
+                $this->runner->userProblem((int) $user['user_id'], ApprovalRules::acceptPermission($mode)) === null);
+            if ($refusal !== null) {
+                return $refusal;
+            }
+            $record = $this->changes->batches($id)[$batch]['blast'] ?? null;
+            if (! is_array($record) || ! hash_equals(BlastRadius::checkId($record, $id, $batch), $seen)) {
+                return self::SEEN_CHANGED;
+            }
+        } elseif ($problem !== null) {
             return 'You may not continue the change: ' . $problem . '.';
         }
-        $batch = (int) $change['current_batch'];
-        $missing = self::missingSecrets($change, $secrets);
+        // who launches the batch: the admin who continues it, with the secret answers given now; an approver without the run permission
+        // launches nothing: the batch starts as the admin who started it before, as after an acceptance (the template's secret answers,
+        // if any, are then asked for at its launch)
+        $launcher = $problem === null ? $user : $this->starter($change, $batch);
+        $given = $problem === null ? $secrets : null;
+        // the batch the change waits to start again (with the secret answers, or without a blast radius), else the next one
+        $again = in_array($change['waiting'], ['secrets', 'blast_unknown'], true);
+        $missing = $given === null ? [] : self::missingSecrets($change, $given);
         if ($missing) {
             // nothing changes: a batch that waits for them keeps waiting (its window open, its backups taken)
             return $change['waiting'] === 'secrets'
                 ? self::secretsText($missing, "to launch batch $batch") . ' The batch keeps waiting for them until '
                     . ($change['resume_at'] !== null ? Clock::show(self::at($change['resume_at']), 'Y-m-d H:i T') : 'its deadline') . '.'
-                : self::secretsText($missing, 'to continue with batch ' . ($batch + 1));
+                : self::secretsText($missing, 'to continue with batch ' . ($again ? $batch : $batch + 1));
+        }
+        // a batch whose blast radius could not be computed: computed first, as the admin who continues it sees the network. Still not:
+        // it goes without one only for what the page showed; another reason, or another window, is shown first (look again)
+        $failure = null;
+        if ($change['waiting'] === 'blast_unknown') {
+            $failure = $this->blastProbe($change, $batch, $user, $now);
+            if ($failure !== null && ! hash_equals(BlastRadius::checkId($failure, $id, $batch), $seen)) {
+                $this->changes->updateBatch($id, $batch, ['blast' => $failure]);
+
+                return self::SEEN_CHANGED;
+            }
         }
         // a device of the batch busy in another run (or held after a stop) would fail it: refused now, the change keeps waiting
         // (checked and the change moved under the lock of the launches, as at the apply)
-        $next = $change['waiting'] === 'secrets' ? $batch : $batch + 1;
+        $next = $again ? $batch : $batch + 1;
         $resumed = null;
-        $refusal = $this->runner->exclusive(function () use ($change, $batch, $next, &$resumed): ?string {
+        $refusal = $this->runner->exclusive(function () use ($change, $batch, $next, $again, &$resumed): ?string {
             $busy = $this->busyRefusal($change, $next, 'the change keeps waiting; continue it');
             if ($busy !== null) {
                 return $busy;
             }
             $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]
-                + ($change['waiting'] === 'secrets' ? [] : ['current_batch' => $batch + 1]));
+                + ($again ? [] : ['current_batch' => $batch + 1]));
 
             return $resumed === null ? 'The change changed meanwhile: reload the page.' : null;
         });
@@ -387,6 +503,31 @@ final class ChangeLifecycle
         }
         if ($change['waiting'] === 'secrets') {
             $this->launchBatch($resumed, $batch, $user, $secrets, $now);
+
+            return null;
+        }
+        if ($change['waiting'] === 'blast_unknown') {
+            $row = $this->changes->batches($id)[$batch] ?? [];
+            // it can be computed now (the cause was fixed): the batch starts as any, checked against its blast radius
+            if ($failure === null) {
+                $this->timeline($resumed, 'blast', "Batch $batch: its blast radius can be computed again; continued by " . UntrustedText::line($user['username'], 60) . '.',
+                    $user['username'], $now);
+                $this->startBatch($resumed, $batch, $launcher, $given, $now);
+
+                return null;
+            }
+            // the admin's explicit decision, recorded on the batch: while its blast radius still cannot be computed, it goes on with
+            // its window covering its devices and the devices approved (or accepted) as cut off (with what it cuts off now as far as
+            // the topology plugin can tell: never more, as a blast radius that grew waits for its acceptance first)
+            $this->changes->updateBatch($id, $batch, ['blast_override' => ['by' => mb_substr($user['username'], 0, 255), 'user_id' => (int) $user['user_id'],
+                'at' => Clock::store($now), 'why' => (string) $failure['error']]]);
+            $window = array_values(array_map('intval', (array) $failure['window']));
+            $text = ChangeText::blastOverride($resumed, $batch, $user['username'], (string) $failure['error'],
+                BlastRadius::listText($window, (array) ($failure['names'] ?? []) + $this->blastNames($resumed, $batch)), is_array($row['blast_accepted'] ?? null));
+            $this->timeline($resumed, 'blast', $text, $user['username'], $now);
+            $this->eventAll($resumed, ChangeText::blastOverrideEvent($resumed, $batch, $user['username'], (string) $failure['event_error'], count($window),
+                is_array($row['blast_accepted'] ?? null)), 'warning', $user['username']);
+            $this->startBatch($resumed, $batch, $launcher, $given, $now);
 
             return null;
         }
@@ -762,8 +903,9 @@ final class ChangeLifecycle
     {
         $problem = $this->dryRunProblem($change, $now) ?? $this->approvalProblem($change, $now);
         if ($problem !== null) {
-            $this->finish($change, ChangeStatus::FAILED, 'while it waited before batch ' . ((int) $change['current_batch'] + ($change['waiting'] === 'secrets' ? 0 : 1))
-                . ", $problem", $now);
+            // the batch it waits to start: the current one again (secret answers, a blast radius), else the next one
+            $again = in_array($change['waiting'], ['secrets', 'blast', 'blast_unknown'], true);
+            $this->finish($change, ChangeStatus::FAILED, 'while it waited before batch ' . ((int) $change['current_batch'] + ($again ? 0 : 1)) . ", $problem", $now);
 
             return;
         }
@@ -782,6 +924,11 @@ final class ChangeLifecycle
                 $this->changes->updateBatch((int) $change['id'], $number, ['note' => 'until ' . Clock::text($deadline) . ', then the change ends']);
                 $this->timeline($change, 'apply', ChangeText::waiting($change, $number, 'secrets', $deadline), null, $now);
             }
+
+            return;
+        }
+        if ($change['waiting'] === 'blast_unknown') {
+            $this->blastRecheck($change, $now);
 
             return;
         }
@@ -863,11 +1010,16 @@ final class ChangeLifecycle
 
             return;
         }
+        // its blast radius on the network as it is now, against the one approved (or accepted) for it: what its window covers
+        $cutOff = $this->blastCheck($change, $number, $user, $now, false);
+        if ($cutOff === null) {
+            return; // it does not start: the change paused or ended
+        }
         $devices = $this->batchDevices($change, $number);
         $this->changes->updateBatch($id, $number, ['status' => 'preparing', 'started_at' => Clock::store($now), 'user_id' => (int) $user['user_id'],
             'username' => mb_substr($user['username'], 0, 255), 'note' => null]);
         if ($this->settings->maintenance) {
-            $error = $this->openWindow($change, $number, $devices, $now);
+            $error = $this->openWindow($change, $number, $devices, $cutOff, $now);
             if ($error !== null) {
                 $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($error, 500)]);
                 $this->finish($change, ChangeStatus::FAILED, "the maintenance window of batch $number could not be opened: $error", $now);
@@ -895,9 +1047,11 @@ final class ChangeLifecycle
     {
         $id = (int) $change['id'];
         $devices = $this->batchDevices($change, $number);
-        // a window never opened for it (one an admin removed in LibreNMS meanwhile is not opened again)
-        if ($this->settings->maintenance && ! array_filter($this->changes->windows($id), fn (array $window) => (int) $window['batch'] === $number)) {
-            $error = $this->openWindow($change, $number, $devices, $now);
+        // a window never opened for this start of the batch (one an admin removed in LibreNMS meanwhile is not opened again),
+        // on the devices its blast check said it cuts off
+        $batch = $this->changes->batches($id)[$number] ?? [];
+        if ($this->settings->maintenance && ! $this->startedWindow($id, $number, $batch)) {
+            $error = $this->openWindow($change, $number, $devices, self::windowCutOff($batch), $now);
             if ($error !== null) {
                 $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($error, 500)]);
                 $this->finish($change, ChangeStatus::FAILED, "the maintenance window of batch $number could not be opened: $error", $now);
@@ -923,10 +1077,18 @@ final class ChangeLifecycle
      */
     private function starter(array $change, int $number): array
     {
-        $batch = $this->changes->batches((int) $change['id'])[$number] ?? null;
+        return self::startedBy($change, $this->changes->batches((int) $change['id'])[$number] ?? []);
+    }
 
-        return $batch !== null && ($batch['user_id'] ?? null) !== null
-            ? ['user_id' => (int) $batch['user_id'], 'username' => (string) $batch['username']] : $this->applier($change);
+    /**
+     * Who starts the batch $batch (its row): the admin who continued the change to it, else who applied the change.
+     *
+     * @return array{user_id: int, username: string}
+     */
+    public static function startedBy(array $change, array $batch): array
+    {
+        return ($batch['user_id'] ?? null) !== null ? ['user_id' => (int) $batch['user_id'], 'username' => (string) $batch['username']]
+            : ['user_id' => (int) ($change['applied_user_id'] ?? 0), 'username' => (string) ($change['applied_by'] ?? '')];
     }
 
     /**
@@ -996,6 +1158,21 @@ final class ChangeLifecycle
 
             return;
         }
+        // its blast radius again, on the network as it is now: a batch that would cut off more than was approved does not launch,
+        // and its window covers what it cuts off now
+        $cutOff = $this->blastCheck($change, $number, $user, $now, true);
+        if ($cutOff === null) {
+            return; // it does not launch: the change paused (its window closed) or ended
+        }
+        if ($this->settings->maintenance) {
+            $error = $this->coverWindow($change, $number, $cutOff, $now);
+            if ($error !== null) {
+                $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($error, 500)]);
+                $this->finish($change, ChangeStatus::FAILED, "batch $number was not launched: its maintenance window could not cover what it cuts off: $error", $now);
+
+                return;
+            }
+        }
         if (! empty($change['has_secrets']) && $secrets === null) {
             // its window is open and its backups taken: it waits at most the expected time of a batch, then the change ends;
             // the wait is said in the timeline only once it is real (paused())
@@ -1041,8 +1218,8 @@ final class ChangeLifecycle
         if ($run !== null && $run['status'] === RunStatus::NOT_LAUNCHED) {
             return; // recorded, then kept from the runner (a stop came at the last moment): its end is taken in at the next step
         }
-        $this->timeline($change, 'batch', ChangeText::batchLaunched($change, $number, (int) $change['batch_count'], (int) $result['run_id'], $user['username']),
-            $user['username'], $now);
+        $this->timeline($change, 'batch', ChangeText::batchLaunched($change, $number, (int) $change['batch_count'], (int) $result['run_id'], $user['username'])
+            . $this->launchedBlast($change, $number), $user['username'], $now);
         // a stop recorded while the runner was asked (after the last check): the task it just got is stopped at once
         $current = $this->changes->find($id);
         if ($current !== null && self::stopAsked($current)) {
@@ -1069,7 +1246,7 @@ final class ChangeLifecycle
             if (Fingerprint::of($parts) !== $expected) {
                 $what = Fingerprint::differences((array) ($change['fingerprint_parts'] ?? []), $parts);
 
-                return 'the template changed in the runner since the dry run' . ($what ? ' (' . implode(', ', $what) . ')' : '') . ': its approval no longer counts';
+                return self::differsText($what) . ': its approval no longer counts';
             }
             $moved = Connections::differences($recorded, $connections, self::displays($targets));
 
@@ -1300,7 +1477,7 @@ final class ChangeLifecycle
      * End a change: its remaining batches are cancelled, the windows of batches that never ran close now, the eventlog
      * of every target says how it ended.
      */
-    private function finish(array $change, string $status, ?string $reason, int $now, ?string $user = null): void
+    private function finish(array $change, string $status, ?string $reason, int $now, ?string $user = null, ?string $eventReason = null): void
     {
         $id = (int) $change['id'];
         $current = $this->changes->find($id) ?? $change;
@@ -1324,7 +1501,8 @@ final class ChangeLifecycle
             }
         }
         $this->timeline($done, $status, ChangeText::outcome($status, $reason !== null ? UntrustedText::line($reason, 1000) : null), null, $now);
-        $this->eventAll($done, ChangeText::finished($done, $status, $reason), match ($status) {
+        // the eventlog of each target gets the reason without other devices' names, when it has them ($eventReason)
+        $this->eventAll($done, ChangeText::finished($done, $status, $eventReason ?? $reason), match ($status) {
             ChangeStatus::APPLIED => 'ok',
             ChangeStatus::FAILED => 'error',
             default => 'warning',
@@ -1441,7 +1619,21 @@ final class ChangeLifecycle
         }
         $what = Fingerprint::differences((array) ($change['fingerprint_parts'] ?? []), $parts);
 
-        return ['changed' => 'the template changed in the runner since the dry run' . ($what ? ' (' . implode(', ', $what) . ')' : '')];
+        return ['changed' => self::differsText($what)];
+    }
+
+    /**
+     * What differs from the dry run, in words: the template in the runner, or only what the change itself keeps (its
+     * targets, answers, batch plan with what each batch cuts off, how the runner reached the targets), which the plugin
+     * never alters after the dry run.
+     *
+     * @param  string[]  $what  Fingerprint::differences()
+     */
+    private static function differsText(array $what): string
+    {
+        $own = $what && ! array_diff($what, ['the targets', 'the answers', 'the batch plan', 'how the runner reaches the targets']);
+
+        return ($own ? 'the change is no longer what was dry-run' : 'the template changed in the runner since the dry run') . ($what ? ' (' . implode(', ', $what) . ')' : '');
     }
 
     /**
@@ -1626,35 +1818,443 @@ final class ChangeLifecycle
         $this->eventAll($void, ChangeText::approvalVoid($void, $reason), 'warning', $user);
     }
 
+    // ------------------------------------------------------------------ blast radius
+
+    /**
+     * The blast radius of batch $number on the network as it is now (as $user, who starts the batch, sees it), against
+     * the one it is held to: the one approved with the change, or the one an approver accepted since. Before the batch
+     * starts ($atLaunch false) and again right before its launch. It grew: the batch does not start (blastStop()). It
+     * cannot be computed (the topology plugin cannot answer, or can no longer tell what depends on a device of the
+     * batch it could tell about when the change was made): the batch does not start either, unless an admin continued
+     * it without one. It shrank: it goes on, and the timeline says so. A plan of the plugin's settings has no blast
+     * radius: its batches go as in phase 2.
+     *
+     * @param  array{user_id: int, username: string}  $user
+     * @return int[]|null the monitored devices the batch's window covers besides its own devices (what it cuts off now;
+     *                    when an admin went on without a blast radius, what was approved or accepted as cut off and what
+     *                    it cuts off now as far as the topology plugin can tell); null when it does not go on
+     */
+    private function blastCheck(array $change, int $number, array $user, int $now, bool $atLaunch): ?array
+    {
+        $plan = $change['plan'] ?? null;
+        if (! BatchPlan::isTopology($plan)) {
+            return []; // planned by the plugin's settings: its blast radius is unknown (the change's page says so)
+        }
+        $id = (int) $change['id'];
+        if (BatchPlan::topologyOf($plan, $number) === null) {
+            $why = 'the blast radius approved with the change cannot be read';
+            $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => $why]);
+            $this->finish($change, ChangeStatus::FAILED, "batch $number was not started: $why", $now);
+
+            return null;
+        }
+        $batch = $this->changes->batches($id)[$number] ?? [];
+        $record = $this->blastNow($change, $number, $batch, $user, $now);
+        if ($record['state'] === 'grew') {
+            $this->blastStop($change, $number, 'blast', $record, $user, $now);
+
+            return null;
+        }
+        if ($record['state'] === 'unknown') {
+            if (is_array($batch['blast_override'] ?? null)) {
+                // an admin continued it without a blast radius (the timeline and the eventlog have the decision): its window
+                // covers what was approved (or accepted) as cut off, and what it cuts off now as far as that can be computed
+                $this->changes->updateBatch($id, $number, ['blast' => ['state' => 'override'] + $record]);
+
+                return $record['window'];
+            }
+            $this->blastStop($change, $number, 'blast_unknown', $record, $user, $now);
+
+            return null;
+        }
+        $previous = $batch['blast'] ?? null;
+        $this->changes->updateBatch($id, $number, ['blast' => $record]);
+        if ($record['removed'] && ! ($atLaunch && is_array($previous) && ($previous['removed'] ?? null) == $record['removed'])) {
+            // said once: not again right before the launch when its start said the same
+            $text = ChangeText::blastShrank($change, $number, BlastRadius::listText($record['removed'], $record['names']), $record['accepted']);
+            $this->timeline($change, 'blast', $text . ($atLaunch ? ' (right before its launch)' : '') . '; it goes on.', null, $now);
+            $event = ChangeText::blastShrankEvent($change, $number, count($record['removed']), $record['accepted']);
+            foreach ($this->batchDevices($change, $number) as $deviceId) {
+                $this->events->write($event, $deviceId, 'info', ChangeText::reference($id), $user['username']);
+            }
+        }
+
+        return $record['lost'];
+    }
+
+    /**
+     * The blast radius of batch $number computed now, as $user sees the network, against the one the batch is held to:
+     * the check kept on the batch. Its state: "grew" (it would cut off a monitored device it is not held to, or it now
+     * takes down every core device of its part while it was held to leave one standing: core_lost), "unknown"
+     * (the topology plugin cannot answer, or can no longer tell what depends on a device of the batch it could tell
+     * about when the change was made: BlastRadius::unplanned(), named with the reason in its error), "shrank" or
+     * "same"; a blast radius that grew is said so first, also while a device is skipped (an approver accepts it, then
+     * the batch waits for an admin's decision to go on without a blast radius). Its window: what the batch's window
+     * covers besides the batch's devices if the batch goes on (when the blast radius cannot be computed, or a device of
+     * the batch is skipped: what the batch is held to cut off, what was approved and everything accepted since, and what
+     * it cuts off now as far as the topology plugin can tell). Its error names devices, for the change page and its
+     * timeline; its event_error counts them, for the eventlog.
+     *
+     * @param  array<string, mixed>  $batch  the batch's row
+     * @param  array{user_id: int, username: string}  $user
+     * @return array<string, mixed>
+     */
+    private function blastNow(array $change, int $number, array $batch, array $user, int $now): array
+    {
+        $held = self::heldOf($change, $number, $batch);
+        $heldReference = self::heldReferenceOf($change, $number, $batch);
+        // what a window covers when the blast radius cannot be computed: what the batch is held to, what was approved and everything
+        // accepted since (an acceptance never makes it cover less than that), then what it cuts off now as far as that can be computed
+        $covered = array_values(array_unique([...$held, ...array_map('intval', BatchPlan::topologyOf($change['plan'] ?? null, $number)['lost'] ?? []),
+            ...array_map('intval', (array) ($batch['blast_accepted']['all'] ?? $batch['blast_accepted']['lost'] ?? []))]));
+        $base = ['held' => $held, 'held_reference' => $heldReference, 'accepted' => is_array($batch['blast_accepted'] ?? null), 'at' => Clock::store($now)];
+        $this->beat();
+        try {
+            if ($this->topology === null) {
+                throw new TopologyError('the topology plugin is not available to this plugin');
+            }
+            $answer = BlastRadius::fromApi($this->topology->blastRadius($this->batchDevices($change, $number), (int) $user['user_id']));
+        } catch (LockLost $e) {
+            throw $e;
+        } catch (TopologyError|\InvalidArgumentException $e) {
+            $why = self::blastError($e);
+
+            return ['state' => 'unknown', 'error' => $why, 'event_error' => $why, 'lost' => $held, 'window' => $covered] + $base;
+        }
+        $blast = $answer['blast'];
+        // a batch held to leave a core device of its part standing that now takes them all down grew, whatever it cuts off (that is
+        // measured from the largest piece left then, not from the core)
+        $diff = BlastRadius::compare($held, $blast['lost'], $heldReference, $blast['reference']);
+        $unplanned = BlastRadius::unplanned(BatchPlan::topologyOf($change['plan'] ?? null, $number)['skipped'] ?? [], $blast['skipped']);
+        $mentioned = array_unique([...$blast['lost'], ...$diff['removed'], ...array_column($blast['skipped'], 'device_id')]);
+        $record = $blast + ['state' => $diff['added'] || $diff['core_lost'] ? 'grew' : ($unplanned ? 'unknown' : ($diff['removed'] ? 'shrank' : 'same')),
+            'added' => $diff['added'], 'removed' => $diff['removed'], 'core_lost' => $diff['core_lost'], 'unplanned' => $unplanned,
+            'window' => $unplanned ? array_values(array_unique([...$covered, ...$blast['lost']])) : $blast['lost'],
+            'names' => array_intersect_key($answer['names'] + $this->blastNames($change, $number), array_flip($mentioned))] + $base;
+        if ($unplanned) {
+            // what depends on them is not in what it cuts off: the batch's blast radius cannot be computed (even when it shrank)
+            $record['error'] = 'the topology plugin can no longer tell what depends on ' . RolloutPlan::reasonsText($unplanned, $record['names']);
+            $record['event_error'] = 'the topology plugin can no longer tell what depends on ' . Format::count(count($unplanned), 'device') . ' of the batch ('
+                . implode(', ', array_unique(array_map(fn (array $entry) => TopologyPlan::reasonText($entry['reason']), $unplanned))) . ')';
+        }
+
+        return $record;
+    }
+
+    /**
+     * Why a blast radius cannot be computed, in words.
+     */
+    private static function blastError(TopologyError|\InvalidArgumentException $e): string
+    {
+        return UntrustedText::line($e instanceof TopologyError ? $e->getMessage() : 'the topology plugin\'s answer is not one: ' . $e->getMessage(), 300);
+    }
+
+    /**
+     * Can the blast radius of batch $number be computed now, as $user sees the network? Null when it can, else the check
+     * that says why not (of state "unknown": blastNow()).
+     *
+     * @param  array{user_id: int, username: string}  $user
+     * @return array<string, mixed>|null
+     */
+    private function blastProbe(array $change, int $number, array $user, int $now): ?array
+    {
+        $record = $this->blastNow($change, $number, $this->changes->batches((int) $change['id'])[$number] ?? [], $user, $now);
+
+        return $record['state'] === 'unknown' ? $record : null;
+    }
+
+    /**
+     * A change waiting because the blast radius of its batch could not be computed, checked again every BLAST_RECHECK
+     * seconds as the admin who started the batch: once it can be computed (the topology plugin enabled again), the batch
+     * starts as any, checked against its blast radius; until then the batch keeps its last check (when, why not, what its
+     * window would cover).
+     */
+    private function blastRecheck(array $change, int $now): void
+    {
+        $id = (int) $change['id'];
+        $number = (int) $change['current_batch'];
+        $batch = $this->changes->batches($id)[$number] ?? null;
+        $record = is_array($batch['blast'] ?? null) ? $batch['blast'] : [];
+        $last = self::at($record['at'] ?? null);
+        if ($batch === null || ($last !== null && $now - $last < self::BLAST_RECHECK)) {
+            return;
+        }
+        $starter = $this->starter($change, $number);
+        $failure = $this->blastProbe($change, $number, $starter, $now);
+        if ($failure !== null) {
+            // still not: the page says when it was checked last, why not, and what the batch's window would cover
+            $this->changes->updateBatch($id, $number, ['blast' => $failure]);
+
+            return;
+        }
+        $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]);
+        if ($resumed === null) {
+            return;
+        }
+        $this->timeline($resumed, 'blast', "Batch $number: its blast radius can be computed again: the batch starts.", null, $now);
+        $this->startBatch($resumed, $number, $starter, null, $now);
+    }
+
+    /**
+     * What a batch launched now cuts off while it runs, for its line in the timeline ("" for a plan of the settings).
+     */
+    private function launchedBlast(array $change, int $number): string
+    {
+        $approved = BatchPlan::topologyOf($change['plan'] ?? null, $number);
+        if ($approved === null) {
+            return '';
+        }
+        if ($approved['hand']) {
+            return ': planned by hand, nothing tells what depends on its devices';
+        }
+        $record = $this->changes->batches((int) $change['id'])[$number]['blast'] ?? null;
+        if (! is_array($record)) {
+            return '';
+        }
+        $names = $this->blastNames($change, $number);
+        if (($record['state'] ?? null) === 'override') {
+            return ': its blast radius unknown (continued without one), its window covers ' . BlastRadius::listText(array_map('intval', (array) ($record['window'] ?? [])), $names, 10, 'its devices only');
+        }
+
+        return ': while it runs it cuts off ' . BlastRadius::text(['lost' => array_map('intval', (array) ($record['lost'] ?? [])), 'unmanaged' => (int) ($record['unmanaged'] ?? 0)], $names);
+    }
+
+    /**
+     * A batch that does not start because its blast radius grew ($waiting "blast") or cannot be computed ("blast_unknown"):
+     * the change ends (the settings refuse such a batch), or pauses until an approver accepts the new blast radius, or an
+     * admin continues without one. A window opened for this start closes now: when the batch starts again, it opens one
+     * on what the batch cuts off then, and asks for fresh backups.
+     *
+     * @param  array<string, mixed>  $record  the blast radius computed now (or why it cannot be), kept on the batch
+     * @param  array{user_id: int, username: string}  $user  who starts the batch (it is started as them again)
+     */
+    private function blastStop(array $change, int $number, string $waiting, array $record, array $user, int $now): void
+    {
+        $id = (int) $change['id'];
+        $grew = $waiting === 'blast';
+        $refuse = $grew ? $this->settings->refuseGrownBlast : $this->settings->refuseUnknownBlast;
+        $names = (array) ($record['names'] ?? []) + $this->blastNames($change, $number);
+        // the change page and its timeline name the devices; the eventlog of each target counts them (it names no other device)
+        if ($grew) {
+            [$since, $word] = ChangeText::held($change, ! empty($record['accepted']));
+            $added = (array) $record['added'];
+            $coreLost = ! empty($record['core_lost']);
+            $why = "its blast radius grew since $since: " . ChangeText::grewText($added ? BlastRadius::listText($added, $names) : '', $coreLost);
+            $eventWhy = "its blast radius grew since $since: " . ChangeText::grewCount(count($added), $coreLost, $word);
+            $text = ChangeText::blastGrew($change, $number, $added ? BlastRadius::listText($added, $names) : '',
+                BlastRadius::listText((array) $record['held'], $names), $refuse, ! empty($record['accepted']), ApprovalRules::accepter($this->settings->approval), $coreLost);
+            $event = ChangeText::blastGrewEvent($change, $number, count($added), count((array) ($record['lost'] ?? [])), (int) ($record['unmanaged'] ?? 0), $refuse,
+                ! empty($record['accepted']), ApprovalRules::accepter($this->settings->approval), $coreLost);
+        } else {
+            $why = 'its blast radius cannot be computed now (' . $record['error'] . ')';
+            $eventWhy = 'its blast radius cannot be computed now (' . ($record['event_error'] ?? $record['error']) . ')';
+            $text = ChangeText::blastUnknown($change, $number, (string) $record['error'], $refuse);
+            $event = ChangeText::blastUnknown($change, $number, (string) ($record['event_error'] ?? $record['error']), $refuse);
+        }
+        if ($refuse) {
+            $setting = ' (setting ' . ($grew ? 'When the blast radius grew' : 'When the blast radius cannot be computed') . ': refuse the batch)';
+            $this->changes->updateBatch($id, $number, ['status' => 'failed', 'ended_at' => Clock::store($now), 'note' => UntrustedText::line($why, 500), 'blast' => $record]);
+            $this->timeline($change, 'blast', $text, null, $now);
+            $this->finish($change, ChangeStatus::FAILED, "batch $number was not started: $why$setting", $now, null, "batch $number was not started: $eventWhy$setting");
+
+            return;
+        }
+        $paused = $this->update($change, ['status' => ChangeStatus::PAUSED, 'waiting' => $waiting, 'resume_at' => null]);
+        if ($paused === null) {
+            return;
+        }
+        $this->changes->updateBatch($id, $number, ['status' => 'pending', 'started_at' => null, 'user_id' => (int) $user['user_id'],
+            'username' => mb_substr($user['username'], 0, 255), 'note' => UntrustedText::line(ucfirst($why), 500), 'blast' => $record]);
+        foreach ($this->changes->windows($id) as $windowId => $window) {
+            if ((int) $window['batch'] === $number && $window['status'] === 'open' && empty($window['closing'])) {
+                $this->moveWindow($paused, (int) $windowId, $window, $now, $now, true);
+            }
+        }
+        $this->timeline($paused, 'blast', $text, null, $now);
+        $this->eventAll($paused, $event, 'warning', $this->batchUser($paused, $number));
+    }
+
+    /**
+     * The monitored devices batch $number is held to cut off: as an approver accepted them when its blast radius grew,
+     * else as approved with the change.
+     *
+     * @return int[]
+     */
+    private function heldLost(array $change, int $number): array
+    {
+        return self::heldOf($change, $number, $this->changes->batches((int) $change['id'])[$number] ?? []);
+    }
+
+    /**
+     * What the blast radius batch $number is held to is measured from, as accepted or approved: "core", or "largest
+     * part" (it takes every core device of its part down).
+     *
+     * @param  array<string, mixed>  $batch  the batch's row
+     */
+    private static function heldReferenceOf(array $change, int $number, array $batch): string
+    {
+        $accepted = $batch['blast_accepted'] ?? null;
+        $reference = is_array($accepted) ? ($accepted['reference'] ?? 'core') : (BatchPlan::topologyOf($change['plan'] ?? null, $number)['reference'] ?? 'core');
+
+        return $reference === 'largest part' ? 'largest part' : 'core';
+    }
+
+    /**
+     * heldLost() of the batch's row.
+     *
+     * @param  array<string, mixed>  $batch
+     * @return int[]
+     */
+    private static function heldOf(array $change, int $number, array $batch): array
+    {
+        $accepted = $batch['blast_accepted'] ?? null;
+        if (is_array($accepted)) {
+            return array_values(array_map('intval', (array) ($accepted['lost'] ?? [])));
+        }
+
+        return BatchPlan::topologyOf($change['plan'] ?? null, $number)['lost'] ?? [];
+    }
+
+    /**
+     * The names the topology plugin gave the devices it said batch $number cuts off (approved with the plan, or computed
+     * since), and the targets' own.
+     *
+     * @return array<int, string>
+     */
+    private function blastNames(array $change, int $number): array
+    {
+        $batch = $this->changes->batches((int) $change['id'])[$number] ?? [];
+
+        return (array) ($batch['blast']['names'] ?? []) + (BatchPlan::topologyPart($change['plan'] ?? null)?->names ?? [])
+            + array_filter(self::displays($this->changes->targets((int) $change['id'])));
+    }
+
+    /**
+     * The devices the window of a batch's current start covers besides its own, as its blast check said.
+     *
+     * @return int[]
+     */
+    private static function windowCutOff(array $batch): array
+    {
+        return array_values(array_map('intval', (array) ($batch['blast']['window'] ?? [])));
+    }
+
+    /**
+     * Has the current start of batch $number a window (open, or removed by an admin in LibreNMS: not opened again)? Windows of
+     * an earlier start, closed when the batch did not start, do not count.
+     */
+    private function startedWindow(int $changeId, int $number, array $batch): bool
+    {
+        $since = self::at($batch['started_at'] ?? null);
+        foreach ($this->changes->windows($changeId) as $window) {
+            if ((int) $window['batch'] === $number && self::at($window['opened_at'] ?? null) >= $since
+                && (($window['status'] === 'open' && empty($window['closing'])) || $window['status'] === 'gone')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // ------------------------------------------------------------------ maintenance windows
 
     /**
-     * Open the maintenance window of a batch; null when it is open, else why not.
+     * Open the maintenance window of a batch, on its devices and the monitored devices it cuts off; null when it is
+     * open, else why not.
      *
      * @param  int[]  $devices
+     * @param  int[]  $cutOff  the monitored devices the batch cuts off (its blast radius)
      */
-    private function openWindow(array $change, int $number, array $devices, int $now): ?string
+    private function openWindow(array $change, int $number, array $devices, array $cutOff, int $now): ?string
     {
         $id = (int) $change['id'];
         foreach ($this->changes->windows($id) as $window) {
-            if ((int) $window['batch'] === $number && $window['status'] === 'open') {
+            if ((int) $window['batch'] === $number && $window['status'] === 'open' && empty($window['closing'])) {
                 return null; // opened by an earlier attempt
             }
         }
         $targets = $this->changes->targets($id);
         $names = array_map(fn ($deviceId) => (string) (($targets[$deviceId]['display'] ?? '') ?: ($targets[$deviceId]['hostname'] ?? "#$deviceId")), $devices);
+        $cutOff = BlastRadius::cutOff($devices, $cutOff);
+        $known = $this->blastNames($change, $number);
+        $cutNames = array_map(fn (int $deviceId) => (string) ($known[$deviceId] ?? "#$deviceId"), $cutOff);
         $end = MaintenanceTimes::opening($now, $this->settings->expectedSeconds);
         $this->beat(); // a window is opened once: by the request that still holds the change
         try {
             $scheduleId = $this->windows->open(ChangeText::windowTitle($change, $number), ChangeText::windowNotes($change, $number, (int) $change['batch_count'], $names,
-                sprintf($this->settings->changeUrl, $id)), $devices, $now, $end, $this->settings->maintenanceBehavior);
+                sprintf($this->settings->changeUrl, $id), $cutNames), BlastRadius::windowDevices($devices, $cutOff), $now, $end, $this->settings->maintenanceBehavior);
         } catch (\RuntimeException $e) {
             return UntrustedText::line($e->getMessage(), 300);
         }
-        $this->changes->addWindow(['change_id' => $id, 'batch' => $number, 'schedule_id' => $scheduleId, 'status' => 'open', 'opened_at' => $now, 'ends_at' => $end]);
-        $this->timeline($change, 'window', "Maintenance window #$scheduleId opened for batch $number until " . Clock::text($end) . '.', null, $now);
+        $this->changes->addWindow(['change_id' => $id, 'batch' => $number, 'schedule_id' => $scheduleId, 'status' => 'open', 'opened_at' => $now, 'ends_at' => $end,
+            'cut_off' => $cutOff]);
+        $this->timeline($change, 'window', "Maintenance window #$scheduleId opened for batch $number until " . Clock::text($end)
+            . ($cutOff ? ', also on the devices it cuts off: ' . BlastRadius::listText($cutOff, $known) : '') . '.', null, $now);
         foreach ($devices as $deviceId) {
             $this->events->write(ChangeText::windowOpened($change, $number, $scheduleId, $end), $deviceId, 'info', ChangeText::reference($id), $this->batchUser($change, $number));
+        }
+        foreach ($cutOff as $deviceId) {
+            $this->events->write(ChangeText::windowCutOff($change, $number, $scheduleId, $end), $deviceId, 'info', ChangeText::reference($id),
+                $this->batchUser($change, $number));
+        }
+
+        return null;
+    }
+
+    /**
+     * Right before a batch's launch: its window covers its devices and the monitored devices it cuts off now (its blast
+     * radius computed again), and only those; the devices added and taken out are said in the timeline and in their
+     * eventlog. Null when it does (or the batch has no open window: maintenance windows off, or removed in LibreNMS),
+     * else why LibreNMS could not change it.
+     *
+     * @param  int[]  $cutOff
+     */
+    private function coverWindow(array $change, int $number, array $cutOff, int $now): ?string
+    {
+        $id = (int) $change['id'];
+        $devices = $this->batchDevices($change, $number);
+        $cutOff = BlastRadius::cutOff($devices, $cutOff);
+        foreach ($this->changes->windows($id) as $windowId => $window) {
+            if ((int) $window['batch'] !== $number || $window['status'] !== 'open' || ! empty($window['closing'])) {
+                continue;
+            }
+            $had = array_values(array_map('intval', (array) ($window['cut_off'] ?? [])));
+            $added = array_values(array_diff($cutOff, $had));
+            $removed = array_values(array_diff($had, $cutOff));
+            if (! $added && ! $removed) {
+                return null;
+            }
+            $known = $this->blastNames($change, $number);
+            $targets = $this->changes->targets($id);
+            $names = array_map(fn ($deviceId) => (string) (($targets[$deviceId]['display'] ?? '') ?: ($targets[$deviceId]['hostname'] ?? "#$deviceId")), $devices);
+            $this->beat();
+            try {
+                $exists = $this->windows->setDevices((int) $window['schedule_id'], BlastRadius::windowDevices($devices, $cutOff), ChangeText::windowNotes($change, $number,
+                    (int) $change['batch_count'], $names, sprintf($this->settings->changeUrl, $id), array_map(fn (int $deviceId) => (string) ($known[$deviceId] ?? "#$deviceId"), $cutOff)));
+            } catch (\RuntimeException $e) {
+                return UntrustedText::line($e->getMessage(), 300);
+            }
+            if (! $exists) {
+                $this->changes->updateWindow((int) $windowId, ['status' => 'gone', 'closed_at' => Clock::store($now)]);
+                $this->timeline($change, 'window', ChangeText::windowGone($change, $number, (int) $window['schedule_id']) . '.', null, $now);
+
+                return null;
+            }
+            $this->changes->updateWindow((int) $windowId, ['cut_off' => $cutOff]);
+            $this->timeline($change, 'window', "Maintenance window #{$window['schedule_id']} of batch $number now covers what the batch cuts off right before its launch"
+                . ($added ? ': also ' . BlastRadius::listText($added, $known) : '') . ($removed ? ($added ? '; ' : ': ') . 'no longer ' . BlastRadius::listText($removed, $known) : '') . '.',
+                null, $now);
+            $until = self::at($window['ends_at'] ?? null);
+            foreach ($added as $deviceId) {
+                $this->events->write(ChangeText::windowCutOff($change, $number, (int) $window['schedule_id'], $until), $deviceId, 'info',
+                    ChangeText::reference($id), $this->batchUser($change, $number));
+            }
+            foreach ($removed as $deviceId) {
+                $this->events->write(ChangeText::windowUncovered($change, $number, (int) $window['schedule_id']), $deviceId, 'info', ChangeText::reference($id),
+                    $this->batchUser($change, $number));
+            }
+
+            return null;
         }
 
         return null;
@@ -1699,7 +2299,8 @@ final class ChangeLifecycle
             if ($end <= $now) {
                 $this->changes->updateWindow((int) $windowId, ['status' => 'closed', 'closed_at' => Clock::store($end)]);
                 $this->timeline($change, 'window', "Maintenance window #{$window['schedule_id']} of batch {$window['batch']} closed.", null, $now);
-                foreach ($this->batchDevices($change, (int) $window['batch']) as $deviceId) {
+                $covered = BlastRadius::windowDevices($this->batchDevices($change, (int) $window['batch']), array_map('intval', (array) ($window['cut_off'] ?? [])));
+                foreach ($covered as $deviceId) {
                     $this->events->write(ChangeText::windowClosed($change, (int) $window['batch'], (int) $window['schedule_id'], $end), $deviceId, 'info',
                         ChangeText::reference($changeId), $this->batchUser($change, (int) $window['batch']));
                 }

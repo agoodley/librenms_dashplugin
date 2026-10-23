@@ -15,10 +15,13 @@ IS-IS, MPLS and IPsec, forwarding, ARP and 802.1X tables, syslog, transceiver se
 * **History:** [topology changes, a baseline and background checks](#topology-history-baseline-and-background-checks)
   that write to the eventlog
 * a **Topology** panel on the [device pages](#device-page)
+* a [planning API](#planning-api-for-other-plugins) other plugins plan with (the rollout plan and the blast radius)
 
 Change automation with Ansible (changes made with reviewed templates of Semaphore UI on LibreNMS devices: a proven
 dry run with the diff per device, an approval, batches that stop at the first failures, Oxidized backups and
 maintenance windows, an audit log) is a separate plugin in this repository: see [ansible/README.md](ansible/README.md).
+With this plugin it plans its batches with the rollout planner and checks what each batch cuts off before it runs,
+through the planning API.
 
 ![Layer 2 map](docs/images/l2-map.png)
 
@@ -635,6 +638,58 @@ diagnostics and changes of that device. Ports get a **Plugins** tab (see
 
 ![Device panel](docs/images/device-panel.png)
 
+## Planning API for other plugins
+
+Another LibreNMS plugin can plan with the rollout planner and the failure simulation in PHP, without reaching into the
+plugin's classes or its HTTP API: `Agoodley\LibrenmsTopology\Api\Planning` (`src/Api/Planning.php`). The
+[Ansible plugin](ansible/README.md#rollout-plan-and-blast-radius) plans its changes and checks each batch's blast
+radius with it.
+
+```php
+use Agoodley\LibrenmsTopology\Api\Planning;
+use Agoodley\LibrenmsTopology\Api\PlanningUnavailable;
+
+if (class_exists(Planning::class) && (int) Planning::VERSION === 1) {   // installed, a compatible API
+    try {
+        $planning = Planning::forUser($request->user());                 // or Planning::system() in a console command
+        $plan = $planning->rollout([12, 13, 14, 15], 5);                // batches of at most 5 devices
+        $blast = $planning->blastRadius([13]);                          // what device 13 going down cuts off
+    } catch (PlanningUnavailable $e) {
+        // the topology plugin is disabled in LibreNMS: $e->getMessage() says so
+    }
+}
+```
+
+* **`rollout(array $deviceIds, int $batchSize = 0)`** is the plan of `api/rollout` for picked devices: `batches` in the
+  order to run them (farthest from the core first, the core last, never two devices that back each other up in one
+  batch), each with its `number`, `tier` (hops from the core, 1 for a switch cabled to a core device, or `core`),
+  `devices`, `lost` (the monitored devices it cuts off from the core, switches first), `network` (how many of them are
+  switches, routers or firewalls), `unmanaged` (how many unmanaged neighbors go down with it), `reference` (`core`, or
+  `largest part` when the batch takes down every core device of its part of the network) and `simulate` (the path of
+  the L2 map with the batch failed, relative to LibreNMS' URL; null for more than 50 devices); `skipped`: the devices
+  it cannot plan, with the `reason` (`unknown`: unknown, disabled or not visible, `down`, `isolated`: no LLDP/CDP
+  neighbor, `unconnected`: no path to the core now) and its `text`; `core`: the core devices of every part of the
+  network the user sees (not only of the parts of the devices planned); `core_modes` (since 1.1): the core devices of
+  the parts of the planned devices, which their plan is measured from, each with how it was chosen: `configured` (the
+  *Core devices* setting), `stp_preferred_roots` (the designated root bridges), `stp` (the spanning tree root) or
+  `automatic` (a guess: the most central switches of its part); `names`: the name of every device of the answer.
+* **`blastRadius(array $deviceIds)`** is the failure simulation of `api/simulate` for these devices going down
+  together, on top of what is down already: `devices` (those failed), `lost`, `network`, `unmanaged` and `reference` as
+  for a batch, `skipped` (the devices it cannot tell anything about, as above: what depends on them is unknown, so it
+  is not in `lost`), `names` and `simulate`.
+* Both answer `version` and `role_hidden`: what the user's LibreNMS role may not view of the data they read (LLDP/CDP
+  links, ports); with anything there the answer is incomplete. At most 5,000 devices per call (more throw an
+  `InvalidArgumentException`); none plans nothing (never the whole network).
+* **Scope.** `forUser($user)` sees what that LibreNMS user may see, as the plugin's pages show it to them: a device
+  outside it is `unknown`, never planned, failed or named, and a link to it is an unmanaged neighbor. `system()` sees
+  every enabled device, like the topology history, and only in console commands: anywhere else it throws a
+  `LogicException`, so no web request widens what it sees this way.
+* **Availability.** `Planning::unavailable()` says why the API cannot be used now (null when it can): the plugin is
+  disabled in *Plugin Admin*; `forUser()` and `system()` throw `PlanningUnavailable` then. `VERSION` is
+  `major.minor`: the major number changes only when a method or a field changes incompatibly, the minor one when
+  something is added. One instance builds the redundancy analysis once (plan, then compute blast radii, with the same
+  one); a new instance sees the network as it is then.
+
 ## Requirements
 
 * LibreNMS 26.x (developed and tested against 26.10), PHP 8.2+
@@ -929,7 +984,8 @@ not followed, and without `routing.view` every router is crossed by an estimate 
   added up per pair of sites.
 * `src/Redundancy/RolloutPlanner.php`, `src/Redundancy/DependencyPlanner.php` – rollout batches and device dependencies
   on the graphs of the redundancy analysis (`Topology\PlanningService`, `Data\DependencyRepository`); `CoreAdvice` names
-  a switch cabled like a second core switch.
+  a switch cabled like a second core switch. `src/Api/Planning.php` – the [planning API](#planning-api-for-other-plugins)
+  of other plugins, on `PlanningService`.
 * `src/Coverage/CoverageAnalyzer.php` – the coverage report (unmonitored, unlinked and ambiguous neighbors, devices
   without neighbor data, ports with several neighbors or many MAC addresses); `Links\NeighborReports` is the index of
   which device reports which neighbor, shared with the link checks.

@@ -252,6 +252,15 @@ class RedundancyAnalyzer
     }
 
     /**
+     * Where the configured core devices come from: 'redundancy_core' (Core devices), 'stp_preferred_roots' (the
+     * designated root bridges) or null (none configured).
+     */
+    public function coreSetting(): ?string
+    {
+        return $this->coreSetting;
+    }
+
+    /**
      * Nodes of the graphs and the devices they stand for: node id => device_id (null for unmanaged
      * neighbours), name, role, managed, network, up; the copies of an end device (see build()) also
      * carry 'of', the node id of their device, which is kept here for its name but is no graph node.

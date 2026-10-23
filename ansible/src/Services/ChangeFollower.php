@@ -7,6 +7,7 @@ use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\ConfigBackups;
 use Agoodley\LibrenmsAnsible\Changes\LockLost;
 use Agoodley\LibrenmsAnsible\Changes\MaintenanceWindows;
+use Agoodley\LibrenmsAnsible\Changes\Topology;
 use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runs\RunLifecycle;
@@ -51,6 +52,7 @@ final class ChangeFollower
         private readonly Eventlog $eventlog = new Eventlog(),
         private readonly ?ConfigBackups $backups = null,
         private readonly ?MaintenanceWindows $windows = null,
+        private readonly ?Topology $topology = null,
     ) {
     }
 
@@ -62,7 +64,8 @@ final class ChangeFollower
         $url = function_exists('url') ? rtrim((string) url('plugin/ansible/changes'), '/') . '/%d' : 'plugin/ansible/changes/%d';
 
         return new ChangeLifecycle($this->changes, $this->runs, new ChangeActions($this->plugin, $this->runs, $this->changes, $this->inventory, $this->settings, $this->eventlog),
-            $this->backups ?? new OxidizedBackups(), $this->windows ?? new LibrenmsMaintenance(), $this->eventlog, $this->settings->changeSettings($url));
+            $this->backups ?? new OxidizedBackups(), $this->windows ?? new LibrenmsMaintenance(), $this->eventlog, $this->settings->changeSettings($url),
+            $this->topology ?? new TopologyPlanning());
     }
 
     /**

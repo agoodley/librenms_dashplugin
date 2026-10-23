@@ -58,11 +58,12 @@ final class SqliteSql implements Sql
             UNIQUE (`change_id`, `device_id`))');
         $this->pdo->exec('CREATE TABLE `ansible_change_batches` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `number` INTEGER NOT NULL,
             `status` TEXT NOT NULL, `run_id` INTEGER, `failures` INTEGER NOT NULL DEFAULT 0, `user_id` INTEGER, `username` TEXT, `started_at` TEXT, `ended_at` TEXT, `note` TEXT,
-            UNIQUE (`change_id`, `number`))');
+            `blast` TEXT, `blast_accepted` TEXT, `blast_override` TEXT, UNIQUE (`change_id`, `number`))');
         $this->pdo->exec('CREATE TABLE `ansible_change_approvals` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `user_id` INTEGER NOT NULL,
             `username` TEXT NOT NULL, `decision` TEXT NOT NULL, `comment` TEXT, `fingerprint` TEXT, `dry_run_id` INTEGER, `created_at` TEXT, `voided_at` TEXT, `void_reason` TEXT)');
         $this->pdo->exec('CREATE TABLE `ansible_change_windows` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `batch` INTEGER NOT NULL,
-            `schedule_id` INTEGER NOT NULL, `status` TEXT NOT NULL, `closing` INTEGER NOT NULL DEFAULT 0, `opened_at` TEXT, `ends_at` TEXT, `closed_at` TEXT, `error` TEXT)');
+            `schedule_id` INTEGER NOT NULL, `status` TEXT NOT NULL, `closing` INTEGER NOT NULL DEFAULT 0, `opened_at` TEXT, `ends_at` TEXT, `closed_at` TEXT, `error` TEXT,
+            `cut_off` TEXT)');
         $this->pdo->exec('CREATE TABLE `ansible_change_diffs` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `run_id` INTEGER NOT NULL, `device_id` INTEGER,
             `position` INTEGER NOT NULL, `task` TEXT NOT NULL DEFAULT \'\', `item` TEXT, `kind` TEXT NOT NULL, `lines` TEXT NOT NULL, `cut` INTEGER NOT NULL DEFAULT 0, `host` TEXT,
             `reason` TEXT)');

@@ -34,7 +34,15 @@
         'running' => 'running', 'done' => 'done', 'failed' => 'failed', 'stopped' => 'stopped', 'cancelled' => 'not run'];
     $waitText = ['canary' => 'waits for an admin to continue after the first batch',
         'secrets' => 'waits for the secret answers until ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?') . ' (the plugin never keeps them), then the change ends',
-        'timer' => 'pause between batches until ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?')];
+        'timer' => 'pause between batches until ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?'),
+        'blast' => 'batch ' . (int) $change['current_batch'] . ' waits for an approver to accept its new blast radius (it grew since the approval)',
+        'blast_unknown' => 'batch ' . (int) $change['current_batch'] . ' waits: its blast radius cannot be computed now (checked again every minute: the batch starts '
+            . 'once it can be); Continue computes it first, and goes without one only while it still cannot'];
+    // the blast radius of the batch the change waits for (it grew, or cannot be computed), as computed before it
+    $waitBatch = in_array($change['waiting'], ['blast', 'blast_unknown'], true) && ! $final ? ($batches[(int) $change['current_batch']] ?? null) : null;
+    $waitBlast = is_array($waitBatch['blast'] ?? null) ? $waitBatch['blast'] : null;
+    $blastNames = fn (?array $record) => (array) ($record['names'] ?? []) + ($topology?->names ?? []) + array_filter(array_map(fn ($t) => (string) ($t['display'] ?: $t['hostname']), $targets));
+    $deviceName = fn (int $id, array $names) => (string) (($names[$id] ?? '') ?: "#$id");
     $counters = ['ok', 'changed', 'unreachable', 'failed', 'skipped'];
     $variables = (array) ($change['variables'] ?? []);
     $byBatch = [];
@@ -52,14 +60,16 @@
         $currentBatch = $batches[(int) $change['current_batch']] ?? null;
         $preparing = implode(' and ', array_filter([$settings->maintenance ? 'maintenance window' : null, $settings->backups && $oxidized ? 'backups' : null]));
         $waits = ($currentBatch['status'] ?? null) === 'pending' && str_starts_with((string) ($currentBatch['note'] ?? ''), 'waits: ');
+        // a batch blocked by its blast radius (it grew, or cannot be computed) waits: it is not about to start
+        $blocked = $status === ChangeStatus::PAUSED && in_array($change['waiting'], ['blast', 'blast_unknown'], true) && ($currentBatch['status'] ?? null) === 'pending';
         $logNote = $final || $currentBatch === null ? 'no batch was launched' : 'batch ' . (int) $change['current_batch'] . ($waits
-            ? ' ' . Clock::localize((string) $currentBatch['note']) : ': ' . match ($currentBatch['status']) { // "batch 2 waits: lab-sw3 is busy in run #92 ..."
+            ? ' ' . Clock::localize((string) $currentBatch['note']) : ': ' . ($blocked ? (string) ChangeStatus::waitingText($change['waiting']) : match ($currentBatch['status']) { // "batch 2 waits: lab-sw3 is busy in run #92 ..."
             'pending' => 'about to start',
             'preparing' => 'preparing' . ($preparing !== '' ? " ($preparing)" : ''),
             'prepared' => 'waits for the secret answers',
             'launching' => 'being launched',
             default => $batchLabels[$currentBatch['status']] ?? (string) $currentBatch['status'],
-        });
+        }));
     }
 @endphp
 
@@ -177,6 +187,51 @@
                 <a href="{{ route('ansible.inventory') }}">Inventory</a>
             </div>
         @endif
+        @if($waitBatch !== null && $change['waiting'] === 'blast')
+            @php $names = $blastNames($waitBlast); [$heldSince, $heldWord] = \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, ! empty($waitBlast['accepted'])); @endphp
+            <div class="ans-warning-loud" id="ans-blast-grew"><i class="fa fa-bolt"></i>
+                Batch {{ (int) $change['current_batch'] }} does not start: its blast radius grew since {{ $heldSince }}.
+                @if(! empty($waitBlast['core_lost']))<strong id="ans-blast-core-lost">It now takes down every core device of its part</strong> (it was {{ $heldWord }} with one left standing),
+                    so what it cuts off is measured from the largest piece left, not from the core.@endif
+                While it runs it would now cut off
+                @forelse((array) ($waitBlast['lost'] ?? []) as $lostId)<a href="{{ url('device/' . $lostId) }}" class="{{ in_array($lostId, (array) ($waitBlast['added'] ?? []), true) ? 'ans-blast-added' : '' }}">{{ $deviceName((int) $lostId, $names) }}</a>@if(! $loop->last), @endif @empty no other monitored device @endforelse
+                @if((int) ($waitBlast['unmanaged'] ?? 0) > 0) and {{ (int) $waitBlast['unmanaged'] }} unmanaged {{ (int) $waitBlast['unmanaged'] === 1 ? 'neighbor' : 'neighbors' }}@endif{{ (array) ($waitBlast['added'] ?? []) ? ':' : '' }}
+                @if((array) ($waitBlast['added'] ?? []))<strong>{{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['added'] ?? []), $names) }}</strong>
+                    {{ count((array) ($waitBlast['added'] ?? [])) === 1 ? 'was' : 'were' }} not {{ $heldWord }}@endif
+                ({{ $heldWord }}: {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['held'] ?? []), $names) }}).
+                @if(! empty($waitBlast['unplanned']))<span id="ans-blast-grew-unplanned">Besides, {{ $waitBlast['error'] ?? '' }}: once the new blast radius is accepted, the batch waits for an admin to continue it without one.</span>@endif
+                @if(! empty($waitBlast['simulate']))<a href="{{ url($waitBlast['simulate']) }}" class="btn btn-xs btn-default" id="ans-blast-grew-simulate" target="_blank" rel="noopener"><i class="fa fa-bolt"></i> Simulate it on the L2 map</a>@endif
+                <div style="font-weight: normal; margin-top: 4px">{{ ucfirst(ApprovalRules::accepter($settings->approval)) }} accepts the new blast radius
+                    (recorded in the timeline and the eventlog), and the batch starts again; or stop the change. Computed {{ $local($waitBlast['at'] ?? null) }}, as {{ $waitBatch['username'] ?: 'the admin who starts the batch' }} sees the network.</div>
+            </div>
+            @if($noAccepter)
+                <div class="alert alert-warning" id="ans-no-accepter"><i class="fa fa-user-times"></i> {{ $noAccepter }} The change waits, its devices reserved for it,
+                    until an admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#{{ ApprovalRules::acceptPermission($settings->approval) === 'run' ? 'ans-permission' : 'ans-approve-permission' }}">settings page</a>,
+                    or stops the change.</div>
+            @endif
+        @elseif($waitBatch !== null && $change['waiting'] === 'blast_unknown')
+            @php
+                $names = $blastNames($waitBlast);
+                $held = (array) ($waitBlast['window'] ?? $waitBlast['lost'] ?? []);
+                $unplanned = array_values(array_filter((array) ($waitBlast['unplanned'] ?? []), 'is_array'));
+                $fix = $unplanned ? ' (' . implode('; ', array_map(fn (array $u) => $deviceName((int) ($u['device_id'] ?? 0), $names) . ': '
+                    . \Agoodley\LibrenmsAnsible\Changes\TopologyPlan::fixText((string) ($u['reason'] ?? '')), $unplanned)) . ')'
+                    : (str_contains((string) ($waitBlast['error'] ?? ''), 'disabled') ? ' (enable the topology plugin again in Plugin Admin)' : '');
+            @endphp
+            <div class="ans-warning-loud" id="ans-blast-unknown"><i class="fa fa-question-circle"></i>
+                Batch {{ (int) $change['current_batch'] }} does not start: its blast radius cannot be computed now ({{ $waitBlast['error'] ?? 'no answer' }}).
+                <div style="font-weight: normal; margin-top: 4px">Fix that{{ $fix }}: the plugin checks again every minute (last {{ $local($waitBlast['at'] ?? null) }}) and starts
+                    the batch once its blast radius can be computed. Or {{ ApprovalRules::accepter($settings->approval) }} continues it: <em>Continue</em> computes it first;
+                    only if it still cannot be computed does the batch go without one, its maintenance window then covering its devices and the devices
+                    {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, false)[1] }}{{ is_array($waitBatch['blast_accepted'] ?? null) ? ' or accepted' : '' }} as cut off
+                    ({{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', $held), $names, 10, 'none') }}), the decision recorded in the timeline
+                    and the eventlog. Or stop the change.</div>
+            </div>
+            @if($noAccepter)
+                <div class="alert alert-warning" id="ans-no-accepter"><i class="fa fa-user-times"></i> {{ $noAccepter }} The change waits, its devices reserved for it,
+                    until an admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#ans-permission">settings page</a>, or stops the change.</div>
+            @endif
+        @endif
         @if($laterBusy)
             <div class="alert alert-warning" id="ans-change-later-busy"><i class="fa fa-clock-o"></i> <strong>Busy devices of later batches:</strong> {{ $laterBusy }}.
                 A batch waits for its devices when it starts, at most {{ intdiv(\Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::waitSeconds($settings), 60) }} minutes;
@@ -203,7 +258,7 @@
     @if(array_filter($actions))
         <div class="panel panel-default" id="ans-change-actions">
             <div class="panel-body" style="padding: 8px 10px">
-                @if($secretVars && ($actions['dry_run'] || $actions['apply'] || $actions['continue']))
+                @if($secretVars && ($actions['dry_run'] || $actions['apply'] || ($actions['continue'] && $continueAs === null)))
                     <div class="form-inline" id="ans-secret-fields" style="margin-bottom: 6px">
                         @foreach($secretVars as $var)
                             <label style="font-weight: normal; margin-right: 8px">{{ $var['label'] }} <span class="ans-code ans-muted">{{ $var['name'] }}</span>
@@ -217,8 +272,11 @@
                     @if($actions['dry_run'])
                         <button type="button" class="btn btn-sm btn-primary" data-action="dry-run" id="ans-action-dry-run"><i class="fa fa-search"></i> {{ $change['dry_runs'] ? 'Run the dry run again' : 'Run the dry run' }}</button>
                     @endif
-                    @if($actions['approve'] || $actions['reject'])
+                    @if($actions['approve'] || $actions['reject'] || $actions['accept'])
                         <input type="text" class="form-control input-sm" id="ans-approval-comment" maxlength="500" placeholder="comment (optional)" style="width: 240px">
+                    @endif
+                    @if($actions['accept'])
+                        <button type="button" class="btn btn-sm btn-warning" data-action="accept" id="ans-action-accept"><i class="fa fa-check"></i> Accept the new blast radius of batch {{ (int) $change['current_batch'] }}</button>
                     @endif
                     @if($actions['approve'])
                         <button type="button" class="btn btn-sm btn-success" data-action="approve" id="ans-action-approve"><i class="fa fa-check"></i> Approve</button>
@@ -230,7 +288,11 @@
                         <button type="button" class="btn btn-sm btn-success" data-action="apply" id="ans-action-apply"><i class="fa fa-play"></i> Apply in {{ $change['batch_count'] }} {{ (int) $change['batch_count'] === 1 ? 'batch' : 'batches' }}</button>
                     @endif
                     @if($actions['continue'])
-                        <button type="button" class="btn btn-sm btn-success" data-action="continue" id="ans-action-continue"><i class="fa fa-forward"></i> {{ $change['waiting'] === 'secrets' ? 'Launch batch ' . $change['current_batch'] : 'Continue with batch ' . ((int) $change['current_batch'] + 1) }}</button>
+                        <button type="button" class="btn btn-sm {{ $change['waiting'] === 'blast_unknown' ? 'btn-warning' : 'btn-success' }}" data-action="continue" id="ans-action-continue"><i class="fa fa-forward"></i> {{ match ($change['waiting']) {
+                            'secrets' => 'Launch batch ' . $change['current_batch'],
+                            'blast_unknown' => 'Continue batch ' . $change['current_batch'],
+                            default => 'Continue with batch ' . ((int) $change['current_batch'] + 1),
+                        } }}</button>
                     @endif
                     @if($actions['stop'])
                         <button type="button" class="btn btn-sm btn-danger" data-action="stop" id="ans-action-stop"><i class="fa fa-stop"></i> {{ $status === ChangeStatus::DRY_RUN ? 'Stop the dry run' : 'Stop the change' }}</button>
@@ -240,10 +302,20 @@
                     @endif
                     <span class="ans-muted" id="ans-action-state"></span>
                 </div>
+                @if($actions['approve'] || $actions['reject'] || $actions['accept'])
+                    <p class="ans-help" id="ans-comment-note" style="margin-top: 6px">The comment goes into the timeline and, as written, into the eventlog of each device of
+                        the change: whoever may see one of those devices in LibreNMS can read it.</p>
+                @endif
                 @if($status === ChangeStatus::AWAITING && $canApprove && $approvalRefusal)
                     <p class="ans-help" id="ans-approval-refusal" style="margin-top: 6px">{{ $approvalRefusal }}</p>
                 @elseif($status === ChangeStatus::AWAITING && ! $actions['approve'])
                     <p class="ans-help" id="ans-approval-waits" style="margin-top: 6px">{{ ApprovalRules::waitsFor($settings->approval) }}</p>
+                @endif
+                @if($change['waiting'] === 'blast' && ! $actions['accept'] && ! $final)
+                    <p class="ans-help" id="ans-accept-waits" style="margin-top: 6px">{{ $canAccept && $acceptRefusal ? $acceptRefusal : ucfirst(ApprovalRules::accepter($settings->approval)) . ' accepts the new blast radius.' }}</p>
+                @endif
+                @if($change['waiting'] === 'blast_unknown' && $continueRefusal !== null && ! $final)
+                    <p class="ans-help" id="ans-continue-waits" style="margin-top: 6px">{{ $continueRefusal }}</p>
                 @endif
                 @if($noApprover)
                     <div class="alert alert-warning" id="ans-no-approver" style="margin: 6px 0 0"><i class="fa fa-user-times"></i> {{ $noApprover }}
@@ -264,26 +336,105 @@
     <div class="row">
         <div class="col-md-7">
             <div class="panel panel-default">
-                <div class="panel-heading"><strong>Batches</strong> <span class="text-muted">({{ \Agoodley\LibrenmsAnsible\Support\Format::count(count($targets), 'device') }}; stops at {{ $plan['stop_at'] ?? 1 }} failed {{ ($plan['stop_at'] ?? 1) == 1 ? 'device' : 'devices' }} in a batch{{ ! empty($plan['wait_after_first']) && count($batches) > 1 ? '; waits for an admin after the first batch' : '' }}{{ ! empty($plan['pause_minutes']) ? '; ' . $plan['pause_minutes'] . ' min between batches' : '' }})</span></div>
+                <div class="panel-heading"><strong>Batches</strong> <span class="text-muted">({{ \Agoodley\LibrenmsAnsible\Support\Format::count(count($targets), 'device') }}; stops at {{ $plan['stop_at'] ?? 1 }} failed {{ ($plan['stop_at'] ?? 1) == 1 ? 'device' : 'devices' }} in a batch{{ ! empty($plan['wait_after_first']) && count($batches) > 1 ? '; waits for an admin after the first batch' : '' }}{{ ! empty($plan['pause_minutes']) ? '; ' . $plan['pause_minutes'] . ' min between batches' : '' }})</span>
+                    @if($topology && $topology->allByHand())
+                        <div class="ans-help" id="ans-batches-planner">Planned by hand: the topology plugin could plan none of these devices when the change was made, so nothing
+                            tells what depends on them. Each batch is checked again before it starts and right before its launch: one that would cut off a device by then waits for
+                            an admin to accept it.</div>
+                    @elseif($topology)
+                        <div class="ans-help" id="ans-batches-planner">Planned by the topology plugin: farthest from the core first, the core last, never two devices that back each other up in one batch.
+                            What each batch cuts off was computed when the change was made, and is part of what is dry-run and approved; it is computed again before the batch starts and
+                            right before its launch, and a batch that would cut off more waits for an admin to accept it.
+                            @if($topology->coreText() !== '')<span id="ans-batches-core">Measured from the core: {{ $topology->coreText() }}.</span>@endif</div>
+                    @elseif($topologyPlanned)
+                        <div class="ans-help text-danger" id="ans-batches-unreadable">The topology plugin's part of this change's plan cannot be read: its batches do not start.</div>
+                    @else
+                        @php
+                            // why the settings planned them, as the change's creation recorded it
+                            $unknownWhy = null;
+                            foreach ($events as $event) {
+                                if (preg_match('/^The blast radius of its batches is unknown: they were planned by the settings, as (.+)\.$/s', (string) $event['message'], $found)) {
+                                    $unknownWhy = $found[1];
+                                    break;
+                                }
+                            }
+                        @endphp
+                        <div class="ans-help" id="ans-blast-unknown-note"><i class="fa fa-question-circle"></i> Blast radius unknown: these batches were planned by the plugin's settings, not by the topology plugin{{ $unknownWhy !== null ? '. When the change was made: ' . $unknownWhy : '' }}.</div>
+                    @endif
+                </div>
+                @if($topology && ! $topology->allByHand() && $topology->coreWarnings())
+                    {{-- what the admin should check of the core, in the warning's colour (as the preview says it) --}}
+                    <div class="panel-body" id="ans-core-warnings" style="padding-bottom: 0">
+                        @foreach($topology->coreWarnings() as $warning)
+                            <p class="ans-help text-warning ans-core-warning">{{ $warning }}</p>
+                        @endforeach
+                    </div>
+                @endif
                 <div class="table-responsive">
                 <table class="table table-condensed ans-table ans-stack" id="ans-batches">
-                    <thead><tr><th>Batch</th><th>Devices</th><th>State</th><th>Run</th><th>Results</th><th>When</th></tr></thead>
+                    <thead><tr><th>Batch</th><th>Devices</th>@if($topology)<th>Down while it runs</th>@endif<th>State</th><th>Run</th><th>Results</th><th>When</th></tr></thead>
                     <tbody>
                     @foreach($batches as $number => $batch)
                         @php $batchRun = $batchRuns[$number] ?? null; @endphp
                         <tr data-batch="{{ $number }}">
-                            <td data-label="Batch">{{ $number }}{{ $number === 1 && count($batches) > 1 ? ' (canary)' : '' }}</td>
+                            <td data-label="Batch">{{ $number }}{{ $number === 1 && count($batches) > 1 ? ' (canary)' : '' }}@if($topology && isset($blast[$number]))<div class="ans-help ans-blast-tier">{{ $blast[$number]['tier_text'] }}</div>@endif</td>
                             <td class="ans-wrap" data-label="Devices">{{ implode(', ', array_map(fn ($d) => $targets[$d]['display'] ?: $targets[$d]['hostname'], $byBatch[$number] ?? [])) }}</td>
+                            @if($topology)
+                                @php
+                                    $approvedBlast = $blast[$number] ?? null;
+                                    $record = is_array($batch['blast'] ?? null) ? $batch['blast'] : null;
+                                    $accepted = is_array($batch['blast_accepted'] ?? null) ? $batch['blast_accepted'] : null;
+                                    $override = is_array($batch['blast_override'] ?? null) ? $batch['blast_override'] : null;
+                                    $names = $blastNames($record);
+                                @endphp
+                                <td class="ans-wrap ans-blast" data-label="Down while it runs">
+                                    @if($approvedBlast === null)
+                                        <span class="text-muted">-</span>
+                                    @elseif($approvedBlast['hand'])
+                                        <span class="text-warning ans-blast-hand">planned by hand: nothing tells what depends on {{ count($byBatch[$number] ?? []) === 1 ? 'it' : 'them' }}</span>
+                                        @if($approvedBlast['skipped'])<div class="ans-help">{{ implode('; ', array_map(fn ($s) => $s['name'] . ': ' . $s['text'], $approvedBlast['skipped'])) }}</div>@endif
+                                    @else
+                                        <span class="ans-blast-lost">@forelse($approvedBlast['lost'] as $lost)<a href="{{ url('device/' . $lost['device_id']) }}">{{ $lost['name'] }}</a>@if(! $loop->last), @endif @empty<span class="text-muted">no other monitored device</span>@endforelse</span>
+                                        @if($approvedBlast['unmanaged'] > 0)<div class="ans-help">and {{ $approvedBlast['unmanaged'] }} unmanaged {{ $approvedBlast['unmanaged'] === 1 ? 'neighbor' : 'neighbors' }} (phones, access points...)</div>@endif
+                                        @if($approvedBlast['reference'] !== 'core')<div class="ans-help">no core device of its part is left: counted from the largest piece that stays together</div>@endif
+                                    @endif
+                                    @if($approvedBlast !== null && $approvedBlast['simulate'] && ! $approvedBlast['hand'])<div><a href="{{ $approvedBlast['simulate'] }}" class="ans-blast-simulate" target="_blank" rel="noopener" title="The topology plugin's failure simulation of this batch on the L2 map, on the network as it is now"><i class="fa fa-bolt"></i> Simulate</a></div>@endif
+                                    @if($accepted)
+                                        <div class="ans-help ans-blast-accepted text-warning">accepted by {{ $accepted['by'] ?? '?' }} {{ $local($accepted['at'] ?? null) }}: {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', (array) ($accepted['lost'] ?? [])), $names) }}</div>
+                                    @endif
+                                    @if($record)
+                                        <div class="ans-help ans-blast-check" data-state="{{ $record['state'] ?? '' }}">
+                                            @switch($record['state'] ?? '')
+                                                @case('same')<span class="text-success">checked {{ $local($record['at'] ?? null) }}: as {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, (bool) $accepted)[1] }}</span>@break
+                                                @case('shrank')<span class="text-success">checked {{ $local($record['at'] ?? null) }}: shrank, no longer {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', (array) ($record['removed'] ?? [])), $names) }}</span>@break
+                                                @case('grew')<span class="text-danger">checked {{ $local($record['at'] ?? null) }}: grew{{ ! empty($record['core_lost']) ? ', it now takes down every core device of its part' : '' }}{{ ($record['added'] ?? []) ? (! empty($record['core_lost']) ? '; also ' : ', also ') . \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', (array) $record['added']), $names) : '' }}</span>@break
+                                                @case('unknown')<span class="text-danger">checked {{ $local($record['at'] ?? null) }}: cannot be computed ({{ $record['error'] ?? '' }})</span>@break
+                                                @case('override')<span class="text-warning">continued without a blast radius by {{ $override['by'] ?? '?' }} {{ $local($override['at'] ?? null) }} ({{ $record['error'] ?? '' }})</span>@break
+                                            @endswitch
+                                            @php
+                                                // what the check measured from, when it is not what the batch was approved (or accepted) with: the approved one is said above
+                                                $checkedFrom = ($record['reference'] ?? 'core') === 'largest part' ? 'largest part' : 'core';
+                                                $heldFrom = ($accepted['reference'] ?? $approvedBlast['reference'] ?? 'core') === 'largest part' ? 'largest part' : 'core';
+                                            @endphp
+                                            @if($checkedFrom !== $heldFrom && in_array($record['state'] ?? '', ['same', 'shrank', 'grew'], true) && empty($record['core_lost']))<div class="ans-blast-reference">{{ $checkedFrom === 'largest part' ? 'measured from the largest piece left: no core device of its part is left' : 'measured from the core: a core device of its part is left' }}</div>@endif
+                                        </div>
+                                    @endif
+                                </td>
+                            @endif
                             <td data-label="State"><span class="label label-{{ $batchCss[$batch['status']] ?? 'default' }} ans-batch-state" @if($batch['status'] === 'prepared' && ! $final) data-held-text="launching" @endif>{{ $batchLabels[$batch['status']] ?? $batch['status'] }}</span>
                                 @if($batch['note'])<div class="ans-help ans-wrap">{{ Clock::localize($batch['note']) }}</div>@endif</td>
                             <td data-label="Run">@if($batchRun)<a href="{{ route('ansible.runs.show', $batchRun['id']) }}">#{{ $batchRun['id'] }}</a> <span class="label label-{{ RunStatus::css($batchRun['status']) }}">{{ RunStatus::label($batchRun['status']) }}</span>@endif</td>
                             <td data-label="Results">@if($batchRun)@include('ansible::partials.results', ['resultSummary' => $batchRun['summary'] ?? [], 'resultDryRun' => false, 'resultUnproven' => false])@endif</td>
-                            <td class="ans-muted" style="white-space: nowrap" data-label="When">{{ $local($batch['started_at']) }}{{ $batch['ended_at'] ? ' – ' . Clock::local($batch['ended_at'], 'H:i:s') : '' }}{{ $batch['username'] ? ' · ' . $batch['username'] : '' }}</td>
+                            <td class="ans-muted" style="white-space: nowrap" data-label="When">{{ $local($batch['started_at']) }}{{ $batch['ended_at'] ? ' – ' . Clock::local($batch['ended_at'], 'H:i:s') : '' }}{{ $batch['username'] && $batch['started_at'] ? ' · ' . $batch['username'] : '' }}</td>
                         </tr>
                     @endforeach
                     </tbody>
                 </table>
                 </div>
+                @if($topology && $topology->leftOut)
+                    <div class="panel-body ans-help" id="ans-left-out" style="padding-top: 0">Left out of the change, as the topology plugin cannot plan them (nothing tells what depends on them):
+                        {{ \Agoodley\LibrenmsAnsible\Changes\RolloutPlan::reasonsText($topology->leftOut, $topology->names, 20) }}.</div>
+                @endif
             </div>
         </div>
         <div class="col-md-5">
@@ -410,12 +561,13 @@
         </div>
         <div class="col-md-5">
             <div class="panel panel-default" id="ans-windows">
-                <div class="panel-heading"><strong>Maintenance windows</strong> <span class="text-muted">({{ $settings->maintenance ? 'one per batch, closed ' . intdiv($settings->settleSeconds, 60) . ' min after it' : 'switched off in the settings' }})</span>
+                <div class="panel-heading"><strong>Maintenance windows</strong> <span class="text-muted">({{ $settings->maintenance ? 'one per batch' . ($topology ? ', on its devices and the devices it cuts off' : '') . ', closed ' . intdiv($settings->settleSeconds, 60) . ' min after it' : 'switched off in the settings' }})</span>
                     <a class="pull-right" href="{{ url('alert-schedule') }}">LibreNMS' maintenance</a></div>
                 <table class="table table-condensed ans-table" id="ans-windows-table">
                     @forelse($windows as $window)
                         <tr data-window="{{ $window['schedule_id'] }}">
-                            <td>#{{ $window['schedule_id'] }}<br><span class="ans-muted">batch {{ $window['batch'] }}</span></td>
+                            <td>#{{ $window['schedule_id'] }}<br><span class="ans-muted">batch {{ $window['batch'] }}</span>
+                                @if($window['cut_off'] ?? [])<div class="ans-help ans-window-cut-off">also {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', (array) $window['cut_off']), $blastNames(is_array($batches[(int) $window['batch']]['blast'] ?? null) ? $batches[(int) $window['batch']]['blast'] : null)) }}: cut off by the batch</div>@endif</td>
                             <td><span class="label label-{{ $window['status'] === 'open' ? 'info' : ($window['status'] === 'closed' ? 'success' : 'warning') }} ans-window-state">{{ $window['status'] === 'open' ? ($window['closing'] ? 'closes at its end' : 'open') : (['closed' => 'closed', 'gone' => 'removed in LibreNMS'][$window['status']] ?? $window['status']) }}</span></td>
                             <td class="ans-muted">{{ $local($window['opened_at']) }} – {{ Clock::local($window['status'] === 'closed' ? $window['closed_at'] : $window['ends_at'], 'Y-m-d H:i:s T') }}{{ $window['error'] ? ' · ' . $window['error'] : '' }}</td>
                         </tr>
@@ -456,6 +608,7 @@
             'actions' => [
                 'dry-run' => route('ansible.changes.dry-run', $change['id']), 'approve' => route('ansible.changes.approve', $change['id']),
                 'reject' => route('ansible.changes.reject', $change['id']), 'apply' => route('ansible.changes.apply', $change['id']),
+                'accept' => route('ansible.changes.accept-blast', $change['id']),
                 'continue' => route('ansible.changes.continue', $change['id']), 'stop' => route('ansible.changes.stop', $change['id']),
                 'cancel' => route('ansible.changes.cancel', $change['id']),
             ],
@@ -470,7 +623,11 @@
             'prepare' => implode(' and ', array_filter([$settings->maintenance ? 'maintenance window' : null, $settings->backups && $oxidized ? 'backups' : null])),
             'currentBatch' => (int) $change['current_batch'],
             'waiting' => $change['waiting'],
+            // the check of the blast radius this page shows, which Accept and Continue name (refused when it changed since)
+            'blast' => $blastCheck,
             'hasSecrets' => (bool) $secretVars,
+            // whom a Continue starts the batch as when it is not the admin of this page (an approver without the run permission)
+            'continueAs' => $continueAs,
             'dryRuns' => (int) $change['dry_runs'],
         ];
     @endphp

@@ -23,6 +23,8 @@ final class ChangeRepository implements ChangeStore
         'ansible_changes' => ['variables', 'plan', 'dry_run_findings', 'fingerprint_parts'],
         'ansible_change_targets' => ['dry_counts', 'counts'],
         'ansible_change_diffs' => ['lines'],
+        'ansible_change_batches' => ['blast', 'blast_accepted', 'blast_override'],
+        'ansible_change_windows' => ['cut_off'],
     ];
 
     /** Boolean columns per table. */
@@ -45,15 +47,17 @@ final class ChangeRepository implements ChangeStore
     public function available(): bool
     {
         try {
-            foreach (array_diff(self::TABLES, ['ansible_change_targets']) as $table) {
+            // a table whose columns are checked below is not looked up twice: its columns tell that it exists too
+            foreach (array_diff(self::TABLES, ['ansible_change_targets', 'ansible_change_batches', 'ansible_change_windows']) as $table) {
                 if (! SchemaCheck::hasTable($table)) {
                     return false;
                 }
             }
 
-            // a table's columns tell that it exists too
             return SchemaCheck::hasColumns('ansible_runs', ['change_id', 'kind', 'batch', 'context', 'commit_hash', 'proof'])
-                && SchemaCheck::hasColumns('ansible_change_targets', ['backup_check', 'served_hash', 'served_at', 'served_note']);
+                && SchemaCheck::hasColumns('ansible_change_targets', ['backup_check', 'served_hash', 'served_at', 'served_note'])
+                && SchemaCheck::hasColumns('ansible_change_batches', ['blast', 'blast_accepted', 'blast_override'])
+                && SchemaCheck::hasColumns('ansible_change_windows', ['cut_off']);
         } catch (\Throwable) {
             return false;
         }
@@ -144,7 +148,7 @@ final class ChangeRepository implements ChangeStore
     {
         $batches = [];
         foreach ($this->sql->select('SELECT * FROM ' . $this->sql->table('ansible_change_batches') . ' WHERE `change_id` = ? ORDER BY `number`', [$changeId]) as $row) {
-            $batches[(int) $row['number']] = $row;
+            $batches[(int) $row['number']] = self::decode('ansible_change_batches', $row);
         }
 
         return $batches;
@@ -223,7 +227,8 @@ final class ChangeRepository implements ChangeStore
     public function addWindow(array $row): int
     {
         return $this->insert('ansible_change_windows', ['change_id' => $row['change_id'], 'batch' => $row['batch'], 'schedule_id' => $row['schedule_id'],
-            'status' => $row['status'], 'opened_at' => Clock::store($row['opened_at']), 'ends_at' => Clock::store($row['ends_at'])]);
+            'status' => $row['status'], 'opened_at' => Clock::store($row['opened_at']), 'ends_at' => Clock::store($row['ends_at']),
+            'cut_off' => ($row['cut_off'] ?? []) ? array_values(array_map('intval', $row['cut_off'])) : null]);
     }
 
     public function updateWindow(int $id, array $values): void

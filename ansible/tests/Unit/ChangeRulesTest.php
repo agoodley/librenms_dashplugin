@@ -13,6 +13,7 @@ use Agoodley\LibrenmsAnsible\Changes\DryRunCheck;
 use Agoodley\LibrenmsAnsible\Changes\Fingerprint;
 use Agoodley\LibrenmsAnsible\Changes\MaintenanceTimes;
 use Agoodley\LibrenmsAnsible\Changes\NextChange;
+use Agoodley\LibrenmsAnsible\Changes\RolloutPlan;
 use Agoodley\LibrenmsAnsible\Changes\TemplateSnapshot;
 use Agoodley\LibrenmsAnsible\Runner\RunnerEnvironment;
 use Agoodley\LibrenmsAnsible\Runner\RunnerInventory;
@@ -161,6 +162,22 @@ class ChangeRulesTest extends TestCase
         $this->assertSame(['sw3: ansible_host 10.0.0.3 → 10.0.3.99'], NextChange::prefill($change, $targets, NextChange::REMAINING, [], $now)['moved'],
             'only the devices it takes (not sw1, applied), as their dry run recorded them');
         $this->assertSame([], NextChange::prefill($change, $targets, NextChange::REMAINING, [])['moved'], 'nothing known now: nothing said');
+        $this->assertSame(RolloutPlan::LEAVE, $prefill['unplanned'], 'a plan of the settings planned nothing by hand');
+    }
+
+    public function testANewChangeFromOneWithABatchPlannedByHandPlansItByHandAgain(): void
+    {
+        // the topology plugin could not plan lab-other: the earlier change had it in a final batch planned by hand
+        $made = RolloutPlan::make([502, 509], [], 1, 5, 1, false, 0, RolloutPlanTest::planner([502, 509]), RolloutPlan::HAND,
+            fn (array $batch) => RolloutPlanTest::blast($batch));
+        $this->assertSame([[502], [509]], $made['plan']->batches);
+        $change = ['id' => 32, 'reference' => '', 'plan' => $made['plan']->toArray(), 'variables' => []];
+        $targets = [502 => ['batch' => 1, 'position' => 0, 'dry_result' => 'changed', 'result' => 'failed', 'display' => 'lab-sw2', 'hostname' => '', 'inventory_name' => ''],
+            509 => ['batch' => 2, 'position' => 1, 'dry_result' => 'changed', 'result' => null, 'display' => 'lab-other', 'hostname' => '', 'inventory_name' => '']];
+
+        $prefill = NextChange::prefill($change, $targets, NextChange::REMAINING, []);
+        $this->assertSame([502, 509], $prefill['devices']);
+        $this->assertSame(RolloutPlan::HAND, $prefill['unplanned'], 'not left out of the new change without a word');
     }
 
     // ------------------------------------------------------------------ how the runner reaches the devices
@@ -286,6 +303,73 @@ class ChangeRulesTest extends TestCase
         $this->assertStringContainsString('no longer be approved', (string) ApprovalRules::refusal(ApprovalRules::REQUIRED, ['status' => ChangeStatus::APPLYING] + $change, 2, true));
         $this->assertSame('Waits for an approval by a second admin with the approve permission (not the requester).', ApprovalRules::waitsFor(ApprovalRules::SECOND));
         $this->assertSame('Waits for an approval by an admin with the approve permission.', ApprovalRules::waitsFor(ApprovalRules::REQUIRED));
+    }
+
+    public function testWhoMayAcceptANewBlastRadiusFollowsTheApprovalSetting(): void
+    {
+        $change = ['status' => ChangeStatus::PAUSED, 'waiting' => 'blast', 'user_id' => 1];
+
+        // with an approval: an approver (the approve permission), never the requester with a second admin
+        $this->assertSame('approve', ApprovalRules::acceptPermission(ApprovalRules::REQUIRED));
+        $this->assertSame('approve', ApprovalRules::acceptPermission(ApprovalRules::SECOND));
+        $this->assertNull(ApprovalRules::acceptRefusal(ApprovalRules::REQUIRED, $change, 1, true), 'the requester may accept when no second admin is needed');
+        $this->assertStringContainsString('you requested this change', (string) ApprovalRules::acceptRefusal(ApprovalRules::SECOND, $change, 1, true));
+        $this->assertNull(ApprovalRules::acceptRefusal(ApprovalRules::SECOND, $change, 2, true));
+        $this->assertStringContainsString('approve permission (ansible.approve)', (string) ApprovalRules::acceptRefusal(ApprovalRules::SECOND, $change, 2, false));
+        $this->assertSame('an admin with the approve permission (not the requester)', ApprovalRules::accepter(ApprovalRules::SECOND));
+        $this->assertSame('an admin with the approve permission', ApprovalRules::accepter(ApprovalRules::REQUIRED));
+
+        // without one: an admin who may continue the change (the run permission), the requester too, so that a team without approvers is not stuck
+        $this->assertSame('run', ApprovalRules::acceptPermission(ApprovalRules::OFF));
+        $this->assertNull(ApprovalRules::acceptRefusal(ApprovalRules::OFF, $change, 1, true));
+        $this->assertStringContainsString('run permission (ansible.run) while the settings ask for no approval', (string) ApprovalRules::acceptRefusal(ApprovalRules::OFF, $change, 1, false));
+        $this->assertSame('an admin with the run permission', ApprovalRules::accepter(ApprovalRules::OFF));
+
+        $this->assertStringContainsString('Only a change whose batch waits because its blast radius grew',
+            (string) ApprovalRules::acceptRefusal(ApprovalRules::OFF, ['waiting' => 'canary'] + $change, 1, true));
+    }
+
+    public function testWhoMayContinueABatchWithoutABlastRadiusFollowsTheAcceptRule(): void
+    {
+        // going on without a blast radius is a decision on it, as an acceptance is
+        $change = ['status' => ChangeStatus::PAUSED, 'waiting' => 'blast_unknown', 'user_id' => 1];
+        $this->assertNull(ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 2, true), 'an approver who is not the requester');
+        $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
+            ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 1, true));
+        $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
+            ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 1, false), 'the requester without the permission: not told to get it (it would not help)');
+        $this->assertStringContainsString('needs the Ansible plugin\'s approve permission (ansible.approve), as accepting a new blast radius does',
+            (string) ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 2, false));
+        $this->assertNull(ApprovalRules::continueRefusal(ApprovalRules::REQUIRED, $change, 1, true), 'the requester who approves, when no second admin is needed');
+        $this->assertStringContainsString('approve permission (ansible.approve)', (string) ApprovalRules::continueRefusal(ApprovalRules::REQUIRED, $change, 1, false));
+        // without an approval: an admin with the run permission, the requester too
+        $this->assertNull(ApprovalRules::continueRefusal(ApprovalRules::OFF, $change, 1, true));
+        $this->assertStringContainsString('needs the Ansible plugin\'s run permission (ansible.run)', (string) ApprovalRules::continueRefusal(ApprovalRules::OFF, $change, 1, false));
+    }
+
+    public function testEveryWaitOfAPausedChangeHasItsWords(): void
+    {
+        // what the lifecycle sets a change's waiting to: literal values, and the waits of blastStop()
+        $source = (string) file_get_contents(__DIR__ . '/../../src/Changes/ChangeLifecycle.php');
+        preg_match_all("/'waiting' => '([a-z_]+)'/", $source, $set);
+        preg_match_all("/blastStop\\(\\\$change, \\\$number, '([a-z_]+)'/", $source, $blast);
+        $waits = array_values(array_unique([...$set[1], ...$blast[1]]));
+        sort($waits);
+        $this->assertSame(['blast', 'blast_unknown', 'canary', 'secrets', 'timer'], $waits);
+        foreach ($waits as $waiting) {
+            $this->assertArrayHasKey($waiting, ChangeStatus::WAITS, "the lists say what \"$waiting\" waits for");
+            $this->assertNotSame('', ChangeStatus::waitingText($waiting));
+        }
+        $this->assertSame('waits for its new blast radius to be accepted', ChangeStatus::waitingText('blast'));
+        $this->assertSame('waits: its blast radius cannot be computed', ChangeStatus::waitingText('blast_unknown'));
+        $this->assertNull(ChangeStatus::waitingText(null));
+        $this->assertNull(ChangeStatus::waitingText(''));
+        $this->assertSame('waits', ChangeStatus::waitingText('something_later'), 'a wait of another version does not break a list');
+
+        // the changes list shows them through waitingText(), never through an array of its own
+        $view = (string) file_get_contents(__DIR__ . '/../../resources/views/changes.blade.php');
+        $this->assertStringContainsString('ChangeStatus::waitingText($change[\'waiting\'])', $view);
+        $this->assertDoesNotMatchRegularExpression("/\\[\\s*'canary'\\s*=>/", $view);
     }
 
     public function testApprovalsExpireAndNeedTheirApprover(): void
