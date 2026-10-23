@@ -58,10 +58,12 @@
             . 'two devices that back each other up in one batch, within the batch size, the first batch taken from its first one) and approves what each batch cuts off; '
             . 'off, or without the topology plugin, the settings above plan them and the blast radius is unknown'],
         ['blast_grew', 'When the blast radius grew', 'before each batch and right before its launch its blast radius is computed again: when it would cut off devices that '
-            . 'were not approved (a redundant link went down since), the batch does not start, and the change waits for an admin to accept the new one (recorded): one '
-            . 'with the approve permission (not the requester with a second admin), or with the run permission while Approval is off; or the change ends'],
-        ['blast_unknown', 'When the blast radius cannot be computed', 'the topology plugin disabled, an error: the batch does not start, and the change waits for an admin '
-            . 'with the run permission to continue it without one (recorded; its window then covers the devices approved as cut off), or ends'],
+            . 'were not approved (a redundant link went down since), or now takes down every core device of its part (approved with one left standing), the batch does '
+            . 'not start, and the change waits for an admin to accept the new one (recorded): one with the approve permission (not the requester with a second admin), or '
+            . 'with the run permission while Approval is off; or the change ends'],
+        ['blast_unknown', 'When the blast radius cannot be computed', 'the topology plugin disabled, an error, or a device of the batch it can no longer tell about (down '
+            . 'in LibreNMS, its LLDP/CDP neighbors gone): the batch does not start, and the change waits for an admin with the run permission to continue it without one '
+            . '(recorded; its window then covers the devices approved as cut off), or ends'],
     ];
 @endphp
 
