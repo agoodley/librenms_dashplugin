@@ -35,8 +35,9 @@ final class VerificationRules
      * @param  array  $after  the state after it
      * @param  array|null  $expectation  what the batch is meant to do (FixExpectation::forBatch()), null for a change that is no fix
      * @param  string  $minimum  the lowest severity a new or worse finding counts from (SEVERITIES)
-     * @return array{result: string, unexpected: list<array>, expected: list<array>, listed: list<array>, counts: array<string, int>}
-     *     result: "verified" or "unexpected"; each entry: what (event, finding, device, fix), type, level, text, devices
+     * @return array{result: string, unexpected: list<array>, expected: list<array>, listed: list<array>, counts: array<string, int>, unchecked: ?string}
+     *     result: "verified" or "unexpected"; each entry: what (event, finding, device, fix), type, level, text, devices; unchecked: the check a
+     *     fix is verified by (links, stp) when it did not run in either state (not enabled, or failed): then nothing says the fix worked
      */
     public static function evaluate(array $comparison, array $before, array $after, ?array $expectation, string $minimum): array
     {
@@ -129,6 +130,17 @@ final class VerificationRules
                 array_push($result['unexpected'], ...self::otherRoots($before, $after, $root, $names));
             }
         }
+        // a fix is verified by the check that found its findings: without it in both states nothing says that they were resolved
+        $unchecked = null;
+        if ($expectation !== null) {
+            $check = ($expectation['kind'] ?? null) === FixExpectation::STP_ROOT_PRIORITY ? 'stp' : 'links';
+            foreach ([$before, $after] as $state) {
+                $checks = (array) ($state['checks'] ?? []);
+                if (! in_array($check, array_map('strval', (array) ($checks['enabled'] ?? [])), true) || array_key_exists($check, (array) ($checks['failed'] ?? []))) {
+                    $unchecked = $check;
+                }
+            }
+        }
 
         $counts = ['events' => count($events), 'unexpected' => count($result['unexpected']), 'expected' => count($result['expected']), 'listed' => count($result['listed']),
             'findings_new' => count((array) ($findings['new'] ?? [])), 'findings_worse' => count((array) ($findings['worse'] ?? [])),
@@ -139,7 +151,7 @@ final class VerificationRules
             $result[$list] = array_slice($result[$list], 0, self::LIST_MAX);
         }
 
-        return ['result' => $result['unexpected'] ? 'unexpected' : 'verified'] + $result + ['counts' => $counts];
+        return ['result' => $result['unexpected'] ? 'unexpected' : 'verified'] + $result + ['counts' => $counts, 'unchecked' => $unchecked];
     }
 
     /**

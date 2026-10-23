@@ -37,6 +37,9 @@ final class FakeVerifier implements Verifier
     /** @var array<string, array> identity => finding, in every state taken from now on */
     public array $findings = [];
 
+    /** @var string[] the topology plugin's background checks enabled in the states taken from now on */
+    public array $checks = ['stp', 'links', 'redundancy', 'routing'];
+
     /** @var array<string, mixed> what compare() answers (events, findings, devices, names) */
     public array $comparison = [];
 
@@ -93,7 +96,7 @@ final class FakeVerifier implements Verifier
         }
 
         return ['version' => '1.0', 'taken_at' => $this->now, 'scope' => $scope, 'devices' => $devices, 'facts' => ['f1' => ['kind' => 'link', 'key' => 'k', 'a' => 1, 'b' => 2,
-            'text' => 'link', 'data' => []]], 'roots' => [], 'findings' => $this->findings, 'names' => self::names(), 'checks' => ['enabled' => [], 'failed' => [],
+            'text' => 'link', 'data' => []]], 'roots' => [], 'findings' => $this->findings, 'names' => self::names(), 'checks' => ['enabled' => $this->checks, 'failed' => [],
             'facts_failed' => []], 'role_hidden' => []];
     }
 

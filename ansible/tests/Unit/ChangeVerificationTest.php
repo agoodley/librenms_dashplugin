@@ -575,6 +575,24 @@ class ChangeVerificationTest extends TestCase
 
     // ------------------------------------------------------------------ a fix
 
+    public function testAFixWhoseCheckDidNotRunIsNotVerified(): void
+    {
+        $fix = ['kind' => 'port_descriptions', 'ids' => ['f1'], 'variable' => 'port_descriptions', 'title' => 'Port descriptions of lab-sw4', 'lines' => [],
+            'findings' => ['d510' => ['code' => 'description_wrong', 'severity' => 'warning', 'title' => 'Port descriptions name the wrong neighbor: lab-sw4', 'devices' => [510]]],
+            'devices' => ['510' => ['d510']]];
+        // the topology plugin's link check is not one of its background checks: no state has its findings, so none is "still there"
+        $this->verifier->checks = ['stp', 'redundancy', 'routing'];
+        $id = $this->applied(['fix' => $fix]);
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->fresh($this->t0 + 1000);
+        $this->sync($id, $this->t0 + 1080);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'verification_unknown', 'unknown'], [$change['status'], $change['waiting'], $this->verify($id, 1)['result']]);
+        $this->assertStringContainsString("Batch 1 cannot be verified: the topology plugin's links check, which found the fix's findings, did not run in the state before or "
+            . 'after it (its settings: Background checks); nothing else that was compared changed.', $this->messages($id));
+    }
+
     public function testAFixIsVerifiedAgainstWhatItWasMadeFor(): void
     {
         $fix = ['kind' => 'port_descriptions', 'ids' => ['f1'], 'variable' => 'port_descriptions', 'title' => 'Port descriptions of lab-sw4', 'lines' => [],

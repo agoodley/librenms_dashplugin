@@ -2488,13 +2488,19 @@ final class ChangeLifecycle
                 $this->batchDevices($change, $number)), $this->settings->verifyMinimum);
             $this->changes->saveState($id, $number, 'after', $state, ['evaluation' => $evaluation, 'names' => array_slice((array) ($comparison['names'] ?? []), 0, 500, true),
                 'from' => (int) ($comparison['from'] ?? 0), 'to' => (int) ($comparison['to'] ?? 0)]);
-            // what either state could not read is not compared: nothing unexpected in the rest is no verification of the batch
+            // what either state could not read is not compared: nothing unexpected in the rest is no verification of the batch (nor of a
+            // fix whose check did not run)
             $skipped = VerificationRules::skippedText((array) ($comparison['skipped'] ?? []));
-            $incomplete = $evaluation['result'] === 'verified' && $skipped !== null;
+            $whys = $skipped !== null ? ["the topology plugin could not read $skipped in the state before or after it (see logs/librenms.log)"] : [];
+            if (($evaluation['unchecked'] ?? null) !== null) {
+                $whys[] = 'the topology plugin\'s ' . ($evaluation['unchecked'] === 'stp' ? 'spanning tree' : (string) $evaluation['unchecked']) . ' check, which found the fix\'s '
+                    . 'findings, did not run in the state before or after it (its settings: Background checks)';
+            }
+            $incomplete = $evaluation['result'] === 'verified' && $whys;
             $this->setVerify($id, $number, ['after' => ['status' => $incomplete ? 'incomplete' : 'done', 'taken_at' => (int) ($state['taken_at'] ?? $now), 'waiting' => null,
                 'checked_at' => $now] + $after]);
             if ($incomplete) {
-                $why = "the topology plugin could not read $skipped in the state before or after it (see logs/librenms.log); nothing else that was compared changed";
+                $why = implode('; ', $whys) . '; nothing else that was compared changed';
                 $this->verifyResult($change, $number, 'unknown', ['evaluation' => $evaluation, 'error' => $why, 'event_error' => $why], $now);
 
                 return;
