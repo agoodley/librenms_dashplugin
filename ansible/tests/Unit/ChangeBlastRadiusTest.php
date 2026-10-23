@@ -715,6 +715,62 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame([511, 512, 513, 514, 510], $this->windows->windows[101]['devices'], 'its window covers what was accepted');
     }
 
+    public function testAnAdminsDecisionToGoWithoutABlastRadiusHoldsOnlyWhileItCannotBeComputed(): void
+    {
+        // the topology plugin cannot answer when batch 3 starts; an admin continues it without a blast radius; its backups take a while
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->error = 'an error';
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $this->backups->enabled = true;
+        $this->backups->succeed = false;
+        $this->backups->now = $this->t0 + 300;
+        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 300, $this->seen($id)));
+        $this->assertSame(['override', 'preparing'], [$this->changes->batches[$id][3]['blast']['state'], $this->changes->batches[$id][3]['status']]);
+        $this->assertCount(2, $this->launched(), 'it waits for its backups');
+
+        // right before its launch the topology plugin answers again, and lab-sw2 now cuts off lab-sw5 too: the decision was to go
+        // without a blast radius, not with one that grew
+        $this->topology->error = null;
+        $this->topology->cuts[502] = [512, 511];
+        $this->backups->nodes[502] = ['name' => 'dev502', 'full_name' => 'lab/dev502', 'last' => ['start' => gmdate('Y-m-d H:i:s', $this->t0 + 302) . ' UTC',
+            'end' => gmdate('Y-m-d H:i:s', $this->t0 + 305) . ' UTC', 'status' => 'success']];
+        $lifecycle->advance($id, $this->t0 + 310);
+        $this->assertSame([ChangeStatus::PAUSED, 'blast'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+        $this->assertSame([511], $this->changes->batches[$id][3]['blast']['added']);
+        $this->assertCount(2, $this->launched(), 'not launched');
+    }
+
+    public function testADeviceTheBatchNoLongerCutsOffRightBeforeItsLaunchLeavesItsWindowAndItsEventlogSaysSo(): void
+    {
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->endBatch($id, 2, $this->t0 + 200);
+        // batch 4 (lab-sw3) starts cutting off lab-sw7 and lab-sw8; before its launch (after its backups) lab-sw8 got a second uplink
+        $this->backups->enabled = true;
+        $this->backups->succeed = false;
+        $this->endBatch($id, 3, $this->t0 + 300);
+        $this->assertSame([503, 513, 514], $this->windows->windows[103]['devices'] ?? null);
+        $this->topology->cuts[503] = [513];
+        foreach ([502, 503] as $deviceId) {
+            $this->backups->nodes[$deviceId] = ['name' => "dev$deviceId", 'full_name' => "lab/dev$deviceId", 'last' => ['start' => gmdate('Y-m-d H:i:s', $this->t0 + 305) . ' UTC',
+                'end' => gmdate('Y-m-d H:i:s', $this->t0 + 306) . ' UTC', 'status' => 'success']];
+        }
+        $lifecycle->advance($id, $this->t0 + 310);
+
+        $this->assertSame([[510], [511, 512, 513, 514], [502], [503]], $this->launched());
+        $this->assertSame([503, 513], $this->windows->windows[103]['devices'], 'lab-sw8 is out of the window');
+        $this->assertSame([513], $this->changes->windows[4]['cut_off']);
+        $this->assertStringContainsString('Maintenance window #103 of batch 4 now covers what the batch cuts off right before its launch: no longer lab-sw8.', $this->messages($id));
+        $this->assertSame(['Ansible change #1 (CHG-1), batch 4: maintenance window #103 no longer covers this device: the batch no longer cuts it off'],
+            array_values(preg_grep('/no longer covers this device/', array_column($this->events->of(514), 'message'))), 'lab-sw8\'s eventlog says so');
+        $this->assertSame([], preg_grep('/no longer covers this device/', array_column($this->events->of(513), 'message')), 'not lab-sw7\'s: still covered');
+    }
+
     // ------------------------------------------------------------------ an acceptance, a Continue: for the blast radius the page showed
 
     public function testAnAcceptanceIsForTheBlastRadiusThePageShowed(): void
@@ -746,6 +802,23 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertNull($lifecycle->acceptBlast($id, $dave, true, 'lab-sw4 too', $this->t0 + 310, $this->seen($id)));
         $this->assertSame([[510], [511, 512, 513, 514], [502]], $this->launched());
         $this->assertSame([512, 511, 510], $this->changes->batches[$id][3]['blast_accepted']['lost']);
+    }
+
+    public function testOnlyABlastRadiusThatGrewIsAccepted(): void
+    {
+        // the change waits for the acceptance of batch 3's new blast radius, but the batch's check says otherwise (a row changed by
+        // hand, a request of an older version): nothing is accepted, the batch does not start
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->cuts[502] = [512, 511];
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $this->changes->batches[$id][3]['blast'] = ['state' => 'same'] + $this->changes->batches[$id][3]['blast'];
+
+        $this->assertSame('Batch 3 has no new blast radius to accept: reload the page.', $lifecycle->acceptBlast($id, self::BOB, true, '', $this->t0 + 300, $this->seen($id)));
+        $this->assertNull($this->changes->batches[$id][3]['blast_accepted']);
+        $this->assertSame([ChangeStatus::PAUSED, 2], [$this->changes->find($id)['status'], count($this->launched())]);
     }
 
     public function testAContinueWithoutABlastRadiusIsForWhatThePageShowed(): void

@@ -210,6 +210,29 @@ final class ChangeService
     }
 
     /**
+     * What a new change's batch plan, planned again at its creation, no longer keeps from the preview it was made from:
+     * its batches, or what they cut off (blastSignature(); "" for a plan of the settings, which has none); null when it
+     * keeps both, or when the preview's were not given (or there is no plan: the change is not made anyway).
+     *
+     * @param  ?int[][]  $expected  the batches the preview showed
+     * @param  ?string  $expectedBlast  the blast radius the preview showed
+     */
+    public static function previewDiffers(?BatchPlan $batches, ?array $expected, ?string $expectedBlast): ?string
+    {
+        if ($batches === null) {
+            return null;
+        }
+        if ($expected !== null && $batches->batches !== $expected) {
+            return 'The batches are no longer those of the preview (the settings or the devices changed): preview again.';
+        }
+        if ($expectedBlast !== null && ($batches->topology !== null ? self::blastSignature($batches->topology) : '') !== $expectedBlast) {
+            return 'What the batches cut off is no longer what the preview showed (the topology changed): preview again.';
+        }
+
+        return null;
+    }
+
+    /**
      * Is this a blast radius a preview gives (blastSignature(), or "" for a plan of the settings, which has none)?
      */
     public static function isBlastSignature(mixed $value): bool
@@ -247,11 +270,9 @@ final class ChangeService
             $errors[] = count($plan->refused) . ' of the chosen devices cannot be targets now (' . implode('; ',
                 array_map(fn ($r) => $r['display'] . ': ' . $r['text'], array_slice($plan->refused, 0, 5))) . '): preview again.';
         }
-        if ($expected !== null && $preview['batches'] !== null && $preview['batches']->batches !== $expected) {
-            $errors[] = 'The batches are no longer those of the preview (the settings or the devices changed): preview again.';
-        } elseif ($expectedBlast !== null && $preview['batches'] !== null
-            && ($preview['batches']->topology !== null ? self::blastSignature($preview['batches']->topology) : '') !== $expectedBlast) {
-            $errors[] = 'What the batches cut off is no longer what the preview showed (the topology changed): preview again.';
+        $differs = self::previewDiffers($preview['batches'], $expected, $expectedBlast);
+        if ($differs !== null) {
+            $errors[] = $differs;
         }
         if ($errors || ! $plan->ok() || $plan->refused || $preview['batches'] === null) {
             return ['change_id' => null, 'errors' => $errors ?: ['The change cannot be made: preview it again.'], 'preview' => self::forPage($preview), 'existing' => false];

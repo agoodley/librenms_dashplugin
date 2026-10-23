@@ -34,8 +34,9 @@ final class TopologyPlanning implements Topology
     /**
      * @param  string  $api  the class of the planning API (API; another in the tests)
      * @param  string  $provider  the topology plugin's service provider (PROVIDER; another in the tests)
+     * @param  (\Closure(int): ?object)|null  $users  the LibreNMS user of an id, null when there is none (LibreNMS' users; others in the tests)
      */
-    public function __construct(private readonly string $api = self::API, private readonly string $provider = self::PROVIDER)
+    public function __construct(private readonly string $api = self::API, private readonly string $provider = self::PROVIDER, private readonly ?\Closure $users = null)
     {
     }
 
@@ -113,7 +114,7 @@ final class TopologyPlanning implements Topology
      */
     private function user(int $userId): object
     {
-        $user = $userId > 0 ? User::find($userId) : null;
+        $user = $userId > 0 ? ($this->users ?? fn (int $id) => User::find($id))($userId) : null;
         if ($user === null) {
             throw new TopologyError("the LibreNMS user #$userId the topology is computed for no longer exists");
         }

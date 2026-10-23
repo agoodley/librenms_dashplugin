@@ -324,6 +324,29 @@ class RolloutPlanTest extends TestCase
         $this->assertFalse(BlastRadius::compare([512], [512])['core_lost']);
     }
 
+    public function testANewChangeIsMadeOnlyWithTheBatchesAndTheBlastRadiusItsPreviewShowed(): void
+    {
+        $plan = self::make()['plan'];
+        $shown = ChangeService::blastSignature($plan->topology);
+        $this->assertNull(ChangeService::previewDiffers($plan, $plan->batches, $shown), 'as the preview showed');
+        $this->assertNull(ChangeService::previewDiffers($plan, null, null), 'nothing given: nothing compared');
+        $this->assertNull(ChangeService::previewDiffers(null, $plan->batches, 'x'), 'no plan: the change is not made anyway');
+
+        // the topology changed between the preview and Create: lab-sw2 now also cuts off lab-sw5, the batches are the same
+        $now = RolloutPlan::make(self::ALL, [], 1, 5, 1, true, 0, self::planner(self::ALL, 5), RolloutPlan::LEAVE,
+            fn (array $batch) => self::blast($batch, [502 => [512, 511]] + self::CUTS))['plan'];
+        $this->assertSame($plan->batches, $now->batches);
+        $this->assertSame('What the batches cut off is no longer what the preview showed (the topology changed): preview again.',
+            ChangeService::previewDiffers($now, $plan->batches, $shown));
+        $this->assertSame('The batches are no longer those of the preview (the settings or the devices changed): preview again.',
+            ChangeService::previewDiffers($now, [[501], [502]], $shown), 'the batches first');
+        // a preview planned by the settings ("": no blast radius) and a change the topology plugin plans now, and the other way round
+        $this->assertSame('What the batches cut off is no longer what the preview showed (the topology changed): preview again.', ChangeService::previewDiffers($plan, null, ''));
+        $settings = BatchPlan::make(self::ALL, [], 1, 5, 1, true, 0);
+        $this->assertNull(ChangeService::previewDiffers($settings, null, ''));
+        $this->assertSame('What the batches cut off is no longer what the preview showed (the topology changed): preview again.', ChangeService::previewDiffers($settings, null, $shown));
+    }
+
     public function testOnlyABlastRadiusAPreviewGivesIsTakenForOne(): void
     {
         $signature = ChangeService::blastSignature(self::make()['plan']->topology);
@@ -348,6 +371,23 @@ class RolloutPlanTest extends TestCase
             'lab-sw2 skipped: another signature');
         $this->assertSame($signature, ChangeService::blastSignature($plan(fn (array $batch) => ['unmanaged' => 7, 'names' => []] + self::blast($batch))),
             'unmanaged neighbors and names are not kept');
+    }
+
+    public function testACheckOfABlastRadiusIsKnownByWhatThePageShowsOfIt(): void
+    {
+        // what an acceptance or a Continue names: what the batch cuts off and what that is measured from, what grew, why it cannot
+        // be computed and what the window would cover; not when it was checked, the names, the unmanaged neighbors or the link
+        $record = ['state' => 'grew', 'lost' => [512, 511], 'reference' => 'core', 'core_lost' => false, 'added' => [511], 'window' => [512, 511], 'unplanned' => [],
+            'at' => '2026-10-22 10:00:00', 'names' => [511 => 'lab-sw5'], 'unmanaged' => 3, 'simulate' => 'plugin/topology/l2?fail=d%3A502', 'held' => [512]];
+        $id = BlastRadius::checkId($record);
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $id);
+        foreach (['at' => '2026-10-22 10:01:00', 'names' => [], 'unmanaged' => 4, 'simulate' => null, 'lost' => [511, 512], 'window' => [511, 512]] as $key => $value) {
+            $this->assertSame($id, BlastRadius::checkId([$key => $value] + $record), "the same check whatever its $key");
+        }
+        foreach (['state' => 'unknown', 'lost' => [512, 511, 510], 'reference' => 'largest part', 'core_lost' => true, 'added' => [511, 510], 'window' => [512],
+            'error' => 'an error', 'unplanned' => [['device_id' => 502, 'reason' => 'down']]] as $key => $value) {
+            $this->assertNotSame($id, BlastRadius::checkId([$key => $value] + $record), "another check when its $key differs");
+        }
     }
 
     public function testTheWindowCoversTheBatchAndWhatItCutsOff(): void
