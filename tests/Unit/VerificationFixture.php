@@ -167,7 +167,8 @@ final class VerificationFixture implements Sources
         $links = array_values(array_filter($this->links, fn (array $link) => in_array($link['local_device_id'], $ids, true) || in_array($link['remote_device_id'], $ids, true)));
         $stp = [];
         foreach ($this->roots as $device => $root) {
-            if (in_array($device, $rootIds, true)) {
+            // secret's own row too, as a buggy source would read it: it says which device a root bridge's MAC is
+            if (in_array($device, $rootIds, true) || $device === self::SECRET) {
                 $stp[] = ['device_id' => $device, 'vlan' => 1, 'designatedRoot' => self::MACS[$root], 'bridgeAddress' => self::MACS[$device]];
             }
         }

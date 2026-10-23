@@ -159,4 +159,55 @@ class StateCompareTest extends TestCase
         $this->assertSame(['facts' => [], 'checks' => [], 'errors' => ['facts' => [], 'checks' => []], 'devices' => []],
             StateCompare::compare($before, $checks() + self::state(self::T + 600, $link, $spof + $route))['skipped']);
     }
+
+    public function testASpanningTreeFactWhoseVlansChangedIsAChange(): void
+    {
+        $collector = new FactCollector(self::NAMES, [32 => ['port_id' => 32, 'device_id' => 3, 'ifName' => 'Gi1/0/50']]);
+        $blocking = fn (array $vlans) => $collector->blockedPorts(array_map(fn (int $vlan) => ['device_id' => 3, 'port_id' => 32, 'vlan' => $vlan, 'state' => 'blocking'], $vlans));
+
+        // the same port, the same fact: it blocks VLAN 10 too after the batch
+        $events = StateCompare::compare(self::state(self::T, $blocking([1])), self::state(self::T + 600, $blocking([1, 10])))['events'];
+
+        $this->assertSame([['blocking_started', [10], 'acc1 Gi1/0/50 started blocking in VLAN 10']], array_map(fn (array $e) => [$e['type'], $e['vlans'], $e['text']], $events));
+        $this->assertSame([], StateCompare::compare(self::state(self::T, $blocking([1, 10])), self::state(self::T + 600, $blocking([1, 10])))['events']);
+    }
+
+    public function testOnlyTheFactsOfDevicesBothStatesCoverAreCompared(): void
+    {
+        $ports = [21 => ['port_id' => 21, 'device_id' => 2, 'ifName' => 'Te1/0/1'], 11 => ['port_id' => 11, 'device_id' => 1, 'ifName' => 'Te1/0/9']];
+        $uplink = (new FactCollector(self::NAMES, $ports))->links([['local_device_id' => 2, 'local_port_id' => 21, 'remote_device_id' => 1, 'remote_port_id' => 11,
+            'remote_hostname' => 'core1', 'remote_port' => 'Te1/0/9', 'remote_platform' => '', 'remote_version' => '', 'protocol' => 'lldp']]);
+        // dist1 (2) a neighbor in the state before, in no scope after: the state after did not look at its uplink to core1
+        $before = self::state(self::T, $uplink);
+        $after = ['scope' => ['subjects' => [3], 'dependents' => [], 'neighbors' => [], 'included' => [], 'domain' => [1]]] + self::state(self::T + 600);
+
+        $compared = StateCompare::compare($before, $after);
+
+        $this->assertSame([], $compared['events'], 'not "Link gone": the state after did not cover dist1');
+        $this->assertSame([2], $compared['skipped']['devices'], 'it is said instead');
+        $this->assertSame(['link_removed'], array_column(StateCompare::compare($before, self::state(self::T + 600))['events'], 'type'), 'covered by both: gone');
+    }
+
+    public function testTheRootBridgeOfEachSwitchOfBothDomainsIsCompared(): void
+    {
+        // core1 (1) is in the domain of both states only (no fact of it is recorded): its root bridge moved
+        $roots = fn (string $mac, int $owner) => ['roots' => [['root' => $mac, 'root_device' => $owner, 'vlans' => [0], 'devices' => [1]]]];
+        $events = StateCompare::compare($roots('00ab01000000', 1) + self::state(self::T), $roots('00ab02000000', 2) + self::state(self::T + 600))['events'];
+
+        $this->assertSame([['root_changed', [1], [0]]], array_map(fn (array $e) => [$e['type'], $e['devices'], $e['vlans']], $events));
+        $this->assertSame(['mac' => '00ab01000000', 'device' => 1], $events[0]['root_before']);
+        $this->assertSame(['mac' => '00ab02000000', 'device' => 2], $events[0]['root_after']);
+    }
+
+    public function testAFindingTakesThePlaceOfOneOfTheSameVlanOnly(): void
+    {
+        $stp = fn (array $vlans) => ['analysis' => 'stp', 'code' => 'root_default_priority', 'label' => 'x', 'severity' => 'warning', 'title' => 'Root bridge acc1 elected with the default priority',
+            'devices' => [3], 'subjects' => [3], 'vlans' => $vlans, 'quiet' => false];
+        $compared = StateCompare::compare(self::state(self::T, [], ['v10' => $stp([10])]), self::state(self::T + 600, [], ['v20' => $stp([20])]))['findings'];
+
+        $this->assertSame([['v20'], ['v10'], []], [array_column($compared['new'], 'identity'), array_column($compared['resolved'], 'identity'), $compared['changed']],
+            'VLAN 20\'s finding is a new one, VLAN 10\'s resolved');
+        $same = StateCompare::compare(self::state(self::T, [], ['a' => $stp([10, 20])]), self::state(self::T + 600, [], ['b' => $stp([10])]))['findings'];
+        $this->assertSame([['b'], 'a'], [array_column($same['changed'], 'identity'), $same['changed'][0]['was']['identity']], 'of the same VLAN (its first): its successor');
+    }
 }

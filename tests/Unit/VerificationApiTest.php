@@ -99,6 +99,18 @@ class VerificationApiTest extends TestCase
         $this->assertSame([], $api->fixes()['fixes']);
     }
 
+    public function testARootBridgeTheUserMayNotSeeIsNamedByItsMacOnly(): void
+    {
+        $net = new Net();
+        $net->roots = array_fill_keys([Net::CORE1, Net::CORE2, Net::DIST1, Net::ACC1, Net::ACC2, Net::FAR1, Net::SECRET], Net::SECRET);
+
+        $state = Verification::withSources($net)->state([Net::ACC1]);
+
+        $this->assertSame([['root' => Net::MACS[Net::SECRET], 'root_device' => null, 'vlans' => [0], 'devices' => [1, 2, 3, 4, 5, 7]]], $state['roots'],
+            'every switch sees secret as its root bridge: its MAC, never its device');
+        $this->assertStringNotContainsString('secret', json_encode($state));
+    }
+
     public function testTwoStatesCompareInTheHistorysWords(): void
     {
         $net = new Net();

@@ -30,26 +30,68 @@ class VerificationRepository extends ScopedRepository
         }
         $states = [];
         foreach (array_chunk($ids, 5000) as $chunk) {
-            foreach (DB::table('devices')->whereIntegerInRaw('device_id', $chunk)
-                ->get(['device_id', 'status', 'last_discovered', 'last_discovered_timetaken', 'last_polled', 'last_polled_timetaken']) as $row) {
-                $states[(int) $row->device_id] = [
-                    'up' => (bool) $row->status,
-                    'down_since' => null,
-                    'discovered_at' => self::started($row->last_discovered, $row->last_discovered_timetaken),
-                    'polled_at' => self::started($row->last_polled, $row->last_polled_timetaken),
-                    'discovery_pending' => $row->last_discovered === null,
-                ];
+            foreach ($this->deviceRows($chunk) as $row) {
+                $states[(int) $row->device_id] = self::stateOf($row);
             }
         }
         $down = array_keys(array_filter($states, fn (array $state) => ! $state['up']));
-        if ($down && $this->allowsTable('device_outages') && Schema::hasTable('device_outages')) {
-            foreach (DB::table('device_outages')->whereIntegerInRaw('device_id', $down)->whereNull('up_again')->groupBy('device_id')
-                ->selectRaw('device_id, MAX(going_down) AS since')->get() as $row) {
-                $states[(int) $row->device_id]['down_since'] = (int) $row->since;
+        if ($down) {
+            foreach ($this->outageStarts($down) as $deviceId => $since) {
+                $states[(int) $deviceId]['down_since'] = (int) $since;
             }
         }
 
         return $states;
+    }
+
+    /**
+     * A device's status and freshness from its devices row: up; when its last discovery and its last poll started (LibreNMS
+     * records when one ended and how long it took); a discovery pending when it was asked for and has not run
+     * (last_discovered empty, as LibreNMS' Rediscover leaves it). Its outage (down_since) is read apart.
+     *
+     * @return array{up: bool, down_since: ?int, discovered_at: ?int, polled_at: ?int, discovery_pending: bool}
+     */
+    public static function stateOf(object $row): array
+    {
+        return [
+            'up' => (bool) $row->status,
+            'down_since' => null,
+            'discovered_at' => self::started($row->last_discovered, $row->last_discovered_timetaken),
+            'polled_at' => self::started($row->last_polled, $row->last_polled_timetaken),
+            'discovery_pending' => $row->last_discovered === null,
+        ];
+    }
+
+    /**
+     * The devices rows of these devices: their status and the end and length of their last discovery and poll.
+     *
+     * @param  int[]  $ids
+     * @return iterable<object>
+     */
+    protected function deviceRows(array $ids): iterable
+    {
+        return DB::table('devices')->whereIntegerInRaw('device_id', $ids)
+            ->get(['device_id', 'status', 'last_discovered', 'last_discovered_timetaken', 'last_polled', 'last_polled_timetaken']);
+    }
+
+    /**
+     * When the current outage of each of these devices began (the device_outages table, when the user's role may read it).
+     *
+     * @param  int[]  $ids
+     * @return array<int, int> device_id => Unix time
+     */
+    protected function outageStarts(array $ids): array
+    {
+        if (! $this->allowsTable('device_outages') || ! Schema::hasTable('device_outages')) {
+            return [];
+        }
+        $since = [];
+        foreach (DB::table('device_outages')->whereIntegerInRaw('device_id', $ids)->whereNull('up_again')->groupBy('device_id')
+            ->selectRaw('device_id, MAX(going_down) AS since')->get() as $row) {
+            $since[(int) $row->device_id] = (int) $row->since;
+        }
+
+        return $since;
     }
 
     /**
@@ -67,16 +109,37 @@ class VerificationRepository extends ScopedRepository
         }
         $found = [];
         foreach (array_chunk($ids, 5000) as $chunk) {
-            foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $chunk)->where('remote_device_id', '>', 0)
-                ->distinct()->pluck('remote_device_id') as $deviceId) {
+            foreach ($this->reportedBy($chunk) as $deviceId) {
                 $found[(int) $deviceId] = true;
             }
-            foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('remote_device_id', $chunk)->distinct()->pluck('local_device_id') as $deviceId) {
+            foreach ($this->reporting($chunk) as $deviceId) {
                 $found[(int) $deviceId] = true;
             }
         }
 
         return array_values(array_diff($this->visibleOf(array_keys($found)), $ids));
+    }
+
+    /**
+     * The monitored far ends the devices report by LLDP/CDP (their active links).
+     *
+     * @param  int[]  $ids
+     * @return iterable<int>
+     */
+    protected function reportedBy(array $ids): iterable
+    {
+        return DB::table('links')->where('active', 1)->whereIntegerInRaw('local_device_id', $ids)->where('remote_device_id', '>', 0)->distinct()->pluck('remote_device_id');
+    }
+
+    /**
+     * The devices that report one of these devices as their far end (a link LLDP/CDP sees from that side only too).
+     *
+     * @param  int[]  $ids
+     * @return iterable<int>
+     */
+    protected function reporting(array $ids): iterable
+    {
+        return DB::table('links')->where('active', 1)->whereIntegerInRaw('remote_device_id', $ids)->distinct()->pluck('local_device_id');
     }
 
     /**
