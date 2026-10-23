@@ -302,6 +302,10 @@
                     @endif
                     <span class="ans-muted" id="ans-action-state"></span>
                 </div>
+                @if($actions['approve'] || $actions['reject'] || $actions['accept'])
+                    <p class="ans-help" id="ans-comment-note" style="margin-top: 6px">The comment goes into the timeline and, as written, into the eventlog of each device of
+                        the change: whoever may see one of those devices in LibreNMS can read it.</p>
+                @endif
                 @if($status === ChangeStatus::AWAITING && $canApprove && $approvalRefusal)
                     <p class="ans-help" id="ans-approval-refusal" style="margin-top: 6px">{{ $approvalRefusal }}</p>
                 @elseif($status === ChangeStatus::AWAITING && ! $actions['approve'])
