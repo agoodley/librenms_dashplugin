@@ -105,11 +105,11 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
   [Oxidized and maintenance windows](#oxidized-and-maintenance-windows).
 * The runner must reach LibreNMS over HTTP(S) (it fetches the inventory from it), and LibreNMS must reach the runner's
   API and Oxidized's.
-* For the rollout plan and the blast radius (optional): the [topology plugin](../README.md) of this repository, with
-  its [planning API](../README.md#planning-api-for-other-plugins) 1.x, installed and enabled in LibreNMS, and what it
-  needs: LibreNMS' LLDP/CDP discovery of the devices and their ports, and the core devices in its settings (*Core
-  devices*, else its guess). Without it the settings plan the batches, as in phase 2. See [Rollout plan and blast
-  radius](#rollout-plan-and-blast-radius).
+* For the rollout plan and the blast radius (optional): the [topology plugin](../README.md) of this repository, from
+  the same commit (its [planning API](../README.md#planning-api-for-other-plugins) 1.x; 1.1 names the core a plan is
+  measured from), installed and enabled in LibreNMS, and what it needs: LibreNMS' LLDP/CDP discovery of the devices
+  and their ports, and the core devices in its settings (*Core devices*, else its guess). Without it the settings plan
+  the batches, as in phase 2. See [Rollout plan and blast radius](#rollout-plan-and-blast-radius).
 
 ## Installation
 
@@ -181,12 +181,20 @@ The runs of phase 1 stay in the audit log as they were.
 
 **From phase 2**, `./lnms migrate` adds the columns of the blast radius. Then:
 
-1. With the topology plugin installed and enabled, new changes are planned by it (*Plan with the topology plugin*, on
-   by default): check its *Core devices* setting and that LibreNMS discovers the LLDP/CDP neighbors of your devices;
-   its *Rollout Planner* page shows what it plans. The devices it cannot plan are left out of a new change unless the
-   admin puts them in a batch planned by hand.
-2. Changes made before keep their plan: their blast radius is unknown, and they go on as in phase 2.
-3. A batch whose blast radius grew waits for an admin to accept the new one: with an approval asked for, an admin with
+1. **Update the topology plugin together with this one**, or install it: phase 3 plans with the topology plugin's
+   planning API from the same commit of this repository, and a topology plugin from before it is said to be *too old
+   for the planning API* on this plugin's pages (its own pages and menus still work). Both plugins come from one clone:
+   with the path repository of [Installation](#installation), `git pull` in the clone updates both, then `./lnms
+   migrate`. To install the topology plugin from that clone, follow its [Installation](../README.md#installation) with
+   a path repository to the clone's root (its last steps: `./lnms plugin:add agoodley/librenms-topology-plugin @dev`,
+   `./lnms migrate`).
+2. With the topology plugin installed and enabled, new changes are planned by it (*Plan with the topology plugin*, on
+   by default): set its *Core devices* (*Overview → Plugins → Plugin Admin → topology → Settings*; empty, it guesses
+   the core, and the plans say so) and check that LibreNMS discovers the LLDP/CDP neighbors of your devices; its
+   *Rollout Planner* page shows what it plans. The devices it cannot plan are left out of a new change unless the
+   admin puts them in batches planned by hand.
+3. Changes made before keep their plan: their blast radius is unknown, and they go on as in phase 2.
+4. A batch whose blast radius grew waits for an admin to accept the new one: with an approval asked for, an admin with
    the approve permission (not the requester with a second admin); with *Approval* off, an admin with the run
    permission. One whose blast radius cannot be computed waits for an admin with the run permission. Or set *When the
    blast radius grew* and *When the blast radius cannot be computed* to *refuse the batch*.

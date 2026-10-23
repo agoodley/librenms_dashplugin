@@ -22,24 +22,38 @@ final class TopologyPlanning implements Topology
     /** The class of the topology plugin's planning API. */
     public const API = 'Agoodley\\LibrenmsTopology\\Api\\Planning';
 
+    /** The topology plugin's service provider: there before the planning API was (a topology plugin too old for it). */
+    public const PROVIDER = 'Agoodley\\LibrenmsTopology\\TopologyServiceProvider';
+
     /** The major version of the planning API this plugin speaks. */
     public const MAJOR = 1;
 
     /** @var array<int, object> user id => the planning API as that user sees the network now */
     private array $planning = [];
 
+    /**
+     * @param  string  $api  the class of the planning API (API; another in the tests)
+     * @param  string  $provider  the topology plugin's service provider (PROVIDER; another in the tests)
+     */
+    public function __construct(private readonly string $api = self::API, private readonly string $provider = self::PROVIDER)
+    {
+    }
+
     public function unavailable(): ?string
     {
-        if (! class_exists(self::API)) {
-            return 'the topology plugin is not installed';
+        if (! class_exists($this->api)) {
+            // both plugins come from one repository: an update of the clone updates both
+            return class_exists($this->provider)
+                ? 'the topology plugin is too old for the planning API this plugin needs: update it (it comes from the same repository as this plugin)'
+                : 'the topology plugin is not installed';
         }
-        $version = (string) constant(self::API . '::VERSION');
+        $version = (string) constant($this->api . '::VERSION');
         if ((int) $version !== self::MAJOR) {
             return 'the topology plugin\'s planning API is version ' . UntrustedText::line($version, 20) . ', and this plugin speaks version ' . self::MAJOR
                 . '.x: update both plugins';
         }
         try {
-            $why = (self::API)::unavailable();
+            $why = ($this->api)::unavailable();
         } catch (\Throwable $e) {
             Log::error('ansible plugin: the topology plugin cannot say whether it is enabled: ' . ErrorText::forLog($e));
 
@@ -72,7 +86,7 @@ final class TopologyPlanning implements Topology
             throw new TopologyError($why);
         }
         try {
-            $planning = $this->planning[$userId] ??= (self::API)::forUser($this->user($userId));
+            $planning = $this->planning[$userId] ??= ($this->api)::forUser($this->user($userId));
             $answer = $work($planning);
         } catch (TopologyError $e) {
             throw $e;
