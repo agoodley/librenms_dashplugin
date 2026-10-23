@@ -16,7 +16,8 @@
     $answer = fn ($var) => $prefill !== null && array_key_exists($var->name, $prefill['vars']) ? $prefill['vars'][$var->name] : $var->default;
     // a change made from fixes (the Fixes page): its template, devices and the lines of its fix variable (read only) are the fix's
     $fixVar = $fix !== null ? ($fix['variable'] ?? null) : null;
-    $fixReference = $fix !== null && ($fix['title'] ?? '') !== '' ? mb_substr('Fix: ' . $fix['title'], 0, 120) : null;
+    // the kind and how many devices, never their names: the reference names the change in the eventlog of every target
+    $fixReference = $fix !== null && ($fix['devices'] ?? []) ? \Agoodley\LibrenmsAnsible\Changes\FixAnswers::reference((string) $fix['kind'], count($fix['devices'])) : null;
     $typeLabels = ['string' => 'text', 'text' => 'several lines', 'int' => 'whole number', 'enum' => 'one of a list', 'secret' => 'secret'];
 @endphp
 

@@ -229,8 +229,18 @@ final class FixAnswers
     }
 
     /**
-     * What the fixes are for, in words (the reference of the change, the timeline): "Fix: Port descriptions of lab-sw2;
-     * Port descriptions of lab-sw6".
+     * The default reference of a change made from fixes: its kind and how many devices it changes, never their names ("Fix:
+     * port descriptions, 2 devices"): the reference names the change in the eventlog of every target, and of the devices a
+     * window cuts off, which name no other device.
+     */
+    public static function reference(string $kind, int $devices): string
+    {
+        return 'Fix: ' . strtolower(self::LABELS[$kind] ?? 'fixes') . ', ' . ($devices === 1 ? '1 device' : "$devices devices");
+    }
+
+    /**
+     * What the fixes are for, in words, with the devices' names (the timeline, the new change page): "Port descriptions of
+     * lab-sw2; Port descriptions of lab-sw6".
      *
      * @param  list<array>  $fixes
      */

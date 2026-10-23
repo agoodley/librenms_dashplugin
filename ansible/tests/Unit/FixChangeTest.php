@@ -95,6 +95,15 @@ class FixChangeTest extends TestCase
         $this->assertSame(['lab-sw1.netops.lab pvst 1,10 4096'], $lines['lines']);
     }
 
+    public function testTheDefaultReferenceNamesNoDevice(): void
+    {
+        $this->assertSame('Fix: port descriptions, 2 devices', FixAnswers::reference('port_descriptions', 2));
+        $this->assertSame('Fix: spanning tree root priority, 1 device', FixAnswers::reference('stp_root_priority', 1));
+        $this->assertStringNotContainsString('lab-sw', FixAnswers::reference('port_descriptions', 2), 'the eventlog of every target carries it');
+        $this->assertSame('Port descriptions of lab-sw2; Port descriptions of lab-sw6', FixAnswers::title('port_descriptions', array_slice(self::answer()['fixes'], 0, 2)),
+            'the names stay in the timeline');
+    }
+
     public function testTheDevicesOfTheFixes(): void
     {
         $answer = self::answer()['fixes'];

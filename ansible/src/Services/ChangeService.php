@@ -193,7 +193,7 @@ final class ChangeService
                 }
             }
             if ($reference === '') {
-                $reference = 'Fix: ' . $draft['title'];
+                $reference = FixAnswers::reference($draft['kind'], count($draft['devices']));
             }
         }
         if ($ordered ?? []) {
