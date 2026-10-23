@@ -750,7 +750,15 @@ it cuts off with those approved, or accepted since:
   the batch*, the change ends.
 
 Unmanaged neighbors are counted, not compared: a phone more or less does not stop a batch. A change planned by the
-settings has no approved blast radius, and goes as in phase 2.
+settings has no approved blast radius, and goes as in phase 2. Nothing is computed while a batch runs (see
+[Limitations](#limitations)).
+
+**Pause or refuse.** Both settings pause by default: an unattended change then waits for an admin instead of failing,
+and the admin's decision is recorded. Choose *refuse the batch* where a paused change could wait unseen for long:
+while it waits, its devices stay reserved for it (no other change can be applied to them) and its remaining batches
+wait with it. A refused batch ends the change at once as failed, with nothing launched for that batch (a window
+opened for it closes); *a new change with the remaining devices* then takes the rest, after a new dry run (and
+approval).
 
 ### Maintenance windows cover what a batch cuts off
 
@@ -1057,8 +1065,11 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   plan, and unmanaged neighbors are those LLDP/CDP reports. **Devices without neighbors cannot be planned**: they are
   left out or planned by hand, with an unknown blast radius.
 * **Port states are as LibreNMS last polled them:** a link that went down since its last poll is still up for the
-  planner, so the check right before a launch is only as fresh as the polling. While a batch runs its blast radius is
-  not computed again: a link that goes down meanwhile is caught before the next batch.
+  planner, so the check right before a launch is only as fresh as the polling.
+* **A link that fails while a batch runs is not caught then.** The blast radius is computed only before each batch
+  and right before its launch: a failure during a batch shows only in the next batch's check, and one during the last
+  batch nowhere. Watching the topology while and after a change runs is
+  [phase 4](../ROADMAP.md#change-automation-with-ansible)'s verification.
 * The plan and the checks see the network as the admin who makes the change or starts the batch sees it: devices
   outside their view are unknown to the planner (left out, or planned by hand).
 
