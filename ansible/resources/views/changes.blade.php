@@ -88,7 +88,9 @@
                     <td data-label="Dry run">@if($state)<span class="label label-{{ $state[0] }}">{{ $state[1] }}</span>@else<span class="text-muted">-</span>@endif</td>
                     <td data-label="Status"><span class="label label-{{ ChangeStatus::css($change['status']) }}">{{ ChangeStatus::label($change['status']) }}</span>
                         @if(in_array($change['status'], ChangeStatus::RESERVING, true))
-                            <span class="ans-muted">batch {{ $change['current_batch'] }} of {{ $change['batch_count'] }}{{ $change['waiting'] ? ' · ' . ['canary' => 'waits for an admin', 'secrets' => 'waits for the secret answers', 'timer' => 'pause'][$change['waiting']] ?? '' : '' }}</span>
+                            {{-- the inline form: this view's other @php is inline too (a block @php here would swallow the row) --}}
+                            @php($waitText = ChangeStatus::waitingText($change['waiting']))
+                            <span class="ans-muted ans-change-waiting" @if($change['waiting']) data-waiting="{{ $change['waiting'] }}" @endif>batch {{ $change['current_batch'] }} of {{ $change['batch_count'] }}{{ $waitText !== null ? ' · ' . $waitText : '' }}</span>
                         @endif
                     </td>
                 </tr>

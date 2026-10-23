@@ -25,7 +25,10 @@ final class ChangeStatus
     /** A batch is being prepared (maintenance window, backups), launched or followed. */
     public const APPLYING = 'applying';
 
-    /** Waiting between two batches: for an admin to continue, for the secret answers, or for the pause to end. */
+    /**
+     * Waiting between two batches (WAITS): for an admin to continue, for the secret answers, for the pause to end, or before
+     * a batch whose blast radius grew (until an admin accepts it) or cannot be computed.
+     */
     public const PAUSED = 'paused';
 
     /** A stop was asked for: the running batch is being stopped. */
@@ -49,6 +52,15 @@ final class ChangeStatus
     /** Statuses before the apply. */
     public const PREPARING = [self::DRAFT, self::DRY_RUN, self::AWAITING, self::READY];
 
+    /** What a paused change waits for (its waiting column), as the lists say it. */
+    public const WAITS = [
+        'canary' => 'waits for an admin',
+        'secrets' => 'waits for the secret answers',
+        'timer' => 'pause',
+        'blast' => 'waits for its new blast radius to be accepted',
+        'blast_unknown' => 'waits: its blast radius cannot be computed',
+    ];
+
     public const LABELS = [
         self::DRAFT => 'Draft', self::DRY_RUN => 'Dry run', self::AWAITING => 'Awaiting approval', self::READY => 'Ready to apply',
         self::APPLYING => 'Applying', self::PAUSED => 'Paused', self::STOPPING => 'Stopping', self::APPLIED => 'Applied', self::FAILED => 'Failed',
@@ -69,6 +81,14 @@ final class ChangeStatus
     public static function label(string $status): string
     {
         return self::LABELS[$status] ?? ucfirst($status);
+    }
+
+    /**
+     * What a change waits for, in words; null when it waits for nothing (a value of another version: "waits").
+     */
+    public static function waitingText(?string $waiting): ?string
+    {
+        return $waiting === null || $waiting === '' ? null : (self::WAITS[$waiting] ?? 'waits');
     }
 
     /**

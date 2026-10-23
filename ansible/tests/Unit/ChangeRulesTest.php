@@ -312,6 +312,31 @@ class ChangeRulesTest extends TestCase
             (string) ApprovalRules::acceptRefusal(ApprovalRules::OFF, ['waiting' => 'canary'] + $change, 1, true));
     }
 
+    public function testEveryWaitOfAPausedChangeHasItsWords(): void
+    {
+        // what the lifecycle sets a change's waiting to: literal values, and the waits of blastStop()
+        $source = (string) file_get_contents(__DIR__ . '/../../src/Changes/ChangeLifecycle.php');
+        preg_match_all("/'waiting' => '([a-z_]+)'/", $source, $set);
+        preg_match_all("/blastStop\\(\\\$change, \\\$number, '([a-z_]+)'/", $source, $blast);
+        $waits = array_values(array_unique([...$set[1], ...$blast[1]]));
+        sort($waits);
+        $this->assertSame(['blast', 'blast_unknown', 'canary', 'secrets', 'timer'], $waits);
+        foreach ($waits as $waiting) {
+            $this->assertArrayHasKey($waiting, ChangeStatus::WAITS, "the lists say what \"$waiting\" waits for");
+            $this->assertNotSame('', ChangeStatus::waitingText($waiting));
+        }
+        $this->assertSame('waits for its new blast radius to be accepted', ChangeStatus::waitingText('blast'));
+        $this->assertSame('waits: its blast radius cannot be computed', ChangeStatus::waitingText('blast_unknown'));
+        $this->assertNull(ChangeStatus::waitingText(null));
+        $this->assertNull(ChangeStatus::waitingText(''));
+        $this->assertSame('waits', ChangeStatus::waitingText('something_later'), 'a wait of another version does not break a list');
+
+        // the changes list shows them through waitingText(), never through an array of its own
+        $view = (string) file_get_contents(__DIR__ . '/../../resources/views/changes.blade.php');
+        $this->assertStringContainsString('ChangeStatus::waitingText($change[\'waiting\'])', $view);
+        $this->assertDoesNotMatchRegularExpression("/\\[\\s*'canary'\\s*=>/", $view);
+    }
+
     public function testApprovalsExpireAndNeedTheirApprover(): void
     {
         $now = strtotime('2026-10-22 12:00:00 UTC');

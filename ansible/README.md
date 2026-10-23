@@ -455,7 +455,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   plugin cannot prove to be one is shown in red, *NOT PROVEN*, with why: it may have changed the devices, and it can be
   neither approved nor applied. Once it is verified, an admin with the approve permission **Approve**s (with a comment)
   or **Reject**s; approvers find the changes that wait for them on the Changes page, with the status filter *Awaiting
-  approval*. **Apply** starts the first batch: its maintenance window, the backups, then its run; after it the change
+  approval*, and under *Paused* those whose batch waits for its new blast radius to be accepted (the status column
+  says what each paused change waits for, and so does the list's JSON, `waiting` and `waiting_text`). **Apply** starts the first batch: its maintenance window, the backups, then its run; after it the change
   waits for **Continue** (when *Wait after the first batch* is on), and the next batches follow on their own until the
   last, or until one fails. A batch whose blast radius grew since the approval waits for an admin's **Accept the new
   blast radius** (an approver's, while the settings ask for an approval), one whose blast radius cannot be computed for

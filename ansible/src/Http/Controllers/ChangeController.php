@@ -99,6 +99,8 @@ class ChangeController extends Controller
             'dry_run_state' => $change['dry_run_state'], 'dry_run_label' => ChangeText::DRY_STATES[$change['dry_run_state'] ?? ''][1] ?? null,
             'targets' => (int) $change['target_count'],
             'target_names' => $change['target_names'], 'batches' => (int) $change['batch_count'], 'current_batch' => (int) $change['current_batch'],
+            // what a paused change waits for: an admin, the secret answers, the pause, the acceptance of a batch's new blast radius ...
+            'waiting' => $change['waiting'], 'waiting_text' => ChangeStatus::waitingText($change['waiting']),
             'url' => route('ansible.changes.show', $change['id']),
         ], $result['rows'])]);
     }
@@ -297,7 +299,8 @@ class ChangeController extends Controller
         return response()->json([
             'id' => $id, 'status' => $change['status'], 'label' => ChangeStatus::label($change['status']), 'css' => ChangeStatus::css($change['status']),
             'final' => ChangeStatus::isFinal($change['status']), 'version' => (int) $change['version'], 'pending' => $state['pending'],
-            'waiting' => $change['waiting'], 'current_batch' => (int) $change['current_batch'], 'error' => $change['error'] !== null ? Clock::localize($change['error']) : null,
+            'waiting' => $change['waiting'], 'waiting_text' => ChangeStatus::waitingText($change['waiting']), 'current_batch' => (int) $change['current_batch'],
+            'error' => $change['error'] !== null ? Clock::localize($change['error']) : null,
             'actions' => $state['actions'], 'signature' => $state['signature'], 'log' => $log,
         ]);
     }
