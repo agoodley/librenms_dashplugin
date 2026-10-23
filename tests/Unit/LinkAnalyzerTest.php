@@ -347,6 +347,8 @@ class LinkAnalyzerTest extends TestCase
         $this->assertSame('sw_shut_end', LinkAnalyzer::cleanDescription("sw\n!\nshut\r\nend"), 'each run of other characters is one underscore');
         $this->assertSame('a b', LinkAnalyzer::cleanDescription('  a    b  '));
         $this->assertSame('x_y_z', LinkAnalyzer::cleanDescription('x"y\'z'));
+        $this->assertSame('C:_temp/x', LinkAnalyzer::cleanDescription('C:\\temp/x'), 'a backslash is none of its characters, a slash is');
+        $this->assertSame('A-Za-z0-9 ._\\/:+()#@,-', LinkAnalyzer::DESCRIPTION_CHARS, 'the slash escaped for the / delimiter');
         $this->assertSame('ap-12.example.net Gi1/0/1 (port 1) #2 @rack:3,+_', LinkAnalyzer::cleanDescription('ap-12.example.net Gi1/0/1 (port 1) #2 @rack:3,+;'));
         $long = LinkAnalyzer::cleanDescription(str_repeat('abcdefghij', 12));
         $this->assertSame(LinkAnalyzer::DESCRIPTION_MAX, mb_strlen($long));

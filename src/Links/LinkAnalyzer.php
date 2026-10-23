@@ -35,7 +35,7 @@ class LinkAnalyzer
      * The characters a description cleanDescription() makes may have (a character class body), and its most characters:
      * what host and port names use, so no line break, quote or variable reaches a configuration.
      */
-    public const DESCRIPTION_CHARS = 'A-Za-z0-9 ._\\/:+()#@,-';
+    public const DESCRIPTION_CHARS = 'A-Za-z0-9 ._\/:+()#@,-'; // \/ is the slash, escaped for the / delimiter: no backslash
 
     public const DESCRIPTION_MAX = 80;
 

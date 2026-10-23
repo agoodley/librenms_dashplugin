@@ -235,6 +235,14 @@ class VerificationRulesTest extends TestCase
 
     // ------------------------------------------------------------------ the fix templates' contract
 
+    public function testADescriptionWithABackslashIsNotOneTheLinkCheckBuilds(): void
+    {
+        $refused = FixAnswers::check('port_descriptions', 'acc1.lab Gi1/0/49 C:\\temp', [3 => 'acc1.lab']);
+        $this->assertSame(['line 1: its description is not one the link check builds (letters, digits, spaces and . _ / : + ( ) # @ , -, at most 80)'], $refused);
+        $this->assertSame([], FixAnswers::check('port_descriptions', 'acc1.lab Gi1/0/49 dist1 Te1/0/1 (a/b)', [3 => 'acc1.lab']));
+        $this->assertSame('A-Za-z0-9 ._\\/:+()#@,-', FixAnswers::DESCRIPTION_CHARS, 'the topology plugin\'s characters (LinkAnalyzer::DESCRIPTION_CHARS): the slash escaped');
+    }
+
     public function testTheLinesOfDescriptionFixesAreCheckedFieldByField(): void
     {
         $hosts = [3 => 'acc1.lab', 4 => 'acc2.lab'];
@@ -258,9 +266,9 @@ class VerificationRulesTest extends TestCase
         // the check of an answer, as the playbook gets it
         $this->assertSame([], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, implode("\n", $built['lines']), $hosts));
         $this->assertSame(['line 1: its host is not a target of the change', 'line 2: its interface name is not one the plugin passes to a playbook (letters, digits and / . _ : -, at most 64)',
-            'line 3: its description is not one the link check builds (letters, digits, spaces and . _ / \\ : + ( ) # @ , -, at most 80)', 'line 4 is not "<host> <interface> <description>"'],
+            'line 3: its description is not one the link check builds (letters, digits, spaces and . _ / : + ( ) # @ , -, at most 80)', 'line 4 is not "<host> <interface> <description>"'],
             FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, "other.lab Gi1/0/1 x\nacc1.lab Gi1/0/1;reload x\nacc1.lab Gi1/0/1 x;y\nacc1.lab Gi1/0/1", $hosts));
-        $this->assertSame(['line 1: its description is not one the link check builds (letters, digits, spaces and . _ / \\ : + ( ) # @ , -, at most 80)'],
+        $this->assertSame(['line 1: its description is not one the link check builds (letters, digits, spaces and . _ / : + ( ) # @ , -, at most 80)'],
             FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, 'acc1.lab Gi1/0/1 ' . str_repeat('a', 81), $hosts));
 
         // the interface must be a port of its host as LibreNMS knows it

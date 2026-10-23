@@ -12,7 +12,7 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
  * - Port descriptions, variable port_descriptions: "<host> <interface> <description>". The host is a target of the
  *   change (its inventory name); the interface a port of that device as LibreNMS knows it (its ifName: letters, digits
  *   and / . _ : -, at most 64); the description the one the topology plugin's link check builds from the LLDP/CDP
- *   neighbor: letters, digits, spaces and . _ / \ : + ( ) # @ , -, at most 80, no space at either end or two in a row.
+ *   neighbor: letters, digits, spaces and . _ / : + ( ) # @ , - (no backslash), at most 80, no space at either end or two in a row.
  * - Spanning tree root priority, variable stp_priorities: "<host> <mode> <instances> <priority>". The mode pvst (a
  *   priority per VLAN: the instances are VLANs 1-4094), mst (the instances are MST instances 0-4094, the fix sets the
  *   CIST, 0) or stp (one instance: "-"); the instances a canonical list (ascending, ranges joined: 1,10-12); the
@@ -36,7 +36,7 @@ final class FixAnswers
     public const LABELS = [self::PORT_DESCRIPTIONS => 'Port descriptions', self::STP_ROOT_PRIORITY => 'Spanning tree root priority'];
 
     /** What a description may hold (a regular expression character class body), and how long it may be. */
-    public const DESCRIPTION_CHARS = 'A-Za-z0-9 ._\\/:+()#@,-';
+    public const DESCRIPTION_CHARS = 'A-Za-z0-9 ._\/:+()#@,-'; // \/ is the slash, escaped for the / delimiter: no backslash
 
     public const DESCRIPTION_MAX = 80;
 
@@ -428,7 +428,7 @@ final class FixAnswers
     {
         return preg_match('/^[' . self::DESCRIPTION_CHARS . ']{1,' . self::DESCRIPTION_MAX . '}$/D', $description) && trim($description) === $description
             && ! str_contains($description, '  ') ? null
-            : 'its description is not one the link check builds (letters, digits, spaces and . _ / \\ : + ( ) # @ , -, at most ' . self::DESCRIPTION_MAX . ')';
+            : 'its description is not one the link check builds (letters, digits, spaces and . _ / : + ( ) # @ , -, at most ' . self::DESCRIPTION_MAX . ')';
     }
 
     private static function priorityProblem(mixed $priority): ?string

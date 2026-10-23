@@ -6,7 +6,7 @@
 #   host         the device as the plugin's inventory names it (inventory_hostname);
 #   interface    the port as LibreNMS names it (its ifName, e.g. Fa0/1): letters, digits and / . _ : -, at most 64;
 #   description  the rest of the line: the description the topology plugin's link check built from the LLDP/CDP
-#                neighbor, letters, digits, spaces and . _ / \ : + ( ) # @ , -, at most 80, no space at either end or
+#                neighbor, letters, digits, spaces and . _ / : + ( ) # @ , - (no backslash), at most 80, no space at either end or
 #                two in a row.
 # The plugin checked every field before the launch; this playbook checks them again before it uses them: a host with a
 # line that is not that fails and changes nothing. Each host takes the lines that name it; a host without one changes
@@ -21,7 +21,7 @@
     lnms_interface_re: '[A-Za-z0-9][A-Za-z0-9/._:-]{0,63}'
     lnms_interfaces_re: '(?m)^interface (\S+)[ \t]*$'
     lnms_backslash: '\'
-    lnms_description_re: '(?=.{1,80}$)[A-Za-z0-9._\\/:+()#@,-]+(?: [A-Za-z0-9._\\/:+()#@,-]+)*'
+    lnms_description_re: '(?=.{1,80}$)[A-Za-z0-9._/:+()#@,-]+(?: [A-Za-z0-9._/:+()#@,-]+)*'
     lnms_mine: "{{ port_descriptions.splitlines() | select('match', (inventory_hostname | regex_escape) ~ ' ') | list }}"
     lnms_ports: >-
       {{ lnms_mine | select('match', (inventory_hostname | regex_escape) ~ ' ' ~ lnms_interface_re ~ ' ' ~ lnms_description_re ~ '$') | list }}

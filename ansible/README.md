@@ -1048,7 +1048,7 @@ network much faster than the whole list):
 
 * **Port descriptions:** a port whose description names the wrong LLDP/CDP neighbor, or none (between monitored
   devices). The fix sets the description the topology plugin's link check builds from the neighbor: its name and
-  port, cleaned (letters, digits, spaces and `. _ / \ : + ( ) # @ , -`; anything else becomes `_`), at most 80
+  port, cleaned (letters, digits, spaces and `. _ / : + ( ) # @ , -`; anything else, a backslash too, becomes `_`), at most 80
   characters.
 * **Spanning tree root priority:** a part of the network whose root bridge is not the intended one, or was elected
   with the default priority. The intended root is the first of the topology plugin's *Designated root bridges* in
@@ -1092,7 +1092,7 @@ per item (checked with the runner when the setting is saved and at each new chan
 * **interface:** a port of that device as LibreNMS names it (its `ifName`, e.g. `Gi1/0/1`): letters, digits and
   `/ . _ : -`, at most 64. A fix with a port whose name is not that is refused as a whole.
 * **description:** the rest of the line, the link check's description: letters, digits, spaces and
-  `. _ / \ : + ( ) # @ , -`, at most 80, no space at either end or two in a row. A name a neighbor sends by LLDP or
+  `. _ / : + ( ) # @ , -` (no backslash), at most 80, no space at either end or two in a row. A name a neighbor sends by LLDP or
   CDP reaches a playbook only like this.
 * **mode:** `pvst` (a priority per VLAN: the instances are VLANs 1–4094), `mst` (the instances are MST instances
   0–4094; the fix sets the CIST, 0) or `stp` (one instance: `-`). **instances:** a canonical list (ascending; two in
