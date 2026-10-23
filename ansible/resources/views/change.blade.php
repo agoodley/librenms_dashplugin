@@ -194,10 +194,9 @@
                     so what it cuts off is measured from the largest piece left, not from the core.@endif
                 While it runs it would now cut off
                 @forelse((array) ($waitBlast['lost'] ?? []) as $lostId)<a href="{{ url('device/' . $lostId) }}" class="{{ in_array($lostId, (array) ($waitBlast['added'] ?? []), true) ? 'ans-blast-added' : '' }}">{{ $deviceName((int) $lostId, $names) }}</a>@if(! $loop->last), @endif @empty no other monitored device @endforelse
-                @if((int) ($waitBlast['unmanaged'] ?? 0) > 0) and {{ (int) $waitBlast['unmanaged'] }} unmanaged {{ (int) $waitBlast['unmanaged'] === 1 ? 'neighbor' : 'neighbors' }}@endif
-                @if((array) ($waitBlast['added'] ?? [])):
-                    <strong>{{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['added'] ?? []), $names) }}</strong> {{ count((array) ($waitBlast['added'] ?? [])) === 1 ? 'was' : 'were' }} not
-                    {{ $heldWord }}@endif
+                @if((int) ($waitBlast['unmanaged'] ?? 0) > 0) and {{ (int) $waitBlast['unmanaged'] }} unmanaged {{ (int) $waitBlast['unmanaged'] === 1 ? 'neighbor' : 'neighbors' }}@endif{{ (array) ($waitBlast['added'] ?? []) ? ':' : '' }}
+                @if((array) ($waitBlast['added'] ?? []))<strong>{{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['added'] ?? []), $names) }}</strong>
+                    {{ count((array) ($waitBlast['added'] ?? [])) === 1 ? 'was' : 'were' }} not {{ $heldWord }}@endif
                 ({{ $heldWord }}: {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['held'] ?? []), $names) }}).
                 @if(! empty($waitBlast['unplanned']))<span id="ans-blast-grew-unplanned">Besides, {{ $waitBlast['error'] ?? '' }}: once the new blast radius is accepted, the batch waits for an admin to continue it without one.</span>@endif
                 @if(! empty($waitBlast['simulate']))<a href="{{ url($waitBlast['simulate']) }}" class="btn btn-xs btn-default" id="ans-blast-grew-simulate" target="_blank" rel="noopener"><i class="fa fa-bolt"></i> Simulate it on the L2 map</a>@endif
