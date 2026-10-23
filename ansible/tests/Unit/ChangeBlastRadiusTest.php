@@ -234,6 +234,17 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame(ChangeStatus::FAILED, $this->changes->find($refused)['status']);
         $this->assertStringContainsString('lab-sw5', (string) $this->changes->find($refused)['error'], 'the change page names it');
 
+        // a device of a batch the topology can no longer tell about (down in LibreNMS), and an admin who continues without a blast radius
+        $this->topology->cuts = RolloutPlanTest::CUTS;
+        $skipped = $this->approved(self::plan([502, 503]));
+        $this->topology->skips[503] = 'down';
+        $lifecycle->apply($skipped, self::ALICE, [], $this->t0 + 7000);
+        $this->endBatch($skipped, 1, $this->t0 + 7100);
+        $this->assertSame('blast_unknown', $this->changes->find($skipped)['waiting']);
+        $this->assertStringContainsString('lab-sw3 (down now)', (string) $this->changes->batches[$skipped][2]['note'], 'the change page names it');
+        $this->assertNull($lifecycle->resume($skipped, self::ALICE, [], $this->t0 + 7200));
+        $this->assertSame('override', $this->changes->batches[$skipped][2]['blast']['state']);
+
         $names = RolloutPlanTest::NAMES;
         $this->assertGreaterThan(80, count($this->events->entries));
         foreach ($this->events->entries as $entry) {
@@ -254,6 +265,10 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertStringContainsString('batch 4: its blast radius shrank since the approval: it cuts off 1 device fewer; it goes on', $sw3);
         $sw1 = implode("\n", array_column($this->events->of(501), 'message'));
         $this->assertStringContainsString('batch 5: continued by alice without a blast radius (it cannot be computed: an error); its maintenance window covers its devices and no other device', $sw1);
+        $this->assertStringContainsString('batch 2: its blast radius cannot be computed now (the topology plugin can no longer tell what depends on 1 device of the batch '
+            . '(down now))', $sw2);
+        $this->assertStringContainsString('batch 2: continued by alice without a blast radius (it cannot be computed: the topology plugin can no longer tell what depends '
+            . 'on 1 device of the batch (down now)); its maintenance window covers its devices and the 2 devices approved as cut off', $sw2);
     }
 
     public function testAChangePlannedByThePluginsSettingsHasNoBlastCheck(): void
@@ -571,6 +586,128 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame([], $this->windows->windows);
     }
 
+    // ------------------------------------------------------------------ a device of the batch the topology can no longer tell about
+
+    public function testADeviceOfTheBatchTheTopologyCanNoLongerTellAboutLeavesItsBlastRadiusUnknown(): void
+    {
+        // lab-sw2 (batch 3, approved as cutting off lab-sw6) is down in LibreNMS when batch 3 starts, though the runner still reaches
+        // it: the topology plugin skips it ("down now") and leaves out what depends on it, so it cuts off nothing as far as it can
+        // tell. That is not "shrank": the batch's blast radius cannot be computed
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->skips[502] = 'down';
+        $this->endBatch($id, 2, $this->t0 + 200);
+
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'blast_unknown', 3], [$change['status'], $change['waiting'], (int) $change['current_batch']]);
+        $this->assertCount(2, $this->launched(), 'batch 3 is not launched');
+        $this->assertCount(2, $this->windows->windows, 'nor its window opened');
+        $record = $this->changes->batches[$id][3]['blast'];
+        $this->assertSame(['unknown', [['device_id' => 502, 'reason' => 'down']], [], [512], [512]],
+            [$record['state'], $record['unplanned'], $record['lost'], $record['held'], $record['window']], 'the device and the reason in the record');
+        $this->assertSame('Its blast radius cannot be computed now (the topology plugin can no longer tell what depends on lab-sw2 (down now))',
+            $this->changes->batches[$id][3]['note']);
+        $this->assertStringContainsString('Batch 3: its blast radius cannot be computed now (the topology plugin can no longer tell what depends on lab-sw2 (down now)). '
+            . 'The batch does not start until its blast radius can be computed again (checked every minute), or an admin continues it', $this->messages($id));
+        $this->assertStringNotContainsString('shrank', $this->messages($id));
+        $this->assertSame('Ansible change #1 (CHG-1), batch 3: its blast radius cannot be computed now (the topology plugin can no longer tell what depends on 1 device '
+            . 'of the batch (down now)). The batch does not start until its blast radius can be computed again (checked every minute), or an admin continues it, '
+            . 'without one if it still cannot be computed.', end($this->events->entries)['message'], 'the eventlog of the targets counts it');
+
+        // checked again every minute: still down, it waits
+        $lifecycle->advance($id, $this->t0 + 262);
+        $this->assertSame('blast_unknown', $this->changes->find($id)['waiting']);
+        $this->assertSame([Clock::store($this->t0 + 262), [['device_id' => 502, 'reason' => 'down']]],
+            [$this->changes->batches[$id][3]['blast']['at'], $this->changes->batches[$id][3]['blast']['unplanned']]);
+        $this->assertCount(2, $this->launched());
+
+        // an admin continues it without a blast radius: its window covers lab-sw2 and lab-sw6, approved as cut off (what lab-sw2 cuts
+        // off while it is down in LibreNMS is not known), and the decision is recorded
+        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 300));
+        $this->assertSame([[510], [511, 512, 513, 514], [502]], $this->launched());
+        $this->assertSame([502, 512], $this->windows->windows[102]['devices']);
+        $this->assertSame([512], $this->changes->windows[3]['cut_off']);
+        $batch = $this->changes->batches[$id][3];
+        $this->assertSame(['override', [512], 'the topology plugin can no longer tell what depends on lab-sw2 (down now)'],
+            [$batch['blast']['state'], $batch['blast']['window'], $batch['blast_override']['why']]);
+        $this->assertStringContainsString('Batch 3: continued by alice without a blast radius (it cannot be computed: the topology plugin can no longer tell what depends '
+            . 'on lab-sw2 (down now)); its maintenance window covers its devices and the devices approved as cut off: lab-sw6', $this->messages($id));
+        $this->assertMatchesRegularExpression('/^Batch 3 of 5 launched by alice \(run #\d+\): its blast radius unknown \(continued without one\), its window covers lab-sw6\.$/m',
+            $this->messages($id));
+        $this->assertNotEmpty(preg_grep('/^Ansible change #1 \(CHG-1\), batch 3: continued by alice without a blast radius \(it cannot be computed: the topology plugin can '
+            . 'no longer tell what depends on 1 device of the batch \(down now\)\); its maintenance window covers its devices and the 1 device approved as cut off$/',
+            array_column($this->events->of(501), 'message')), 'in the eventlog, in counts');
+    }
+
+    public function testEveryReasonTheTopologyCannotTellAboutADeviceLeavesTheBlastRadiusUnknown(): void
+    {
+        // lab-sw3's LLDP links are gone (a discovery run, or a change that touched LLDP), its uplink is down, or the admin who starts
+        // the batch may no longer see it: what depends on it is unknown
+        foreach (['isolated' => 'no LLDP/CDP neighbors: no topology data', 'unconnected' => 'no path to the core now', 'unknown' => 'unknown, disabled or not visible'] as $reason => $text) {
+            $this->setUp();
+            $id = $this->approved(self::plan([502, 503]));
+            $this->topology->skips[503] = $reason;
+            $this->lifecycle()->apply($id, self::ALICE, [], $this->t0 + 50);
+            $this->endBatch($id, 1, $this->t0 + 100);
+            $change = $this->changes->find($id);
+            $this->assertSame([ChangeStatus::PAUSED, 'blast_unknown', 2], [$change['status'], $change['waiting'], (int) $change['current_batch']], $reason);
+            $this->assertSame("Its blast radius cannot be computed now (the topology plugin can no longer tell what depends on lab-sw3 ($text))",
+                $this->changes->batches[$id][2]['note'], $reason);
+            $this->assertSame([[502]], $this->launched(), $reason);
+        }
+    }
+
+    public function testADeviceTheTopologyCanNoLongerTellAboutRightBeforeTheLaunchStopsTheLaunch(): void
+    {
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $this->backups->enabled = true;
+        $this->backups->succeed = false; // the backups before batch 1 take a while
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->assertSame([[510]], $this->windowDevices(), 'batch 1 started: its window is open, its backups asked for');
+
+        // meanwhile lab-sw4's LLDP links are gone (a discovery run): checked right before the launch
+        $this->topology->skips[510] = 'isolated';
+        $this->backups->nodes[510] = ['name' => 'dev510', 'full_name' => 'lab/dev510', 'last' => ['start' => gmdate('Y-m-d H:i:s', $this->t0 + 52) . ' UTC',
+            'end' => gmdate('Y-m-d H:i:s', $this->t0 + 55) . ' UTC', 'status' => 'success']];
+        $lifecycle->advance($id, $this->t0 + 60);
+
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'blast_unknown'], [$change['status'], $change['waiting']]);
+        $this->assertSame([], $this->launched(), 'not launched');
+        $this->assertSame('closed', $this->changes->windows[1]['status'], 'the window of that start closes');
+        $this->assertSame([['device_id' => 510, 'reason' => 'isolated']], $this->changes->batches[$id][1]['blast']['unplanned']);
+    }
+
+    public function testABlastRadiusThatGrewWhileADeviceIsSkippedIsAcceptedFirst(): void
+    {
+        // lab-sw7's LLDP links are gone and lab-sw5 now cuts off lab-sw4 (recabled behind it): what grew waits for an approver, then
+        // the batch waits for an admin to go on without a blast radius, and its window covers what was accepted
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->topology->skips[513] = 'isolated';
+        $this->topology->cuts[511] = [510];
+        $this->endBatch($id, 1, $this->t0 + 100);
+
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'blast', 2], [$change['status'], $change['waiting'], (int) $change['current_batch']]);
+        $record = $this->changes->batches[$id][2]['blast'];
+        $this->assertSame(['grew', [510], [['device_id' => 513, 'reason' => 'isolated']]], [$record['state'], $record['added'], $record['unplanned']]);
+        $this->assertStringContainsString('lab-sw7', $record['error'], 'the page says it too');
+        $this->assertStringContainsString('accept its new blast radius', (string) $lifecycle->resume($id, self::ALICE, [], $this->t0 + 150), 'Continue does not start it');
+
+        $this->assertNull($lifecycle->acceptBlast($id, self::BOB, true, '', $this->t0 + 200));
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'blast_unknown', 2], [$change['status'], $change['waiting'], (int) $change['current_batch']]);
+        $this->assertSame([[510]], $this->launched());
+        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 300));
+        $this->assertSame([[510], [511, 512, 513, 514]], $this->launched());
+        $this->assertSame([511, 512, 513, 514, 510], $this->windows->windows[101]['devices'], 'its window covers what was accepted');
+    }
+
     // ------------------------------------------------------------------ shrank: it goes on, and the window covers what it cuts off now
 
     public function testABlastRadiusThatShrankGoesOnAndSaysSo(): void
@@ -670,16 +807,20 @@ class ChangeBlastRadiusTest extends TestCase
         $id = $this->approved($plan);
         $lifecycle = $this->lifecycle();
         $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->topology->skips[509] = 'down';
         for ($number = 1; $number <= 5; $number++) {
             $this->endBatch($id, $number, $this->t0 + 100 * $number);
         }
-        // its neighbors are known now: it cuts off lab-sw7, which nobody approved
+        // still unknown to the topology (now down, too): it goes as approved, held to "cuts off nothing"
         $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status']);
         $this->assertSame([509], $this->runner->launches[count($this->runner->launches) - 1]['devices'], 'still unknown: it goes as approved');
+        $this->assertSame(['same', []], [$this->changes->batches[$id][6]['blast']['state'], $this->changes->batches[$id][6]['blast']['unplanned']]);
         $this->endBatch($id, 6, $this->t0 + 700);
         $this->assertSame(ChangeStatus::APPLIED, $this->changes->find($id)['status']);
 
+        // its neighbors are known now: it cuts off lab-sw7, which nobody approved
         $id = $this->approved($plan);
+        $this->topology->skips = [];
         $this->topology->cuts[509] = [513];
         $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
         for ($number = 1; $number <= 5; $number++) {

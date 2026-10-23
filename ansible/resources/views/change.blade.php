@@ -195,6 +195,7 @@
                 @if((int) ($waitBlast['unmanaged'] ?? 0) > 0) and {{ (int) $waitBlast['unmanaged'] }} unmanaged {{ (int) $waitBlast['unmanaged'] === 1 ? 'neighbor' : 'neighbors' }}@endif:
                 <strong>{{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['added'] ?? []), $names) }}</strong> {{ count((array) ($waitBlast['added'] ?? [])) === 1 ? 'was' : 'were' }} not
                 {{ $heldWord }} ({{ $heldWord }}: {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['held'] ?? []), $names) }}).
+                @if(! empty($waitBlast['unplanned']))<span id="ans-blast-grew-unplanned">Besides, {{ $waitBlast['error'] ?? '' }}: once the new blast radius is accepted, the batch waits for an admin to continue it without one.</span>@endif
                 @if(! empty($waitBlast['simulate']))<a href="{{ url($waitBlast['simulate']) }}" class="btn btn-xs btn-default" id="ans-blast-grew-simulate" target="_blank" rel="noopener"><i class="fa fa-bolt"></i> Simulate it on the L2 map</a>@endif
                 <div style="font-weight: normal; margin-top: 4px">{{ ucfirst(ApprovalRules::accepter($settings->approval)) }} accepts the new blast radius
                     (recorded in the timeline and the eventlog), and the batch starts again; or stop the change. Computed {{ $local($waitBlast['at'] ?? null) }}, as {{ $waitBatch['username'] ?: 'the admin who starts the batch' }} sees the network.</div>
@@ -205,10 +206,17 @@
                     or stops the change.</div>
             @endif
         @elseif($waitBatch !== null && $change['waiting'] === 'blast_unknown')
-            @php $names = $blastNames($waitBlast); $held = (array) ($waitBlast['lost'] ?? []); @endphp
+            @php
+                $names = $blastNames($waitBlast);
+                $held = (array) ($waitBlast['window'] ?? $waitBlast['lost'] ?? []);
+                $unplanned = array_values(array_filter((array) ($waitBlast['unplanned'] ?? []), 'is_array'));
+                $fix = $unplanned ? ' (' . implode('; ', array_map(fn (array $u) => $deviceName((int) ($u['device_id'] ?? 0), $names) . ': '
+                    . \Agoodley\LibrenmsAnsible\Changes\TopologyPlan::fixText((string) ($u['reason'] ?? '')), $unplanned)) . ')'
+                    : (str_contains((string) ($waitBlast['error'] ?? ''), 'disabled') ? ' (enable the topology plugin again in Plugin Admin)' : '');
+            @endphp
             <div class="ans-warning-loud" id="ans-blast-unknown"><i class="fa fa-question-circle"></i>
                 Batch {{ (int) $change['current_batch'] }} does not start: its blast radius cannot be computed now ({{ $waitBlast['error'] ?? 'no answer' }}).
-                <div style="font-weight: normal; margin-top: 4px">Fix that{{ str_contains((string) ($waitBlast['error'] ?? ''), 'disabled') ? ' (enable the topology plugin again in Plugin Admin)' : '' }},
+                <div style="font-weight: normal; margin-top: 4px">Fix that{{ $fix }},
                     then <em>Continue</em>, or let the plugin check again on its own: it does every minute (last {{ $local($waitBlast['at'] ?? null) }}), and starts the batch
                     once its blast radius can be computed. <em>Continue</em> computes it first; only if it still cannot be computed does the batch go without one,
                     its maintenance window then covering its devices and the devices {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, is_array($waitBatch['blast_accepted'] ?? null))[1] }} as cut off

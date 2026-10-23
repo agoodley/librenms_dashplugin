@@ -295,6 +295,19 @@ final class TopologyPlan
     }
 
     /**
+     * What makes a device the topology plugin cannot tell about (for that reason) known to it again, in words.
+     */
+    public static function fixText(string $reason): string
+    {
+        return match ($reason) {
+            'down' => 'LibreNMS sees it up again',
+            'isolated' => 'LibreNMS discovers its LLDP/CDP neighbors again',
+            'unconnected' => 'its path to the core is back',
+            default => 'it is enabled in LibreNMS again and the admin who starts the batch may see it',
+        };
+    }
+
+    /**
      * A batch's place, in words: "2 hops from the core", "1 hop from the core", "the core", "planned by hand".
      */
     public static function tierText(int|string|null $tier): string

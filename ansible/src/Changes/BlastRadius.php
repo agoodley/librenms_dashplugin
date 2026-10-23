@@ -11,8 +11,10 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
  * (reference: "largest part" when the batch takes every core device of its part down) and the devices of the batch
  * the topology can tell nothing about (skipped: down, without LLDP/CDP neighbors, without a path to the core, or
  * unknown to it: what depends on them is unknown). The one approved with the change (TopologyPlan) is compared with
- * the one recomputed before each batch: a batch whose blast radius grew does not start without an approver; its
- * maintenance window covers its devices and the monitored devices it cuts off.
+ * the one recomputed before each batch: a batch whose blast radius grew does not start without an approver, nor one
+ * with a device the topology could tell about then and no longer can (unplanned(): its blast radius cannot be
+ * computed) without an admin's explicit decision; its maintenance window covers its devices and the monitored devices
+ * it cuts off.
  */
 final class BlastRadius
 {
@@ -102,6 +104,23 @@ final class BlastRadius
         $now = array_values(array_unique(array_map('intval', $now)));
 
         return ['added' => array_values(array_diff($now, $held)), 'removed' => array_values(array_diff($held, $now))];
+    }
+
+    /**
+     * The devices of a batch the topology plugin can no longer tell about (skipped now: down, without LLDP/CDP
+     * neighbors, without a path to the core, unknown to it) that it could tell about when the change was made (not
+     * skipped then): what depends on them is unknown now, so is the batch's blast radius. A device skipped then too (a
+     * batch planned by hand) changes nothing: the batch is still held to what was approved for it.
+     *
+     * @param  list<array{device_id: int, reason: string}>  $approved  the devices skipped when the change was made
+     * @param  list<array{device_id: int, reason: string}>  $now  the devices skipped now
+     * @return list<array{device_id: int, reason: string}>
+     */
+    public static function unplanned(array $approved, array $now): array
+    {
+        $before = array_map('intval', array_column($approved, 'device_id'));
+
+        return array_values(array_filter($now, fn (array $entry) => ! in_array((int) $entry['device_id'], $before, true)));
     }
 
     /**

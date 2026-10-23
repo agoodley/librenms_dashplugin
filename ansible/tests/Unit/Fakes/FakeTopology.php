@@ -16,6 +16,9 @@ final class FakeTopology implements Topology
     /** @var array<int, int[]> device => what it alone cuts off now */
     public array $cuts = RolloutPlanTest::CUTS;
 
+    /** @var array<int, string> device => why the topology can tell nothing about it now (down, isolated, unconnected, unknown) */
+    public array $skips = [];
+
     public ?string $unavailable = null;
 
     /** blastRadius() fails with this error (the topology plugin disabled, an error). */
@@ -47,6 +50,6 @@ final class FakeTopology implements Topology
             throw new TopologyError($this->error);
         }
 
-        return RolloutPlanTest::blast($deviceIds, $this->cuts);
+        return RolloutPlanTest::blast($deviceIds, $this->cuts, $this->skips);
     }
 }

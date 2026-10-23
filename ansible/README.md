@@ -379,7 +379,7 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | *Rollout plan and blast radius* | | the part says whether the topology plugin can plan now, and why not |
 | Plan with the topology plugin | on | a new change plans its batches with the topology plugin's rollout planner when it can (installed, enabled in LibreNMS, planning API 1.x), and approves what each batch cuts off; off, or without it, the settings above plan them and the blast radius is unknown |
 | When the blast radius grew | pause until an admin accepts it | a batch that would cut off devices that were not approved waits for an admin to accept the new blast radius: one with the approve permission (not the requester with a second admin), or, while *Approval* is off, one with the run permission; or *refuse the batch*: the change ends |
-| When the blast radius cannot be computed | pause for an admin | a batch whose blast radius cannot be computed (the topology plugin disabled, an error) waits for an admin with the run permission to continue it without one; or *refuse the batch* |
+| When the blast radius cannot be computed | pause for an admin | a batch whose blast radius cannot be computed (the topology plugin disabled, an error, a device of the batch it can no longer tell about) waits for an admin with the run permission to continue it without one; or *refuse the batch* |
 | *Run permission*, *Approve permission* | | who may prepare and apply changes, and who may approve them ([Permissions](#permissions)) |
 
 A setting that cannot be used is refused with the reason, and nothing is saved: a platform mapping line that cannot
@@ -760,13 +760,21 @@ it cuts off with those approved, or accepted since:
   and the window opened for the batch closes.
 * **It shrank:** the batch goes on, and the timeline says what it no longer cuts off.
 * **It cannot be computed** (the topology plugin disabled meanwhile, an error, a LibreNMS role that may not view the
-  links): **the batch does not start either**, and the change page says why. Fix the cause (enable the topology plugin
-  again), then *Continue*, or let the plugin check again on its own: the change page's poll and the sync command
-  compute it again every minute, and once it can be computed the batch starts as any, checked against its blast
-  radius. *Continue* (an admin with the run permission) computes it first, too; only if it still cannot be computed
-  does the batch go without one, recorded in the timeline and in the eventlog, its window then covering its devices
-  and the devices approved (or accepted) as cut off. With *When the blast radius cannot be computed: refuse the
-  batch*, the change ends.
+  links), or **a device of the batch is one the topology plugin could tell about when the change was made and no
+  longer can**: down in LibreNMS (while the runner may still reach it), without its LLDP/CDP neighbors (a discovery
+  run, or a change that touched LLDP), without a path to the core, or no longer visible to the admin who starts the
+  batch. What depends on such a device is not in what the batch cuts off, so a smaller blast radius would not mean
+  less goes down: **the batch does not start either**, and the change page says why, naming the device and the
+  reason (as do the timeline and the batch's record). Fix the cause (enable the topology plugin again, bring the
+  device back in LibreNMS), then *Continue*, or let the plugin check again on its own: the change page's poll and the
+  sync command compute it again every minute, and once it can be computed the batch starts as any, checked against
+  its blast radius. *Continue* (an admin with the run permission) computes it first, too; only if it still cannot be
+  computed does the batch go without one, recorded in the timeline and in the eventlog, its window then covering its
+  devices and the devices approved (or accepted) as cut off, with what it cuts off now as far as the topology plugin
+  can tell. A device of a batch planned by hand, which the topology plugin could not tell about when the change was
+  made either, changes nothing: the batch is held to what was approved for it. A blast radius that grew is said first,
+  also while a device is skipped: an approver accepts it, then the batch waits for the admin's decision. With *When
+  the blast radius cannot be computed: refuse the batch*, the change ends.
 
 Unmanaged neighbors are counted, not compared: a phone more or less does not stop a batch. A change planned by the
 settings has no approved blast radius, and goes as in phase 2. Nothing is computed while a batch runs (see

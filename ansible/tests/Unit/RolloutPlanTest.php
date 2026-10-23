@@ -69,19 +69,21 @@ class RolloutPlanTest extends TestCase
     }
 
     /**
-     * The planning API's blastRadius() of these devices in the lab ($cuts: what each device alone cuts off now).
+     * The planning API's blastRadius() of these devices in the lab ($cuts: what each device alone cuts off now; $skips:
+     * the devices the topology can tell nothing about now, with why: down, without LLDP/CDP neighbors...).
      *
      * @param  int[]  $devices
      * @param  array<int, int[]>  $cuts
+     * @param  array<int, string>  $skips
      */
-    public static function blast(array $devices, array $cuts = self::CUTS): array
+    public static function blast(array $devices, array $cuts = self::CUTS, array $skips = []): array
     {
         $lost = [];
         $unmanaged = 0;
         $skipped = [];
         foreach ($devices as $deviceId) {
-            if (! isset($cuts[$deviceId])) {
-                $skipped[] = ['device_id' => $deviceId, 'reason' => self::UNPLANNABLE[$deviceId] ?? 'unknown', 'text' => '...'];
+            if (! isset($cuts[$deviceId]) || isset($skips[$deviceId])) {
+                $skipped[] = ['device_id' => $deviceId, 'reason' => $skips[$deviceId] ?? self::UNPLANNABLE[$deviceId] ?? 'unknown', 'text' => '...'];
 
                 continue;
             }
