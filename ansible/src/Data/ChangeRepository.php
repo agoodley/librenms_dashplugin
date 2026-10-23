@@ -289,8 +289,8 @@ final class ChangeRepository implements ChangeStore
         }
         $scope = (array) ($state['scope'] ?? []);
         $covered = array_merge(...array_map(fn ($role) => array_map('intval', (array) ($scope[$role] ?? [])), ['subjects', 'dependents', 'neighbors', 'included']));
-        $this->saveScope($changeId, $batch, $phase, $covered, array_map('intval', (array) ($scope['domain'] ?? [])),
-            array_intersect_key((array) ($state['names'] ?? []), array_flip($covered)));
+        $domain = array_map('intval', (array) ($scope['domain'] ?? []));
+        $this->saveScope($changeId, $batch, $phase, $covered, $domain, array_intersect_key((array) ($state['names'] ?? []), array_flip([...$covered, ...$domain])));
         $this->sql->change('UPDATE ' . $this->sql->table('ansible_change_states') . ' SET `taken_at` = ?, `bytes` = ?, `data` = ?, `result` = ? WHERE `change_id` = ? AND `batch` = ? AND `phase` = ?',
             [Clock::store((int) ($state['taken_at'] ?? time())), strlen($json), 'gz:' . base64_encode((string) gzencode($json, 6)),
                 $result !== null ? json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) : null, $changeId, $batch, $phase]);

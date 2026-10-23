@@ -129,7 +129,7 @@ final class ApprovalRules
                 ? 'Accepting what a batch changed needs the Ansible plugin\'s run permission (ansible.run) while the settings ask for no approval: an admin grants it on the plugin\'s settings page.'
                 : 'Accepting what a batch changed needs the Ansible plugin\'s approve permission (ansible.approve), as an approval does: an admin grants it on the plugin\'s settings page.';
         }
-        if ($change['status'] !== ChangeStatus::PAUSED || ! in_array($change['waiting'] ?? null, ['verification', 'verification_unknown'], true)) {
+        if ($change['status'] !== ChangeStatus::PAUSED || ! in_array($change['waiting'] ?? null, ['verification', 'verify_unknown'], true)) {
             return 'Only a change that waits after a batch\'s verification (unexpected changes, or a batch that cannot be verified) has something to accept.';
         }
 

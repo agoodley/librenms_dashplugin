@@ -82,7 +82,8 @@ class VerificationApiTest extends TestCase
         $this->assertStringNotContainsString('secret', json_encode($state));
         $this->assertSame([], $api->state([Net::SECRET])['scope']['subjects']);
         $this->assertSame([], $api->scope([Net::SECRET])['subjects']);
-        $this->assertEquals([Net::ACC1 => 'acc1', Net::DIST1 => 'dist1', Net::CORE2 => 'core2'], $api->scope([Net::ACC1, Net::SECRET])['names'], 'the names of what a state of it records');
+        $this->assertEquals([Net::ACC1 => 'acc1', Net::DIST1 => 'dist1', Net::CORE2 => 'core2', Net::CORE1 => 'core1', Net::ACC2 => 'acc2', Net::FAR1 => 'far1'],
+            $api->scope([Net::ACC1, Net::SECRET])['names'], 'the names of every device of its scope, its spanning tree domain too: never one the user may not see');
         $this->assertSame([Net::ACC1], array_keys($api->freshness([Net::ACC1, Net::SECRET])['devices']));
 
         // nor do the fixes: a fix only changes ports of the device of its finding, a fix of a device the user may not see is none

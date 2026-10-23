@@ -206,4 +206,13 @@ class ChangeRepositoryTest extends TestCase
         $this->sql->change('UPDATE `ansible_run_targets` SET `unexpected` = 1 WHERE `run_id` = ?', [$stray]);
         $this->assertSame([513 => $stray], $runs->changedSince([513], $since, 7), 'a run on a device that was not its target counts too');
     }
+
+    public function testEveryWaitFitsTheColumnThatKeepsIt(): void
+    {
+        // ansible_changes.waiting is a string of 16 (the migration of phase 2): MySQL refuses a longer value, and the change would not pause
+        foreach (array_keys(\Agoodley\LibrenmsAnsible\Changes\ChangeStatus::WAITS) as $waiting) {
+            $this->assertLessThanOrEqual(16, strlen($waiting), $waiting);
+        }
+        $this->assertMatchesRegularExpression("/string\\('waiting', 16\\)/", (string) file_get_contents(__DIR__ . '/../../database/migrations/2026_11_01_000000_ansible_changes.php'));
+    }
 }

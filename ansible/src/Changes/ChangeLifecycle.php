@@ -96,7 +96,7 @@ final class ChangeLifecycle
     public const VERIFY_SEEN_CHANGED = 'The verification of the batch changed since you loaded the page: look again.';
 
     /** What the change waits for while a batch's unexpected changes, or a batch that cannot be verified, wait for an admin. */
-    public const VERIFY_WAITS = ['verification', 'verification_unknown'];
+    public const VERIFY_WAITS = ['verification', 'verify_unknown'];
 
     /** A target's record of what the inventory endpoint served the runner (InventoryGuard), cleared when its dry run or batch begins. */
     private const UNSERVED = ['served_hash' => null, 'served_at' => null, 'served_note' => null];
@@ -965,7 +965,7 @@ final class ChangeLifecycle
 
             return;
         }
-        if ($change['waiting'] === 'verification_unknown') {
+        if ($change['waiting'] === 'verify_unknown') {
             $this->verifyRecheck($change, $now);
 
             return;
@@ -2578,7 +2578,7 @@ final class ChangeLifecycle
             return false;
         }
         // pause: until an admin accepts (a batch that cannot be verified is checked again every minute meanwhile)
-        $waiting = $result === 'unexpected' ? 'verification' : 'verification_unknown';
+        $waiting = $result === 'unexpected' ? 'verification' : 'verify_unknown';
         if ($change['status'] !== ChangeStatus::PAUSED || $change['waiting'] !== $waiting) {
             $this->update($change, ['status' => ChangeStatus::PAUSED, 'waiting' => $waiting, 'resume_at' => null]);
         }

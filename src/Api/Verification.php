@@ -132,14 +132,14 @@ final class Verification
      * @param  int[]  $deviceIds  the subjects (those the scope may not see are left out)
      * @param  array{include?: int[], domain?: int[], dependents?: bool}  $options  as state()'s
      * @return array{version: string, subjects: int[], dependents: int[], neighbors: int[], included: int[], domain: int[], names: array<int, string>}
-     *     names: of the devices whose facts a state records (all but the domain)
+     *     names: of every device of the scope
      */
     public function scope(array $deviceIds, array $options = []): array
     {
         $scope = $this->expand(self::ids($deviceIds), $options);
 
         return ['version' => self::VERSION] + $scope + ['names' => $this->sources->names([...$scope['subjects'], ...$scope['dependents'], ...$scope['neighbors'],
-            ...$scope['included']])];
+            ...$scope['included'], ...$scope['domain']])];
     }
 
     /**

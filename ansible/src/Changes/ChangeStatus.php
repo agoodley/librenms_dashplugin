@@ -61,7 +61,7 @@ final class ChangeStatus
         'blast' => 'waits for its new blast radius to be accepted',
         'blast_unknown' => 'waits: its blast radius cannot be computed',
         'verification' => 'waits for the unexpected changes of a batch to be accepted',
-        'verification_unknown' => 'waits: a batch cannot be verified',
+        'verify_unknown' => 'waits: a batch cannot be verified',
     ];
 
     public const LABELS = [

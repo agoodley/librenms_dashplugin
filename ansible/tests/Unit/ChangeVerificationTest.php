@@ -406,7 +406,7 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame('waiting', $this->verify($id, 1)['after']['status']);
         $this->sync($id, $this->t0 + 2701);
         $change = $this->changes->find($id);
-        $this->assertSame([ChangeStatus::PAUSED, 'verification_unknown'], [$change['status'], $change['waiting']]);
+        $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown'], [$change['status'], $change['waiting']]);
         $this->assertSame(1, $this->verifier->count('state'), 'no state taken on data older than the batch\'s end: no comparison');
         $this->assertSame(0, $this->verifier->count('compare'));
         $this->assertStringContainsString("Batch 1 cannot be verified: LibreNMS' data of lab-sw4 (a discovery) is not newer than the end of the batch and its settle time", $this->messages($id));
@@ -437,7 +437,7 @@ class ChangeVerificationTest extends TestCase
         $this->verifier->comparison = ['skipped' => ['facts' => ['link'], 'checks' => ['redundancy']]];
         $this->sync($id, $this->t0 + 1080);
         $change = $this->changes->find($id);
-        $this->assertSame([ChangeStatus::PAUSED, 'verification_unknown'], [$change['status'], $change['waiting']], 'not verified: what was not compared may have changed');
+        $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown'], [$change['status'], $change['waiting']], 'not verified: what was not compared may have changed');
         $this->assertSame(['unknown', 'incomplete'], [$this->verify($id, 1)['result'], $this->verify($id, 1)['after']['status']]);
         $this->assertStringContainsString('Batch 1 cannot be verified: the topology plugin could not read the links and the redundancy check in the state before or after it',
             $this->messages($id));
@@ -463,7 +463,7 @@ class ChangeVerificationTest extends TestCase
         $this->assertStringContainsString('Batch 1 will not be verified: the topology plugin is disabled in LibreNMS', $this->messages($id));
         $this->endBatch($id, 1, $this->t0 + 300);
         $change = $this->changes->find($id);
-        $this->assertSame([ChangeStatus::PAUSED, 'verification_unknown'], [$change['status'], $change['waiting']], 'after it, it cannot be verified: the change pauses');
+        $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown'], [$change['status'], $change['waiting']], 'after it, it cannot be verified: the change pauses');
         $this->assertSame(0, count($this->verifier->calls));
 
         $this->assertNull($this->web($this->t0 + 400)->acceptVerification($id, self::BOB, true, '', $this->t0 + 400, $this->seen($id)));
@@ -588,7 +588,7 @@ class ChangeVerificationTest extends TestCase
         $this->fresh($this->t0 + 1000);
         $this->sync($id, $this->t0 + 1080);
         $change = $this->changes->find($id);
-        $this->assertSame([ChangeStatus::PAUSED, 'verification_unknown', 'unknown'], [$change['status'], $change['waiting'], $this->verify($id, 1)['result']]);
+        $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown', 'unknown'], [$change['status'], $change['waiting'], $this->verify($id, 1)['result']]);
         $this->assertStringContainsString("Batch 1 cannot be verified: the topology plugin's links check, which found the fix's findings, did not run in the state before or "
             . 'after it (its settings: Background checks); nothing else that was compared changed.', $this->messages($id));
     }

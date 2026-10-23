@@ -39,7 +39,7 @@
         'blast_unknown' => 'batch ' . (int) $change['current_batch'] . ' waits: its blast radius cannot be computed now (checked again every minute: the batch starts '
             . 'once it can be); Continue computes it first, and goes without one only while it still cannot',
         'verification' => 'batch ' . (int) $change['current_batch'] . ' made unexpected changes: batch ' . ((int) $change['current_batch'] + 1) . ' waits for an admin to accept them',
-        'verification_unknown' => 'batch ' . (int) $change['current_batch'] . ' cannot be verified (checked again every minute): batch ' . ((int) $change['current_batch'] + 1)
+        'verify_unknown' => 'batch ' . (int) $change['current_batch'] . ' cannot be verified (checked again every minute): batch ' . ((int) $change['current_batch'] + 1)
             . ' waits for an admin to accept going on without its verification'];
     // phase 4: the verification of the batches
     $verifyOn = $settings->verify || $verification;
