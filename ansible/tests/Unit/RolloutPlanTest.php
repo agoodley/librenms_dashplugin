@@ -355,6 +355,22 @@ class RolloutPlanTest extends TestCase
         foreach (['zz', strtoupper($signature), $signature . 'a', substr($signature, 1), $signature . "\n", ' ' . $signature, null, 0, 123, true, [$signature], ['x' => 1]] as $value) {
             $this->assertFalse(ChangeService::isBlastSignature($value), 'not one: ' . json_encode($value));
         }
+
+        // what a request to create a change says its preview showed: nothing (no check), none (the page sends "", LibreNMS turns it into
+        // null), or a signature; anything else is refused, never taken as nothing
+        $this->assertNull(ChangeService::expectedBlast(false, null));
+        $this->assertNull(ChangeService::expectedBlast(false, 'zz'), 'not given: whatever is there');
+        $this->assertSame('', ChangeService::expectedBlast(true, null), 'the empty string the page sends, as LibreNMS hands it on');
+        $this->assertSame('', ChangeService::expectedBlast(true, ''));
+        $this->assertSame($signature, ChangeService::expectedBlast(true, $signature));
+        foreach (['zz', strtoupper($signature), 12, [$signature]] as $value) {
+            try {
+                ChangeService::expectedBlast(true, $value);
+                $this->fail('refused: ' . json_encode($value));
+            } catch (\InvalidArgumentException $e) {
+                $this->assertSame('The blast radius of the preview is not one: preview again.', $e->getMessage());
+            }
+        }
     }
 
     public function testWhatANewChangeKeepsFromItsPreviewIsWhatEachBatchCutsOffAndWhatThatIsMeasuredFrom(): void
