@@ -396,7 +396,12 @@
                                                 @case('unknown')<span class="text-danger">checked {{ $local($record['at'] ?? null) }}: cannot be computed ({{ $record['error'] ?? '' }})</span>@break
                                                 @case('override')<span class="text-warning">continued without a blast radius by {{ $override['by'] ?? '?' }} {{ $local($override['at'] ?? null) }} ({{ $record['error'] ?? '' }})</span>@break
                                             @endswitch
-                                            @if(($record['reference'] ?? 'core') === 'largest part' && in_array($record['state'] ?? '', ['same', 'shrank', 'grew'], true))<div class="ans-blast-reference">measured from the largest piece left: no core device of its part is left</div>@endif
+                                            @php
+                                                // what the check measured from, when it is not what the batch was approved (or accepted) with: the approved one is said above
+                                                $checkedFrom = ($record['reference'] ?? 'core') === 'largest part' ? 'largest part' : 'core';
+                                                $heldFrom = ($accepted['reference'] ?? $approvedBlast['reference'] ?? 'core') === 'largest part' ? 'largest part' : 'core';
+                                            @endphp
+                                            @if($checkedFrom !== $heldFrom && in_array($record['state'] ?? '', ['same', 'shrank', 'grew'], true) && empty($record['core_lost']))<div class="ans-blast-reference">{{ $checkedFrom === 'largest part' ? 'measured from the largest piece left: no core device of its part is left' : 'measured from the core: a core device of its part is left' }}</div>@endif
                                         </div>
                                     @endif
                                 </td>
