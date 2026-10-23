@@ -1427,6 +1427,10 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   network behind it) are not in its blast radius, nor under its maintenance window.
 * **Port states are as LibreNMS last polled them:** a link that went down since its last poll is still up for the
   planner, so the check right before a launch is only as fresh as the polling.
+* **Changes whose scopes overlap see each other's changes.** Two changes applied at the same time whose batches share
+  a neighbor or an L2 domain both compare what is around them: a link one of them took down is unexpected for both,
+  and both pause (each cannot tell whose it was). That is on the safe side: an admin accepts it on the change that
+  did not take it down.
 * **A link that fails while a batch runs is not caught then.** The blast radius is computed only before each batch
   and right before its launch, and the verification compares the states before and after each batch: a link that
   failed during a batch and came back before its state after it is not seen.
