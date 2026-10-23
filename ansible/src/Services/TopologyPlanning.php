@@ -45,7 +45,8 @@ final class TopologyPlanning implements Topology
         if (! class_exists($this->api)) {
             // both plugins come from one repository: an update of the clone updates both
             return class_exists($this->provider)
-                ? 'the topology plugin is too old for the planning API this plugin needs: update it (it comes from the same repository as this plugin)'
+                ? 'the topology plugin is too old for the planning API this plugin needs: update it with this plugin (this plugin\'s README, Installation, From '
+                    . 'phase 2: both come from the same repository)'
                 : 'the topology plugin is not installed';
         }
         $version = (string) constant($this->api . '::VERSION');

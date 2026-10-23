@@ -185,9 +185,12 @@ The runs of phase 1 stay in the audit log as they were.
    planning API from the same commit of this repository, and a topology plugin from before it is said to be *too old
    for the planning API* on this plugin's pages (its own pages and menus still work). Both plugins come from one clone:
    with the path repository of [Installation](#installation), `git pull` in the clone updates both, then `./lnms
-   migrate`. To install the topology plugin from that clone, follow its [Installation](../README.md#installation) with
-   a path repository to the clone's root (its last steps: `./lnms plugin:add agoodley/librenms-topology-plugin @dev`,
-   `./lnms migrate`).
+   migrate`. A topology plugin installed from GitHub, as its [Installation](../README.md#installation) does first (a
+   `vcs` repository), is not updated by `git pull` in the clone: run its `./lnms plugin:add
+   agoodley/librenms-topology-plugin dev-main` again (Composer takes the latest commit), then `./lnms migrate`. To
+   install the topology plugin from the clone instead, follow its [Installation](../README.md#installation) with a path
+   repository to the clone's root (its last steps: `./lnms plugin:add agoodley/librenms-topology-plugin @dev`, `./lnms
+   migrate`).
 2. With the topology plugin installed and enabled, new changes are planned by it (*Plan with the topology plugin*, on
    by default): set its *Core devices* (*Overview → Plugins → Plugin Admin → topology → Settings*; empty, it guesses
    the core, and the plans say so) and check that LibreNMS discovers the LLDP/CDP neighbors of your devices; its

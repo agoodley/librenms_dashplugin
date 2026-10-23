@@ -20,7 +20,8 @@ class TopologyPlanningTest extends TestCase
     public function testATopologyPluginTooOldForThePlanningApiIsToldToBeUpdated(): void
     {
         // installed (its service provider is there) but from before the planning API: its pages and menus work, planning does not
-        $this->assertSame('the topology plugin is too old for the planning API this plugin needs: update it (it comes from the same repository as this plugin)',
+        $this->assertSame('the topology plugin is too old for the planning API this plugin needs: update it with this plugin (this plugin\'s README, Installation, From '
+            . 'phase 2: both come from the same repository)',
             (new TopologyPlanning('No\Such\Planning', FakeTopologyProvider::class))->unavailable());
     }
 
