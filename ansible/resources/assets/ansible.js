@@ -1430,6 +1430,14 @@
         var list = byId('ans-fixes-list');
         var LABELS = {port_descriptions: 'Port descriptions', stp_root_priority: 'Spanning tree root priority'};
         var severity = {critical: 'danger', warning: 'warning', info: 'info'};
+        // a topology plugin's page links a finding here by its identity: its fix is marked, and chosen when it can be
+        var wanted = (/[?&]finding=([0-9a-f]{40})(?:&|$)/.exec(window.location.search) || [])[1] || null;
+        var wantedRow = null;
+        var hasWanted = function (fix) {
+            return wanted !== null && fix.findings.some(function (finding) {
+                return finding.identity === wanted;
+            });
+        };
 
         function findings(fix) {
             return fix.findings.map(function (finding) {
@@ -1514,10 +1522,19 @@
                     return d.name;
                 }).join(', '))]), el('td', 'ans-wrap', changes(fix)), el('td', 'ans-wrap', findings(fix))]);
                 row.setAttribute('data-fix', fix.id);
+                if (hasWanted(fix)) {
+                    row.className = 'info ans-fix-wanted';
+                    wantedRow = row;
+                    if (!box_.disabled) {
+                        box_.checked = true;
+                        selected[fix.id] = true;
+                    }
+                }
                 append(rows, row);
             });
             var table = el('table', 'table table-condensed ans-table ans-stack');
             append(table, [el('thead', null, el('tr', null, [el('th', null, ''), el('th', null, 'Fix'), el('th', null, 'What it changes'), el('th', null, 'Findings it resolves')])), rows]);
+            refresh();
             append(box, [el('div', 'panel-heading', [el('strong', null, LABELS[kind] + ' (' + entries.length + ')'), ' ', templateText]),
                 el('div', 'table-responsive', table), el('div', 'panel-body', [button, ' ', el('span', 'ans-help', canRun ? 'opens a new change: nothing runs before its dry run'
                     : 'making a change needs the run permission')])]);
@@ -1549,9 +1566,19 @@
                 box.id = 'ans-fixes-not-fixable';
                 append(box, [el('div', 'panel-heading', el('strong', null, 'Findings without a clear fix (' + data.not_fixable.length + ')')),
                     el('ul', 'list-unstyled panel-body', data.not_fixable.map(function (entry) {
-                        return el('li', null, [el('strong', null, entry.title), ': ', entry.why]);
+                        var item = el('li', entry.identity === wanted && wanted !== null ? 'bg-info ans-fix-wanted' : null, [el('strong', null, entry.title), ': ', entry.why]);
+                        if (entry.identity === wanted && wanted !== null) {
+                            wantedRow = item;
+                        }
+                        return item;
                     }))]);
                 list.appendChild(box);
+            }
+            if (wanted !== null && wantedRow === null) {
+                list.insertBefore(alertBox('info', null, ['The finding you came from has no fix here now: it was resolved, or it changed since that page was loaded.']),
+                    list.firstChild);
+            } else if (wantedRow !== null && wantedRow.scrollIntoView) {
+                wantedRow.scrollIntoView({block: 'center'});
             }
         });
     }

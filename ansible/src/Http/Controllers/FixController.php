@@ -63,7 +63,8 @@ class FixController extends Controller
             }
             $entry = ['id' => $fix['id'], 'kind' => $fix['kind'], 'title' => UntrustedText::line((string) ($fix['title'] ?? ''), 300),
                 'devices' => array_map(fn ($id) => ['device_id' => (int) $id, 'name' => $name($id)], (array) ($fix['devices'] ?? [])),
-                'findings' => array_map(fn (array $f) => ['severity' => (string) ($f['severity'] ?? ''), 'title' => UntrustedText::line((string) ($f['title'] ?? ''), 300),
+                'findings' => array_map(fn (array $f) => ['identity' => self::identity($f['identity'] ?? null), 'severity' => (string) ($f['severity'] ?? ''),
+                    'title' => UntrustedText::line((string) ($f['title'] ?? ''), 300),
                     'devices' => array_map(fn ($id) => (int) $id, (array) ($f['devices'] ?? []))], array_values(array_filter((array) ($fix['findings'] ?? []), 'is_array')))];
             if ($fix['kind'] === FixAnswers::PORT_DESCRIPTIONS) {
                 $entry['ports'] = array_map(fn (array $port) => ['device' => $name($port['device_id'] ?? 0), 'interface' => UntrustedText::line((string) ($port['ifName'] ?? ''), 80),
@@ -78,12 +79,22 @@ class FixController extends Controller
             }
             $fixes[] = $entry;
         }
-        $notFixable = array_map(fn (array $entry) => ['title' => UntrustedText::line((string) ($entry['title'] ?? ''), 300), 'why' => UntrustedText::line((string) ($entry['why'] ?? ''), 400),
+        $notFixable = array_map(fn (array $entry) => ['identity' => self::identity($entry['identity'] ?? null), 'title' => UntrustedText::line((string) ($entry['title'] ?? ''), 300),
+            'why' => UntrustedText::line((string) ($entry['why'] ?? ''), 400),
             'devices' => array_map(fn ($id) => $name($id), (array) ($entry['devices'] ?? []))], array_values(array_filter((array) ($answer['not_fixable'] ?? []), 'is_array')));
 
         return response()->json(['fixes' => $fixes, 'not_fixable' => $notFixable, 'templates' => $this->templates(),
             'role_hidden' => array_values(array_filter((array) ($answer['role_hidden'] ?? []), 'is_string')), 'can_run' => Access::canRun($request->user()),
             'new_change' => route('ansible.changes.new')]);
+    }
+
+    /**
+     * A finding's identity (the topology plugin's history hash, 40 hex characters), '' when it is not one: the topology
+     * plugin's pages link a finding to this page by it (?finding=), which marks its fix.
+     */
+    private static function identity(mixed $identity): string
+    {
+        return is_string($identity) && preg_match('/^[0-9a-f]{40}$/D', $identity) ? $identity : '';
     }
 
     /**

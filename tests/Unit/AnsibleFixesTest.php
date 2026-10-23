@@ -1,0 +1,43 @@
+<?php
+
+namespace Agoodley\LibrenmsTopology\Tests\Unit;
+
+use Agoodley\LibrenmsTopology\History\FindingHistory;
+use Agoodley\LibrenmsTopology\Support\AnsibleFixes;
+use PHPUnit\Framework\TestCase;
+
+/**
+ * A finding whose fix is clear links to the Ansible plugin's Fixes page, which marks the fix of that finding; other
+ * findings, users who are no admins, and a LibreNMS without the Ansible plugin get no link.
+ */
+class AnsibleFixesTest extends TestCase
+{
+    public function testOnlyTheFindingsTheFixesPageFixesAreLinked(): void
+    {
+        $wrong = ['code' => 'description_wrong', 'devices' => [511], 'ports' => [95110], 'vlan' => null];
+        $root = ['code' => 'root_not_preferred', 'devices' => [503], 'ports' => [], 'vlan' => 10];
+
+        $this->assertSame('https://nms/plugin/ansible/fixes?finding=' . FindingHistory::hash('links', $wrong),
+            AnsibleFixes::link('https://nms/plugin/ansible/fixes', 'links', $wrong), 'the finding\'s identity, as the fixes carry it');
+        $this->assertSame('https://nms/plugin/ansible/fixes?finding=' . FindingHistory::hash('stp', $root), AnsibleFixes::link('https://nms/plugin/ansible/fixes', 'stp', $root));
+        $this->assertTrue(AnsibleFixes::fixable('links', ['code' => 'description_missing']));
+        $this->assertTrue(AnsibleFixes::fixable('stp', ['code' => 'root_default_priority']));
+        $this->assertFalse(AnsibleFixes::fixable('links', ['code' => 'vlan_mismatch']), 'no clear fix');
+        $this->assertFalse(AnsibleFixes::fixable('stp', $wrong), 'a code of another check');
+        $this->assertFalse(AnsibleFixes::fixable('redundancy', ['code' => 'description_wrong']));
+        $this->assertNull(AnsibleFixes::link(null, 'links', $wrong), 'no Fixes page for the user: no link');
+    }
+
+    public function testOnlyAnAdminHasTheFixesPage(): void
+    {
+        $user = new class {
+            public function can(string $ability): bool
+            {
+                return false;
+            }
+        };
+
+        $this->assertNull(AnsibleFixes::pageUrl($user));
+        $this->assertNull(AnsibleFixes::pageUrl(null));
+    }
+}

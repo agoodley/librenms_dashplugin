@@ -95,6 +95,8 @@
             <table class="table table-condensed table-hover topo-stp-table">
                 <thead><tr><th style="width: 90px">Severity</th><th>Finding</th><th style="width: 22%">Devices</th></tr></thead>
                 <tbody>
+                {{-- the short form: this page's earlier @php() would take a block's @endphp as its own --}}
+                @php($fixPage = \Agoodley\LibrenmsTopology\Support\AnsibleFixes::pageUrl(auth()->user()))
                 @forelse($result['findings'] as $finding)
                     <tr>
                         <td><span class="topo-sev topo-sev-{{ $finding['severity'] }}">{{ $finding['severity'] }}</span></td>
@@ -104,6 +106,7 @@
                             @if($finding['vlan'] !== null)
                                 <a href="{{ $mapUrl($finding['vlan'], $finding['devices'][0] ?? null) }}" title="Show on the L2 map with STP overlay"><i class="fa fa-sitemap"></i></a>
                             @endif
+                            @include('topology::partials.finding-fix', ['analysis' => 'stp'])
                             <div class="topo-finding-detail">{{ $finding['detail'] }}</div>
                             @if($finding['recommendation'])
                                 <div class="topo-finding-rec"><i class="fa fa-lightbulb-o"></i> {{ $finding['recommendation'] }}</div>
