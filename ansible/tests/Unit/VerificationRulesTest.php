@@ -324,9 +324,10 @@ class VerificationRulesTest extends TestCase
         $this->assertSame(['acc1.lab Gi1/0/49 dist1 Te1/0/1', 'acc2.lab Ethernet1/1 _n_c_d_ _sw_ _ co Gi1/0/1'], $built['lines']);
         $this->assertSame([3, 4], $built['devices']);
         $this->assertCount(3, $built['errors']);
-        $this->assertStringContainsString('acc1.lab port #32: its interface name is not one the plugin passes to a playbook', $built['errors'][0]);
-        $this->assertStringContainsString('acc1.lab port #33: its description is not one the link check builds', $built['errors'][1]);
-        $this->assertStringContainsString('device #9 port #91: it is not a target of the change', $built['errors'][2]);
+        // said by the device's and the port's names, as LibreNMS has them (cleaned)
+        $this->assertStringStartsWith('acc1.lab Gi0/0/1 <&"\'>: its interface name is not one the plugin passes to a playbook', $built['errors'][0]);
+        $this->assertStringStartsWith('acc1.lab Gi1/0/50: its description is not one the link check builds', $built['errors'][1]);
+        $this->assertSame('device #9 Gi1/0/1: it is not a target of the change', $built['errors'][2]);
 
         // the check of an answer, as the playbook gets it
         $this->assertSame([], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, implode("\n", $built['lines']), $hosts));
@@ -348,7 +349,7 @@ class VerificationRulesTest extends TestCase
         $spaced = FixAnswers::lines(FixAnswers::PORT_DESCRIPTIONS, [['kind' => 'port_descriptions', 'ports' => [['device_id' => 3, 'port_id' => 34, 'ifName' => 'Gi1/0/49 x',
             'description' => 'dist1 Te1/0/1']]]], $hosts);
         $this->assertSame([], $spaced['lines']);
-        $this->assertStringContainsString('acc1.lab port #34: its interface name is not one the plugin passes to a playbook', $spaced['errors'][0]);
+        $this->assertStringStartsWith('acc1.lab Gi1/0/49 x: its interface name is not one the plugin passes to a playbook', $spaced['errors'][0]);
         $this->assertSame(['line 1: its host is not a target of the change'], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, 'acc;1.lab Gi1/0/49 x', [3 => 'acc;1.lab']),
             'a target whose inventory name is not one a line may hold');
         $many = implode("\n", array_fill(0, FixAnswers::LINES_MAX + 1, 'acc1.lab Gi1/0/49 x'));
@@ -360,6 +361,36 @@ class VerificationRulesTest extends TestCase
         $this->assertSame([], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, implode("\n", $built['lines']), $hosts, $interfaces));
         $this->assertSame(['line 1: its interface is not a port of its host in LibreNMS', 'line 2: its interface is not a port of its host in LibreNMS'],
             FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, "acc1.lab Ethernet1/1 dist1 Te1/0/1\nacc2.lab Gi1/0/49 dist1 Te1/0/1", $hosts, $interfaces));
+    }
+
+    public function testWhatCannotBeALineIsSaidByNameWithWhyADeviceCannotBeATarget(): void
+    {
+        $hosts = [3 => 'acc1.lab'];
+        $names = [3 => 'acc1', 9 => 'lab-sw2', 8 => "edge\n7"];
+        $refusals = [9 => 'not in the allowed device group Ansible lab'];
+        $port = fn (int $deviceId, int $portId, string $ifName) => ['device_id' => $deviceId, 'port_id' => $portId, 'ifName' => $ifName, 'description' => 'dist1 Te1/0/1'];
+        $fixes = [
+            ['kind' => 'port_descriptions', 'ports' => [$port(9, 91, 'Fa0/1'), $port(9, 92, 'Fa0/2')]],
+            ['kind' => 'port_descriptions', 'ports' => [$port(3, 31, 'Gi1/0/49'), $port(3, 32, "Gi1/0/50\nreload")]],
+            ['kind' => 'port_descriptions', 'ports' => [$port(8, 81, ''), ...array_map(fn (int $n) => $port(8, 81 + $n, "Fa0/$n"), range(1, 6))]],
+        ];
+
+        $built = FixAnswers::lines(FixAnswers::PORT_DESCRIPTIONS, $fixes, $hosts, $names, $refusals);
+        $this->assertSame(['acc1.lab Gi1/0/49 dist1 Te1/0/1'], $built['lines']);
+        $this->assertSame([
+            'acc1 Gi1/0/50 reload: its interface name is not one the plugin passes to a playbook (letters, digits and / . _ : -, at most 64)',
+            // a device that cannot be a target once, with its ports and why (the target check of New change)
+            'lab-sw2 Fa0/1, Fa0/2: it cannot be a target: not in the allowed device group Ansible lab',
+            'edge 7 port #81, Fa0/1, Fa0/2, Fa0/3, Fa0/4 and 2 more: it is not a target of the change',
+        ], $built['errors']);
+
+        // a root fix: its bridge that cannot be a target, by name
+        $root = ['kind' => 'stp_root_priority', 'primary' => ['device_id' => 3, 'priority' => 4096, 'mode' => 'pvst', 'instances' => [1]],
+            'secondary' => ['device_id' => 9, 'priority' => 8192, 'mode' => 'pvst', 'instances' => [1]]];
+        $this->assertSame(['lab-sw2: it cannot be a target: not in the allowed device group Ansible lab'],
+            FixAnswers::lines(FixAnswers::STP_ROOT_PRIORITY, [$root], $hosts, $names, $refusals)['errors']);
+        $this->assertSame(['acc1: its priority is not a multiple of 4096 from 0 to 61440'],
+            FixAnswers::lines(FixAnswers::STP_ROOT_PRIORITY, [['primary' => ['priority' => 4097] + $root['primary'], 'secondary' => null] + $root], $hosts, $names)['errors']);
     }
 
     public function testAHostileNeighborNameReachesAPlaybookOnlyAsTheLinkChecksDescription(): void

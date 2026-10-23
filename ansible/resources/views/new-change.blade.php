@@ -208,9 +208,10 @@
         <h4 class="ans-step"><span class="badge">5</span> Preview and create</h4>
         <p class="ans-help">The preview shows exactly what the change will be, with its batches. Creating it runs nothing: its page launches the dry run.</p>
         <div class="ans-launchbar">
-            <button type="button" class="btn btn-primary btn-sm" id="ans-preview-button"><i class="fa fa-eye"></i> Preview</button>
+            {{-- a change cannot be made from fixes the plugin refuses (above): nothing to preview, back to the Fixes page --}}
+            <button type="button" class="btn btn-primary btn-sm" id="ans-preview-button" @if($fix && $fix['errors']) disabled @endif><i class="fa fa-eye"></i> Preview</button>
             <button type="button" class="btn btn-success btn-sm" id="ans-create-button" disabled><i class="fa fa-plus"></i> Create the change</button>
-            <span class="ans-muted" id="ans-launch-state"></span>
+            <span class="ans-muted" id="ans-launch-state">@if($fix && $fix['errors'])a change cannot be made from these fixes (above): <a href="{{ route('ansible.fixes') }}">back to the Fixes page</a>@endif</span>
         </div>
         <div id="ans-preview" class="ans-preview"></div>
 

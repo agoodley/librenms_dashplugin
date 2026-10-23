@@ -1096,19 +1096,24 @@ network much faster than the whole list):
 
 Each fix shows what it changes and the findings it resolves. The topology plugin's *Link & VLAN diagnostics* and
 *Spanning tree diagnostics* link each such finding to it (*Fix with Ansible*, for admins, while this plugin is
-enabled), filtered to the finding's device, and the page then marks that fix and chooses it. **Fix the selected**
-(one or several fixes of one kind) opens **New change** made from them: the template the settings map to the kind,
-the fixes' devices, the survey answer as the fixes' lines (read only), a reference of their kind and how many devices
-they change (*Fix: port descriptions, 2 devices*: the reference names the change in the eventlog of every target,
-which names no other device; the timeline names the fixes), and what the change is meant to do. The preview and
-*Create* compute the lines again from the findings as they are then, only what the chosen fixes need (a description
-fix: the link check of its devices and their neighbors; a root fix: the spanning tree check of its domain), and
-refuse the change when they are not what the page showed (*The fix changed since you loaded the page: reload the
-page to make the change from the fix as it is now.*).
-The lines are those of the change's targets only: a device the planner leaves out (down, say) takes its fix with it,
-and the preview says so (a root fix whose intended root is left out goes; one whose secondary is, sets the intended
-root alone). From there it is a change like any other: dry-run with its diff, approved, applied in batches, each
-batch verified; the verification expects the batch's findings resolved, and nothing else changed.
+enabled), filtered to the finding's device, and the page then marks that fix and chooses it. A fix the plugin cannot
+apply cannot be chosen, and says why: a device of it that cannot be a target, by the check of *New change* (*lab-sw2
+cannot be a target: not in the device group Ansible lab, the only one the plugin may change*; no platform mapping,
+busy in another run...), or a port whose name cannot be passed to a playbook. The fixes chosen change at most *Max
+targets per change* devices: once they do, a fix of another device cannot be chosen until one is no longer chosen.
+**Fix the selected** (one or several fixes of one kind) opens **New change** made from them: the template the settings
+map to the kind, the fixes' devices, the survey answer as the fixes' lines (read only), a reference of their kind and
+how many devices they change (*Fix: port descriptions, 2 devices*: the reference names the change in the eventlog of
+every target, which names no other device; the timeline names the fixes), and what the change is meant to do. The
+preview and *Create* compute the lines again from the findings as they are then, only what the chosen fixes need (a
+description fix: the link check of its devices and their neighbors; a root fix: the spanning tree check of its
+domain), and refuse the change when they are not what the page showed (*The fix changed since you loaded the page:
+reload the page to make the change from the fix as it is now.*); fixes it can no longer apply (a device that became
+busy since, say) are named on the page, with why, and it offers no preview. The lines are those of the change's
+targets only: a device the planner leaves out (down, say) takes its fix with it, and the preview says so (a root fix
+whose intended root is left out goes; one whose secondary is, sets the intended root alone). From there it is a change
+like any other: dry-run with its diff, approved, applied in batches, each batch verified; the verification expects the
+batch's findings resolved, and nothing else changed.
 
 **A root priority fix plans its own batches:** the intended root alone first, then its secondary, so that the root of
 each VLAN moves once, to the intended root, and the verification after each batch expects that root. Each batch's

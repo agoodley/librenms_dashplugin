@@ -58,17 +58,22 @@ final class FixAnswers
     public const CHANGED = 'The fix changed since you loaded the page: reload the page to make the change from the fix as it is now.';
 
     /**
-     * The lines of the chosen fixes of one kind (the topology plugin's fixes() entries), for the hosts of the change.
+     * The lines of the chosen fixes of one kind (the topology plugin's fixes() entries), for the hosts of the change. What
+     * cannot be a line is said by the device's and the port's names: a device that cannot be a target once, with why.
      *
      * @param  list<array>  $fixes
      * @param  array<int, string>  $hosts  device_id => inventory name of the targets
+     * @param  array<int, string>  $names  device_id => the device's name (the topology plugin's), for what cannot be a line
+     * @param  array<int, string>  $refusals  device_id => why a device of the fixes cannot be a target (TargetSelection)
      * @return array{lines: string[], devices: int[], errors: string[]} devices: those the lines change, in their order
      */
-    public static function lines(string $kind, array $fixes, array $hosts): array
+    public static function lines(string $kind, array $fixes, array $hosts, array $names = [], array $refusals = []): array
     {
         $lines = [];
         $devices = [];
         $errors = [];
+        // the devices that are no targets, with the ports of their fixes: one error each, at the end
+        $noTarget = [];
         if (! in_array($kind, self::KINDS, true)) {
             return ['lines' => [], 'devices' => [], 'errors' => ['There is no fix of that kind.']];
         }
@@ -81,10 +86,14 @@ final class FixAnswers
             if ($kind === self::PORT_DESCRIPTIONS) {
                 foreach ((array) ($fix['ports'] ?? []) as $port) {
                     $deviceId = (int) ($port['device_id'] ?? 0);
-                    $problem = self::hostProblem($deviceId, $hosts) ?? self::interfaceProblem((string) ($port['ifName'] ?? ''))
-                        ?? self::descriptionProblem((string) ($port['description'] ?? ''));
+                    if (! self::isHost($deviceId, $hosts)) {
+                        $noTarget[$deviceId][] = self::interfaceName($port);
+
+                        continue;
+                    }
+                    $problem = self::interfaceProblem((string) ($port['ifName'] ?? '')) ?? self::descriptionProblem((string) ($port['description'] ?? ''));
                     if ($problem !== null) {
-                        $errors[] = self::portName($port, $hosts) . ': ' . $problem;
+                        $errors[] = self::deviceName($deviceId, $hosts, $names) . ' ' . self::interfaceName($port) . ': ' . $problem;
 
                         continue;
                     }
@@ -100,20 +109,31 @@ final class FixAnswers
                     continue;
                 }
                 $deviceId = (int) ($bridge['device_id'] ?? 0);
+                if (! self::isHost($deviceId, $hosts)) {
+                    $noTarget[$deviceId] ??= [];
+
+                    continue;
+                }
                 $mode = (string) ($bridge['mode'] ?? '');
                 $instances = self::instances($mode, (array) ($bridge['instances'] ?? []));
                 $priority = $bridge['priority'] ?? null;
-                $problem = self::hostProblem($deviceId, $hosts) ?? (! in_array($mode, self::MODES, true) ? 'its spanning tree mode is not pvst, mst or stp' : null)
+                $problem = (! in_array($mode, self::MODES, true) ? 'its spanning tree mode is not pvst, mst or stp' : null)
                     ?? ($instances === null ? 'its spanning tree instances are not ' . ($mode === 'mst' ? 'MST instances 0-4094' : 'VLANs 1-4094') : null)
                     ?? self::priorityProblem($priority);
                 if ($problem !== null) {
-                    $errors[] = UntrustedText::line((string) ($hosts[$deviceId] ?? "device #$deviceId"), 80) . ': ' . $problem;
+                    $errors[] = self::deviceName($deviceId, $hosts, $names) . ': ' . $problem;
 
                     continue;
                 }
                 $lines[] = $hosts[$deviceId] . " $mode $instances " . (int) $priority;
                 $devices[$deviceId] = true;
             }
+        }
+        foreach ($noTarget as $deviceId => $ports) {
+            $ports = array_values(array_unique($ports));
+            $errors[] = self::deviceName($deviceId, $hosts, $names) . ($ports ? ' ' . implode(', ', array_slice($ports, 0, 5)) . (count($ports) > 5 ? ' and ' . (count($ports) - 5)
+                . ' more' : '') : '') . ': ' . (isset($refusals[$deviceId]) ? 'it cannot be a target: ' . UntrustedText::line($refusals[$deviceId], 300)
+                : 'it is not a target of the change');
         }
         if (count($lines) > self::LINES_MAX) {
             $errors[] = 'More than ' . self::LINES_MAX . ' lines: choose fewer fixes.';
@@ -410,13 +430,13 @@ final class FixAnswers
     }
 
     /**
-     * Why a device may not be a host of a fix's line: it is no target of the change.
+     * May the device be the host of a fix's line: a target of the change, by an inventory name a line may hold?
      *
      * @param  array<int, string>  $hosts
      */
-    private static function hostProblem(int $deviceId, array $hosts): ?string
+    private static function isHost(int $deviceId, array $hosts): bool
     {
-        return isset($hosts[$deviceId]) && preg_match(self::HOST, (string) $hosts[$deviceId]) ? null : 'it is not a target of the change';
+        return isset($hosts[$deviceId]) && preg_match(self::HOST, (string) $hosts[$deviceId]) === 1;
     }
 
     private static function interfaceProblem(string $interface): ?string
@@ -442,10 +462,24 @@ final class FixAnswers
      *
      * @param  array<int, string>  $hosts
      */
-    private static function portName(array $port, array $hosts): string
+    /**
+     * A device of a fix by its name: the topology plugin's, else its inventory name, else its number.
+     *
+     * @param  array<int, string>  $hosts
+     * @param  array<int, string>  $names
+     */
+    private static function deviceName(int $deviceId, array $hosts, array $names): string
     {
-        $deviceId = (int) ($port['device_id'] ?? 0);
+        return UntrustedText::line((string) (($names[$deviceId] ?? '') ?: (($hosts[$deviceId] ?? '') ?: "device #$deviceId")), 80);
+    }
 
-        return UntrustedText::line((string) ($hosts[$deviceId] ?? "device #$deviceId"), 80) . ' port #' . (int) ($port['port_id'] ?? 0);
+    /**
+     * A port of a fix by its interface name (as LibreNMS has it, cleaned), else its number.
+     */
+    private static function interfaceName(array $port): string
+    {
+        $name = UntrustedText::line((string) ($port['ifName'] ?? ''), 64);
+
+        return $name !== '' ? $name : 'port #' . (int) ($port['port_id'] ?? 0);
     }
 }

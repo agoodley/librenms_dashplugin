@@ -1468,7 +1468,8 @@
                 bridge(fix.secondary, 'secondary'), el('div', 'ans-help', 'chosen from ' + fix.chosen_from + '; set alone first, then the secondary')];
         }
 
-        function section(kind, entries, template, canRun, newChange) {
+        // the fixes chosen change at most maxTargets devices (Max targets per change): a change of more is refused
+        function section(kind, entries, template, canRun, newChange, maxTargets) {
             var box = el('div', 'panel panel-default');
             box.id = 'ans-fixes-' + kind;
             var templateText = template.problem ? el('span', 'text-warning', [el('i', 'fa fa-exclamation-triangle'), ' Template: ' + template.problem + ' '])
@@ -1483,11 +1484,36 @@
             button.type = 'button';
             button.disabled = true;
             button.id = 'ans-fix-' + kind;
+            var chosenText = el('span', 'ans-help');
+            chosenText.id = 'ans-fix-devices-' + kind;
+            // the checkboxes shown, by fix
+            var boxes = {};
             var refresh = function () {
                 var count = Object.keys(selected).length;
                 button.disabled = !count || !canRun || !!template.problem;
                 button.textContent = '';
                 append(button, [el('i', 'fa fa-wrench'), ' Fix the selected (' + count + ')']);
+                // the devices the chosen fixes change
+                var chosen = {};
+                entries.forEach(function (fix) {
+                    if (selected[fix.id]) {
+                        fix.devices.forEach(function (device) {
+                            chosen[device.device_id] = true;
+                        });
+                    }
+                });
+                var devices = Object.keys(chosen).length;
+                chosenText.textContent = count ? 'they change ' + devices + ' device' + (devices === 1 ? '' : 's') + ' (a change has at most ' + maxTargets + ')' : '';
+                // a fix that would take the change past the most targets cannot be chosen, until one is no longer chosen
+                Object.keys(boxes).forEach(function (id) {
+                    var entry = boxes[id];
+                    var more = entry.fix.devices.filter(function (device) {
+                        return !chosen[device.device_id];
+                    }).length;
+                    entry.box.disabled = !entry.box.checked && (!usable(entry.fix) || devices + more > maxTargets);
+                    entry.box.title = whyNot(entry.fix) || (entry.box.disabled ? 'A change has at most ' + maxTargets + ' targets (Max targets per change): the fixes chosen change '
+                        + devices + ' device' + (devices === 1 ? '' : 's') + '. Choose this fix in another change.' : '');
+                });
             };
             button.addEventListener('click', function () {
                 var ids = [];
@@ -1503,14 +1529,26 @@
                 window.location.assign(newChange + '?fix=' + encodeURIComponent(kind) + '&ids=' + ids.join(',') + '&scope=' + Object.keys(scope).join(','));
             });
             var rows = el('tbody');
-            // a port whose name cannot be passed to a playbook: the plugin refuses the whole fix (every field is checked)
+            // a port whose name cannot be passed to a playbook, a device that cannot be a target (the target check of New change): the plugin
+            // refuses the whole fix (every field is checked)
             var refusedFix = function (fix) {
                 return fix.kind === 'port_descriptions' && fix.ports.some(function (port) {
                     return !port.passes;
                 });
             };
+            var whyNot = function (fix) {
+                if (refusedFix(fix)) {
+                    return 'The plugin cannot apply this fix: an interface name cannot be passed to a playbook';
+                }
+                if (fix.refusals && fix.refusals.length) {
+                    return 'The plugin cannot apply this fix: ' + fix.refusals.map(function (refusal) {
+                        return refusal.device + ' cannot be a target (' + refusal.text + ')';
+                    }).join('; ');
+                }
+                return '';
+            };
             var usable = function (fix) {
-                return canRun && !template.problem && !refusedFix(fix);
+                return canRun && !template.problem && !whyNot(fix);
             };
             // the fix of the finding a link names is chosen, and shown on its page
             var wantedIndex = -1;
@@ -1527,11 +1565,8 @@
                 box_.type = 'checkbox';
                 box_.className = 'ans-fix-check';
                 box_.setAttribute('aria-label', 'Fix ' + fix.title);
-                box_.disabled = !usable(fix);
                 box_.checked = !!selected[fix.id];
-                if (refusedFix(fix)) {
-                    box_.title = 'The plugin cannot apply this fix: an interface name cannot be passed to a playbook';
-                }
+                boxes[fix.id] = {box: box_, fix: fix};
                 box_.addEventListener('change', function () {
                     if (box_.checked) {
                         selected[fix.id] = true;
@@ -1540,9 +1575,12 @@
                     }
                     refresh();
                 });
-                var row = el('tr', null, [el('td', null, box_), el('td', 'ans-wrap', [el('strong', null, fix.title), el('div', 'ans-help', fix.devices.map(function (d) {
+                var refusals = (fix.refusals || []).map(function (refusal) {
+                    return el('div', 'ans-help text-warning ans-fix-refusal', refusal.device + ' cannot be a target: ' + refusal.text);
+                });
+                var row = el('tr', whyNot(fix) ? 'ans-refused' : null, [el('td', null, box_), el('td', 'ans-wrap', [el('strong', null, fix.title), el('div', 'ans-help', fix.devices.map(function (d) {
                     return d.name;
-                }).join(', '))]), el('td', 'ans-wrap', changes(fix)), el('td', 'ans-wrap', findings(fix))]);
+                }).join(', '))].concat(refusals)), el('td', 'ans-wrap', changes(fix)), el('td', 'ans-wrap', findings(fix))]);
                 row.setAttribute('data-fix', fix.id);
                 if (hasWanted(fix)) {
                     row.classList.add('info', 'ans-fix-wanted');
@@ -1569,9 +1607,11 @@
                 var from = all ? 0 : page * PAGE;
                 var to = all ? entries.length : Math.min(entries.length, from + PAGE);
                 rows.textContent = '';
+                boxes = {};
                 for (var i = from; i < to; i++) {
                     rows.appendChild(rowOf(entries[i]));
                 }
+                refresh();
                 range.textContent = all ? 'all ' + entries.length : (from + 1) + '\u2013' + to + ' of ' + entries.length;
                 prev.disabled = all || page === 0;
                 next.disabled = all || to >= entries.length;
@@ -1600,7 +1640,7 @@
                 pager.id = 'ans-fixes-pages-' + kind;
             }
             append(box, [el('div', 'panel-heading', [el('strong', null, LABELS[kind] + ' (' + entries.length + ')'), ' ', templateText]),
-                pager ? el('div', 'panel-body', pager) : null, el('div', 'table-responsive', table), el('div', 'panel-body', [button, ' ', el('span', 'ans-help', canRun
+                pager ? el('div', 'panel-body', pager) : null, el('div', 'table-responsive', table), el('div', 'panel-body', [button, ' ', chosenText, ' ', el('span', 'ans-help', canRun
                     ? 'opens a new change: nothing runs before its dry run' : 'making a change needs the run permission')])]);
             return box;
         }
@@ -1629,7 +1669,7 @@
                     return fix.kind === kind;
                 });
                 if (entries.length) {
-                    list.appendChild(section(kind, entries, data.templates[kind] || {problem: 'unknown'}, data.can_run, data.new_change));
+                    list.appendChild(section(kind, entries, data.templates[kind] || {problem: 'unknown'}, data.can_run, data.new_change, data.max_targets || 25));
                 }
             });
             if (data.not_fixable.length) {

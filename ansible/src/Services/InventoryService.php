@@ -2,10 +2,13 @@
 
 namespace Agoodley\LibrenmsAnsible\Services;
 
+use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
 use Agoodley\LibrenmsAnsible\Data\FetchRepository;
+use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Inventory\Inventory;
 use Agoodley\LibrenmsAnsible\Inventory\InventoryBuilder;
+use Agoodley\LibrenmsAnsible\Runs\TargetSelection;
 use Agoodley\LibrenmsAnsible\Support\PluginSettings;
 use App\Models\User;
 
@@ -104,6 +107,18 @@ final class InventoryService
         }
 
         return $found;
+    }
+
+    /**
+     * The target check of a new change, as New change makes it for every device (TargetSelection): the inventory of every
+     * device, what the inventory user may see, the runs that hold devices and the changes being applied.
+     */
+    public function targetSelection(RunRepository $runs, ChangeRepository $changes): TargetSelection
+    {
+        $inventoryUser = $this->inventoryUser();
+
+        return new TargetSelection($this->build(), $this->devices->exists(), $runs->busy(), $inventoryUser['visible'] ?? null,
+            (string) ($inventoryUser['user']->username ?? ''), $changes->reserved());
     }
 
     /**

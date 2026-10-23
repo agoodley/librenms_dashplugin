@@ -94,20 +94,18 @@ final class ChangeService
             }
         }
         $devices = FixChange::devices($kind, $chosen['fixes']);
-        // the hosts of the lines: the devices' inventory names (a device that is no host of the inventory cannot be a target)
-        $inventory = $this->inventory->build();
-        $hosts = [];
-        foreach ($devices as $deviceId) {
-            $name = $inventory->nameOf($deviceId);
-            if ($name !== null) {
-                $hosts[$deviceId] = $name;
-            }
+        // the hosts of the lines: the devices that can be targets (the target check of New change), by their inventory names; why each
+        // of the others cannot be one
+        $selected = $this->inventory->targetSelection($this->runs, $this->changes)->select($devices);
+        $built = FixAnswers::lines($kind, $chosen['fixes'], $selected['targets'], $names, array_map(fn (array $refusal) => (string) $refusal['text'], $selected['refused']));
+        $errors = [...$draft['errors'], ...$built['errors']];
+        if (count($devices) > $this->settings->maxTargets()) {
+            $errors[] = 'The fixes chosen change ' . count($devices) . ' devices: a change has at most ' . $this->settings->maxTargets()
+                . ' targets (Max targets per change). Choose fewer fixes on the Fixes page.';
         }
-        $built = FixAnswers::lines($kind, $chosen['fixes'], $hosts);
 
         return ['devices' => $devices, 'lines' => $built['lines'], 'title' => FixAnswers::title($kind, $chosen['fixes']),
-            'effect' => FixAnswers::effect($kind, $chosen['fixes'], $names), 'errors' => [...$draft['errors'], ...$built['errors']], 'fixes' => $chosen['fixes'],
-            'names' => $names] + $draft;
+            'effect' => FixAnswers::effect($kind, $chosen['fixes'], $names), 'errors' => $errors, 'fixes' => $chosen['fixes'], 'names' => $names] + $draft;
     }
 
     /**

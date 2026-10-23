@@ -3,9 +3,12 @@
 namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 
 use Agoodley\LibrenmsAnsible\Changes\FixAnswers;
+use Agoodley\LibrenmsAnsible\Changes\FixChange;
 use Agoodley\LibrenmsAnsible\Changes\FixFilter;
 use Agoodley\LibrenmsAnsible\Changes\TopologyError;
+use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
+use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
@@ -20,7 +23,9 @@ use Illuminate\Support\Facades\Cache;
  * The Fixes page (phase 4): the topology plugin's findings whose fix is clear (its verification API's fixes(), as the
  * admin sees the network), by kind, each with what it changes and the findings it resolves, and those it cannot fix with
  * why; Fix opens a new change made from the chosen fixes of one kind (ChangeController::create(): the template the
- * settings map to the kind, the devices, the lines read only). LibreNMS admins with the run permission, as New change.
+ * settings map to the kind, the devices, the lines read only). A fix of a device that cannot be a target (the target
+ * check of New change: outside the allowed device group, busy in another run...) cannot be chosen, with why, and the
+ * fixes chosen change at most Max targets per change devices. LibreNMS admins with the run permission, as New change.
  * The list is loaded after the page (on a large network the topology plugin takes some seconds), of every
  * device the admin sees or, as the topology plugin's pages filter, of a device, a device group, a location (each one
  * given narrows it): the topology plugin then computes the fixes of those devices only.
@@ -92,7 +97,7 @@ class FixController extends Controller
         }
         if ($filter && ! $ids) {
             return response()->json(['fixes' => [], 'not_fixable' => [], 'templates' => $this->templates(), 'role_hidden' => [], 'can_run' => Access::canRun($request->user()),
-                'new_change' => route('ansible.changes.new'), 'filter' => $filter, 'devices' => 0]);
+                'new_change' => route('ansible.changes.new'), 'filter' => $filter, 'devices' => 0, 'max_targets' => $this->settings()->maxTargets()]);
         }
         try {
             // the fixes of the devices the filter keeps, computed for them (more than the topology plugin takes at once: of every device,
@@ -114,6 +119,11 @@ class FixController extends Controller
             }
         }
         $name = fn ($deviceId) => $names[(int) $deviceId] ?? '#' . (int) $deviceId;
+        // the target check of New change, for the devices of the fixes: a fix of a device that cannot be a target cannot be chosen
+        $runs = new RunRepository();
+        $changes = new ChangeRepository();
+        $selection = $runs->available() && $changes->available() ? $this->inventoryService()->targetSelection($runs, $changes) : null;
+        $refusal = fn ($deviceId) => $selection?->refusal((int) $deviceId)['text'] ?? ($selection === null ? 'the Ansible plugin\'s tables are missing or out of date' : null);
         $fixes = [];
         foreach ((array) ($answer['fixes'] ?? []) as $fix) {
             if (! is_array($fix) || ! in_array($fix['kind'] ?? null, FixAnswers::KINDS, true) || ! is_string($fix['id'] ?? null)) {
@@ -137,6 +147,14 @@ class FixController extends Controller
                     'secondary' => $bridge($fix['secondary'] ?? null), 'chosen_from' => UntrustedText::line((string) ($fix['chosen_from'] ?? ''), 80),
                     'roots_now' => implode(', ', array_unique(array_map(fn ($root) => $name($root['device_id'] ?? 0), (array) ($fix['roots_now'] ?? []))))];
             }
+            // the devices of the fix that cannot be targets, and why (the change it opens would refuse them)
+            $entry['refusals'] = [];
+            foreach (FixChange::devices($fix['kind'], [$fix]) as $deviceId) {
+                $why = $refusal($deviceId);
+                if ($why !== null) {
+                    $entry['refusals'][] = ['device' => $name($deviceId), 'text' => UntrustedText::line((string) $why, 300)];
+                }
+            }
             $fixes[] = $entry;
         }
         $notFixable = array_map(fn (array $entry) => ['identity' => self::identity($entry['identity'] ?? null), 'title' => UntrustedText::line((string) ($entry['title'] ?? ''), 300),
@@ -145,7 +163,7 @@ class FixController extends Controller
 
         return response()->json(['fixes' => $fixes, 'not_fixable' => $notFixable, 'templates' => $this->templates(),
             'role_hidden' => array_values(array_filter((array) ($answer['role_hidden'] ?? []), 'is_string')), 'can_run' => Access::canRun($request->user()),
-            'new_change' => route('ansible.changes.new'), 'filter' => $filter, 'devices' => $filter ? count($ids) : null]);
+            'new_change' => route('ansible.changes.new'), 'filter' => $filter, 'devices' => $filter ? count($ids) : null, 'max_targets' => $this->settings()->maxTargets()]);
     }
 
     /**
