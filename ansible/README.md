@@ -1038,7 +1038,10 @@ the whole domain: 2.2 MB of JSON, kept as 0.34 MB, so 0.7 MB a batch (its compar
 ## Fixes
 
 The **Fixes** page (*Ansible → Fixes*) lists the topology plugin's findings whose fix is clear, as the admin sees the
-network, by kind:
+network, by kind, 25 at a time (*Next*, *Show all*: a fix chosen on one page stays chosen). Its filters are the
+topology plugin's pages': a **device**, a **device group**, a **location**, each one narrowing the list to the fixes of
+those devices and of the findings about them, which the topology plugin then computes for them alone (on a large
+network much faster than the whole list):
 
 * **Port descriptions:** a port whose description names the wrong LLDP/CDP neighbor, or none (between monitored
   devices). The fix sets the description the topology plugin's link check builds from the neighbor: its name and
@@ -1052,7 +1055,7 @@ network, by kind:
 
 Each fix shows what it changes and the findings it resolves. The topology plugin's *Link & VLAN diagnostics* and
 *Spanning tree diagnostics* link each such finding to it (*Fix with Ansible*, for admins, while this plugin is
-enabled), and the page then marks that fix. **Fix the selected** (one or several fixes of one kind) opens **New
+enabled), filtered to the finding's device, and the page then marks that fix and chooses it. **Fix the selected** (one or several fixes of one kind) opens **New
 change** made from them: the template the settings map to the kind, the fixes' devices, the survey answer as the
 fixes' lines (read only), a reference naming them (*Fix: Port descriptions of lab-sw2*), and what the change is meant
 to do. The preview and *Create* compute the lines again from the findings as they are then, only what the chosen
@@ -1410,7 +1413,9 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   the same thing is the same finding. A finding of a check that failed in either state is not compared (see above).
 * **The Fixes page on a large network:** listing every fix runs the topology plugin's link and spanning tree checks
   of the whole network the admin sees, in the page's request: on its large test network (4,922 devices, 10 PVST+
-  VLANs, one L2 domain) 15 to 16 s and 380 MB, which the request raises PHP's memory limit for. A change made from fixes
+  VLANs, one L2 domain) 15 to 16 s and 380 MB, which the request raises PHP's memory limit for (filtered, the fixes of
+  those devices only: their link check is quick, the spanning tree check of their domains is not when a domain is
+  that large). A change made from fixes
   computes only what its fixes need, at its preview and at its creation: a description fix of a switch there 0.3 s
   and 12 MB (the link check of the switch and its neighbors, with the name of every device); a root fix the spanning
   tree check of its domain, which there is the whole network: 12 s and 330 MB.

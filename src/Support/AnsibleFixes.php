@@ -40,15 +40,17 @@ final class AnsibleFixes
 
     /**
      * The link of one finding to the Fixes page (which marks the fix of that finding), null when the page is none or the
-     * finding is not one it fixes.
+     * finding is not one it fixes. Filtered to the finding's first device: the page then lists that device's fixes and
+     * those of the findings about it, which the topology plugin computes for it alone (fast on a large network).
      */
     public static function link(?string $page, string $analysis, array $finding): ?string
     {
         if ($page === null || ! self::fixable($analysis, $finding)) {
             return null;
         }
+        $device = (int) (array_values((array) ($finding['devices'] ?? []))[0] ?? 0);
 
-        return $page . '?finding=' . FindingHistory::hash($analysis, $finding);
+        return $page . '?' . ($device > 0 ? 'device=' . $device . '&' : '') . 'finding=' . FindingHistory::hash($analysis, $finding);
     }
 
     /**

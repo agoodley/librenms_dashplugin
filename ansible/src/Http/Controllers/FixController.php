@@ -3,7 +3,9 @@
 namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 
 use Agoodley\LibrenmsAnsible\Changes\FixAnswers;
+use Agoodley\LibrenmsAnsible\Changes\FixFilter;
 use Agoodley\LibrenmsAnsible\Changes\TopologyError;
+use Agoodley\LibrenmsAnsible\Data\DeviceRepository;
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
@@ -18,32 +20,62 @@ use Illuminate\Http\Request;
  * admin sees the network), by kind, each with what it changes and the findings it resolves, and those it cannot fix with
  * why; Fix opens a new change made from the chosen fixes of one kind (ChangeController::create(): the template the
  * settings map to the kind, the devices, the lines read only). LibreNMS admins; making the change needs the run
- * permission. The list is loaded after the page (on a large network the topology plugin takes some seconds).
+ * permission. The list is loaded after the page (on a large network the topology plugin takes some seconds), of every
+ * device the admin sees or, as the topology plugin's pages filter, of a device, a device group, a location (each one
+ * given narrows it): the topology plugin then computes the fixes of those devices only.
  */
 class FixController extends Controller
 {
     /**
-     * plugin/ansible/fixes
+     * plugin/ansible/fixes[?device=&group=&location=]
      */
     public function index(Request $request): View
     {
+        $filter = FixFilter::parse($request->query());
+        $devices = new DeviceRepository();
+        // the device of the filter by its name, when the admin sees it
+        $device = $filter['device'] ?? null;
+        $deviceName = $device !== null ? (isset($devices->visibleTo($request->user())[$device]) ? ($devices->names([$device])[$device] ?? null) : null) ?? "#$device" : null;
+
         return view('ansible::fixes', ['assetVersion' => self::assetVersion(), 'canRun' => Access::canRun($request->user()),
             'unavailable' => (new TopologyVerification())->unavailable(), 'templates' => array_map(fn (string $kind) => $this->settings()->fixTemplate($kind),
-                array_combine(FixAnswers::KINDS, FixAnswers::KINDS))]);
+                array_combine(FixAnswers::KINDS, FixAnswers::KINDS)),
+            'filter' => $filter ?? [], 'filterInvalid' => $filter === null, 'groups' => $devices->deviceGroups(), 'locations' => $devices->locations(),
+            'deviceName' => $deviceName]);
     }
 
     /**
-     * plugin/ansible/api/fixes: the fixes as JSON, with the template of each kind and whether it can apply it.
+     * plugin/ansible/api/fixes[?device=&group=&location=]: the fixes as JSON (of the devices the filter keeps, those the admin
+     * sees), with the template of each kind and whether it can apply it.
      */
     public function list(Request $request): JsonResponse
     {
+        $filter = FixFilter::parse($request->query());
+        if ($filter === null) {
+            return response()->json(['error' => 'The filter is not valid: a device, a device group and a location are given by their number.'], 422);
+        }
         $verification = new TopologyVerification();
         $why = $verification->unavailable();
         if ($why !== null) {
             return response()->json(['error' => 'The topology plugin cannot list the fixes: ' . $why . '.'], 503);
         }
+        $ids = [];
+        if ($filter) {
+            $devices = new DeviceRepository();
+            $ids = FixFilter::keep($filter, $devices->devices(), isset($filter['group']) ? $devices->memberships() : [], $devices->visibleTo($request->user()));
+        }
+        if ($filter && ! $ids) {
+            return response()->json(['fixes' => [], 'not_fixable' => [], 'templates' => $this->templates(), 'role_hidden' => [], 'can_run' => Access::canRun($request->user()),
+                'new_change' => route('ansible.changes.new'), 'filter' => $filter, 'devices' => 0]);
+        }
         try {
-            $answer = $verification->fixes([], (int) $request->user()->user_id);
+            // the fixes of the devices the filter keeps, computed for them (more than the topology plugin takes at once: of every device,
+            // then kept for them as it keeps them)
+            $scoped = count($ids) <= FixFilter::MAX_DEVICES;
+            $answer = $verification->fixes($scoped ? $ids : [], (int) $request->user()->user_id);
+            if (! $scoped) {
+                $answer['fixes'] = FixFilter::ofDevices((array) ($answer['fixes'] ?? []), $ids);
+            }
         } catch (TopologyError $e) {
             return response()->json(['error' => 'The topology plugin cannot list the fixes: ' . $e->getMessage() . '.'], 503);
         } catch (\Throwable $e) {
@@ -87,7 +119,7 @@ class FixController extends Controller
 
         return response()->json(['fixes' => $fixes, 'not_fixable' => $notFixable, 'templates' => $this->templates(),
             'role_hidden' => array_values(array_filter((array) ($answer['role_hidden'] ?? []), 'is_string')), 'can_run' => Access::canRun($request->user()),
-            'new_change' => route('ansible.changes.new')]);
+            'new_change' => route('ansible.changes.new'), 'filter' => $filter, 'devices' => $filter ? count($ids) : null]);
     }
 
     /**

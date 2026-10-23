@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsAnsible\Tests\Unit;
 
 use Agoodley\LibrenmsAnsible\Changes\FixChange;
+use Agoodley\LibrenmsAnsible\Changes\FixFilter;
 use Agoodley\LibrenmsAnsible\Changes\RolloutPlan;
 use Agoodley\LibrenmsAnsible\Changes\TopologyPlan;
 use PHPUnit\Framework\TestCase;
@@ -43,6 +44,28 @@ class FixChangeTest extends TestCase
         $this->assertSame('Choose fixes of one kind on the Fixes page.', FixChange::choose('port_descriptions', ['../x', '1 OR 1=1'], self::answer())['error'],
             'ids that are not of the topology plugin: none chosen');
         $this->assertSame('A change takes at most 200 fixes.', FixChange::choose('port_descriptions', array_map(fn (int $n) => sha1((string) $n), range(1, 201)), self::answer())['error']);
+    }
+
+    public function testTheFixesPageFiltersAsTheTopologyPagesDo(): void
+    {
+        $this->assertSame([], FixFilter::parse([]), 'no filter: every device');
+        $this->assertSame(['device' => 502, 'location' => 7], FixFilter::parse(['device' => '502', 'group' => '', 'location' => '7', 'other' => 'x']));
+        foreach ([['device' => '0'], ['group' => '1 OR 1=1'], ['location' => ['7']], ['device' => '-3'], ['device' => '12345678901']] as $bad) {
+            $this->assertNull(FixFilter::parse($bad), 'not a number: ' . json_encode($bad));
+        }
+
+        $devices = [501 => ['location_id' => 7], 502 => ['location_id' => 7], 503 => ['location_id' => 8], 510 => ['location_id' => 7], 511 => ['location_id' => 7, 'disabled' => 1]];
+        $memberships = [501 => [3], 502 => [3, 4], 503 => [3], 511 => [3]];
+        $visible = [501 => true, 502 => true, 503 => true, 511 => true];
+        $this->assertSame([502], FixFilter::keep(['device' => 502], $devices, $memberships, $visible));
+        $this->assertSame([501, 502], FixFilter::keep(['group' => 3, 'location' => 7], $devices, $memberships, $visible), 'each filter narrows; 510 is not seen, 511 disabled');
+        $this->assertSame([], FixFilter::keep(['device' => 503, 'location' => 7], $devices, $memberships, $visible), 'a device elsewhere: none');
+        $this->assertSame([], FixFilter::keep(['device' => 510], $devices, $memberships, $visible), 'a device the admin does not see: none');
+
+        // more devices than the topology plugin takes at once: the fixes of every device, kept for them as it keeps them
+        $fixes = self::answer()['fixes'];
+        $fixes[2]['findings'] = [['identity' => 'r', 'devices' => [503]]];
+        $this->assertSame([self::D2, self::R1], array_column(FixFilter::ofDevices($fixes, [512, 503]), 'id'), 'a fix of one of them, or of a finding about one');
     }
 
     public function testTheDevicesOfTheFixes(): void

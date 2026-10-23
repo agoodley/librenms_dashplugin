@@ -1497,19 +1497,33 @@
                 window.location.assign(newChange + '?fix=' + encodeURIComponent(kind) + '&ids=' + ids.join(',') + '&scope=' + Object.keys(scope).join(','));
             });
             var rows = el('tbody');
-            // a large network has many fixes of a kind: the first ones are shown, the others on demand (and the one a link names)
-            var SHOWN = 12;
+            // a port whose name cannot be passed to a playbook: the plugin refuses the whole fix (every field is checked)
+            var refusedFix = function (fix) {
+                return fix.kind === 'port_descriptions' && fix.ports.some(function (port) {
+                    return !port.passes;
+                });
+            };
+            var usable = function (fix) {
+                return canRun && !template.problem && !refusedFix(fix);
+            };
+            // the fix of the finding a link names is chosen, and shown on its page
+            var wantedIndex = -1;
             entries.forEach(function (fix, index) {
+                if (hasWanted(fix)) {
+                    wantedIndex = index;
+                    if (usable(fix)) {
+                        selected[fix.id] = true;
+                    }
+                }
+            });
+            var rowOf = function (fix) {
                 var box_ = el('input');
                 box_.type = 'checkbox';
                 box_.className = 'ans-fix-check';
                 box_.setAttribute('aria-label', 'Fix ' + fix.title);
-                // a port whose name cannot be passed to a playbook: the plugin refuses the whole fix (every field is checked)
-                var refused = fix.kind === 'port_descriptions' && fix.ports.some(function (port) {
-                    return !port.passes;
-                });
-                box_.disabled = !canRun || !!template.problem || refused;
-                if (refused) {
+                box_.disabled = !usable(fix);
+                box_.checked = !!selected[fix.id];
+                if (refusedFix(fix)) {
                     box_.title = 'The plugin cannot apply this fix: an interface name cannot be passed to a playbook';
                 }
                 box_.addEventListener('change', function () {
@@ -1524,39 +1538,63 @@
                     return d.name;
                 }).join(', '))]), el('td', 'ans-wrap', changes(fix)), el('td', 'ans-wrap', findings(fix))]);
                 row.setAttribute('data-fix', fix.id);
-                if (index >= SHOWN) {
-                    row.classList.add('ans-fix-more');
-                    row.hidden = true;
-                }
                 if (hasWanted(fix)) {
                     row.classList.add('info', 'ans-fix-wanted');
-                    row.hidden = false;
                     wantedRow = row;
-                    if (!box_.disabled) {
-                        box_.checked = true;
-                        selected[fix.id] = true;
-                    }
                 }
-                append(rows, row);
+                return row;
+            };
+            // a large network has many fixes of a kind: a page of them at a time (the choice is kept from page to page), or all of them
+            var PAGE = 25;
+            var page = wantedIndex >= 0 ? Math.floor(wantedIndex / PAGE) : 0;
+            var all = false;
+            var pageButton = function (label, id) {
+                var b = el('button', 'btn btn-xs btn-default', label);
+                b.type = 'button';
+                b.id = id + kind;
+                return b;
+            };
+            var prev = pageButton('\u2039 Previous', 'ans-fixes-prev-');
+            var next = pageButton('Next \u203a', 'ans-fixes-next-');
+            var allButton = pageButton('Show all ' + entries.length, 'ans-fixes-all-');
+            var range = el('span', 'ans-muted');
+            range.id = 'ans-fixes-range-' + kind;
+            var render = function () {
+                var from = all ? 0 : page * PAGE;
+                var to = all ? entries.length : Math.min(entries.length, from + PAGE);
+                rows.textContent = '';
+                for (var i = from; i < to; i++) {
+                    rows.appendChild(rowOf(entries[i]));
+                }
+                range.textContent = all ? 'all ' + entries.length : (from + 1) + '\u2013' + to + ' of ' + entries.length;
+                prev.disabled = all || page === 0;
+                next.disabled = all || to >= entries.length;
+                allButton.textContent = all ? 'Show ' + PAGE + ' at a time' : 'Show all ' + entries.length;
+            };
+            prev.addEventListener('click', function () {
+                page = Math.max(0, page - 1);
+                render();
             });
+            next.addEventListener('click', function () {
+                page++;
+                render();
+            });
+            allButton.addEventListener('click', function () {
+                all = !all;
+                page = 0;
+                render();
+            });
+            render();
             var table = el('table', 'table table-condensed ans-table ans-stack');
             append(table, [el('thead', null, el('tr', null, [el('th', null, ''), el('th', null, 'Fix'), el('th', null, 'What it changes'), el('th', null, 'Findings it resolves')])), rows]);
             refresh();
-            var others = rows.querySelectorAll('tr.ans-fix-more[hidden]').length;
-            var more = null;
-            if (others) {
-                more = el('button', 'btn btn-xs btn-default', 'Show the other ' + others);
-                more.type = 'button';
-                more.id = 'ans-fixes-more-' + kind;
-                more.addEventListener('click', function () {
-                    rows.querySelectorAll('tr.ans-fix-more').forEach(function (hiddenRow) {
-                        hiddenRow.hidden = false;
-                    });
-                    more.remove();
-                });
+            var pager = null;
+            if (entries.length > PAGE) {
+                pager = el('span', 'ans-fixes-pager', [prev, ' ', range, ' ', next, ' ', allButton]);
+                pager.id = 'ans-fixes-pages-' + kind;
             }
             append(box, [el('div', 'panel-heading', [el('strong', null, LABELS[kind] + ' (' + entries.length + ')'), ' ', templateText]),
-                el('div', 'table-responsive', table), el('div', 'panel-body', [more, more ? ' ' : null, button, ' ', el('span', 'ans-help', canRun
+                pager ? el('div', 'panel-body', pager) : null, el('div', 'table-responsive', table), el('div', 'panel-body', [button, ' ', el('span', 'ans-help', canRun
                     ? 'opens a new change: nothing runs before its dry run' : 'making a change needs the run permission')])]);
             return box;
         }
@@ -1568,8 +1606,15 @@
                 return;
             }
             var data = result.body;
-            status.textContent = data.fixes.length ? data.fixes.length + ' fix' + (data.fixes.length === 1 ? '' : 'es') + ' as you see the network'
-                : 'No finding of the topology plugin has a clear fix now, as you see the network.';
+            var count = data.fixes.length + ' fix' + (data.fixes.length === 1 ? '' : 'es');
+            if (config.filtered && !data.devices) {
+                status.textContent = 'No device you may see matches the filter.';
+            } else if (config.filtered) {
+                status.textContent = data.fixes.length ? count + ' of the ' + data.devices + ' device' + (data.devices === 1 ? '' : 's') + ' of the filter, and of the findings about them'
+                    : 'No finding of the topology plugin about the ' + data.devices + ' device' + (data.devices === 1 ? '' : 's') + ' of the filter has a clear fix now.';
+            } else {
+                status.textContent = data.fixes.length ? count + ' as you see the network' : 'No finding of the topology plugin has a clear fix now, as you see the network.';
+            }
             if (data.role_hidden && data.role_hidden.length) {
                 list.appendChild(alertBox('warning', null, ['Your LibreNMS role may not view ' + data.role_hidden.join(', ') + ': the list may be incomplete.']));
             }
@@ -1595,8 +1640,8 @@
                 list.appendChild(box);
             }
             if (wanted !== null && wantedRow === null) {
-                list.insertBefore(alertBox('info', null, ['The finding you came from has no fix here now: it was resolved, or it changed since that page was loaded.']),
-                    list.firstChild);
+                list.insertBefore(alertBox('info', null, ['The finding you came from has no fix here now: it was resolved, or it changed since that page was loaded'
+                    + (config.filtered ? ', or it is not about the devices of the filter.' : '.')]), list.firstChild);
             } else if (wantedRow !== null && wantedRow.scrollIntoView) {
                 wantedRow.scrollIntoView({block: 'center'});
             }

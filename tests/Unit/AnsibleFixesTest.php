@@ -17,9 +17,11 @@ class AnsibleFixesTest extends TestCase
         $wrong = ['code' => 'description_wrong', 'devices' => [511], 'ports' => [95110], 'vlan' => null];
         $root = ['code' => 'root_not_preferred', 'devices' => [503], 'ports' => [], 'vlan' => 10];
 
-        $this->assertSame('https://nms/plugin/ansible/fixes?finding=' . FindingHistory::hash('links', $wrong),
-            AnsibleFixes::link('https://nms/plugin/ansible/fixes', 'links', $wrong), 'the finding\'s identity, as the fixes carry it');
-        $this->assertSame('https://nms/plugin/ansible/fixes?finding=' . FindingHistory::hash('stp', $root), AnsibleFixes::link('https://nms/plugin/ansible/fixes', 'stp', $root));
+        $this->assertSame('https://nms/plugin/ansible/fixes?device=511&finding=' . FindingHistory::hash('links', $wrong),
+            AnsibleFixes::link('https://nms/plugin/ansible/fixes', 'links', $wrong), 'the finding\'s identity, as the fixes carry it, and its device (the page filtered to it)');
+        $this->assertSame('https://nms/plugin/ansible/fixes?device=503&finding=' . FindingHistory::hash('stp', $root), AnsibleFixes::link('https://nms/plugin/ansible/fixes', 'stp', $root));
+        $this->assertSame('https://nms/plugin/ansible/fixes?finding=' . FindingHistory::hash('stp', ['devices' => []] + $root),
+            AnsibleFixes::link('https://nms/plugin/ansible/fixes', 'stp', ['devices' => []] + $root), 'a finding without a device: the page of every device');
         $this->assertTrue(AnsibleFixes::fixable('links', ['code' => 'description_missing']));
         $this->assertTrue(AnsibleFixes::fixable('stp', ['code' => 'root_default_priority']));
         $this->assertFalse(AnsibleFixes::fixable('links', ['code' => 'vlan_mismatch']), 'no clear fix');
