@@ -1006,8 +1006,11 @@ permission, never the requester with a second admin, while the settings ask for 
 they ask for none); the acceptance is for what the page showed, and refused when the verification changed since it
 was loaded. **Stop the change**: it ends as failed. **Only record them**: the change goes on. A batch that **cannot
 be verified** (no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be taken, a LibreNMS
-role that may not view the links, a part of the network the topology plugin could not read in either state, or for a
-fix the check that found its findings not run) follows **When a batch cannot be verified** the same way. While it
+role that may not view the links, a part of the network the topology plugin could not read in either state, a device
+of its scope that LibreNMS no longer has as the admin who started the batch sees it (disabled, deleted, no longer
+visible to them), that admin no longer one who may start it (no state is taken as them: they would see less, or
+nothing), or for a fix the check that found its findings not run) follows **When a batch cannot be verified** the same
+way. While it
 pauses, the plugin checks every minute whether the data became fresh (when the state before the batch was taken), or
 takes a new state after it every 5 minutes (when one could not be read in full), and verifies the batch then.
 *Continue* starts neither.
@@ -1218,7 +1221,10 @@ released has stopped by then.
   its outcome says so from its Apply on.
 * **Never a comparison on stale data:** the state after a batch is taken only from a discovery and a poll of its scope
   that started after the batch ended and its settle time; without them within the wait, the batch is not verified,
-  never verified.
+  never verified. **Nor on less than its scope:** a device the state before it covered (or of its spanning tree domain)
+  that LibreNMS no longer has as the admin who started the batch sees it, or that the state after it lacks, makes the
+  batch one that cannot be verified, named; and no state is taken as an admin who may no longer start the batch
+  (gone, disabled, no longer an admin, without the run permission).
 * **A fix sends only checked, structured answers:** lines the plugin builds from the topology plugin's data, each
   field checked against the fix templates' contract (the host a target, the interface a port of it in LibreNMS, the
   description in the link check's characters and length, the mode, a canonical list of instances, the priority),

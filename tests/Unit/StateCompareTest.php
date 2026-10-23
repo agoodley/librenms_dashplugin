@@ -109,6 +109,18 @@ class StateCompareTest extends TestCase
         $this->assertSame([1, 3, 2], StateCompare::domain(self::state(self::T)));
     }
 
+    public function testADeviceTheSecondStateNoLongerCoversIsNamed(): void
+    {
+        $before = self::state(self::T);
+        // dist1 (2) and core1 (1, of the domain) no longer seen: disabled, deleted, or no longer visible to the user
+        $after = ['scope' => ['subjects' => [3], 'dependents' => [], 'neighbors' => [], 'included' => [], 'domain' => []]] + self::state(self::T + 600);
+        $this->assertSame([1, 2], StateCompare::compare($before, $after)['skipped']['devices'], 'what the first state covered or had in its domain');
+        $this->assertSame([], StateCompare::compare($before, self::state(self::T + 600))['skipped']['devices']);
+        // a device that only moved from the covered devices to the domain is no longer covered either
+        $moved = ['scope' => ['subjects' => [3], 'dependents' => [], 'neighbors' => [], 'included' => [], 'domain' => [1, 2]]] + self::state(self::T + 600);
+        $this->assertSame([2], StateCompare::compare($before, $moved)['skipped']['devices']);
+    }
+
     public function testWhatEitherStateCouldNotReadIsNotComparedAndSaidSo(): void
     {
         $ports = [31 => ['port_id' => 31, 'device_id' => 3, 'ifName' => 'Gi1/0/49'], 21 => ['port_id' => 21, 'device_id' => 2, 'ifName' => 'Te1/0/1']];
@@ -128,7 +140,7 @@ class StateCompareTest extends TestCase
         $this->assertSame([], $compared['findings']['resolved']);
         $this->assertSame(1, $compared['findings']['same'], 'the routing finding, which both read');
         $this->assertSame(['facts' => [FactCollector::LINK], 'checks' => ['redundancy'], 'errors' => ['facts' => [FactCollector::LINK => ['after' => 'database error 42S02/1146: no such table']],
-            'checks' => ['redundancy' => ['after' => 'TypeError: an argument is null']]]], $compared['skipped'], 'with the error of each, in the state it failed in');
+            'checks' => ['redundancy' => ['after' => 'TypeError: an argument is null']]], 'devices' => []], $compared['skipped'], 'with the error of each, in the state it failed in');
 
         // the same check failed in both states
         $compared = StateCompare::compare($checks(['redundancy' => 'TypeError: before']) + self::state(self::T, $link, $route), $after);
@@ -140,11 +152,11 @@ class StateCompareTest extends TestCase
             'quiet' => false]]);
         $compared = StateCompare::compare($before, $after);
         $this->assertSame([], $compared['findings']['new']);
-        $this->assertSame(['facts' => [], 'checks' => ['links'], 'errors' => ['facts' => [], 'checks' => []]], $compared['skipped'],
+        $this->assertSame(['facts' => [], 'checks' => ['links'], 'errors' => ['facts' => [], 'checks' => []], 'devices' => []], $compared['skipped'],
             'a check without an error: it ran in one of the states only');
 
         // both read everything: nothing skipped
-        $this->assertSame(['facts' => [], 'checks' => [], 'errors' => ['facts' => [], 'checks' => []]],
+        $this->assertSame(['facts' => [], 'checks' => [], 'errors' => ['facts' => [], 'checks' => []], 'devices' => []],
             StateCompare::compare($before, $checks() + self::state(self::T + 600, $link, $spof + $route))['skipped']);
     }
 }

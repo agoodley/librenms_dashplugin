@@ -286,10 +286,12 @@ final class Verification
      * @return array{version: string, from: int, to: int, events: list<array{type: string, category: string, level: string, text: string, devices: int[]}>,
      *     findings: array{new: list<array>, worse: list<array>, changed: list<array>, milder: list<array>, resolved: list<array>, same: int},
      *     devices: array{down: int[], up: int[]}, names: array<int, string>, skipped: array{facts: string[], checks: string[],
-     *     errors: array{facts: array<string, array{before?: string, after?: string}>, checks: array<string, array{before?: string, after?: string}>}}}
+     *     errors: array{facts: array<string, array{before?: string, after?: string}>, checks: array<string, array{before?: string, after?: string}>},
+     *     devices: int[]}}
      *     events: in the Changes page's words (ChangeReport::TYPES); worse, changed, milder: the finding now with "was"; skipped: the kinds of
      *     facts and the checks not compared, as either state could not read them (a caller must not take the rest for all of it), with the
-     *     error of each in the state it failed in (a check without one was enabled in one of the states only)
+     *     error of each in the state it failed in (a check without one was enabled in one of the states only), and the devices the first
+     *     state covered or had in its domain that the second does not (disabled or deleted in LibreNMS, or no longer visible to the user)
      *
      * @throws \InvalidArgumentException when a state is not one of this API's major version
      */

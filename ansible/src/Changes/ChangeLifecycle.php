@@ -2374,6 +2374,8 @@ final class ChangeLifecycle
         $devices = $this->batchDevices($change, $number);
         $stale = null;
         try {
+            // a state is taken as the admin who starts the batch sees the network: one who may no longer start it sees less, or nothing
+            $this->stateTaker($user, 'starts');
             if (($before['status'] ?? null) === 'refresh') {
                 $this->beat();
                 $scope = $this->verifier->scope($devices, (int) $user['user_id']);
@@ -2404,6 +2406,13 @@ final class ChangeLifecycle
             }
             $this->beat();
             $state = $this->verifier->state($devices, (int) $user['user_id']);
+            // the batch's own devices, as that admin sees them: one the state does not cover could not be verified
+            $unseen = array_values(array_diff($devices, array_map('intval', (array) (($state['scope'] ?? [])['subjects'] ?? []))));
+            if ($unseen) {
+                throw new TopologyError('it does not cover ' . VerificationRules::devicesText($unseen, $this->targetNames($change)) . ' of the batch: '
+                    . UntrustedText::line($user['username'], 60) . ', who starts the batch, does not see ' . (count($unseen) === 1 ? 'it' : 'them') . ' in LibreNMS (disabled, '
+                    . 'or not visible to them)');
+            }
             $this->changes->saveState($id, $number, 'before', $state);
             $older = $number === 1 ? 'the Apply' : 'the end of batch ' . ($number - 1);
             $note = ($before['status'] ?? null) === 'take' ? 'from LibreNMS\' data as it is (setting Fresh data: wait)'
@@ -2486,6 +2495,8 @@ final class ChangeLifecycle
         $user = $this->starter($change, $number);
         $scope = $this->changes->scopeOf($id, $number, 'before') ?? ['covered' => [], 'domain' => [], 'names' => []];
         try {
+            // the state after it is taken as the state before it was, as the admin who started the batch sees the network
+            $this->stateTaker($user, 'started');
             if ($after['status'] === 'settling') {
                 // fresh data for what the state before covered, and for the next batch's devices (its state before is taken from it)
                 $next = $number < (int) $change['batch_count'] ? $this->prefetchNext($change, $number + 1, $now) : [];
@@ -2501,6 +2512,18 @@ final class ChangeLifecycle
             $this->beat();
             $fresh = Freshness::check($this->verifier->freshness([...$scope['covered'], ...$scope['domain']], (int) $user['user_id']), $scope['covered'], $scope['domain'],
                 $due, self::at($batch['started_at'] ?? null) ?: $ended);
+            if ($fresh['unknown']) {
+                // a device of its scope LibreNMS no longer has as that admin sees it (disabled, deleted, no longer visible to them): never
+                // verified on less than its scope (checked again every minute: it may come back)
+                $this->setVerify($id, $number, ['after' => ['status' => 'missing', 'checked_at' => $now, 'missing' => $fresh['unknown']] + $after]);
+                $this->verifyResult($change, $number, 'unknown', ['error' => 'LibreNMS no longer has ' . VerificationRules::devicesText($fresh['unknown'], $scope['names'])
+                    . ' of its scope as ' . UntrustedText::line($user['username'], 60) . ', who started the batch, sees the network (disabled or deleted, or no longer '
+                    . 'visible to them): what the batch changed there cannot be compared. To go on: enable ' . (count($fresh['unknown']) === 1 ? 'it' : 'them')
+                    . ' in LibreNMS again, or set When a batch cannot be verified to only record it',
+                    'event_error' => 'LibreNMS no longer has ' . Format::count(count($fresh['unknown']), 'device') . ' of its scope as the admin who started the batch sees the network'], $now);
+
+                return;
+            }
             if (! $fresh['fresh']) {
                 $waiting = Freshness::waitingText($fresh['waiting'], $scope['names']);
                 if ($now < (int) ($after['deadline'] ?? 0)) {
@@ -2531,9 +2554,12 @@ final class ChangeLifecycle
             $this->changes->saveState($id, $number, 'after', $state, ['evaluation' => $evaluation, 'names' => array_slice((array) ($comparison['names'] ?? []), 0, 500, true),
                 'from' => (int) ($comparison['from'] ?? 0), 'to' => (int) ($comparison['to'] ?? 0)]);
             // what either state could not read is not compared: nothing unexpected in the rest is no verification of the batch (nor of a
-            // fix whose check did not run); the page and the timeline name what failed, its error, and the ways out
-            $skipped = VerificationRules::skippedWhy((array) ($comparison['skipped'] ?? []), isset($evaluation['unchecked']) ? (string) $evaluation['unchecked'] : null);
-            $incomplete = $evaluation['result'] === 'verified' && $skipped !== null;
+            // fix whose check did not run); a device the state after no longer covers never is, whatever the rest says. The page and the
+            // timeline name what failed, its error, and the ways out
+            $lost = (array) (((array) ($comparison['skipped'] ?? []))['devices'] ?? []);
+            $skipped = VerificationRules::skippedWhy((array) ($comparison['skipped'] ?? []), isset($evaluation['unchecked']) ? (string) $evaluation['unchecked'] : null,
+                (array) ($comparison['names'] ?? []) + $scope['names'], (int) ($evaluation['counts']['unexpected'] ?? 0));
+            $incomplete = $skipped !== null && ($evaluation['result'] === 'verified' || $lost);
             $this->setVerify($id, $number, ['after' => ['status' => $incomplete ? 'incomplete' : 'done', 'taken_at' => (int) ($state['taken_at'] ?? $now), 'waiting' => null,
                 'checked_at' => $now] + $after]);
             if ($incomplete) {
@@ -2635,19 +2661,20 @@ final class ChangeLifecycle
         $verify = (array) ($this->changes->batches($id)[$number]['verify'] ?? []);
         $after = (array) ($verify['after'] ?? []);
         $incomplete = ($after['status'] ?? null) === 'incomplete';
-        if (($verify['before']['status'] ?? null) !== 'taken' || ! in_array($after['status'] ?? null, ['stale', 'waiting', 'settling', 'incomplete'], true)
+        if (($verify['before']['status'] ?? null) !== 'taken' || ! in_array($after['status'] ?? null, ['stale', 'waiting', 'settling', 'incomplete', 'missing'], true)
             || $this->verifier === null || ! $this->verifier->takesStates()
             || $now - (int) ($after['checked_at'] ?? 0) < ($incomplete ? self::INCOMPLETE_RECHECK : self::BLAST_RECHECK)) {
             return; // nothing to check again (no state before it), or not yet
         }
-        if (in_array($after['status'] ?? null, ['stale', 'incomplete'], true)) {
-            // a state after it, taken again: once the data is fresh (it was, for an incomplete comparison) and the topology plugin reads it all
+        if (in_array($after['status'] ?? null, ['stale', 'incomplete', 'missing'], true)) {
+            // a state after it, taken again: once the data is fresh (it was, for an incomplete comparison), the topology plugin reads it all
+            // and LibreNMS has every device of its scope again
             $this->setVerify($id, $number, ['after' => ['status' => 'waiting', 'deadline' => PHP_INT_MAX] + $after]);
         }
         $this->verifyStep($change, $number, $now);
         $verify = (array) ($this->changes->batches($id)[$number]['verify'] ?? []);
         if (($verify['result'] ?? null) === 'unknown') {
-            $status = ($verify['after']['status'] ?? null) === 'incomplete' ? 'incomplete' : 'stale';
+            $status = in_array($verify['after']['status'] ?? null, ['incomplete', 'missing'], true) ? $verify['after']['status'] : 'stale';
             $this->setVerify($id, $number, ['decision' => 'pause', 'after' => ['status' => $status] + (array) ($verify['after'] ?? [])]);
 
             return; // still not
@@ -2662,6 +2689,34 @@ final class ChangeLifecycle
                 $this->afterBatch($resumed, $number, 'done', null, $now, null);
             }
         }
+    }
+
+    /**
+     * A state is taken as the admin who starts (or started) the batch sees the network: one who may no longer start it (gone,
+     * disabled, no longer an admin, without the run permission) would see less, or nothing, and the comparison would hold
+     * nothing: no state is taken as them.
+     *
+     * @param  array{user_id: int, username: string}  $user
+     *
+     * @throws TopologyError
+     */
+    private function stateTaker(array $user, string $starts): void
+    {
+        $problem = $this->runner->userProblem((int) $user['user_id'], 'run');
+        if ($problem !== null) {
+            throw new TopologyError('it is taken as ' . UntrustedText::line($user['username'], 60) . ", who $starts the batch, and " . UntrustedText::line($user['username'], 60)
+                . ' ' . $problem);
+        }
+    }
+
+    /**
+     * The names of the change's targets.
+     *
+     * @return array<int, string>
+     */
+    private function targetNames(array $change): array
+    {
+        return array_map(fn (array $target) => (string) (($target['display'] ?? '') ?: ($target['inventory_name'] ?? '')), $this->changes->targets((int) $change['id']));
     }
 
     /**

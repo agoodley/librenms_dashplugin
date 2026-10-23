@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsAnsible\Changes;
 
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
+use Agoodley\LibrenmsAnsible\Support\Format;
 
 /**
  * What the comparison of a batch's states (before it, and after it once LibreNMS' data is fresh) means for the change:
@@ -296,19 +297,22 @@ final class VerificationRules
     }
 
     /**
-     * Why a comparison that found nothing unexpected is no verification of the batch, for the change page and the
-     * timeline: what either state could not read, each with the topology plugin's error (one line, never SQL) and the
-     * state it failed in; a check that ran in one of the states only; the check that found a fix's findings that did
-     * not run; then the ways out (fix it, switch the check off in the topology plugin's settings, or only record such a
-     * batch). The same for the eventlog without the errors (they may name devices). Null when nothing keeps the
-     * comparison from being a verification.
+     * Why a comparison is no verification of the batch, for the change page and the timeline: what either state could not
+     * read, each with the topology plugin's error (one line, never SQL) and the state it failed in; a check that ran in one
+     * of the states only; the check that found a fix's findings that did not run; the devices the state before covered
+     * that the state after no longer does (LibreNMS no longer has them as the admin who started the batch sees the
+     * network); then the ways out (fix it, switch the check off in the topology plugin's settings, enable the devices
+     * again, or only record such a batch). The same for the eventlog without the errors and the names (they may name
+     * devices). Null when nothing keeps the comparison from being a verification.
      *
      * @param  array{facts?: string[], checks?: string[], errors?: array{facts?: array<string, array{before?: string, after?: string}>,
-     *     checks?: array<string, array{before?: string, after?: string}>}}  $skipped  the verification API's skipped
+     *     checks?: array<string, array{before?: string, after?: string}>}, devices?: int[]}  $skipped  the verification API's skipped
      * @param  ?string  $unchecked  the check that found a fix's findings, when it did not run in both states (evaluate())
+     * @param  array<int, string>  $names  device => name, for the devices no longer covered
+     * @param  int  $unexpected  the unexpected changes found in what was compared
      * @return array{why: string, event: string}|null
      */
-    public static function skippedWhy(array $skipped, ?string $unchecked = null): ?array
+    public static function skippedWhy(array $skipped, ?string $unchecked = null, array $names = [], int $unexpected = 0): ?array
     {
         $errors = (array) ($skipped['errors'] ?? []);
         $why = [];
@@ -344,6 +348,14 @@ final class VerificationRules
                 $event[] = self::checkEvent($check, 'is switched off');
             }
         }
+        $eventText = $event ? implode('; ', [$event[0][0], ...array_column(array_slice($event, 1), 1)]) . ' in the state before or after it' : '';
+        // a device the state before covered that the state after does not: what the batch changed there is not compared
+        $lost = array_slice(array_values(array_unique(array_map('intval', array_filter((array) ($skipped['devices'] ?? []), 'is_scalar')))), 0, 200);
+        if ($lost) {
+            $why[] = 'the state after it no longer covers ' . self::devicesText($lost, $names) . ': LibreNMS no longer has '
+                . (count($lost) === 1 ? 'it' : 'them') . ' as the admin who started the batch sees the network (disabled or deleted, or no longer visible to that admin)';
+            $eventText .= ($eventText !== '' ? '; ' : '') . 'the state after it no longer covers ' . Format::count(count($lost), 'device') . ' of its scope';
+        }
         if (! $why) {
             return null;
         }
@@ -357,10 +369,13 @@ final class VerificationRules
         if ($back) {
             $ways[] = 'switch the ' . self::join($back) . ' check' . (count($back) > 1 ? 's' : '') . ' back as it was in the topology plugin\'s settings';
         }
+        if ($lost) {
+            $ways[] = 'enable ' . (count($lost) === 1 ? 'the device' : 'the devices') . ' in LibreNMS again (or let that admin see ' . (count($lost) === 1 ? 'it' : 'them') . ')';
+        }
         $ways[] = 'set When a batch cannot be verified to only record it';
 
-        return ['why' => implode('; ', $why) . '; nothing else that was compared changed. To go on: ' . self::join($ways, 'or'),
-            'event' => implode('; ', [$event[0][0], ...array_column(array_slice($event, 1), 1)]) . ' in the state before or after it'];
+        return ['why' => implode('; ', $why) . ($unexpected > 0 ? '; ' . Format::count($unexpected, 'unexpected change') . ' in what was compared (listed with the batch)'
+            : '; nothing else that was compared changed') . '. To go on: ' . self::join($ways, 'or'), 'event' => $eventText];
     }
 
     /**
@@ -371,6 +386,19 @@ final class VerificationRules
     private static function checkEvent(string $check, string $what): array
     {
         return ['the topology plugin\'s ' . self::checkWords($check) . " check $what", 'its ' . self::checkWords($check) . " check $what"];
+    }
+
+    /**
+     * Devices by name, at most 10: "lab-sw3, lab-sw5 and 4 more".
+     *
+     * @param  int[]  $ids
+     * @param  array<int, string>  $names
+     */
+    public static function devicesText(array $ids, array $names, int $max = 10): string
+    {
+        $parts = array_map(fn (int $id) => UntrustedText::line((string) (($names[$id] ?? '') ?: "device #$id"), 80), array_slice($ids, 0, $max));
+
+        return count($ids) > $max ? implode(', ', $parts) . ' and ' . (count($ids) - $max) . ' more' : self::join($parts);
     }
 
     /**

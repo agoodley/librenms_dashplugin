@@ -746,8 +746,9 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
   `root_after`); `findings` `new`, `worse`, `changed`, `milder` (each with what it `was`, by the findings history's
   successor rule) and `resolved`; `devices` `down` and `up`; `skipped`: the kinds of facts and the checks not
   compared, because either state could not read them (a caller must not take the rest for all of it), with the
-  `errors` of each in the state it failed in (`before`, `after`; a check without one ran in one of the states only).
-  Only what both states cover is compared.
+  `errors` of each in the state it failed in (`before`, `after`; a check without one ran in one of the states only),
+  and the `devices` the first state covered or had in its domain that the second does not (disabled or deleted in
+  LibreNMS, or no longer visible to the user). Only what both states cover is compared.
 * **`fixes(array $deviceIds = [])`**: the findings with a clear configuration, as data, never configuration text: each
   fix has an `id`, its `kind`, `title`, the `devices` it changes and the findings it `resolves`. A port descriptions fix
   has `ports` (`device_id`, `port_id`, `ifName`, `ifDescr`, the `current` description and the `description` the link

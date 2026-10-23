@@ -466,6 +466,107 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status']);
     }
 
+    // ------------------------------------------------------------------ never verified on less than its scope
+
+    public function testADeviceOfItsScopeLibreNmsNoLongerHasMakesTheBatchOneThatCannotBeVerified(): void
+    {
+        $id = $this->applied();
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        // lab-sw3, a neighbor of lab-sw4 the state before covered, disabled in LibreNMS after the batch
+        $this->verifier->gone = [503];
+        $this->fresh($this->t0 + 1000);
+        $this->sync($id, $this->t0 + 1080);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown', 'unknown', 'missing'], [$change['status'], $change['waiting'], $this->verify($id, 1)['result'],
+            $this->verify($id, 1)['after']['status']], 'never "verified" on less than its scope');
+        $this->assertSame(1, $this->verifier->count('state'), 'no state after it is taken without the device');
+        $this->assertStringContainsString('Batch 1 cannot be verified: LibreNMS no longer has lab-sw3 of its scope as alice, who started the batch, sees the network (disabled or '
+            . 'deleted, or no longer visible to them)', $this->messages($id));
+        $events = implode("\n", array_column($this->events->of(510), 'message'));
+        $this->assertStringContainsString('LibreNMS no longer has 1 device of its scope as the admin who started the batch sees the network', $events);
+        $this->assertStringNotContainsString('lab-sw3', $events, 'the eventlog names no other device');
+
+        // enabled again: checked again a minute later, verified, the change goes on
+        $this->verifier->gone = [];
+        $this->sync($id, $this->t0 + 1150);
+        $this->assertSame('verified', $this->verify($id, 1)['result']);
+        $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status']);
+    }
+
+    public function testAStateAfterThatNoLongerCoversADeviceCannotBeVerifiedWhateverItFound(): void
+    {
+        $id = $this->applied();
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->fresh($this->t0 + 1000);
+        // the topology plugin's state after it lacks lab-sw3 (no longer visible to the admin when the state was taken), and what both cover changed
+        $this->verifier->comparison = ['skipped' => ['facts' => [], 'checks' => [], 'errors' => [], 'devices' => [503]]] + self::uplinkLost();
+        $this->sync($id, $this->t0 + 1080);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown', 'unknown'], [$change['status'], $change['waiting'], $this->verify($id, 1)['result']],
+            'cannot be verified, not "unexpected": the comparison is not over its whole scope');
+        $this->assertMatchesRegularExpression('/Batch 1 cannot be verified: the state after it no longer covers lab-sw3: LibreNMS no longer has it as the admin who started the batch '
+            . 'sees the network \(disabled or deleted, or no longer visible to that admin\); \d+ unexpected changes? in what was compared \(listed with the batch\)\. To go on: enable '
+            . 'the device in LibreNMS again \(or let that admin see it\) or set When a batch cannot be verified to only record it\./', $this->messages($id));
+        $this->assertSame([[510]], $this->launched());
+
+        // a state after it that covers it all again (checked every 5 minutes): what changed is then what the batch made
+        $this->verifier->comparison = self::uplinkLost();
+        $this->sync($id, $this->t0 + 1400);
+        $this->assertSame([ChangeStatus::PAUSED, 'verification', 'unexpected'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting'],
+            $this->verify($id, 1)['result']]);
+    }
+
+    public function testNoStateIsTakenAsAnAdminWhoMayNoLongerStartTheBatch(): void
+    {
+        $id = $this->applied();
+        $this->endBatch($id, 1, $this->t0 + 300);
+        // alice, who started batch 1, demoted after it: the topology plugin would show her nothing, and nothing would read as unchanged
+        $this->runner->userProblems[self::ALICE['user_id']] = 'is no longer a LibreNMS admin';
+        $asked = [$this->verifier->count('state'), $this->verifier->count('freshness'), $this->verifier->count('scope'), count($this->refresh->requests)];
+        $this->sync($id, $this->t0 + 960);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown', 'unknown'], [$change['status'], $change['waiting'], $this->verify($id, 1)['result']]);
+        $this->assertStringContainsString('Batch 1 cannot be verified: the state after it could not be taken (it is taken as alice, who started the batch, and alice is no longer '
+            . 'a LibreNMS admin)', $this->messages($id));
+        $this->assertSame($asked, [$this->verifier->count('state'), $this->verifier->count('freshness'), $this->verifier->count('scope'), count($this->refresh->requests)],
+            'nothing asked as her after the batch: no freshness, scope, state or refresh');
+        // checked again every minute: once she may start it again, the batch is verified as any
+        unset($this->runner->userProblems[self::ALICE['user_id']]);
+        $this->sync($id, $this->t0 + 1030);
+        $this->fresh($this->t0 + 1040);
+        $this->sync($id, $this->t0 + 1100);
+        $this->assertSame('verified', $this->verify($id, 1)['result']);
+    }
+
+    public function testNoStateBeforeIsTakenAsAnAdminWhoMayNoLongerStartTheBatch(): void
+    {
+        $id = $this->approved();
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->runner->userProblems[self::ALICE['user_id']] = 'no longer holds the run permission (ansible.run)';
+        $this->sync($id, $this->t0 + 60);
+        $this->assertSame([0, 0], [$this->verifier->count('scope'), $this->verifier->count('state')], 'nothing taken as her');
+        $this->assertSame('unknown', $this->verify($id, 1)['before']['status']);
+        $change = $this->changes->find($id);
+        $this->assertSame(ChangeStatus::FAILED, $change['status'], 'nor is the batch launched by her');
+        $this->assertStringContainsString('alice, who launches it, no longer holds the run permission', (string) $change['error']);
+    }
+
+    public function testTheStateBeforeMustCoverTheBatchsDevices(): void
+    {
+        $id = $this->approved();
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        // lab-sw4, the batch's device, is not one the admin who starts the batch sees in LibreNMS
+        $this->verifier->gone = [510];
+        $this->sync($id, $this->t0 + 60);
+        $this->fresh($this->t0 + 90);
+        $this->sync($id, $this->t0 + 120);
+        $this->assertSame('unknown', $this->verify($id, 1)['before']['status']);
+        $this->assertStringContainsString('Batch 1 will not be verified: the state before it could not be taken (it does not cover lab-sw4 of the batch: alice, who starts the '
+            . 'batch, does not see it in LibreNMS (disabled, or not visible to them))', $this->messages($id));
+    }
+
     // ------------------------------------------------------------------ decided at Apply
 
     /** @return array<string, array{string}> why the topology plugin's verification API is not there at the Apply */

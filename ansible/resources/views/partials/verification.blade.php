@@ -7,7 +7,7 @@
     $beforeLabels = ['refresh' => 'to be taken from data LibreNMS discovers again', 'take' => 'to be taken', 'waiting' => 'waits for fresh data', 'taken' => 'taken',
         'unknown' => 'could not be taken'];
     $afterLabels = ['settling' => 'settle time', 'waiting' => 'waits for fresh data', 'stale' => 'no fresh data', 'done' => 'compared',
-        'incomplete' => 'compared in part'];
+        'incomplete' => 'compared in part', 'missing' => 'devices of its scope missing'];
 @endphp
 <div class="panel panel-default" id="ans-verification">
     <div class="panel-heading"><strong>Verification</strong> <span class="text-muted">(the topology plugin's state of the network around each batch, before it and after it on fresh

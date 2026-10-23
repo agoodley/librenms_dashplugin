@@ -21,7 +21,9 @@ use Agoodley\LibrenmsTopology\Stp\Finding;
  * the switches of both domains, and the findings about a device of both scopes. A finding about a device only one of
  * them covers is not compared: the other state did not look. Nor is what either state could not read: a kind of fact
  * whose reading failed, a check that failed or was not enabled in both (its findings would read as new, or resolved);
- * the comparison names them (skipped), so that a caller does not take the rest for all of it.
+ * nor a device the first state covered that the second no longer does (disabled or deleted in LibreNMS, or no longer
+ * visible to the user meanwhile). The comparison names them (skipped), so that a caller does not take the rest for all
+ * of it.
  */
 final class StateCompare
 {
@@ -32,10 +34,12 @@ final class StateCompare
      * @return array{from: int, to: int, events: list<array{type: string, category: string, level: string, text: string, devices: int[], vlans?: int[],
      *     root_before?: ?array{mac: string, device: ?int}, root_after?: ?array{mac: string, device: ?int}}>,
      *     findings: array{new: list<array>, worse: list<array>, changed: list<array>, milder: list<array>, resolved: list<array>, same: int},
-     *     devices: array{down: int[], up: int[]}, names: array<int, string>, skipped: array{facts: string[], checks: string[]}}
+     *     devices: array{down: int[], up: int[]}, names: array<int, string>, skipped: array{facts: string[], checks: string[], errors: array,
+     *     devices: int[]}}
      *     events: a spanning tree event has the VLAN keys it is about, a root bridge event the root before and after (its MAC, and the device
      *     when it is monitored); worse, changed and milder: the finding now with "was" (the one before); skipped: the kinds of facts and the
-     *     checks not compared, as either state could not read them
+     *     checks not compared, as either state could not read them (with their errors), and the devices the first state covered (or had in
+     *     its domain) that the second does not
      */
     public static function compare(array $before, array $after): array
     {
@@ -88,10 +92,11 @@ final class StateCompare
     /**
      * What the two states cannot be compared on: the kinds of facts either could not read, and the checks that failed in
      * either or were not enabled in both; with the error of each in the state it failed in (a check in checks without
-     * one ran in one of the states only: it was switched on or off between them).
+     * one ran in one of the states only: it was switched on or off between them); and the devices whose facts the first
+     * state recorded, or of its domain, that the second does not have so (it no longer sees them).
      *
      * @return array{facts: string[], checks: string[], errors: array{facts: array<string, array{before?: string, after?: string}>,
-     *     checks: array<string, array{before?: string, after?: string}>}}
+     *     checks: array<string, array{before?: string, after?: string}>}, devices: int[]}
      */
     private static function skipped(array $before, array $after): array
     {
@@ -114,8 +119,10 @@ final class StateCompare
         }
         ksort($errors['facts']);
         ksort($errors['checks']);
+        $lost = array_values(array_unique([...array_diff(self::covered($before), self::covered($after)), ...array_diff(self::domain($before), self::domain($after))]));
+        sort($lost);
 
-        return ['facts' => $facts, 'checks' => $checksSkipped, 'errors' => $errors];
+        return ['facts' => $facts, 'checks' => $checksSkipped, 'errors' => $errors, 'devices' => $lost];
     }
 
     /**

@@ -34,6 +34,9 @@ final class FakeVerifier implements Verifier
     /** @var int[] the other spanning tree switches of the domain */
     public array $domain = [];
 
+    /** @var int[] the devices the API no longer tells about (disabled or deleted in LibreNMS, no longer visible to the user) */
+    public array $gone = [];
+
     /** @var array<string, array> identity => finding, in every state taken from now on */
     public array $findings = [];
 
@@ -70,7 +73,7 @@ final class FakeVerifier implements Verifier
     {
         $this->record('freshness', $deviceIds, $userId);
         $states = [];
-        foreach ($deviceIds as $deviceId) {
+        foreach (array_diff(array_map('intval', $deviceIds), $this->gone) as $deviceId) {
             $states[(int) $deviceId] = ($this->devices[(int) $deviceId] ?? []) + ['up' => true, 'down_since' => null, 'discovered_at' => $this->discoveredAt,
                 'polled_at' => $this->polledAt, 'discovery_pending' => false];
         }
@@ -132,11 +135,12 @@ final class FakeVerifier implements Verifier
      */
     private function scopeOf(array $devices, array $include): array
     {
-        $devices = array_values(array_map('intval', $devices));
-        $neighbors = array_values(array_diff(array_unique(array_merge([], ...array_map(fn (int $id) => $this->neighbors[$id] ?? [], $devices))), $devices));
+        $devices = array_values(array_diff(array_map('intval', $devices), $this->gone));
+        $neighbors = array_values(array_diff(array_unique(array_merge([], ...array_map(fn (int $id) => $this->neighbors[$id] ?? [], $devices))), $devices, $this->gone));
 
         return ['subjects' => $devices, 'dependents' => [], 'neighbors' => $neighbors,
-            'included' => array_values(array_diff(array_map('intval', $include), $devices, $neighbors)), 'domain' => array_values(array_diff($this->domain, $devices, $neighbors))];
+            'included' => array_values(array_diff(array_map('intval', $include), $devices, $neighbors, $this->gone)),
+            'domain' => array_values(array_diff($this->domain, $devices, $neighbors, $this->gone))];
     }
 
     private function record(string $method, array $devices, int $userId): void
