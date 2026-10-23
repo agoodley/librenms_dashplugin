@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Services;
 use Agoodley\LibrenmsAnsible\Changes\LockLost;
 use Agoodley\LibrenmsAnsible\Changes\TopologyError;
 use Agoodley\LibrenmsAnsible\Changes\Verifier;
+use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
 use Agoodley\LibrenmsAnsible\Support\ErrorText;
 use Agoodley\LibrenmsAnsible\Support\MemoryLimit;
@@ -37,6 +38,12 @@ final class TopologyVerification implements Verifier
 
     /** Seconds a scope or a state may take in its process (a state of the large test network takes about 16). */
     public const TIMEOUT = 600;
+
+    /** The most of its process' answer that is read: a state the plugin keeps (ChangeRepository::STATE_MAX), and its envelope. */
+    public const OUTPUT_MAX = ChangeRepository::STATE_MAX + 1024 * 1024;
+
+    /** The most of its process' error output that is read (for the log). */
+    private const ERRORS_MAX = 8000;
 
     private ?\Closure $heartbeat = null;
 
@@ -197,15 +204,17 @@ final class TopologyVerification implements Verifier
 
     /**
      * Take a scope or a state in a process of its own: `php artisan ansible:state`, the request on its input, the answer
-     * on its output (JSON), stopped after TIMEOUT seconds; the heartbeat is called while it runs.
+     * on its output (JSON), stopped after TIMEOUT seconds or once its answer is longer than $max (never read whole); the
+     * heartbeat is called while it runs.
      *
      * @param  array{what: string, user_id: int, devices: int[], cover: array}  $request
+     * @param  string[]|null  $command  the process (the artisan command; another in the tests)
      * @return array<string, mixed> the answer, or {error}
      */
-    public static function run(array $request, ?\Closure $heartbeat = null): array
+    public static function run(array $request, ?\Closure $heartbeat = null, ?array $command = null, int $max = self::OUTPUT_MAX): array
     {
         $artisan = function_exists('base_path') ? base_path('artisan') : 'artisan';
-        $process = proc_open([PHP_BINARY, $artisan, 'ansible:state'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes,
+        $process = proc_open($command ?? [PHP_BINARY, $artisan, 'ansible:state'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes,
             function_exists('base_path') ? base_path() : null);
         if (! is_resource($process)) {
             return ['error' => 'its process could not be started'];
@@ -230,8 +239,14 @@ final class TopologyVerification implements Verifier
                     $chunk = (string) fread($pipe, 1 << 16);
                     if ($pipe === $pipes[1]) {
                         $output .= $chunk;
-                    } else {
-                        $errors .= mb_substr($chunk, 0, 4000);
+                        if (strlen($output) > $max) {
+                            proc_terminate($process, 9);
+
+                            return ['error' => 'its answer is more than ' . round($max / 1048576, 1) . ' MB (the plugin keeps a state of at most '
+                                . intdiv(ChangeRepository::STATE_MAX, 1048576) . ' MB)'];
+                        }
+                    } elseif (strlen($errors) < self::ERRORS_MAX) {
+                        $errors .= substr($chunk, 0, self::ERRORS_MAX - strlen($errors));
                     }
                 }
                 if (feof($pipes[1]) && feof($pipes[2])) {
