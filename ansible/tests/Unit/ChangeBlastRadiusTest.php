@@ -666,6 +666,60 @@ class ChangeBlastRadiusTest extends TestCase
         }
     }
 
+    public function testAnAcceptanceWhileADeviceIsSkippedKeepsWhatTheBatchWasHeldTo(): void
+    {
+        // batch 2 (lab-sw6, lab-sw7, lab-sw8) was approved to cut off lab-sw3, behind lab-sw7. Then lab-sw7's LLDP links vanish (what depends
+        // on it is unknown: lab-sw3 is no longer in what the check computes) and lab-sw6 now cuts off lab-sw2: it grew. The acceptance of the
+        // growth keeps lab-sw3, and the window of the admin's Continue without a blast radius covers what was approved and what was accepted
+        $cuts = [513 => [503]] + RolloutPlanTest::CUTS;
+        $plan = RolloutPlan::make([511, 512, 513, 514], [], 1, 5, 1, false, 0, RolloutPlanTest::planner([511, 512, 513, 514], 5), RolloutPlan::LEAVE,
+            fn (array $batch) => RolloutPlanTest::blast($batch, $cuts))['plan'];
+        $this->assertSame([[511], [512, 513, 514]], $plan->batches);
+        $this->assertSame([503], $plan->topology->batch(2)['lost']);
+        $this->topology->cuts = $cuts;
+        $id = $this->approved($plan);
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->topology->skips[513] = 'isolated';
+        $this->topology->cuts[512] = [502];
+        $this->endBatch($id, 1, $this->t0 + 100);
+
+        $record = $this->changes->batches[$id][2]['blast'];
+        $this->assertSame(['grew', [502], [503], [['device_id' => 513, 'reason' => 'isolated']]], [$record['state'], $record['lost'], $record['held'], $record['unplanned']]);
+        $this->assertSame([503, 502], $record['window'], 'what it was held to, and what it cuts off now');
+        $this->assertNull($lifecycle->acceptBlast($id, self::BOB, true, 'lab-sw2 may go', $this->t0 + 200, $this->seen($id)));
+        $this->assertSame([[503, 502], [503, 502]], [$this->changes->batches[$id][2]['blast_accepted']['lost'], $this->changes->batches[$id][2]['blast_accepted']['all']],
+            'the acceptance keeps lab-sw3: what depends on lab-sw7 is unknown');
+        $this->assertSame([ChangeStatus::PAUSED, 'blast_unknown'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 300, $this->seen($id)));
+        $this->assertSame([[511], [512, 513, 514]], $this->launched());
+        $this->assertSame([512, 513, 514, 503, 502], $this->windows->windows[101]['devices'], 'its window covers lab-sw3 (approved) and lab-sw2 (accepted)');
+    }
+
+    public function testTheWindowOfAContinueWithoutABlastRadiusCoversWhatWasApprovedAndEverythingAccepted(): void
+    {
+        // batch 3 (lab-sw2), approved to cut off lab-sw6, grew to lab-sw5 and lab-sw6 and was accepted; it grew again, to lab-sw5 alone (lab-sw6
+        // got another uplink) and lab-sw4, which was accepted too. Then the topology plugin cannot answer: the window of the admin's Continue
+        // covers lab-sw6, lab-sw5 and lab-sw4, everything approved or accepted
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->cuts[502] = [512, 511];
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $this->topology->cuts[502] = [511, 510];
+        $this->assertNull($lifecycle->acceptBlast($id, self::BOB, true, '', $this->t0 + 300, $this->seen($id)));
+        $this->assertSame([ChangeStatus::PAUSED, 'blast', [510]], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting'], $this->changes->batches[$id][3]['blast']['added']]);
+        $this->topology->error = 'an error';
+        $this->assertNull($lifecycle->acceptBlast($id, self::BOB, true, '', $this->t0 + 400, $this->seen($id)));
+        $this->assertSame([[511, 510], [512, 511, 510]], [$this->changes->batches[$id][3]['blast_accepted']['lost'], $this->changes->batches[$id][3]['blast_accepted']['all']]);
+        $this->assertSame('blast_unknown', $this->changes->find($id)['waiting']);
+        $this->assertSame([511, 510, 512], $this->changes->batches[$id][3]['blast']['window']);
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 500, $this->seen($id)));
+        $this->assertSame([502, 511, 510, 512], $this->windows->windows[102]['devices']);
+    }
+
     public function testADeviceTheTopologyCanNoLongerTellAboutRightBeforeTheLaunchStopsTheLaunch(): void
     {
         $id = $this->approved();

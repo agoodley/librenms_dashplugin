@@ -282,9 +282,13 @@ final class ChangeLifecycle
             return 'The change changed meanwhile: reload the page.';
         }
         $comment = self::comment($comment);
-        $lost = array_values(array_map('intval', (array) ($blast['lost'] ?? [])));
+        // what it cuts off now; while a device of the batch is skipped (what depends on it is unknown), also what the batch was held to:
+        // the check's window. An acceptance never drops a device the batch was held to without the blast radius that says so
+        $lost = array_values(array_unique(array_map('intval', (array) (empty($blast['unplanned']) ? ($blast['lost'] ?? []) : ($blast['window'] ?? $blast['lost'] ?? [])))));
+        $previous = $this->changes->batches($id)[$number]['blast_accepted'] ?? null;
+        $all = array_values(array_unique([...array_map('intval', (array) (is_array($previous) ? ($previous['all'] ?? $previous['lost'] ?? []) : [])), ...$lost]));
         $reference = ($blast['reference'] ?? 'core') === 'largest part' ? 'largest part' : 'core';
-        $this->changes->updateBatch($id, $number, ['blast_accepted' => ['lost' => $lost, 'unmanaged' => (int) ($blast['unmanaged'] ?? 0), 'reference' => $reference,
+        $this->changes->updateBatch($id, $number, ['blast_accepted' => ['lost' => $lost, 'all' => $all, 'unmanaged' => (int) ($blast['unmanaged'] ?? 0), 'reference' => $reference,
             'added' => array_values(array_map('intval', (array) ($blast['added'] ?? []))), 'by' => mb_substr($user['username'], 0, 255),
             'user_id' => (int) $user['user_id'], 'at' => Clock::store($now), 'comment' => $comment]]);
         $text = ChangeText::blastAccepted($resumed, $number, $user['username'], BlastRadius::text(['lost' => $lost, 'unmanaged' => (int) ($blast['unmanaged'] ?? 0)],
@@ -1852,9 +1856,10 @@ final class ChangeLifecycle
      * about when the change was made: BlastRadius::unplanned(), named with the reason in its error), "shrank" or
      * "same"; a blast radius that grew is said so first, also while a device is skipped (an approver accepts it, then
      * the batch waits for an admin's decision to go on without a blast radius). Its window: what the batch's window
-     * covers besides the batch's devices if the batch goes on (when the blast radius cannot be computed: what the batch
-     * is held to cut off, and what it cuts off now as far as the topology plugin can tell). Its error names devices,
-     * for the change page and its timeline; its event_error counts them, for the eventlog.
+     * covers besides the batch's devices if the batch goes on (when the blast radius cannot be computed, or a device of
+     * the batch is skipped: what the batch is held to cut off, what was approved and everything accepted since, and what
+     * it cuts off now as far as the topology plugin can tell). Its error names devices, for the change page and its
+     * timeline; its event_error counts them, for the eventlog.
      *
      * @param  array<string, mixed>  $batch  the batch's row
      * @param  array{user_id: int, username: string}  $user
@@ -1864,6 +1869,10 @@ final class ChangeLifecycle
     {
         $held = self::heldOf($change, $number, $batch);
         $heldReference = self::heldReferenceOf($change, $number, $batch);
+        // what a window covers when the blast radius cannot be computed: what the batch is held to, what was approved and everything
+        // accepted since (an acceptance never makes it cover less than that), then what it cuts off now as far as that can be computed
+        $covered = array_values(array_unique([...$held, ...array_map('intval', BatchPlan::topologyOf($change['plan'] ?? null, $number)['lost'] ?? []),
+            ...array_map('intval', (array) ($batch['blast_accepted']['all'] ?? $batch['blast_accepted']['lost'] ?? []))]));
         $base = ['held' => $held, 'held_reference' => $heldReference, 'accepted' => is_array($batch['blast_accepted'] ?? null), 'at' => Clock::store($now)];
         $this->beat();
         try {
@@ -1876,7 +1885,7 @@ final class ChangeLifecycle
         } catch (TopologyError|\InvalidArgumentException $e) {
             $why = self::blastError($e);
 
-            return ['state' => 'unknown', 'error' => $why, 'event_error' => $why, 'lost' => $held, 'window' => $held] + $base;
+            return ['state' => 'unknown', 'error' => $why, 'event_error' => $why, 'lost' => $held, 'window' => $covered] + $base;
         }
         $blast = $answer['blast'];
         // a batch held to leave a core device of its part standing that now takes them all down grew, whatever it cuts off (that is
@@ -1886,7 +1895,7 @@ final class ChangeLifecycle
         $mentioned = array_unique([...$blast['lost'], ...$diff['removed'], ...array_column($blast['skipped'], 'device_id')]);
         $record = $blast + ['state' => $diff['added'] || $diff['core_lost'] ? 'grew' : ($unplanned ? 'unknown' : ($diff['removed'] ? 'shrank' : 'same')),
             'added' => $diff['added'], 'removed' => $diff['removed'], 'core_lost' => $diff['core_lost'], 'unplanned' => $unplanned,
-            'window' => $unplanned ? array_values(array_unique([...$held, ...$blast['lost']])) : $blast['lost'],
+            'window' => $unplanned ? array_values(array_unique([...$covered, ...$blast['lost']])) : $blast['lost'],
             'names' => array_intersect_key($answer['names'] + $this->blastNames($change, $number), array_flip($mentioned))] + $base;
         if ($unplanned) {
             // what depends on them is not in what it cuts off: the batch's blast radius cannot be computed (even when it shrank)
