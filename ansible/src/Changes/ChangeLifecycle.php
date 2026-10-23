@@ -2307,8 +2307,7 @@ final class ChangeLifecycle
             $ask = $this->settings->verifyFresh === 'ask';
             $this->setVerify($id, $number, ['before' => ['status' => $ask ? 'refresh' : 'take', 'since' => $now]]);
             $this->timeline($change, 'verify', "Before batch $number: the plugin takes the state of the network around it first (its devices, what it cuts off, their "
-                . 'LLDP/CDP neighbors and spanning tree domains), ' . ($ask ? 'from data LibreNMS discovers again for it, at most ' . intdiv($this->settings->verifyWaitSeconds, 60)
-                . ' minutes' : 'from LibreNMS\' data as it is (setting Fresh data: wait)') . '; the batch starts then.', null, $now);
+                . 'LLDP/CDP neighbors and spanning tree domains), ' . ($ask ? 'from data LibreNMS discovers again for it, at most ' . Format::count(intdiv($this->settings->verifyWaitSeconds, 60), 'minute') : 'from LibreNMS\' data as it is (setting Fresh data: wait)') . '; the batch starts then.', null, $now);
         }
 
         return true;
@@ -2365,7 +2364,7 @@ final class ChangeLifecycle
             $this->changes->saveState($id, $number, 'before', $state);
             $older = $number === 1 ? 'the Apply' : 'the end of batch ' . ($number - 1);
             $note = ($before['status'] ?? null) === 'take' ? 'from LibreNMS\' data as it is (setting Fresh data: wait)'
-                : ($stale !== null ? "its data is older than $older: LibreNMS did not discover or poll $stale again within " . intdiv($this->settings->verifyWaitSeconds, 60) . ' minutes'
+                : ($stale !== null ? "its data is older than $older: LibreNMS did not discover or poll $stale again within " . Format::count(intdiv($this->settings->verifyWaitSeconds, 60), 'minute')
                     : 'from fresh data');
             $this->setVerify($id, $number, ['before' => ['status' => 'taken', 'taken_at' => (int) ($state['taken_at'] ?? $now), 'stale' => $stale !== null, 'note' => $note,
                 'size' => VerificationText::stateSize($state), 'waiting' => null] + $before]);
@@ -2469,9 +2468,9 @@ final class ChangeLifecycle
                 // never compared on data older than the batch's end: it cannot be verified (a pause checks it again every minute)
                 $this->setVerify($id, $number, ['after' => ['status' => 'stale', 'waiting' => $waiting, 'checked_at' => $now] + $after]);
                 $this->verifyResult($change, $number, 'unknown', ['error' => "LibreNMS' data of $waiting is not newer than the end of the batch and its settle time ("
-                    . Clock::text($due) . ') after ' . intdiv($this->settings->verifyWaitSeconds, 60) . ' minutes',
+                    . Clock::text($due) . ') after ' . Format::count(intdiv($this->settings->verifyWaitSeconds, 60), 'minute'),
                     'event_error' => 'LibreNMS\' data of ' . Format::count(count($fresh['waiting']), 'device') . ' is not newer than the end of the batch after '
-                        . intdiv($this->settings->verifyWaitSeconds, 60) . ' minutes'], $now);
+                        . Format::count(intdiv($this->settings->verifyWaitSeconds, 60), 'minute')], $now);
 
                 return;
             }
