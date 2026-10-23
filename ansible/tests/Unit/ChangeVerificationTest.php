@@ -247,6 +247,9 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame([510, 502, 503, 501, 512], $this->refresh->requests[1], 'what the state before batch 1 covered, and batch 2 with its neighbors');
         $this->sync($id, $this->t0 + 1020);
         $this->assertSame([[510]], $this->launched(), 'data older than the batch\'s end and its settle time is never compared');
+        $this->fresh($this->t0 + 700);
+        $this->sync($id, $this->t0 + 1040);
+        $this->assertSame([[510]], $this->launched(), 'nor data newer than its end, within its settle time');
         $this->assertSame(1, $this->verifier->count('state'));
 
         // fresh data: the state after it, compared, verified; batch 2 starts from its own state (its refresh was asked with it)
@@ -521,6 +524,20 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status']);
     }
 
+    public function testTheStateAfterABatchCoversAtLeastWhatTheStateBeforeItCovered(): void
+    {
+        $id = $this->applied();
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        // after the batch lab-sw4 no longer reports lab-sw3 as its neighbor: the state after it covers lab-sw3 still, as the state before it did
+        $this->verifier->neighbors[510] = [502];
+        $this->fresh($this->t0 + 1000);
+        $this->sync($id, $this->t0 + 1080);
+        $this->assertSame('verified', $this->verify($id, 1)['result']);
+        $this->assertSame([503], $this->changes->stateOf($id, 1, 'after')['scope']['included'], 'lab-sw3, which the state before it covered as a neighbor');
+        $this->assertSame(['include' => [510, 502, 503]], $this->verifier->covers[1], 'the state after it, taken with the cover of the state before it');
+    }
+
     public function testAStateAfterThatNoLongerCoversADeviceCannotBeVerifiedWhateverItFound(): void
     {
         $id = $this->applied();
@@ -538,9 +555,18 @@ class ChangeVerificationTest extends TestCase
             . 'the device in LibreNMS again \(or let that admin see it\) or set When a batch cannot be verified to only record it\./', $this->messages($id));
         $this->assertSame([[510]], $this->launched());
 
-        // a state after it that covers it all again (checked every 5 minutes): what changed is then what the batch made
+        // a state after it that covers it all again (checked every 5 minutes): what changed is then what the batch made, and the change, which
+        // waits for an admin to accept it, never goes on meanwhile
         $this->verifier->comparison = self::uplinkLost();
+        $statuses = [];
+        $record = function () use (&$record, &$statuses, $id) {
+            $statuses[] = $this->changes->find($id)['status'];
+            $this->changes->afterUpdate = $record;
+        };
+        $this->changes->afterUpdate = $record;
         $this->sync($id, $this->t0 + 1400);
+        $this->changes->afterUpdate = null;
+        $this->assertSame([ChangeStatus::PAUSED], $statuses, 'paused again at once, for an acceptance');
         $this->assertSame([ChangeStatus::PAUSED, 'verification', 'unexpected'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting'],
             $this->verify($id, 1)['result']]);
     }

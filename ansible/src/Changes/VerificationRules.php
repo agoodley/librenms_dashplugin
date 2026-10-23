@@ -237,9 +237,11 @@ final class VerificationRules
         ksort($wrong);
         foreach ($wrong as $vlan => $byRoot) {
             foreach ($byRoot as $bridge => $devices) {
-                $what = $bridge === 'none' ? 'reports no root bridge' : 'sees ' . (str_starts_with($bridge, 'd') ? self::name((int) substr($bridge, 1), $names) : 'the bridge ' . $bridge);
+                $one = count($devices) === 1;
+                $what = $bridge === 'none' ? ($one ? 'reports' : 'report') . ' no root bridge'
+                    : ($one ? 'sees ' : 'see ') . (str_starts_with($bridge, 'd') ? self::name((int) substr($bridge, 1), $names) : 'the bridge ' . $bridge) . ' as root bridge';
                 $entries[] = self::entry('fix', 'root_not_intended', 'warning', self::vlanLabel($vlan) . ': ' . self::deviceList($devices, $names) . ' ' . $what
-                    . ' as root bridge, not ' . self::name((int) ($root['primary'] ?? 0), $names) . ', the root the fix intends', $devices);
+                    . ', not ' . self::name((int) ($root['primary'] ?? 0), $names) . ', the root the fix intends', $devices);
             }
         }
 

@@ -10,6 +10,7 @@ use Agoodley\LibrenmsAnsible\Changes\VerificationRules;
 use Agoodley\LibrenmsAnsible\Changes\VerificationText;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
 use Agoodley\LibrenmsAnsible\Runner\SurveyVar;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -103,6 +104,22 @@ class VerificationRulesTest extends TestCase
         $this->assertSame('verified', VerificationRules::evaluate(self::comparison([], ['new' => [self::finding('a', 'warning', 'x')]]), [], [], null, 'critical')['result']);
     }
 
+    /** @return array<string, array{string}> the comparison's events that are changes nobody asked for, named here (the Changes page's types) */
+    public static function unexpectedEvents(): array
+    {
+        return ['a link gone' => ['link_removed'], 'a cable moved' => ['cable_moved'], 'a new unmanaged neighbor' => ['unmanaged_new'],
+            'a port-channel member lost' => ['lag_member_removed'], 'a root bridge moved' => ['root_changed'], 'a spanning tree instance gone' => ['root_gone'],
+            'a port that started blocking' => ['blocking_started'], 'an OSPF adjacency lost' => ['ospf_lost'], 'a BGP session lost' => ['bgp_lost']];
+    }
+
+    #[DataProvider('unexpectedEvents')]
+    public function testEachChangeNobodyAskedForIsUnexpectedNeverOnlyListed(string $type): void
+    {
+        $result = VerificationRules::evaluate(self::comparison([self::event($type, 'warning', "the $type event", ['vlans' => [10]])]), [], [], null, 'warning');
+
+        $this->assertSame(['unexpected', [$type], []], [$result['result'], array_column($result['unexpected'], 'type'), $result['listed']]);
+    }
+
     public function testADescriptionFixExpectsItsFindingsResolved(): void
     {
         $fix = FixAnswers::record(FixAnswers::PORT_DESCRIPTIONS, [['id' => 'f1', 'kind' => 'port_descriptions', 'title' => 'Port descriptions of acc1', 'devices' => [3],
@@ -128,6 +145,46 @@ class VerificationRulesTest extends TestCase
             ['was' => ['identity' => 'h3', 'severity' => 'warning', 'devices' => [3]]])]]), [], ['findings' => []], $batch, 'warning');
         $this->assertSame(['not_resolved'], array_column($changed['unexpected'], 'type'));
         $this->assertSame([], $changed['listed']);
+    }
+
+    /** A root fix: core1 the intended root of VLAN 1 / CST and VLAN 10 (acc1 the root now), dist1 its secondary. */
+    private static function rootFix(): array
+    {
+        return FixAnswers::record(FixAnswers::STP_ROOT_PRIORITY, [['id' => 'r1', 'kind' => 'stp_root_priority', 'title' => 'Root bridge of VLAN 1 / CST, VLAN 10: core1',
+            'vlans' => [0, 10], 'primary' => ['device_id' => 1, 'priority' => 4096, 'mode' => 'pvst', 'instances' => [1, 10], 'mac' => '00AB01000000'],
+            'secondary' => ['device_id' => 2, 'priority' => 8192, 'mode' => 'pvst', 'instances' => [1, 10], 'mac' => '00ab02000000'], 'chosen_from' => 'the designated root bridges',
+            'roots_now' => [0 => ['device_id' => 3, 'mac' => '00ab03000000'], 10 => ['device_id' => 3, 'mac' => '00ab03000000']], 'resolves' => ['p0'],
+            'findings' => [['identity' => 'p0', 'code' => 'root_default_priority', 'severity' => 'warning', 'title' => 'Root bridge acc1 was elected with the default priority',
+                'devices' => [3]]]]], ['core1 pvst 1,10 4096', 'dist1 pvst 1,10 8192']);
+    }
+
+    public function testARootFixIsOnlyWhatMovesInItsVlansToItsIntendedRoot(): void
+    {
+        $expectation = FixExpectation::forBatch(self::rootFix(), [1]);
+        $roots = fn (string $mac, ?int $device, array $vlans, array $devices) => ['root' => $mac, 'root_device' => $device, 'vlans' => $vlans, 'devices' => $devices];
+        $before = ['roots' => [$roots('00ab03000000', 3, [0, 10], [1, 2, 3, 4]), $roots('00ab02000000', 2, [30], [1, 2, 3, 4])]];
+        $after = ['roots' => [$roots('00ab01000000', 1, [0, 10, 30], [1, 2, 3, 4])], 'findings' => []];
+        $result = VerificationRules::evaluate(self::comparison([
+            self::event('root_changed', 'warning', 'VLAN 1 / CST, VLAN 10: root bridge changed from acc1 to core1', ['vlans' => [0, 10], 'root_after' => ['mac' => '00ab01000000', 'device' => 1]]),
+            // the intended root, but in a VLAN the fix does not set: no part of the fix
+            self::event('root_changed', 'warning', 'VLAN 30: root bridge changed from dist1 to core1', ['vlans' => [30], 'root_after' => ['mac' => '00ab01000000', 'device' => 1]]),
+            // a port that started blocking in one of the fix's VLANs and in another: no part of it either
+            self::event('blocking_started', 'info', 'acc2 Gi1/0/50 started blocking in VLAN 10, VLAN 30', ['vlans' => [10, 30]]),
+            self::event('blocking_started', 'info', 'acc2 Gi1/0/48 started blocking in VLAN 10', ['vlans' => [10]]),
+        ]), $before, $after, $expectation, 'warning');
+
+        $this->assertSame(['VLAN 1 / CST, VLAN 10: root bridge changed from acc1 to core1', 'acc2 Gi1/0/48 started blocking in VLAN 10'], array_column($result['expected'], 'text'));
+        $this->assertSame(['VLAN 30: root bridge changed from dist1 to core1', 'acc2 Gi1/0/50 started blocking in VLAN 10, VLAN 30'], array_column($result['unexpected'], 'text'));
+
+        // a switch of the fix's domain that reports no root bridge after the batch, where it saw the root the fix moves away from
+        $lost = ['roots' => [$roots('00ab01000000', 1, [0, 10], [1, 2, 3]), $roots('00ab01000000', 1, [0], [4])], 'findings' => []];
+        $none = VerificationRules::evaluate(self::comparison(), ['roots' => [$roots('00ab03000000', 3, [0, 10], [1, 2, 3, 4])]], $lost, $expectation, 'warning');
+        $this->assertSame([['root_not_intended', [4]]], array_map(fn (array $e) => [$e['type'], $e['devices']], $none['unexpected']));
+        $this->assertSame('VLAN 10: acc2 reports no root bridge, not core1, the root the fix intends', $none['unexpected'][0]['text']);
+        $many = VerificationRules::evaluate(self::comparison(), ['roots' => [$roots('00ab03000000', 3, [0, 10], [1, 2, 3, 4])]],
+            ['roots' => [$roots('00ab03000000', 3, [0, 10], [1, 2, 3, 4])], 'findings' => []], $expectation, 'warning');
+        $this->assertSame(['VLAN 1 / CST: core1, dist1, acc1, acc2 see acc1 as root bridge, not core1, the root the fix intends',
+            'VLAN 10: core1, dist1, acc1, acc2 see acc1 as root bridge, not core1, the root the fix intends'], array_column($many['unexpected'], 'text'), 'several: see');
     }
 
     public function testARootFixExpectsTheIntendedRootAndWhatMovesWithIt(): void
@@ -278,6 +335,25 @@ class VerificationRulesTest extends TestCase
             FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, "other.lab Gi1/0/1 x\nacc1.lab Gi1/0/1;reload x\nacc1.lab Gi1/0/1 x;y\nacc1.lab Gi1/0/1", $hosts));
         $this->assertSame(['line 1: its description is not one the link check builds (letters, digits, spaces and . _ / : + ( ) # @ , -, at most 80)'],
             FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, 'acc1.lab Gi1/0/1 ' . str_repeat('a', 81), $hosts));
+
+        // a description as the link check builds it: no space at its ends, never two in a row; an interface of at most 64 characters, no space;
+        // a host as the inventory names one
+        $refused = 'line 1: its description is not one the link check builds (letters, digits, spaces and . _ / : + ( ) # @ , -, at most 80)';
+        foreach (['acc1.lab Gi1/0/49 dist1 Te1/0/1 ', 'acc1.lab Gi1/0/49 dist1  Te1/0/1', "acc1.lab Gi1/0/49 dist1 Te1/0/1\t"] as $answer) {
+            $this->assertSame([$refused], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, $answer, $hosts), json_encode($answer));
+        }
+        $this->assertSame([], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, 'acc1.lab G' . str_repeat('i', 63) . ' x', $hosts), 'an interface of 64 characters');
+        $this->assertSame(['line 1: its interface name is not one the plugin passes to a playbook (letters, digits and / . _ : -, at most 64)'],
+            FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, 'acc1.lab G' . str_repeat('i', 64) . ' x', $hosts), 'one of 65');
+        $spaced = FixAnswers::lines(FixAnswers::PORT_DESCRIPTIONS, [['kind' => 'port_descriptions', 'ports' => [['device_id' => 3, 'port_id' => 34, 'ifName' => 'Gi1/0/49 x',
+            'description' => 'dist1 Te1/0/1']]]], $hosts);
+        $this->assertSame([], $spaced['lines']);
+        $this->assertStringContainsString('acc1.lab port #34: its interface name is not one the plugin passes to a playbook', $spaced['errors'][0]);
+        $this->assertSame(['line 1: its host is not a target of the change'], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, 'acc;1.lab Gi1/0/49 x', [3 => 'acc;1.lab']),
+            'a target whose inventory name is not one a line may hold');
+        $many = implode("\n", array_fill(0, FixAnswers::LINES_MAX + 1, 'acc1.lab Gi1/0/49 x'));
+        $this->assertSame(['More than 2000 lines.'], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, $many, $hosts));
+        $this->assertSame([], FixAnswers::check(FixAnswers::PORT_DESCRIPTIONS, implode("\n", array_fill(0, FixAnswers::LINES_MAX, 'acc1.lab Gi1/0/49 x')), $hosts));
 
         // the interface must be a port of its host as LibreNMS knows it
         $interfaces = [3 => ['Gi1/0/49', 'Gi1/0/50'], 4 => ['Ethernet1/1']];
