@@ -47,13 +47,13 @@ final class ChangeRepository implements ChangeStore
     public function available(): bool
     {
         try {
-            foreach (array_diff(self::TABLES, ['ansible_change_targets']) as $table) {
+            // a table whose columns are checked below is not looked up twice: its columns tell that it exists too
+            foreach (array_diff(self::TABLES, ['ansible_change_targets', 'ansible_change_batches', 'ansible_change_windows']) as $table) {
                 if (! SchemaCheck::hasTable($table)) {
                     return false;
                 }
             }
 
-            // a table's columns tell that it exists too
             return SchemaCheck::hasColumns('ansible_runs', ['change_id', 'kind', 'batch', 'context', 'commit_hash', 'proof'])
                 && SchemaCheck::hasColumns('ansible_change_targets', ['backup_check', 'served_hash', 'served_at', 'served_note'])
                 && SchemaCheck::hasColumns('ansible_change_batches', ['blast', 'blast_accepted', 'blast_override'])
