@@ -54,8 +54,8 @@ final class FixAnswers
     /** Most lines of one answer. */
     public const LINES_MAX = 2000;
 
-    /** Why a fix's lines are refused at the creation when they are not those the page showed. */
-    public const CHANGED = 'The fix changed since you loaded the page: look again.';
+    /** Why a fix's lines are refused at the creation when they are not those the page showed (the page shows the old ones). */
+    public const CHANGED = 'The fix changed since you loaded the page: reload the page to make the change from the fix as it is now.';
 
     /**
      * The lines of the chosen fixes of one kind (the topology plugin's fixes() entries), for the hosts of the change.

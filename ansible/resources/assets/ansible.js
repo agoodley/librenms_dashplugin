@@ -596,7 +596,13 @@
             clear(previewBox);
             previewBox.style.opacity = '1';
             showVariableErrors(plan ? plan.variable_errors : null);
-            var messages = (errors || []).concat(plan && plan.errors ? plan.errors : []);
+            // a refused creation gives the preview's errors twice (in its own and in its plan's): each is said once
+            var messages = [];
+            (errors || []).concat(plan && plan.errors ? plan.errors : []).forEach(function (message) {
+                if (messages.indexOf(message) < 0) {
+                    messages.push(message);
+                }
+            });
             if (plan && plan.variable_errors && Object.keys(plan.variable_errors).length && !errors) {
                 messages.push('Fix the answers marked above.');
             }
