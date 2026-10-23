@@ -3,6 +3,7 @@
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
 use Agoodley\LibrenmsTopology\History\FactCollector;
+use Agoodley\LibrenmsTopology\Verification\FixBuilder;
 use Agoodley\LibrenmsTopology\Verification\Sources;
 
 /**
@@ -217,9 +218,13 @@ final class VerificationFixture implements Sources
         return array_intersect_key(self::NAMES, array_flip($ids));
     }
 
+    /** @var array<int, string>|null device => LibreNMS hostname (default: name.example.net) */
+    public ?array $hostnames = null;
+
     public function devicesOfSetting(string $key): array
     {
-        return $this->settings[$key] ?? [];
+        // as LibreNMS' sources name them: by device id or LibreNMS hostname only
+        return FixBuilder::devicesNamed(array_map('strval', $this->settings[$key] ?? []), $this->hostnames ?? array_map(fn (string $name) => "$name.example.net", self::NAMES));
     }
 
     public function quietChecks(): array

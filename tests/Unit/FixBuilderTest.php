@@ -123,6 +123,23 @@ class FixBuilderTest extends TestCase
         $this->assertStringContainsString('Plugin Admin', FixBuilder::ROOT_SETTINGS);
     }
 
+    public function testTheSettingsNameTheBridgesOfAFixByDeviceIdOrHostnameOnly(): void
+    {
+        // device 724 reports the sysName "sec-sw1": a sysName or a display name never names a device a fix pushes a priority on
+        $hostnames = [1 => 'core1.example.net', 2 => 'CORE2.example.net', 7 => 'far1.example.net', 724 => 'imp-sw.example.net', 9 => '3', 3 => 'dist1.example.net'];
+        $named = FixBuilder::devicesNamed(['sec-sw1', 'core2.example.net', '7', 'Core1.Example.Net', 'core1', '3', ' '], $hostnames);
+        $this->assertSame([2, 7, 1], $named['devices'], 'by LibreNMS hostname (case aside) or device id, in the setting\'s order');
+        $this->assertSame(['3' => [3, 9]], $named['ambiguous'], 'the id of one device and the hostname of another');
+        $this->assertSame(['sec-sw1', 'core1'], $named['unmatched'], 'a sysName, a short name: no device');
+
+        $findings = [self::finding('h0', 'root_default_priority', [3], ['root' => 3, 'root_mac' => '00ab03000000'], [0])];
+        $refused = FixBuilder::rootPriorities($findings, self::DOMAINS, [2, 1], [], self::bridges(), self::NAMES, 'a setting names several devices');
+        $this->assertSame([], $refused['fixes'], 'no root fix while a setting names a device ambiguously');
+        $this->assertSame('a setting names several devices', $refused['not_fixable'][0]['why']);
+        $hinted = FixBuilder::rootPriorities($findings, self::DOMAINS, [], [], self::bridges(), self::NAMES, null, ' (hint)');
+        $this->assertStringEndsWith(FixBuilder::ROOT_SETTINGS . ' (hint)', $hinted['not_fixable'][0]['why']);
+    }
+
     public function testAnIntendedRootWithoutTheInstanceIsNoFixAndASecondaryWithoutItIsNone(): void
     {
         $bridges = self::bridges();

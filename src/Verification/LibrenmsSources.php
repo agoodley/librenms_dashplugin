@@ -190,24 +190,12 @@ final class LibrenmsSources implements Sources
 
     public function devicesOfSetting(string $key): array
     {
-        $wanted = array_map('strtolower', $this->settings->list($key));
+        $wanted = $this->settings->list($key);
         if (! $wanted) {
-            return [];
-        }
-        $byName = [];
-        foreach ($this->repo->devices($this->repo->deviceIds(), roles: false) as $deviceId => $device) {
-            foreach (array_filter([(string) $deviceId, (string) ($device['hostname'] ?? ''), (string) ($device['sysName'] ?? ''), (string) ($device['display'] ?? '')]) as $name) {
-                $byName[strtolower($name)][] = (int) $deviceId;
-            }
-        }
-        $ordered = [];
-        foreach ($wanted as $name) {
-            foreach ($byName[$name] ?? [] as $deviceId) {
-                $ordered[$deviceId] = true;
-            }
+            return ['devices' => [], 'ambiguous' => [], 'unmatched' => []];
         }
 
-        return array_keys($ordered);
+        return FixBuilder::devicesNamed($wanted, array_map(fn (array $row) => (string) ($row['hostname'] ?? ''), $this->repo->nameRows()));
     }
 
     public function quietChecks(): array

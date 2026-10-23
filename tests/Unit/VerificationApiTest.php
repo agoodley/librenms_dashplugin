@@ -228,6 +228,19 @@ class VerificationApiTest extends TestCase
         $this->assertSame([['linkFindings', [Net::ACC1]]], array_values(array_filter($net->calls, fn (array $call) => $call[0] === 'linkFindings')));
         $this->assertSame(['stp_root_priority'], array_column(Verification::withSources($net)->fixes([Net::CORE1])['fixes'], 'kind'));
 
+        // the settings name the bridges by device id or LibreNMS hostname only: a name that means several devices makes no root fix, a sysName none
+        $net->hostnames = [1 => 'core1.example.net', 2 => '1', 3 => 'dist1.example.net', 4 => 'acc1.example.net', 5 => 'acc2.example.net', 7 => 'far1.example.net'];
+        $net->settings['stp_preferred_roots'] = ['1'];
+        $ambiguous = Verification::withSources($net)->fixes([Net::CORE1], ['kinds' => ['stp_root_priority']]);
+        $this->assertSame([], $ambiguous['fixes']);
+        $this->assertStringContainsString('names "1", which is the id or the LibreNMS hostname of several devices (#1, #2)', $ambiguous['not_fixable'][0]['why']);
+        $net->hostnames = null;
+        $net->settings = ['stp_preferred_roots' => ['core2', 'core1'], 'redundancy_core' => ['core1']];
+        $bySysName = Verification::withSources($net)->fixes([Net::CORE1], ['kinds' => ['stp_root_priority']]);
+        $this->assertSame([], $bySysName['fixes'], 'short names, as a device reports itself: no device');
+        $this->assertStringContainsString('never by its sysName or display name: "core2", "core1" name no device so', $bySysName['not_fixable'][0]['why']);
+        $net->settings = ['stp_preferred_roots' => [Net::CORE2, Net::CORE1], 'redundancy_core' => [1, 2]];
+
         // only the kinds asked for are computed: a description fix needs no spanning tree check, a root fix no link check
         $net->calls = [];
         $this->assertSame(['port_descriptions'], array_column(Verification::withSources($net)->fixes([Net::ACC1, Net::CORE1], ['kinds' => ['port_descriptions']])['fixes'], 'kind'));

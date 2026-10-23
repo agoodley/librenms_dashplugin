@@ -755,9 +755,10 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
   check builds from the neighbor, cleaned: `DESCRIPTION_CHARS`, at most `DESCRIPTION_MAX`); a spanning tree root
   priority fix the `vlans`, the `primary` and `secondary` bridges (`device_id`, `priority` `PRIMARY_PRIORITY` /
   `SECONDARY_PRIORITY`, `mode` `pvst`, `mst` or `stp`, `instances`, `mac`, the priority they have `now`), what they were
-  `chosen_from` (the designated root bridges, else the configured core devices) and the `roots_now`. `not_fixable`:
-  the findings of those checks without a clear fix, with why (no designated root bridge or core device in their part
-  of the network). Of these devices: the fixes of them and of the findings about them (the link check of them and
+  `chosen_from` (the designated root bridges, else the configured core devices, as the settings name them by device id
+  or LibreNMS hostname: never by a sysName or a display name, which a device reports itself) and the `roots_now`.
+  `not_fixable`: the findings of those checks without a clear fix, with why (no designated root bridge or core device
+  in their part of the network, or a setting's name that is the id or hostname of several devices). Of these devices: the fixes of them and of the findings about them (the link check of them and
   their LLDP/CDP neighbors, which knows the name of every device the user sees, as a description may name any; the
   spanning tree check of their L2 domains); of every device when none are given. Option `kinds`
   (`PORT_DESCRIPTIONS`, `STP_ROOT_PRIORITY`): only those are computed.

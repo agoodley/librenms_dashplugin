@@ -347,14 +347,29 @@ final class Verification
         $built = ['fixes' => [], 'not_fixable' => []];
         $designated = [];
         $core = [];
+        $refusal = null;
+        $hint = '';
         $stp = ['findings' => [], 'domains' => []];
         if (in_array(FixBuilder::STP_ROOT_PRIORITY, $kinds, true)) {
             $stp = $this->sources->stpAnalysis($ids === null ? null : $this->sources->stpDomain($ids));
             $roots = array_map(fn (array $finding) => $finding + ['identity' => FindingHistory::hash('stp', $finding), 'analysis' => 'stp'],
                 array_values(array_filter($stp['findings'], fn (array $finding) => in_array($finding['code'], FixBuilder::CODES[FixBuilder::STP_ROOT_PRIORITY], true)
                     && $this->visibleFinding($finding))));
-            $designated = $this->sources->devicesOfSetting('stp_preferred_roots');
-            $core = $this->sources->devicesOfSetting('redundancy_core');
+            // the devices the settings name, by device id or LibreNMS hostname only: a priority is never pushed on a device because of
+            // the name it reports itself (sysName) or a display name; a name that means several devices makes no root fix
+            $named = ['stp_preferred_roots' => $this->sources->devicesOfSetting('stp_preferred_roots'), 'redundancy_core' => $this->sources->devicesOfSetting('redundancy_core')];
+            $designated = $named['stp_preferred_roots']['devices'];
+            $core = $named['redundancy_core']['devices'];
+            foreach ($named as $setting => $found) {
+                foreach ($found['ambiguous'] as $name => $ids) {
+                    $refusal ??= 'the topology plugin\'s setting ' . ($setting === 'stp_preferred_roots' ? 'Designated root bridges' : 'Core devices') . ' names "'
+                        . $name . '", which is the id or the LibreNMS hostname of several devices (' . implode(', ', array_map(fn (int $id) => "#$id", $ids))
+                        . '): a fix names each device by one of them alone';
+                }
+            }
+            $unmatched = array_values(array_unique([...$named['stp_preferred_roots']['unmatched'], ...$named['redundancy_core']['unmatched']]));
+            $hint = $unmatched ? ' (a fix knows a device there by its device id or LibreNMS hostname, never by its sysName or display name: '
+                . implode(', ', array_map(fn (string $n) => '"' . $n . '"', array_slice($unmatched, 0, 5))) . (count($unmatched) > 5 ? ' and more' : '') . ' name no device so)' : '';
         }
         $keys = [];
         foreach ($roots as $finding) {
@@ -367,7 +382,7 @@ final class Verification
         $mentioned = array_merge(array_merge([], ...array_column($links, 'devices')), array_merge([], ...array_column($roots, 'devices')), $designated, $core);
         $names = $this->sources->names(array_values(array_unique(array_map('intval', $mentioned))));
         if ($roots) {
-            $built = FixBuilder::rootPriorities($roots, $stp['domains'], $designated, $core, $this->sources->bridges(array_map('array_values', $keys)), $names);
+            $built = FixBuilder::rootPriorities($roots, $stp['domains'], $designated, $core, $this->sources->bridges(array_map('array_values', $keys)), $names, $refusal, $hint);
         }
         $fixes = [...FixBuilder::descriptions($links, $ports ? $this->sources->portNames($ports) : [], $names), ...$built['fixes']];
         if ($wanted !== null) {

@@ -119,10 +119,11 @@ interface Sources
     public function names(array $ids): array;
 
     /**
-     * The devices named by a setting that lists devices (stp_preferred_roots, redundancy_core), in the setting's order,
-     * among those the scope may see.
+     * The devices a setting of the topology plugin names (stp_preferred_roots, redundancy_core), for a fix that pushes a
+     * priority on them: by device id or LibreNMS hostname only (FixBuilder::devicesNamed()), in the setting's order; the
+     * names that mean several devices, and those that mean none.
      *
-     * @return int[]
+     * @return array{devices: int[], ambiguous: array<string, int[]>, unmatched: string[]}
      */
     public function devicesOfSetting(string $key): array;
 

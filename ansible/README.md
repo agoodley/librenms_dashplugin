@@ -1053,8 +1053,10 @@ network much faster than the whole list):
 * **Spanning tree root priority:** a part of the network whose root bridge is not the intended one, or was elected
   with the default priority. The intended root is the first of the topology plugin's *Designated root bridges* in
   that part, else its first *Core device*, set to priority 4096 in every VLAN (PVST+) or in the CIST (MST), the next
-  one as its secondary with 8192. Without designated root bridges or configured core devices there is no root fix:
-  the page lists the finding with why, and where to set them.
+  one as its secondary with 8192. A fix knows these devices by the settings' device ids or LibreNMS hostnames only,
+  never by a sysName or a display name (a device reports its sysName itself): name them so. Without designated root
+  bridges or configured core devices named so, or with a name that is the id or hostname of several devices, there is
+  no root fix: the page lists the finding with why, and where to set them.
 
 Each fix shows what it changes and the findings it resolves. The topology plugin's *Link & VLAN diagnostics* and
 *Spanning tree diagnostics* link each such finding to it (*Fix with Ansible*, for admins, while this plugin is

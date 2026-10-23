@@ -92,14 +92,24 @@ final class FixBuilder
      * @param  array<int, array{keys: int[], instances: array<int, array{mac: string, priority: int, protocol: string}>}>  $bridges  the
      *                                                                                                                              spanning tree of the devices named
      * @param  array<int, string>  $names
+     * @param  ?string  $refusal  why no root fix can be made at all (a setting names a device ambiguously): each finding then has it
+     * @param  string  $hint  said after "no designated root bridge or core device": the settings' names that name no device (devicesNamed())
      * @return array{fixes: list<array>, not_fixable: list<array{identity: string, code: string, title: string, why: string}>}
      */
-    public static function rootPriorities(array $findings, array $domains, array $designated, array $core, array $bridges, array $names): array
+    public static function rootPriorities(array $findings, array $domains, array $designated, array $core, array $bridges, array $names, ?string $refusal = null,
+        string $hint = ''): array
     {
         $groups = [];
         $notFixable = [];
         foreach ($findings as $finding) {
             if (! in_array($finding['code'] ?? null, self::CODES[self::STP_ROOT_PRIORITY], true) || ! isset($finding['fix']['root'])) {
+                continue;
+            }
+            if ($refusal !== null) {
+                // the settings do not say which devices they mean: no priority is pushed on a guess
+                $notFixable[] = ['identity' => (string) $finding['identity'], 'code' => (string) $finding['code'], 'title' => FindingHistory::title($finding),
+                    'devices' => array_map('intval', (array) $finding['devices']), 'why' => $refusal];
+
                 continue;
             }
             $root = (int) $finding['fix']['root'];
@@ -108,7 +118,7 @@ final class FixBuilder
                 $members = self::domainOf($domains[$key] ?? [], $root);
                 [$candidates, $from] = ($picked = array_values(array_intersect($designated, $members))) ? [$picked, 'designated'] : [array_values(array_intersect($core, $members)), 'core'];
                 if (! $candidates) {
-                    $why = 'no designated root bridge or core device in its part of the network: ' . self::ROOT_SETTINGS;
+                    $why = 'no designated root bridge or core device in its part of the network: ' . self::ROOT_SETTINGS . $hint;
                     continue;
                 }
                 $primary = $candidates[0];
@@ -156,6 +166,47 @@ final class FixBuilder
         }
 
         return ['fixes' => $fixes, 'not_fixable' => $notFixable];
+    }
+
+    /**
+     * The devices the names of a setting mean, for a fix that pushes a priority on them (designated root bridges, core
+     * devices): a device id, or a LibreNMS hostname (case aside), never a sysName or a display name, which a device
+     * reports itself or anyone may set; in the setting's order. A name that means several devices, and the names that mean
+     * none, are said.
+     *
+     * @param  string[]  $wanted  the setting's names
+     * @param  array<int, string>  $hostnames  device_id => LibreNMS hostname, of the devices the user sees
+     * @return array{devices: int[], ambiguous: array<string, int[]>, unmatched: string[]}
+     */
+    public static function devicesNamed(array $wanted, array $hostnames): array
+    {
+        $byName = [];
+        foreach ($hostnames as $deviceId => $hostname) {
+            $byName[(string) (int) $deviceId][(int) $deviceId] = true;
+            if (trim((string) $hostname) !== '') {
+                $byName[strtolower(trim((string) $hostname))][(int) $deviceId] = true;
+            }
+        }
+        $devices = [];
+        $ambiguous = [];
+        $unmatched = [];
+        foreach ($wanted as $name) {
+            $name = strtolower(trim((string) $name));
+            if ($name === '') {
+                continue;
+            }
+            $matches = array_keys($byName[$name] ?? []);
+            if (count($matches) > 1) {
+                sort($matches);
+                $ambiguous[$name] = $matches;
+            } elseif ($matches) {
+                $devices[$matches[0]] = true;
+            } else {
+                $unmatched[] = $name;
+            }
+        }
+
+        return ['devices' => array_keys($devices), 'ambiguous' => $ambiguous, 'unmatched' => array_values(array_unique($unmatched))];
     }
 
     /**
