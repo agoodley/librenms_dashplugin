@@ -185,17 +185,16 @@
             </div>
         @endif
         @if($waitBatch !== null && $change['waiting'] === 'blast')
-            @php $names = $blastNames($waitBlast); @endphp
+            @php $names = $blastNames($waitBlast); [$heldSince, $heldWord] = \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, ! empty($waitBlast['accepted'])); @endphp
             <div class="ans-warning-loud" id="ans-blast-grew"><i class="fa fa-bolt"></i>
-                Batch {{ (int) $change['current_batch'] }} does not start: its blast radius grew since {{ ! empty($waitBlast['accepted']) ? 'it was accepted' : 'the approval' }}.
+                Batch {{ (int) $change['current_batch'] }} does not start: its blast radius grew since {{ $heldSince }}.
                 While it runs it would now cut off
                 @foreach((array) ($waitBlast['lost'] ?? []) as $lostId)<a href="{{ url('device/' . $lostId) }}" class="{{ in_array($lostId, (array) ($waitBlast['added'] ?? []), true) ? 'ans-blast-added' : '' }}">{{ $deviceName((int) $lostId, $names) }}</a>@if(! $loop->last), @endif @endforeach
                 @if((int) ($waitBlast['unmanaged'] ?? 0) > 0) and {{ (int) $waitBlast['unmanaged'] }} unmanaged {{ (int) $waitBlast['unmanaged'] === 1 ? 'neighbor' : 'neighbors' }}@endif:
                 <strong>{{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['added'] ?? []), $names) }}</strong> {{ count((array) ($waitBlast['added'] ?? [])) === 1 ? 'was' : 'were' }} not
-                {{ ! empty($waitBlast['accepted']) ? 'accepted' : 'approved' }}
-                ({{ ! empty($waitBlast['accepted']) ? 'accepted' : 'approved' }}: {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['held'] ?? []), $names) }}).
+                {{ $heldWord }} ({{ $heldWord }}: {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['held'] ?? []), $names) }}).
                 @if(! empty($waitBlast['simulate']))<a href="{{ url($waitBlast['simulate']) }}" class="btn btn-xs btn-default" id="ans-blast-grew-simulate"><i class="fa fa-bolt"></i> Simulate it on the L2 map</a>@endif
-                <div style="font-weight: normal; margin-top: 4px">An admin with the approve permission{{ $settings->approval === ApprovalRules::SECOND ? ', not the requester,' : '' }} accepts the new blast radius
+                <div style="font-weight: normal; margin-top: 4px">{{ ucfirst(ApprovalRules::accepter($settings->approval)) }} accepts the new blast radius
                     (recorded in the timeline and the eventlog), and the batch starts again; or stop the change. Computed {{ $local($waitBlast['at'] ?? null) }}, as {{ $waitBatch['username'] ?: 'the admin who starts the batch' }} sees the network.</div>
             </div>
         @elseif($waitBatch !== null && $change['waiting'] === 'blast_unknown')
@@ -203,7 +202,7 @@
             <div class="ans-warning-loud" id="ans-blast-unknown"><i class="fa fa-question-circle"></i>
                 Batch {{ (int) $change['current_batch'] }} does not start: its blast radius cannot be computed now ({{ $waitBlast['error'] ?? 'no answer' }}).
                 <div style="font-weight: normal; margin-top: 4px">An admin with the run permission may continue it without one: its maintenance window then covers its devices and the
-                    devices {{ is_array($waitBatch['blast_accepted'] ?? null) ? 'accepted' : 'approved' }} as cut off
+                    devices {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, is_array($waitBatch['blast_accepted'] ?? null))[1] }} as cut off
                     ({{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', $held), $names, 10, 'none') }}); the decision is recorded in the timeline and the eventlog.
                     Or stop the change.</div>
             </div>
@@ -284,7 +283,7 @@
                     <p class="ans-help" id="ans-approval-waits" style="margin-top: 6px">{{ ApprovalRules::waitsFor($settings->approval) }}</p>
                 @endif
                 @if($change['waiting'] === 'blast' && ! $actions['accept'] && ! $final)
-                    <p class="ans-help" id="ans-accept-waits" style="margin-top: 6px">{{ $canApprove && $acceptRefusal ? $acceptRefusal : 'An admin with the approve permission accepts the new blast radius' . ($settings->approval === ApprovalRules::SECOND ? ' (not the requester).' : '.') }}</p>
+                    <p class="ans-help" id="ans-accept-waits" style="margin-top: 6px">{{ $canAccept && $acceptRefusal ? $acceptRefusal : ucfirst(ApprovalRules::accepter($settings->approval)) . ' accepts the new blast radius.' }}</p>
                 @endif
                 @if($noApprover)
                     <div class="alert alert-warning" id="ans-no-approver" style="margin: 6px 0 0"><i class="fa fa-user-times"></i> {{ $noApprover }}
@@ -351,7 +350,7 @@
                                     @if($record)
                                         <div class="ans-help ans-blast-check" data-state="{{ $record['state'] ?? '' }}">
                                             @switch($record['state'] ?? '')
-                                                @case('same')<span class="text-success">checked {{ $local($record['at'] ?? null) }}: as {{ $accepted ? 'accepted' : 'approved' }}</span>@break
+                                                @case('same')<span class="text-success">checked {{ $local($record['at'] ?? null) }}: as {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, (bool) $accepted)[1] }}</span>@break
                                                 @case('shrank')<span class="text-success">checked {{ $local($record['at'] ?? null) }}: shrank, no longer {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', (array) ($record['removed'] ?? [])), $names) }}</span>@break
                                                 @case('grew')<span class="text-danger">checked {{ $local($record['at'] ?? null) }}: grew, also {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', (array) ($record['added'] ?? [])), $names) }}</span>@break
                                                 @case('unknown')<span class="text-danger">checked {{ $local($record['at'] ?? null) }}: cannot be computed ({{ $record['error'] ?? '' }})</span>@break

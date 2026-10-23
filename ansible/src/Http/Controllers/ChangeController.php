@@ -339,14 +339,27 @@ class ChangeController extends Controller
 
     /**
      * POST plugin/ansible/changes/{id}/accept-blast {comment}: accept the new blast radius of the batch that waits because
-     * it grew since the approval.
+     * it grew. It needs the permission the approval setting asks for (ApprovalRules::acceptPermission()): the approve
+     * permission, or the run permission while the settings ask for no approval.
      */
     public function acceptBlast(Request $request, int $id): JsonResponse
     {
         $user = self::user($request);
-        $holds = Access::canApprove($request->user());
+        $mode = $this->settings()->changeSettings()->approval;
+        $holds = self::canAccept($request, $mode);
+        if (! $holds) {
+            return response()->json(['error' => ApprovalRules::acceptRefusal($mode, ['status' => ChangeStatus::PAUSED, 'waiting' => 'blast', 'user_id' => null], 0, false)], 403);
+        }
 
         return $this->act($id, fn (ChangeLifecycle $lifecycle) => $lifecycle->acceptBlast($id, $user, $holds, self::comment($request), time()));
+    }
+
+    /**
+     * Does the user hold the permission accepting a new blast radius needs now?
+     */
+    private static function canAccept(Request $request, string $mode): bool
+    {
+        return ApprovalRules::acceptPermission($mode) === 'run' ? Access::canRun($request->user()) : Access::canApprove($request->user());
     }
 
     /**
@@ -439,8 +452,8 @@ class ChangeController extends Controller
         $runs = new RunRepository();
         ['run' => $run, 'batches' => $batches, 'batchRuns' => $batchRuns, 'windows' => $windows, 'targets' => $targets, 'approvals' => $approvals,
             'signature' => $signature, 'pending' => $pending, 'withheld' => $withheld] = $this->live($change);
-        ['actions' => $actions, 'approvalRefusal' => $approvalRefusal, 'canRun' => $canRun, 'canApprove' => $canApprove, 'acceptRefusal' => $acceptRefusal]
-            = $this->actions($request, $change);
+        ['actions' => $actions, 'approvalRefusal' => $approvalRefusal, 'canRun' => $canRun, 'canApprove' => $canApprove, 'canAccept' => $canAccept,
+            'acceptRefusal' => $acceptRefusal] = $this->actions($request, $change);
         // what the topology plugin said about each batch (approved with the change), and what it says before each batch
         $topology = \Agoodley\LibrenmsAnsible\Changes\BatchPlan::topologyPart($change['plan'] ?? null);
         $blast = [];
@@ -489,7 +502,7 @@ class ChangeController extends Controller
             'change' => $change, 'targets' => $targets, 'batches' => $batches, 'batchRuns' => $batchRuns, 'run' => $run, 'dryRun' => $dryRun,
             'approvals' => $approvals, 'windows' => $windows, 'events' => $events, 'signature' => $signature,
             'diffs' => $diffs, 'unattributed' => $unattributed, 'secretVars' => $secretVars, 'settings' => $settings, 'canRun' => $canRun, 'canApprove' => $canApprove,
-            'approvalRefusal' => $approvalRefusal, 'acceptRefusal' => $acceptRefusal, 'actions' => $actions, 'pending' => $pending, 'withheld' => $withheld,
+            'approvalRefusal' => $approvalRefusal, 'canAccept' => $canAccept, 'acceptRefusal' => $acceptRefusal, 'actions' => $actions, 'pending' => $pending, 'withheld' => $withheld,
             'laterBusy' => $laterBusy, 'topology' => $topology, 'blast' => $blast,
             'topologyPlanned' => \Agoodley\LibrenmsAnsible\Changes\BatchPlan::isTopology($change['plan'] ?? null),
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
@@ -610,7 +623,7 @@ class ChangeController extends Controller
     /**
      * The actions the user may take on the change now (the lifecycle checks each again).
      *
-     * @return array{actions: array<string, bool>, approvalRefusal: ?string, canRun: bool, canApprove: bool}
+     * @return array{actions: array<string, bool>, approvalRefusal: ?string, canRun: bool, canApprove: bool, canAccept: bool, acceptRefusal: ?string}
      */
     private function actions(Request $request, array $change): array
     {
@@ -620,16 +633,19 @@ class ChangeController extends Controller
         $status = $change['status'];
         $approvalRefusal = $canApprove ? ApprovalRules::refusal($this->settings()->changeSettings()->approval, $change, (int) $user->user_id, true) : null;
 
-        $acceptRefusal = $canApprove ? ApprovalRules::acceptRefusal($this->settings()->changeSettings()->approval, $change, (int) $user->user_id, true) : null;
+        // who accepts a new blast radius follows the approval setting: an approver, or with no approval an admin who may continue
+        $mode = $this->settings()->changeSettings()->approval;
+        $canAccept = self::canAccept($request, $mode);
+        $acceptRefusal = $canAccept ? ApprovalRules::acceptRefusal($mode, $change, (int) $user->user_id, true) : null;
 
-        return ['canRun' => $canRun, 'canApprove' => $canApprove, 'approvalRefusal' => $approvalRefusal, 'acceptRefusal' => $acceptRefusal, 'actions' => [
+        return ['canRun' => $canRun, 'canApprove' => $canApprove, 'canAccept' => $canAccept, 'approvalRefusal' => $approvalRefusal, 'acceptRefusal' => $acceptRefusal, 'actions' => [
             'dry_run' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
             'approve' => $canApprove && $status === ChangeStatus::AWAITING && $approvalRefusal === null,
             'reject' => $canApprove && $status === ChangeStatus::AWAITING,
             'apply' => $canRun && $status === ChangeStatus::READY,
-            // a batch whose blast radius grew is not continued: an approver accepts the new one
+            // a batch whose blast radius grew is not continued: its new blast radius is accepted
             'continue' => $canRun && $status === ChangeStatus::PAUSED && $change['waiting'] !== 'blast',
-            'accept' => $canApprove && $status === ChangeStatus::PAUSED && $change['waiting'] === 'blast' && $acceptRefusal === null,
+            'accept' => $canAccept && $status === ChangeStatus::PAUSED && $change['waiting'] === 'blast' && $acceptRefusal === null,
             'stop' => $canRun && in_array($status, [ChangeStatus::APPLYING, ChangeStatus::PAUSED, ChangeStatus::DRY_RUN], true),
             'cancel' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
         ]];

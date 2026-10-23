@@ -159,18 +159,39 @@ final class ChangeText
     }
 
     /**
-     * A batch's blast radius grew since the approval (or the acceptance): it does not start.
+     * What a batch's blast radius is held to, in words: [since when, its name]: since an admin accepted it ("accepted"),
+     * since the approval ("approved"), or, for a change applied without an approval, since the change was made
+     * ("planned").
      *
-     * @param  string  $added  the devices it cuts off now that were not approved, in words
-     * @param  string  $held  what it was approved (or accepted) to cut off, in words
-     * @param  bool  $accepted  the blast radius it is held to was accepted by an approver since the approval
+     * @param  array{approved_at?: ?string}  $change
+     * @return array{0: string, 1: string}
      */
-    public static function blastGrew(array $change, int $batch, string $added, string $held, bool $refused, bool $accepted = false): string
+    public static function held(array $change, bool $accepted): array
     {
-        return self::name($change) . ", batch $batch: its blast radius grew since " . ($accepted ? 'it was accepted' : 'the approval') . ': it would now also cut off '
-            . UntrustedText::line($added, 400) . ' (' . ($accepted ? 'accepted' : 'approved') . ': ' . UntrustedText::line($held, 300) . '). '
+        return match (true) {
+            $accepted => ['it was accepted', 'accepted'],
+            ($change['approved_at'] ?? null) !== null => ['the approval', 'approved'],
+            default => ['the change was made', 'planned'],
+        };
+    }
+
+    /**
+     * A batch's blast radius grew since the approval (or the acceptance, or the change was made): it does not start.
+     *
+     * @param  string  $added  the devices it cuts off now that it was not held to, in words
+     * @param  string  $held  what it was held to cut off, in words
+     * @param  bool  $accepted  the blast radius it is held to was accepted by an admin since
+     * @param  string  $accepter  who accepts the new one (ApprovalRules::accepter())
+     */
+    public static function blastGrew(array $change, int $batch, string $added, string $held, bool $refused, bool $accepted = false,
+        string $accepter = 'an admin with the approve permission'): string
+    {
+        [$since, $word] = self::held($change, $accepted);
+
+        return self::name($change) . ", batch $batch: its blast radius grew since $since: it would now also cut off " . UntrustedText::line($added, 400)
+            . " ($word: " . UntrustedText::line($held, 300) . '). '
             . ($refused ? 'The batch is refused (setting When the blast radius grew: refuse the batch).'
-                : 'The batch does not start until an admin with the approve permission accepts the new blast radius.');
+                : "The batch does not start until $accepter accepts the new blast radius.");
     }
 
     /**
@@ -184,11 +205,12 @@ final class ChangeText
     }
 
     /**
-     * A batch's blast radius shrank since the approval: it goes on.
+     * A batch's blast radius shrank since the approval (or the acceptance, or the change was made): it goes on.
      */
-    public static function blastShrank(array $change, int $batch, string $removed): string
+    public static function blastShrank(array $change, int $batch, string $removed, bool $accepted = false): string
     {
-        return self::name($change) . ", batch $batch: its blast radius shrank since the approval: it no longer cuts off " . UntrustedText::line($removed, 400);
+        return self::name($change) . ", batch $batch: its blast radius shrank since " . self::held($change, $accepted)[0] . ': it no longer cuts off '
+            . UntrustedText::line($removed, 400);
     }
 
     /**
@@ -207,10 +229,10 @@ final class ChangeText
      *
      * @param  string  $covered  the devices approved as cut off, which its window covers, in words
      */
-    public static function blastOverride(array $change, int $batch, string $by, string $why, string $covered): string
+    public static function blastOverride(array $change, int $batch, string $by, string $why, string $covered, bool $accepted = false): string
     {
         return self::name($change) . ", batch $batch: continued by " . self::user($by) . ' without a blast radius (it cannot be computed: ' . UntrustedText::line($why, 300)
-            . '); its maintenance window covers its devices and the devices approved as cut off: ' . UntrustedText::line($covered, 300);
+            . '); its maintenance window covers its devices and the devices ' . self::held($change, $accepted)[1] . ' as cut off: ' . UntrustedText::line($covered, 300);
     }
 
     /**

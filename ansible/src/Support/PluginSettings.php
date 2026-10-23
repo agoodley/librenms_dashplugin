@@ -55,7 +55,7 @@ final class PluginSettings
         'backups' => ['1' => 'on', '0' => 'off'],
         'maintenance' => ['1' => 'on', '0' => 'off'],
         'topology_plan' => ['1' => 'on', '0' => 'off'],
-        'blast_grew' => ['pause' => 'pause for an approver', 'refuse' => 'refuse the batch'],
+        'blast_grew' => ['pause' => 'pause until an admin accepts it', 'refuse' => 'refuse the batch'],
         'blast_unknown' => ['pause' => 'pause for an admin', 'refuse' => 'refuse the batch'],
     ];
 

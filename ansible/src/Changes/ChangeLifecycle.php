@@ -238,13 +238,14 @@ final class ChangeLifecycle
     }
 
     /**
-     * Accept the new blast radius of a batch that does not start because it grew since the approval: an admin with the
-     * approve permission (not the requester when the settings ask for a second admin) accepts what it cuts off now, which
-     * the batch is held to from then on, and the batch starts again (its blast radius computed once more). Null when it
-     * was accepted, else why not.
+     * Accept the new blast radius of a batch that does not start because it grew since the approval (or since the change
+     * was made, without one): an admin with the approve permission (not the requester when the settings ask for a second
+     * admin), or, while the settings ask for no approval, with the run permission (ApprovalRules::acceptPermission())
+     * accepts what it cuts off now, which the batch is held to from then on, and the batch starts again (its blast radius
+     * computed once more). Null when it was accepted, else why not.
      *
      * @param  array{user_id: int, username: string}  $user
-     * @param  bool  $holds  the user is an admin holding the approve permission
+     * @param  bool  $holds  the user is an admin holding the permission the settings ask for
      */
     public function acceptBlast(int $id, array $user, bool $holds, string $comment, int $now): ?string
     {
@@ -455,7 +456,8 @@ final class ChangeLifecycle
             $why = UntrustedText::line((string) ($row['blast']['error'] ?? 'it could not be computed'), 300);
             $this->changes->updateBatch($id, $batch, ['blast_override' => ['by' => mb_substr($user['username'], 0, 255), 'user_id' => (int) $user['user_id'],
                 'at' => Clock::store($now), 'why' => $why]]);
-            $text = ChangeText::blastOverride($resumed, $batch, $user['username'], $why, BlastRadius::listText($this->heldLost($resumed, $batch), $this->blastNames($resumed, $batch)));
+            $text = ChangeText::blastOverride($resumed, $batch, $user['username'], $why, BlastRadius::listText($this->heldLost($resumed, $batch), $this->blastNames($resumed, $batch)),
+                is_array($row['blast_accepted'] ?? null));
             $this->timeline($resumed, 'blast', $text, $user['username'], $now);
             $this->eventAll($resumed, $text, 'warning', $user['username']);
             $this->startBatch($resumed, $batch, $user, $secrets, $now);
@@ -1804,7 +1806,7 @@ final class ChangeLifecycle
         $this->changes->updateBatch($id, $number, ['blast' => $record]);
         if ($diff['removed'] && ! ($atLaunch && is_array($previous) && ($previous['removed'] ?? null) == $diff['removed'])) {
             // said once: not again right before the launch when its start said the same
-            $text = ChangeText::blastShrank($change, $number, BlastRadius::listText($diff['removed'], $record['names']));
+            $text = ChangeText::blastShrank($change, $number, BlastRadius::listText($diff['removed'], $record['names']), $record['accepted']);
             $this->timeline($change, 'blast', $text . ($atLaunch ? ' (right before its launch)' : '') . '; it goes on.', null, $now);
             foreach ($devices as $deviceId) {
                 $this->events->write($text, $deviceId, 'info', ChangeText::reference($id), $user['username']);
@@ -1854,10 +1856,10 @@ final class ChangeLifecycle
         $refuse = $grew ? $this->settings->refuseGrownBlast : $this->settings->refuseUnknownBlast;
         $names = (array) ($record['names'] ?? []) + $this->blastNames($change, $number);
         if ($grew) {
-            $why = 'its blast radius grew since ' . (! empty($record['accepted']) ? 'it was accepted' : 'the approval') . ': it would now also cut off '
+            $why = 'its blast radius grew since ' . ChangeText::held($change, ! empty($record['accepted']))[0] . ': it would now also cut off '
                 . BlastRadius::listText((array) $record['added'], $names);
             $text = ChangeText::blastGrew($change, $number, BlastRadius::listText((array) $record['added'], $names),
-                BlastRadius::listText((array) $record['held'], $names), $refuse, ! empty($record['accepted']));
+                BlastRadius::listText((array) $record['held'], $names), $refuse, ! empty($record['accepted']), ApprovalRules::accepter($this->settings->approval));
         } else {
             $why = 'its blast radius cannot be computed now (' . $record['error'] . ')';
             $text = ChangeText::blastUnknown($change, $number, (string) $record['error'], $refuse);

@@ -186,9 +186,10 @@ The runs of phase 1 stay in the audit log as they were.
    its *Rollout Planner* page shows what it plans. The devices it cannot plan are left out of a new change unless the
    admin puts them in a batch planned by hand.
 2. Changes made before keep their plan: their blast radius is unknown, and they go on as in phase 2.
-3. A batch whose blast radius grew waits for an admin with the approve permission (not the requester with a second
-   admin), one whose blast radius cannot be computed for an admin with the run permission; or set *When the blast
-   radius grew* and *When the blast radius cannot be computed* to *refuse the batch*.
+3. A batch whose blast radius grew waits for an admin to accept the new one: with an approval asked for, an admin with
+   the approve permission (not the requester with a second admin); with *Approval* off, an admin with the run
+   permission. One whose blast radius cannot be computed waits for an admin with the run permission. Or set *When the
+   blast radius grew* and *When the blast radius cannot be computed* to *refuse the batch*.
 
 **Removing:**
 
@@ -369,7 +370,7 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | Settle time | 10 min | a window ends this long after its batch (0–1440) |
 | *Rollout plan and blast radius* | | the part says whether the topology plugin can plan now, and why not |
 | Plan with the topology plugin | on | a new change plans its batches with the topology plugin's rollout planner when it can (installed, enabled in LibreNMS, planning API 1.x), and approves what each batch cuts off; off, or without it, the settings above plan them and the blast radius is unknown |
-| When the blast radius grew | pause for an approver | a batch that would cut off devices that were not approved waits for an admin with the approve permission to accept the new blast radius; or *refuse the batch*: the change ends |
+| When the blast radius grew | pause until an admin accepts it | a batch that would cut off devices that were not approved waits for an admin to accept the new blast radius: one with the approve permission (not the requester with a second admin), or, while *Approval* is off, one with the run permission; or *refuse the batch*: the change ends |
 | When the blast radius cannot be computed | pause for an admin | a batch whose blast radius cannot be computed (the topology plugin disabled, an error) waits for an admin with the run permission to continue it without one; or *refuse the batch* |
 | *Run permission*, *Approve permission* | | who may prepare and apply changes, and who may approve them ([Permissions](#permissions)) |
 
@@ -415,7 +416,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 * With *an approval*, an approver may approve their own change; with *an approval from a second admin*, the requester
   never may, whoever holds the approve permission. The same goes for **accepting a new blast radius** of a batch that
   would cut off more than was approved: it needs the approve permission, never the requester with a second admin.
-  **Continuing a batch whose blast radius cannot be computed** needs the run permission, like *Continue*. An approval counts only while its approver still is an admin with
+  With *no approval* it needs the run permission instead, like *Continue* (the requester may accept, as nobody
+  approves changes there). **Continuing a batch whose blast radius cannot be computed** needs the run permission, like
+  *Continue*. An approval counts only while its approver still is an admin with
   the approve permission, and a batch is launched only while the admin who launches it (who applied the change or
   continued it) still holds the run permission.
 * Any LibreNMS admin can grant either permission, also to themselves: it is an explicit, logged opt-in (each grant and
@@ -454,8 +457,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   or **Reject**s; approvers find the changes that wait for them on the Changes page, with the status filter *Awaiting
   approval*. **Apply** starts the first batch: its maintenance window, the backups, then its run; after it the change
   waits for **Continue** (when *Wait after the first batch* is on), and the next batches follow on their own until the
-  last, or until one fails. A batch whose blast radius grew since the approval waits for an approver's **Accept the
-  new blast radius**, one whose blast radius cannot be computed for an admin's **Continue** without it (see [Rollout
+  last, or until one fails. A batch whose blast radius grew since the approval waits for an admin's **Accept the new
+  blast radius** (an approver's, while the settings ask for an approval), one whose blast radius cannot be computed for
+  an admin's **Continue** without it (see [Rollout
   plan and blast radius](#rollout-plan-and-blast-radius)). An Apply or a Continue while a device of the batch is busy in another unfinished run (or
   held after a stop) is refused and changes nothing: the change stays ready, or waiting (checked under the lock of the
   launches, so a run launched meanwhile is seen). A batch the plugin starts on its own (after the previous one, after a
@@ -512,7 +516,7 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 | Awaiting approval | its dry run is verified; the settings need an approval |
 | Ready to apply | approved (or the settings need none) |
 | Applying | a batch is being prepared (window, backups) or runs |
-| Paused | it waits: for an admin after the first batch, for the end of a pause between batches, for the secret answers of the next batch, for an approver to accept a batch's blast radius that grew, or for an admin to continue a batch whose blast radius cannot be computed |
+| Paused | it waits: for an admin after the first batch, for the end of a pause between batches, for the secret answers of the next batch, for an admin to accept a batch's blast radius that grew, or for an admin to continue a batch whose blast radius cannot be computed |
 | Stopping | an admin stopped it; the runner is stopping its batch |
 | Applied, Failed, Stopped, Rejected, Cancelled | it ended; failed: a batch reached *Stop at* (that many failed devices), or the plugin stopped it because what was approved no longer holds (see below) |
 
@@ -730,8 +734,10 @@ it cuts off with those approved, or accepted since:
 
 * **It grew** (it would cut off a device that was not approved: a redundant link went down since): **the batch does
   not start.** The change pauses, its page names the devices that were not approved and links the simulation, and an
-  admin with the approve permission (never the requester with a second admin) **accepts the new blast radius**, with
-  a comment; that is recorded in the timeline and in the eventlog of the change's devices, and the batch starts again
+  admin **accepts the new blast radius**, with a comment: one with the approve permission (never the requester with a
+  second admin) while the settings ask for an approval, else one with the run permission, who may continue the change
+  anyway (a change applied without an approval says *since the change was made* and *planned* where others say *since
+  the approval* and *approved*). That is recorded in the timeline and in the eventlog of the change's devices, and the batch starts again
   (its blast radius computed once more, and held to what was accepted from then on). *Continue* does not start it,
   and a batch whose blast radius grows again waits again. With *When the blast radius grew: refuse the batch*, the
   change ends as failed instead. Found right before the launch (after the backups), it stops the launch the same way,
@@ -755,8 +761,7 @@ of each such device says why it is under maintenance (*maintenance window #223 c
 its path to the core while batch 3 (lab-sw2) runs*), and that it no longer is when the batch no longer cuts it off
 right before its launch. The windows keep phase 2's rules: moved while the batch runs, closed a settle time after it,
 on every end. A batch planned by the settings has a window on its devices only, and so has one planned by hand, unless
-the topology plugin has learned meanwhile what it cuts off: then it waits for an approver like any batch whose blast
-radius grew.
+the topology plugin has learned meanwhile what it cuts off: then it waits like any batch whose blast radius grew.
 
 ### An example: the lab
 
@@ -892,8 +897,9 @@ released has stopped by then.
   that no longer counts, a refused backup. A batch is launched once at most; a stopped change launches nothing more.
 * **Approvals** only from admins with the approve permission, never from the requester with a second admin, never for
   a dry run that is unverified, failed or expired; approvals expire.
-* **No batch starts with a blast radius larger than what was approved** unless an admin with the approve permission
-  accepted the new one (never the requester with a second admin), and none while its blast radius cannot be computed
+* **No batch starts with a blast radius larger than what was approved** unless an admin accepted the new one: one with
+  the approve permission (never the requester with a second admin), or, with no approval asked for, one with the run
+  permission; and none while its blast radius cannot be computed
   unless an admin with the run permission continued it explicitly; both are recorded in the timeline and the
   eventlog. The blast radius is computed before each batch and again right before its launch.
 * **The planner's batches are the ones applied:** the plan is fixed when the change is created, is part of what is

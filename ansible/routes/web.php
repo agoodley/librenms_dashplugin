@@ -58,8 +58,11 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
         Route::middleware(RequireAdmin::class . ':approve')->group(function (): void {
             Route::post('changes/{id}/approve', [ChangeController::class, 'approve'])->whereNumber('id')->name('changes.approve');
             Route::post('changes/{id}/reject', [ChangeController::class, 'reject'])->whereNumber('id')->name('changes.reject');
-            Route::post('changes/{id}/accept-blast', [ChangeController::class, 'acceptBlast'])->whereNumber('id')->name('changes.accept-blast');
         });
+
+        // accepting a batch's new blast radius needs the approve permission, or the run permission while the settings ask
+        // for no approval: the controller checks which
+        Route::post('changes/{id}/accept-blast', [ChangeController::class, 'acceptBlast'])->whereNumber('id')->name('changes.accept-blast');
     });
 
 // The inventory the runner pulls (contrib/librenms_inventory.py): read only, a LibreNMS API token (X-Auth-Token

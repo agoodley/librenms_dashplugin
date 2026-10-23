@@ -235,7 +235,7 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame(['pending', 'grew', [511], [512]], [$batch['status'], $batch['blast']['state'], $batch['blast']['added'], $batch['blast']['held']]);
         $this->assertSame('Its blast radius grew since the approval: it would now also cut off lab-sw5', $batch['note']);
         $this->assertStringContainsString('Batch 3: its blast radius grew since the approval: it would now also cut off lab-sw5 (approved: lab-sw6). The batch does not start '
-            . 'until an admin with the approve permission accepts the new blast radius.', $this->messages($id));
+            . 'until an admin with the approve permission (not the requester) accepts the new blast radius.', $this->messages($id));
         $this->assertSame('warning', end($this->events->entries)['severity']);
         $this->assertStringContainsString('would now also cut off lab-sw5', end($this->events->entries)['message'], 'in the eventlog of the targets');
 
@@ -264,6 +264,51 @@ class ChangeBlastRadiusTest extends TestCase
         }
         $this->assertSame(ChangeStatus::APPLIED, $this->changes->find($id)['status']);
         $this->assertSame(self::BATCHES, $this->launched(), 'still the approved batches, in order');
+    }
+
+    public function testWithoutAnApprovalAnAdminWhoMayContinueAcceptsANewBlastRadius(): void
+    {
+        // the settings ask for no approval: the change is applied as it was dry-run, held to the blast radius planned with it
+        $plan = self::plan();
+        $id = $this->changes->add(array_intersect_key(self::TARGETS, array_flip(array_merge(...$plan->batches))), $plan);
+        $lifecycle = $this->lifecycle(['approval' => ApprovalRules::OFF]);
+        $this->assertNull($lifecycle->startDryRun($id, self::ALICE, [], $this->t0));
+        $runId = (int) $this->changes->find($id)['dry_run_id'];
+        $names = array_intersect_key(self::TARGETS, array_flip(array_merge(...$plan->batches)));
+        $lines = ['DRY RUN ****', 'PLAY [Description] [CHECK MODE] ****', 'TASK [Set it] [CHECK MODE] ****'];
+        foreach ($names as $name) {
+            $lines[] = "changed: [$name]";
+        }
+        $lines[] = 'PLAY RECAP ****';
+        foreach ($names as $name) {
+            $lines[] = "$name : ok=1 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0";
+        }
+        $this->endRun($runId, array_fill_keys(array_keys($names), 'changed'), $lines, $this->t0 + 30);
+        $lifecycle->advance($id, $this->t0 + 35);
+        $this->assertSame([ChangeStatus::READY, null], [$this->changes->find($id)['status'], $this->changes->find($id)['approved_at']]);
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $end = function (int $number, int $at) use ($id, $lifecycle): void {
+            $batchRun = (int) $this->changes->batches[$id][$number]['run_id'];
+            $this->assertGreaterThan(0, $batchRun, "batch $number has a run");
+            $this->endRun($batchRun, array_fill_keys(array_keys($this->runs->targets[$batchRun]), 'changed'), [], $at);
+            $lifecycle->advance($id, $at + 1);
+        };
+        $end(1, $this->t0 + 100);
+        $this->topology->cuts[502] = [512, 511];
+        $end(2, $this->t0 + 200);
+
+        $this->assertSame([ChangeStatus::PAUSED, 'blast'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+        $this->assertSame('Its blast radius grew since the change was made: it would now also cut off lab-sw5', $this->changes->batches[$id][3]['note']);
+        $this->assertStringContainsString('Batch 3: its blast radius grew since the change was made: it would now also cut off lab-sw5 (planned: lab-sw6). The batch does not '
+            . 'start until an admin with the run permission accepts the new blast radius.', $this->messages($id));
+        $this->assertStringContainsString('run permission (ansible.run)', (string) $lifecycle->acceptBlast($id, self::BOB, false, '', $this->t0 + 300));
+        // the requester, who may continue the change, accepts it: nobody approves changes here
+        $this->assertNull($lifecycle->acceptBlast($id, self::ALICE, true, 'lab-sw5 is being recabled', $this->t0 + 310));
+        $this->assertSame([[510], [511, 512, 513, 514], [502]], $this->launched());
+        $this->assertSame([502, 512, 511], $this->windows->windows[102]['devices']);
+        $this->assertStringContainsString('Batch 3: its new blast radius accepted by alice: it cuts off lab-sw6, lab-sw5 and 3 unmanaged neighbors: "lab-sw5 is being recabled"',
+            $this->messages($id));
+        $this->assertSame('alice', $this->changes->batches[$id][3]['blast_accepted']['by']);
     }
 
     public function testABlastRadiusThatGrewAgainSinceItWasAcceptedWaitsAgain(): void

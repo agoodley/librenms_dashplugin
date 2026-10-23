@@ -64,17 +64,42 @@ final class ApprovalRules
     }
 
     /**
-     * Why the user may not accept the new blast radius of a change's batch now (it grew since the approval, so the batch
-     * does not start); null when they may: an admin with the approve permission, and not the requester when the settings
-     * ask for a second admin. With no approval asked for, an admin with the approve permission still accepts it: nobody
-     * approved what the batch now cuts off.
+     * The permission accepting a batch's new blast radius needs (it grew since the change was approved or made, so the
+     * batch does not start): the approve permission while the settings ask for an approval, as for the approval itself;
+     * the run permission while they ask for none, as for Continue, so that a team without approvers is not stuck.
+     *
+     * @return string 'approve' or 'run'
+     */
+    public static function acceptPermission(string $mode): string
+    {
+        return $mode === self::OFF ? 'run' : 'approve';
+    }
+
+    /**
+     * Who accepts a batch's new blast radius, in words.
+     */
+    public static function accepter(string $mode): string
+    {
+        return match ($mode) {
+            self::OFF => 'an admin with the run permission',
+            self::SECOND => 'an admin with the approve permission (not the requester)',
+            default => 'an admin with the approve permission',
+        };
+    }
+
+    /**
+     * Why the user may not accept the new blast radius of a change's batch now; null when they may: an admin holding
+     * the permission acceptPermission() names, and not the requester when the settings ask for a second admin.
      *
      * @param  array{status: string, waiting?: ?string, user_id: int|string|null}  $change
+     * @param  bool  $holds  the user is an admin holding that permission
      */
     public static function acceptRefusal(string $mode, array $change, int $userId, bool $holds): ?string
     {
         if (! $holds) {
-            return 'Accepting a new blast radius needs the Ansible plugin\'s approve permission (ansible.approve): an admin grants it on the plugin\'s settings page.';
+            return self::acceptPermission($mode) === 'run'
+                ? 'Accepting a new blast radius needs the Ansible plugin\'s run permission (ansible.run) while the settings ask for no approval: an admin grants it on the plugin\'s settings page.'
+                : 'Accepting a new blast radius needs the Ansible plugin\'s approve permission (ansible.approve): an admin grants it on the plugin\'s settings page.';
         }
         if ($change['status'] !== ChangeStatus::PAUSED || ($change['waiting'] ?? null) !== 'blast') {
             return 'Only a change whose batch waits because its blast radius grew can have the new blast radius accepted.';

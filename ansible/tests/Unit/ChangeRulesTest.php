@@ -288,6 +288,30 @@ class ChangeRulesTest extends TestCase
         $this->assertSame('Waits for an approval by an admin with the approve permission.', ApprovalRules::waitsFor(ApprovalRules::REQUIRED));
     }
 
+    public function testWhoMayAcceptANewBlastRadiusFollowsTheApprovalSetting(): void
+    {
+        $change = ['status' => ChangeStatus::PAUSED, 'waiting' => 'blast', 'user_id' => 1];
+
+        // with an approval: an approver (the approve permission), never the requester with a second admin
+        $this->assertSame('approve', ApprovalRules::acceptPermission(ApprovalRules::REQUIRED));
+        $this->assertSame('approve', ApprovalRules::acceptPermission(ApprovalRules::SECOND));
+        $this->assertNull(ApprovalRules::acceptRefusal(ApprovalRules::REQUIRED, $change, 1, true), 'the requester may accept when no second admin is needed');
+        $this->assertStringContainsString('you requested this change', (string) ApprovalRules::acceptRefusal(ApprovalRules::SECOND, $change, 1, true));
+        $this->assertNull(ApprovalRules::acceptRefusal(ApprovalRules::SECOND, $change, 2, true));
+        $this->assertStringContainsString('approve permission (ansible.approve)', (string) ApprovalRules::acceptRefusal(ApprovalRules::SECOND, $change, 2, false));
+        $this->assertSame('an admin with the approve permission (not the requester)', ApprovalRules::accepter(ApprovalRules::SECOND));
+        $this->assertSame('an admin with the approve permission', ApprovalRules::accepter(ApprovalRules::REQUIRED));
+
+        // without one: an admin who may continue the change (the run permission), the requester too, so that a team without approvers is not stuck
+        $this->assertSame('run', ApprovalRules::acceptPermission(ApprovalRules::OFF));
+        $this->assertNull(ApprovalRules::acceptRefusal(ApprovalRules::OFF, $change, 1, true));
+        $this->assertStringContainsString('run permission (ansible.run) while the settings ask for no approval', (string) ApprovalRules::acceptRefusal(ApprovalRules::OFF, $change, 1, false));
+        $this->assertSame('an admin with the run permission', ApprovalRules::accepter(ApprovalRules::OFF));
+
+        $this->assertStringContainsString('Only a change whose batch waits because its blast radius grew',
+            (string) ApprovalRules::acceptRefusal(ApprovalRules::OFF, ['waiting' => 'canary'] + $change, 1, true));
+    }
+
     public function testApprovalsExpireAndNeedTheirApprover(): void
     {
         $now = strtotime('2026-10-22 12:00:00 UTC');
