@@ -53,12 +53,16 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit {
          * @param  int[]|null  $visible
          * @param  string[]  $denied  model classes the user's role may not view
          */
-        private static function api(RedundancyFixture $net, ?array $visible = null, array $denied = [], string $core = 'core1 core2'): Planning
+        private static function api(RedundancyFixture $net, ?array $visible = null, array $denied = [], string $core = 'core1 core2', array $unseen = []): Planning
         {
-            return Planning::withRepository(self::repository($net, $visible, $denied), new PluginSettings(['redundancy_core' => $core]));
+            return Planning::withRepository(self::repository($net, $visible, $denied, $unseen), new PluginSettings(['redundancy_core' => $core]));
         }
 
-        private static function repository(RedundancyFixture $net, ?array $visible, array $denied): TopologyRepository
+        /**
+         * @param  int[]  $unseen  devices the scope's own check (canSee()) refuses although the analysis was handed them: what the API
+         *                         answers is filtered by that check, whatever the analysis it used
+         */
+        private static function repository(RedundancyFixture $net, ?array $visible, array $denied, array $unseen = []): TopologyRepository
         {
             $history = new class(null) extends HistoryRepository
             {
@@ -68,10 +72,10 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit {
                 }
             };
 
-            return new class(null, $net, $visible ?? array_keys($net->devices), $denied, $history) extends TopologyRepository
+            return new class(null, $net, $visible ?? array_keys($net->devices), $denied, $history, $unseen) extends TopologyRepository
             {
                 public function __construct(mixed $user, private readonly RedundancyFixture $net, private readonly array $visible, private readonly array $denied,
-                    private readonly HistoryRepository $history)
+                    private readonly HistoryRepository $history, private readonly array $unseen)
                 {
                     parent::__construct($user);
                 }
@@ -93,12 +97,13 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit {
 
                 public function canSee(int $deviceId): bool
                 {
-                    return in_array($deviceId, $this->deviceIds(), true);
+                    return in_array($deviceId, $this->deviceIds(), true) && ! in_array($deviceId, $this->unseen, true);
                 }
 
+                /** As TopologyRepository::devices(): the devices asked for, whoever may see them (its callers scope). */
                 public function devices(array $ids, bool $roles = true): array
                 {
-                    return array_intersect_key($this->net->devices, array_flip(array_filter($ids, fn ($id) => $this->canSee((int) $id))));
+                    return array_intersect_key($this->net->devices, array_flip(array_map('intval', $ids)));
                 }
 
                 public function linksWhere(array $ids, callable $keep): array
@@ -285,6 +290,27 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit {
             $blast = $api->blastRadius([self::D2]);
             $this->assertSame([], array_diff($blast['lost'], [self::C1, self::C2, self::D2, self::A1, self::A2, self::AP, self::A3]));
             $this->assertSame([], array_diff(array_keys($blast['names']), [self::C1, self::C2, self::D2, self::A1, self::A2, self::AP, self::A3]));
+        }
+
+        public function testWhatTheApiAnswersIsFilteredByTheScopesOwnCheck(): void
+        {
+            // the analysis was handed core2, which the scope's own check refuses: the answer neither lists nor names it, whatever the analysis
+            $plan = self::api(self::network(), null, [], 'core1 core2', [self::C2])->rollout([self::D1, self::A1]);
+            $this->assertSame([self::C1], $plan['core']);
+            $this->assertArrayNotHasKey(self::C2, $plan['core_modes']);
+            $this->assertArrayNotHasKey(self::C2, $plan['names']);
+        }
+
+        public function testUnmanagedNodesAreCountedNeverListedAsDevices(): void
+        {
+            // an unmanaged switch behind acc3 (LLDP sees it on two ports, so it is a node of the graph, not a leaf): dist1 cuts it off with acc3
+            $net = self::network();
+            $net->neighbor(self::A3, 'Gi1/0/10', 'unmanaged-sw', 'unknown switch')->neighbor(self::A3, 'Gi1/0/11', 'unmanaged-sw', 'unknown switch');
+            $before = self::api(self::network())->blastRadius([self::D1]);
+            $blast = self::api($net)->blastRadius([self::D1]);
+            $this->assertContains(null, array_column($net->analyzer()->simulate(['d:' . self::D1])['lost'], 'device_id'), 'the simulation loses an unmanaged node');
+            $this->assertSame([self::A3], $blast['lost'], 'lost lists monitored devices only: no 0 for an unmanaged node');
+            $this->assertSame($before['unmanaged'] + 1, $blast['unmanaged'], 'the unmanaged switch is counted');
         }
 
         public function testWhatTheUsersRoleHidesIsSaid(): void
