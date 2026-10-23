@@ -270,7 +270,16 @@ final class ChangeText
     public static function blastOverride(array $change, int $batch, string $by, string $why, string $covered, bool $accepted = false): string
     {
         return self::name($change) . ", batch $batch: continued by " . self::user($by) . ' without a blast radius (it cannot be computed: ' . UntrustedText::line($why, 300)
-            . '); its maintenance window covers its devices and the devices ' . self::held($change, $accepted)[1] . ' as cut off: ' . UntrustedText::line($covered, 300);
+            . '); its maintenance window covers its devices and the devices ' . self::coveredWord($change, $accepted) . ' as cut off: ' . UntrustedText::line($covered, 300);
+    }
+
+    /**
+     * What the window of a batch continued without a blast radius covers, in words: "approved" (or "planned"), and
+     * "or accepted" once a new blast radius was accepted (it covers both).
+     */
+    private static function coveredWord(array $change, bool $accepted): string
+    {
+        return self::held($change, false)[1] . ($accepted ? ' or accepted' : '');
     }
 
     // ------------------------------------------------------------------ the eventlog of phase 3: no other device named
@@ -331,7 +340,7 @@ final class ChangeText
     public static function blastOverrideEvent(array $change, int $batch, string $by, string $why, int $covered, bool $accepted): string
     {
         return self::name($change) . ", batch $batch: continued by " . self::user($by) . ' without a blast radius (it cannot be computed: ' . UntrustedText::line($why, 300)
-            . '); its maintenance window covers its devices and ' . ($covered > 0 ? 'the ' . Format::count($covered, 'device') . ' ' . self::held($change, $accepted)[1]
+            . '); its maintenance window covers its devices and ' . ($covered > 0 ? 'the ' . Format::count($covered, 'device') . ' ' . self::coveredWord($change, $accepted)
                 . ' as cut off' : 'no other device');
     }
 

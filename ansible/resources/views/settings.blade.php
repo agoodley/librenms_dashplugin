@@ -63,8 +63,9 @@
             . 'with the run permission while Approval is off; or the change ends'],
         ['blast_unknown', 'When the blast radius cannot be computed', 'the topology plugin disabled, an error, or a device of the batch it can no longer tell about (down '
             . 'in LibreNMS, its LLDP/CDP neighbors gone): the batch does not start; it is checked again every minute and starts on its own once its blast radius can be '
-            . 'computed. Meanwhile an admin with the run permission may continue it: Continue computes it first, and only while it still cannot be computed does the batch '
-            . 'go without one (recorded; its window then covers the devices approved as cut off). Or the change ends'],
+            . 'computed. Meanwhile an admin may continue it, as one accepts a new blast radius (with the approve permission, not the requester with a second admin; '
+            . 'with the run permission while Approval is off): Continue computes it first, and only while it still cannot be computed does the batch go without one '
+            . '(recorded; its window then covers the devices approved or accepted as cut off). Or the change ends'],
     ];
 @endphp
 
@@ -343,8 +344,8 @@
                 @include('ansible::partials.settings-answer', ['failed' => 'Nothing was changed:'])
             @endif
             <p class="help-block">LibreNMS admins see the changes, the runs and the inventory; to create, dry-run, apply, continue and stop changes (and stop runs) they also need this permission
-                (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::PERMISSION }}</span>). With it they also continue a batch whose blast radius cannot be
-                computed, and, while Approval is off, accept the new blast radius of a batch that grew. It is given to each user directly:
+                (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::PERMISSION }}</span>). While Approval is off, they also accept with it the new blast radius
+                of a batch that grew, and continue one whose blast radius cannot be computed. It is given to each user directly:
                 LibreNMS' role editor keeps only its own permissions, so a role would lose it the next time it is saved. Any LibreNMS admin can
                 grant it, also to themselves: it is an explicit opt-in, written to the eventlog with who granted or revoked it, not a separation
                 of duties between admins.</p>
@@ -390,8 +391,10 @@
             @endif
             <p class="help-block">To approve or reject a change after its verified dry run, a LibreNMS admin needs this permission
                 (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::APPROVE }}</span>), given to each user directly like the run permission and written to the eventlog;
-                while an approval is asked for, also to accept the new blast radius of a batch that grew since the approval.
-                With "an approval from a second admin" (Changes, above) the requester of a change can never approve it, nor accept its new blast radius, whoever holds this permission.</p>
+                while an approval is asked for, also to accept the new blast radius of a batch that grew since the approval, and to continue one whose blast radius
+                cannot be computed (an approver without the run permission launches nothing: the batch starts as the admin who started it).
+                With "an approval from a second admin" (Changes, above) the requester of a change can never approve it, accept its new blast radius or continue it without one,
+                whoever holds this permission.</p>
             <table class="table table-condensed ans-table" id="ans-approve-holders" style="max-width: 700px">
                 <thead><tr><th>User</th><th>Name</th><th></th></tr></thead>
                 <tbody>

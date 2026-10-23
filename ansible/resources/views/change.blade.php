@@ -220,13 +220,17 @@
             @endphp
             <div class="ans-warning-loud" id="ans-blast-unknown"><i class="fa fa-question-circle"></i>
                 Batch {{ (int) $change['current_batch'] }} does not start: its blast radius cannot be computed now ({{ $waitBlast['error'] ?? 'no answer' }}).
-                <div style="font-weight: normal; margin-top: 4px">Fix that{{ $fix }},
-                    then <em>Continue</em>, or let the plugin check again on its own: it does every minute (last {{ $local($waitBlast['at'] ?? null) }}), and starts the batch
-                    once its blast radius can be computed. <em>Continue</em> computes it first; only if it still cannot be computed does the batch go without one,
-                    its maintenance window then covering its devices and the devices {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, is_array($waitBatch['blast_accepted'] ?? null))[1] }} as cut off
+                <div style="font-weight: normal; margin-top: 4px">Fix that{{ $fix }}: the plugin checks again every minute (last {{ $local($waitBlast['at'] ?? null) }}) and starts
+                    the batch once its blast radius can be computed. Or {{ ApprovalRules::accepter($settings->approval) }} continues it: <em>Continue</em> computes it first;
+                    only if it still cannot be computed does the batch go without one, its maintenance window then covering its devices and the devices
+                    {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, false)[1] }}{{ is_array($waitBatch['blast_accepted'] ?? null) ? ' or accepted' : '' }} as cut off
                     ({{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', $held), $names, 10, 'none') }}), the decision recorded in the timeline
                     and the eventlog. Or stop the change.</div>
             </div>
+            @if($noAccepter)
+                <div class="alert alert-warning" id="ans-no-accepter"><i class="fa fa-user-times"></i> {{ $noAccepter }} The change waits, its devices reserved for it,
+                    until an admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#ans-permission">settings page</a>, or stops the change.</div>
+            @endif
         @endif
         @if($laterBusy)
             <div class="alert alert-warning" id="ans-change-later-busy"><i class="fa fa-clock-o"></i> <strong>Busy devices of later batches:</strong> {{ $laterBusy }}.
@@ -254,7 +258,7 @@
     @if(array_filter($actions))
         <div class="panel panel-default" id="ans-change-actions">
             <div class="panel-body" style="padding: 8px 10px">
-                @if($secretVars && ($actions['dry_run'] || $actions['apply'] || $actions['continue']))
+                @if($secretVars && ($actions['dry_run'] || $actions['apply'] || ($actions['continue'] && $continueAs === null)))
                     <div class="form-inline" id="ans-secret-fields" style="margin-bottom: 6px">
                         @foreach($secretVars as $var)
                             <label style="font-weight: normal; margin-right: 8px">{{ $var['label'] }} <span class="ans-code ans-muted">{{ $var['name'] }}</span>
@@ -305,6 +309,9 @@
                 @endif
                 @if($change['waiting'] === 'blast' && ! $actions['accept'] && ! $final)
                     <p class="ans-help" id="ans-accept-waits" style="margin-top: 6px">{{ $canAccept && $acceptRefusal ? $acceptRefusal : ucfirst(ApprovalRules::accepter($settings->approval)) . ' accepts the new blast radius.' }}</p>
+                @endif
+                @if($change['waiting'] === 'blast_unknown' && $continueRefusal !== null && ! $final)
+                    <p class="ans-help" id="ans-continue-waits" style="margin-top: 6px">{{ $continueRefusal }}</p>
                 @endif
                 @if($noApprover)
                     <div class="alert alert-warning" id="ans-no-approver" style="margin: 6px 0 0"><i class="fa fa-user-times"></i> {{ $noApprover }}
@@ -615,6 +622,8 @@
             // the check of the blast radius this page shows, which Accept and Continue name (refused when it changed since)
             'blast' => $blastCheck,
             'hasSecrets' => (bool) $secretVars,
+            // whom a Continue starts the batch as when it is not the admin of this page (an approver without the run permission)
+            'continueAs' => $continueAs,
             'dryRuns' => (int) $change['dry_runs'],
         ];
     @endphp

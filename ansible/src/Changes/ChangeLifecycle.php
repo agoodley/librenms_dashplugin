@@ -415,7 +415,9 @@ final class ChangeLifecycle
 
     /**
      * Continue a paused change: the next batch after the first one or a pause, the prepared batch with the secret
-     * answers, or the batch whose blast radius could not be computed: computed first, it starts as any once it can be,
+     * answers, or the batch whose blast radius could not be computed (by whom an acceptance may be given:
+     * ApprovalRules::continueRefusal(); an approver without the run permission starts it as the admin who started it
+     * before, as an acceptance does): computed first, it starts as any once it can be,
      * and goes without one (recorded) only while it still cannot; such a Continue names the check the change page
      * showed ($seen, as for acceptBlast()), and is refused when it changed since, also when the check it makes then
      * finds another reason or another window than the page showed (kept for the page to show). A batch whose blast
@@ -438,19 +440,32 @@ final class ChangeLifecycle
             return "Batch $batch waits for an admin with the approve permission to accept its new blast radius (it grew since the approval): it does not start "
                 . 'before. Stop the change rather than run it with a blast radius nobody approved.';
         }
+        $unknown = $change['waiting'] === 'blast_unknown';
         $problem = $this->runner->userProblem((int) $user['user_id'], 'run');
-        if ($problem !== null) {
-            return 'You may not continue the change: ' . $problem . '.';
-        }
-        if ($change['waiting'] === 'blast_unknown') {
+        if ($unknown) {
+            // a decision on a blast radius, as an acceptance: an approver while the settings ask for an approval (never the requester with
+            // a second admin), an admin with the run permission while they ask for none
+            $mode = $this->settings->approval;
+            $refusal = ApprovalRules::continueRefusal($mode, $change, (int) $user['user_id'],
+                $this->runner->userProblem((int) $user['user_id'], ApprovalRules::acceptPermission($mode)) === null);
+            if ($refusal !== null) {
+                return $refusal;
+            }
             $record = $this->changes->batches($id)[$batch]['blast'] ?? null;
             if (! is_array($record) || ! hash_equals(BlastRadius::checkId($record, $id, $batch), $seen)) {
                 return self::SEEN_CHANGED;
             }
+        } elseif ($problem !== null) {
+            return 'You may not continue the change: ' . $problem . '.';
         }
+        // who launches the batch: the admin who continues it, with the secret answers given now; an approver without the run permission
+        // launches nothing: the batch starts as the admin who started it before, as after an acceptance (the template's secret answers,
+        // if any, are then asked for at its launch)
+        $launcher = $problem === null ? $user : $this->starter($change, $batch);
+        $given = $problem === null ? $secrets : null;
         // the batch the change waits to start again (with the secret answers, or without a blast radius), else the next one
         $again = in_array($change['waiting'], ['secrets', 'blast_unknown'], true);
-        $missing = self::missingSecrets($change, $secrets);
+        $missing = $given === null ? [] : self::missingSecrets($change, $given);
         if ($missing) {
             // nothing changes: a batch that waits for them keeps waiting (its window open, its backups taken)
             return $change['waiting'] === 'secrets'
@@ -497,7 +512,7 @@ final class ChangeLifecycle
             if ($failure === null) {
                 $this->timeline($resumed, 'blast', "Batch $batch: its blast radius can be computed again; continued by " . UntrustedText::line($user['username'], 60) . '.',
                     $user['username'], $now);
-                $this->startBatch($resumed, $batch, $user, $secrets, $now);
+                $this->startBatch($resumed, $batch, $launcher, $given, $now);
 
                 return null;
             }
@@ -512,7 +527,7 @@ final class ChangeLifecycle
             $this->timeline($resumed, 'blast', $text, $user['username'], $now);
             $this->eventAll($resumed, ChangeText::blastOverrideEvent($resumed, $batch, $user['username'], (string) $failure['event_error'], count($window),
                 is_array($row['blast_accepted'] ?? null)), 'warning', $user['username']);
-            $this->startBatch($resumed, $batch, $user, $secrets, $now);
+            $this->startBatch($resumed, $batch, $launcher, $given, $now);
 
             return null;
         }
@@ -1062,10 +1077,18 @@ final class ChangeLifecycle
      */
     private function starter(array $change, int $number): array
     {
-        $batch = $this->changes->batches((int) $change['id'])[$number] ?? null;
+        return self::startedBy($change, $this->changes->batches((int) $change['id'])[$number] ?? []);
+    }
 
-        return $batch !== null && ($batch['user_id'] ?? null) !== null
-            ? ['user_id' => (int) $batch['user_id'], 'username' => (string) $batch['username']] : $this->applier($change);
+    /**
+     * Who starts the batch $batch (its row): the admin who continued the change to it, else who applied the change.
+     *
+     * @return array{user_id: int, username: string}
+     */
+    public static function startedBy(array $change, array $batch): array
+    {
+        return ($batch['user_id'] ?? null) !== null ? ['user_id' => (int) $batch['user_id'], 'username' => (string) $batch['username']]
+            : ['user_id' => (int) ($change['applied_user_id'] ?? 0), 'username' => (string) ($change['applied_by'] ?? '')];
     }
 
     /**

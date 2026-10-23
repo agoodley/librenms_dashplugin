@@ -986,7 +986,8 @@
                     : (now.waiting === 'blast_unknown' ? 'Continue batch ' + now.currentBatch + '? Its blast radius is computed first: if it can be, the batch '
                         + 'starts as any, checked against it. If it still cannot be computed, the batch goes without one: nothing checks what it cuts off, its '
                         + 'maintenance window covers its devices and the devices it was held to cut off, and your decision is recorded in the timeline and in '
-                        + 'the eventlog.'
+                        + 'the eventlog.' + (now.continueAs ? ' You do not hold the run permission: the batch starts as ' + now.continueAs + ', who started it'
+                            + (now.hasSecrets ? ', and waits for an admin with the run permission to give the secret answers' : '') + '.' : '')
                         : 'Continue with batch ' + (now.currentBatch + 1) + '? Check the devices of the batches so far first.'),
                 accept: 'Accept the new blast radius of batch ' + now.currentBatch + ', as shown above? The batch then starts again, its blast radius checked '
                     + 'once more, and its maintenance window covers what it cuts off. Your acceptance is recorded in the timeline and in the eventlog.',

@@ -200,9 +200,9 @@ The runs of phase 1 stay in the audit log as they were.
 4. A batch whose blast radius grew waits for an admin to accept the new one: with an approval asked for, an admin with
    the approve permission (not the requester with a second admin); with *Approval* off, an admin with the run
    permission. One whose blast radius cannot be computed is checked again every minute and starts on its own once it
-   can be computed; meanwhile an admin with the run permission may continue it (*Continue* computes it first, and only
-   while it still cannot be computed does the batch go without one). Or set *When the blast radius grew* and *When the
-   blast radius cannot be computed* to *refuse the batch*.
+   can be computed; meanwhile the same admins may continue it (*Continue* computes it first, and only while it still
+   cannot be computed does the batch go without one). Or set *When the blast radius grew* and *When the blast radius
+   cannot be computed* to *refuse the batch*.
 
 **Removing:**
 
@@ -384,7 +384,7 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | *Rollout plan and blast radius* | | the part says whether the topology plugin can plan now, and why not |
 | Plan with the topology plugin | on | a new change plans its batches with the topology plugin's rollout planner when it can (installed, enabled in LibreNMS, planning API 1.x), and approves what each batch cuts off; off, or without it, the settings above plan them and the blast radius is unknown |
 | When the blast radius grew | pause until an admin accepts it | a batch that would cut off devices that were not approved, or now takes down every core device of its part (approved with one left standing), waits for an admin to accept the new blast radius: one with the approve permission (not the requester with a second admin), or, while *Approval* is off, one with the run permission; or *refuse the batch*: the change ends |
-| When the blast radius cannot be computed | pause for an admin | a batch whose blast radius cannot be computed (the topology plugin disabled, an error, a device of the batch it can no longer tell about) does not start: it is checked again every minute and starts on its own once it can be computed; meanwhile an admin with the run permission may continue it (*Continue* computes it first, and only while it still cannot be computed does the batch go without one); or *refuse the batch* |
+| When the blast radius cannot be computed | pause for an admin | a batch whose blast radius cannot be computed (the topology plugin disabled, an error, a device of the batch it can no longer tell about) does not start: it is checked again every minute and starts on its own once it can be computed; meanwhile an admin who may accept a new blast radius (the approve permission, not the requester with a second admin; the run permission while *Approval* is off) may continue it (*Continue* computes it first, and only while it still cannot be computed does the batch go without one); or *refuse the batch* |
 | *Run permission*, *Approve permission* | | who may prepare and apply changes, and who may approve them ([Permissions](#permissions)) |
 
 A setting that cannot be used is refused with the reason, and nothing is saved: a platform mapping line that cannot
@@ -421,19 +421,24 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 
 * **Viewing** the changes, the runs, the inventory, the JSON and the device panel is for LibreNMS **admins**. Everyone
   else gets HTTP 403 on every route of the plugin and sees no menu entry, panel or button.
-* **Preparing and applying** changes (a new change, its dry run, *Apply*, *Continue*, *Stop*, *Cancel*), stopping a
-  run and releasing the devices of a run the runner could not be asked about, or of a stopped run, also needs the
-  plugin's **run permission**, `ansible.run`. **Approving and rejecting** changes needs its **approve permission**,
-  `ansible.approve`. An admin grants them on the settings page. Admins do not get them automatically: an admin without
-  them sees everything, but no buttons, and the plugin answers 403 to such requests.
+* **Preparing and applying** changes (a new change, its dry run, *Apply*, *Continue* but for a batch whose blast
+  radius cannot be computed (below), *Stop*, *Cancel*), stopping a run and releasing the devices of a run the runner
+  could not be asked about, or of a stopped run, also needs the plugin's **run permission**, `ansible.run`.
+  **Approving and rejecting** changes needs its **approve permission**, `ansible.approve`. An admin grants them on the
+  settings page. Admins do not get them automatically: an admin without them sees everything, but no buttons, and the
+  plugin answers 403 to such requests.
 * With *an approval*, an approver may approve their own change; with *an approval from a second admin*, the requester
   never may, whoever holds the approve permission. The same goes for **accepting a new blast radius** of a batch that
   would cut off more than was approved: it needs the approve permission, never the requester with a second admin.
   With *no approval* it needs the run permission instead, like *Continue* (the requester may accept, as nobody
-  approves changes there). **Continuing a batch whose blast radius cannot be computed** needs the run permission, like
-  *Continue*. An approval counts only while its approver still is an admin with
-  the approve permission, and a batch is launched only while the admin who launches it (who applied the change or
-  continued it) still holds the run permission.
+  approves changes there). **Continuing a batch whose blast radius cannot be computed** (which goes on without one
+  while it still cannot be computed) is a decision on a blast radius too, and follows the same rule: the approve
+  permission, never the requester with a second admin, while the settings ask for an approval; the run permission
+  while they ask for none. An approver without the run permission launches nothing: after their acceptance or
+  *Continue* the batch starts as the admin who started it (who applied the change or continued it to this batch), and
+  a template's secret answers are then asked for at its launch, from an admin with the run permission. An approval
+  counts only while its approver still is an admin with the approve permission, and a batch is launched only while the
+  admin who launches it (who applied the change or continued it) still holds the run permission.
 * Any LibreNMS admin can grant either permission, also to themselves: it is an explicit, logged opt-in (each grant and
   revoke goes to the eventlog, with who did it); the separation of duties is the second-admin approval. Each change of
   the runner connection or of the other settings is logged the same way (never the token).
@@ -779,16 +784,18 @@ batch the topology plugin can tell about. Each check is kept with the batch, and
   batch. What depends on such a device is not in what the batch cuts off, so a smaller blast radius would not mean
   less goes down: **the batch does not start either**, and the change page says why, naming the device and the
   reason (as do the timeline and the batch's record). Fix the cause (enable the topology plugin again, bring the
-  device back in LibreNMS), then *Continue*, or let the plugin check again on its own: the change page's poll and the
-  sync command compute it again every minute, and once it can be computed the batch starts as any, checked against
-  its blast radius. *Continue* (an admin with the run permission) computes it first, too; only if it still cannot be
-  computed does the batch go without one, recorded in the timeline and in the eventlog, its window then covering its
-  devices and the devices approved (or accepted) as cut off, with what it cuts off now as far as the topology plugin
-  can tell; like an acceptance, it is refused when why it cannot be computed, or what the window would cover, changed
-  since the page was loaded. A device of a batch planned by hand, which the topology plugin could not tell about when
-  the change was made either, changes nothing: the batch is held to what was approved for it. A blast radius that
-  grew is said first, also while a device is skipped: an approver accepts it, then the batch waits for the admin's
-  decision. With *When the blast radius cannot be computed: refuse the batch*, the change ends.
+  device back in LibreNMS): the change page's poll and the sync command compute it again every minute, and once it can
+  be computed the batch starts as any, checked against its blast radius. Or an admin who may accept a new blast radius
+  (one with the approve permission, never the requester with a second admin, while the settings ask for an approval;
+  one with the run permission while they ask for none) continues it: *Continue* computes it first, too; only if it
+  still cannot be computed does the batch go without one, recorded in the timeline and in the eventlog, its window
+  then covering its devices, the devices approved and every device accepted since as cut off, and what it cuts off now
+  as far as the topology plugin can tell; like an acceptance, it is refused when why it cannot be computed, or what the
+  window would cover, changed since the page was loaded. A device of a batch planned by hand, which the topology plugin
+  could not tell about when the change was made either, changes nothing: the batch is held to what was approved for
+  it. A blast radius that grew is said first, also while a device is skipped: an approver accepts it (keeping what the
+  batch was held to, as what depends on the skipped device is unknown), then the batch waits for the admin's decision.
+  With *When the blast radius cannot be computed: refuse the batch*, the change ends.
 
 Unmanaged neighbors are counted, not compared: a phone more or less does not stop a batch. A change planned by the
 settings has no approved blast radius, and goes as in phase 2. Nothing is computed while a batch runs (see
@@ -951,14 +958,15 @@ released has stopped by then.
   a dry run that is unverified, failed or expired; approvals expire.
 * **No batch starts with a blast radius larger than what was approved** unless an admin accepted the new one: one with
   the approve permission (never the requester with a second admin), or, with no approval asked for, one with the run
-  permission; and none while its blast radius cannot be computed
-  unless an admin with the run permission continued it explicitly; both are recorded in the timeline and the
+  permission; and none while its blast radius cannot be computed unless such an admin (the same rule) continued it
+  explicitly, for the reason and the window the change page showed; both are recorded in the timeline and the
   eventlog. The blast radius is computed before each batch and again right before its launch.
 * **The planner's batches are the ones applied:** the plan is fixed when the change is created, is part of what is
   dry-run and approved, and the batches launch their own devices, in their order.
 * **A batch's maintenance window covers its devices and every monitored device the blast radius computed right before
-  its launch says it cuts off** (for a batch an admin continued without a blast radius: the devices approved, or
-  accepted, as cut off), nothing else, and closes like every window.
+  its launch says it cuts off** (for a batch an admin continued without a blast radius: the devices approved, and
+  every device accepted since, as cut off, with what it cuts off then as far as the topology plugin can tell),
+  nothing else, and closes like every window.
 * **The topology plugin answers as the admin sees the network:** the plugin asks its planning API as the LibreNMS user
   who makes the change or starts the batch (scoped like the topology pages), never with its console-only system scope.
 * **Maintenance windows and backups** are always ended or recorded: a window ends with its batch plus the settle time,

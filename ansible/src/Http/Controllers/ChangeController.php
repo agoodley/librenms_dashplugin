@@ -393,11 +393,38 @@ class ChangeController extends Controller
      */
     public function resume(Request $request, int $id): JsonResponse
     {
+        $refusal = $this->continuePermission($request, $id);
+        if ($refusal !== null) {
+            return response()->json(['error' => $refusal], 403);
+        }
         $user = self::user($request);
         $secrets = $this->secrets($request, $id);
         $seen = self::seen($request);
 
         return $this->act($id, fn (ChangeLifecycle $lifecycle) => $lifecycle->resume($id, $user, $secrets, time(), $seen));
+    }
+
+    /**
+     * Why the user may not continue the change for want of a permission: a Continue needs the run permission, except for
+     * a batch whose blast radius cannot be computed, which needs what accepting a new blast radius needs (the approve
+     * permission while the settings ask for an approval: ApprovalRules::continueRefusal()). Null when they hold it, or
+     * when the change cannot be read (act() says why); the lifecycle checks it again under the change's lock.
+     */
+    private function continuePermission(Request $request, int $id): ?string
+    {
+        try {
+            $change = self::tablesProblem() === null ? (new ChangeRepository())->find($id) : null;
+        } catch (\Throwable) {
+            $change = null;
+        }
+        if ($change !== null && $change['status'] === ChangeStatus::PAUSED && $change['waiting'] === 'blast_unknown') {
+            $mode = $this->settings()->changeSettings()->approval;
+
+            return self::canAccept($request, $mode) ? null : ApprovalRules::continueRefusal($mode, $change, (int) $request->user()->user_id, false);
+        }
+
+        return Access::canRun($request->user()) ? null
+            : 'Preparing, dry-running, applying and stopping changes needs the Ansible plugin\'s run permission: an admin grants it on the plugin\'s settings page.';
     }
 
     /**
@@ -479,7 +506,7 @@ class ChangeController extends Controller
         ['run' => $run, 'batches' => $batches, 'batchRuns' => $batchRuns, 'windows' => $windows, 'targets' => $targets, 'approvals' => $approvals,
             'signature' => $signature, 'pending' => $pending, 'withheld' => $withheld] = $this->live($change);
         ['actions' => $actions, 'approvalRefusal' => $approvalRefusal, 'canRun' => $canRun, 'canApprove' => $canApprove, 'canAccept' => $canAccept,
-            'acceptRefusal' => $acceptRefusal] = $this->actions($request, $change);
+            'acceptRefusal' => $acceptRefusal, 'continueRefusal' => $continueRefusal] = $this->actions($request, $change);
         // what the topology plugin said about each batch (approved with the change), and what it says before each batch
         $topology = \Agoodley\LibrenmsAnsible\Changes\BatchPlan::topologyPart($change['plan'] ?? null);
         $blast = [];
@@ -528,14 +555,20 @@ class ChangeController extends Controller
             'change' => $change, 'targets' => $targets, 'batches' => $batches, 'batchRuns' => $batchRuns, 'run' => $run, 'dryRun' => $dryRun,
             'approvals' => $approvals, 'windows' => $windows, 'events' => $events, 'signature' => $signature,
             'diffs' => $diffs, 'unattributed' => $unattributed, 'secretVars' => $secretVars, 'settings' => $settings, 'canRun' => $canRun, 'canApprove' => $canApprove,
-            'approvalRefusal' => $approvalRefusal, 'canAccept' => $canAccept, 'acceptRefusal' => $acceptRefusal, 'actions' => $actions, 'pending' => $pending, 'withheld' => $withheld,
+            'approvalRefusal' => $approvalRefusal, 'canAccept' => $canAccept, 'acceptRefusal' => $acceptRefusal, 'continueRefusal' => $continueRefusal, 'actions' => $actions,
+            'pending' => $pending, 'withheld' => $withheld,
+            // an approver without the run permission who continues a batch whose blast radius cannot be computed launches nothing: it starts
+            // as the admin who started it (ChangeLifecycle::resume())
+            'continueAs' => $actions['continue'] && ! $canRun ? ChangeLifecycle::startedBy($change, $batches[(int) $change['current_batch']] ?? [])['username'] : null,
             'laterBusy' => $laterBusy, 'topology' => $topology, 'blast' => $blast, 'blastCheck' => self::blastCheck($change, $batches),
             'topologyPlanned' => \Agoodley\LibrenmsAnsible\Changes\BatchPlan::isTopology($change['plan'] ?? null),
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
             'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($settings->approval, $change) : null,
-            // a batch whose blast radius grew waits for an admin to accept it: said when nobody can (while the settings ask for no
-            // approval: with one, the approver of an approval that counts can)
-            'noAccepter' => $status === ChangeStatus::PAUSED && $change['waiting'] === 'blast' && $settings->approval === ApprovalRules::OFF ? self::noAccepter() : null,
+            // a batch whose blast radius grew waits for an admin to accept it, one whose blast radius cannot be computed for an admin to continue
+            // it (or for it to be computable): said when nobody can (while the settings ask for no approval: with one, the approver of an
+            // approval that counts can)
+            'noAccepter' => $status === ChangeStatus::PAUSED && in_array($change['waiting'], ['blast', 'blast_unknown'], true) && $settings->approval === ApprovalRules::OFF
+                ? self::noAccepter((string) $change['waiting']) : null,
             // before the apply: the targets Oxidized cannot back up (asked at the dry run), whose batches the setting would refuse
             'backupWarning' => $settings->backups && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true)
                 ? BackupCheck::warning(BackupCheck::missing(array_map(fn ($t) => $t['backup_check'] ?? null, $targets), array_map(fn ($t) => NextChange::name($t), $targets)),
@@ -666,7 +699,8 @@ class ChangeController extends Controller
     /**
      * The actions the user may take on the change now (the lifecycle checks each again).
      *
-     * @return array{actions: array<string, bool>, approvalRefusal: ?string, canRun: bool, canApprove: bool, canAccept: bool, acceptRefusal: ?string}
+     * @return array{actions: array<string, bool>, approvalRefusal: ?string, canRun: bool, canApprove: bool, canAccept: bool, acceptRefusal: ?string,
+     *     continueRefusal: ?string}
      */
     private function actions(Request $request, array $change): array
     {
@@ -680,14 +714,20 @@ class ChangeController extends Controller
         $mode = $this->settings()->changeSettings()->approval;
         $canAccept = self::canAccept($request, $mode);
         $acceptRefusal = $canAccept ? ApprovalRules::acceptRefusal($mode, $change, (int) $user->user_id, true) : null;
+        // and who may continue a batch whose blast radius cannot be computed (a Continue goes without one while it cannot): the same admins
+        $continueRefusal = $status === ChangeStatus::PAUSED && $change['waiting'] === 'blast_unknown'
+            ? ApprovalRules::continueRefusal($mode, $change, (int) $user->user_id, $canAccept) : null;
 
-        return ['canRun' => $canRun, 'canApprove' => $canApprove, 'canAccept' => $canAccept, 'approvalRefusal' => $approvalRefusal, 'acceptRefusal' => $acceptRefusal, 'actions' => [
+        return ['canRun' => $canRun, 'canApprove' => $canApprove, 'canAccept' => $canAccept, 'approvalRefusal' => $approvalRefusal, 'acceptRefusal' => $acceptRefusal,
+            'continueRefusal' => $continueRefusal, 'actions' => [
             'dry_run' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
             'approve' => $canApprove && $status === ChangeStatus::AWAITING && $approvalRefusal === null,
             'reject' => $canApprove && $status === ChangeStatus::AWAITING,
             'apply' => $canRun && $status === ChangeStatus::READY,
-            // a batch whose blast radius grew is not continued: its new blast radius is accepted
-            'continue' => $canRun && $status === ChangeStatus::PAUSED && $change['waiting'] !== 'blast',
+            // a batch whose blast radius grew is not continued: its new blast radius is accepted; one whose blast radius cannot be computed is
+            // continued by who may accept one (an approver without the run permission too: it then starts as the admin who started it)
+            'continue' => $status === ChangeStatus::PAUSED && $change['waiting'] !== 'blast'
+                && ($change['waiting'] === 'blast_unknown' ? $continueRefusal === null : $canRun),
             'accept' => $canAccept && $status === ChangeStatus::PAUSED && $change['waiting'] === 'blast' && $acceptRefusal === null,
             'stop' => $canRun && in_array($status, [ChangeStatus::APPLYING, ChangeStatus::PAUSED, ChangeStatus::DRY_RUN], true),
             'cancel' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
@@ -716,11 +756,12 @@ class ChangeController extends Controller
     }
 
     /**
-     * Why nobody can accept the new blast radius of a batch that grew while the settings ask for no approval (no enabled
-     * admin holds the run permission); null when someone can. With an approval, the approver of an approval that counts
-     * may accept it (one that no longer holds the approve permission voids the approval, and the change ends).
+     * Why nobody can accept the new blast radius of a batch that grew, or continue one whose blast radius cannot be
+     * computed, while the settings ask for no approval (no enabled admin holds the run permission); null when someone
+     * can. With an approval, the approver of an approval that counts may (one that no longer holds the approve
+     * permission voids the approval, and the change ends).
      */
-    private static function noAccepter(): ?string
+    private static function noAccepter(string $waiting): ?string
     {
         try {
             $able = array_filter((new \Agoodley\LibrenmsAnsible\Data\PermissionRepository())->holders(Access::PERMISSION), fn ($user) => $user['admin'] && $user['enabled']);
@@ -728,7 +769,8 @@ class ChangeController extends Controller
             return null;
         }
 
-        return $able ? null : 'Nobody can accept it yet: no admin holds the run permission.';
+        return $able ? null : ($waiting === 'blast' ? 'Nobody can accept it yet: no admin holds the run permission.'
+            : 'Nobody can continue it yet: no admin holds the run permission (it starts on its own once its blast radius can be computed).');
     }
 
     /**

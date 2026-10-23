@@ -329,6 +329,22 @@ class ChangeRulesTest extends TestCase
             (string) ApprovalRules::acceptRefusal(ApprovalRules::OFF, ['waiting' => 'canary'] + $change, 1, true));
     }
 
+    public function testWhoMayContinueABatchWithoutABlastRadiusFollowsTheAcceptRule(): void
+    {
+        // going on without a blast radius is a decision on it, as an acceptance is
+        $change = ['status' => ChangeStatus::PAUSED, 'waiting' => 'blast_unknown', 'user_id' => 1];
+        $this->assertNull(ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 2, true), 'an approver who is not the requester');
+        $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
+            ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 1, true));
+        $this->assertStringContainsString('needs the Ansible plugin\'s approve permission (ansible.approve), as accepting a new blast radius does',
+            (string) ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 2, false));
+        $this->assertNull(ApprovalRules::continueRefusal(ApprovalRules::REQUIRED, $change, 1, true), 'the requester who approves, when no second admin is needed');
+        $this->assertStringContainsString('approve permission (ansible.approve)', (string) ApprovalRules::continueRefusal(ApprovalRules::REQUIRED, $change, 1, false));
+        // without an approval: an admin with the run permission, the requester too
+        $this->assertNull(ApprovalRules::continueRefusal(ApprovalRules::OFF, $change, 1, true));
+        $this->assertStringContainsString('needs the Ansible plugin\'s run permission (ansible.run)', (string) ApprovalRules::continueRefusal(ApprovalRules::OFF, $change, 1, false));
+    }
+
     public function testEveryWaitOfAPausedChangeHasItsWords(): void
     {
         // what the lifecycle sets a change's waiting to: literal values, and the waits of blastStop()

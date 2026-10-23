@@ -88,11 +88,11 @@ class ChangeBlastRadiusTest extends TestCase
     }
 
     /** A change of the plan, dry-run by alice and approved by bob. */
-    private function approved(?BatchPlan $plan = null): int
+    private function approved(?BatchPlan $plan = null, array $fields = []): int
     {
         $plan ??= self::plan();
         $targets = array_intersect_key(self::TARGETS, array_flip(array_merge(...$plan->batches)));
-        $id = $this->changes->add($targets, $plan);
+        $id = $this->changes->add($targets, $plan, $fields);
         $lifecycle = $this->lifecycle();
         $this->assertNull($lifecycle->startDryRun($id, self::ALICE, [], $this->t0));
         $runId = (int) $this->changes->find($id)['dry_run_id'];
@@ -230,7 +230,7 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame('shrank', $this->changes->batches[$id][4]['blast']['state']);
         $this->topology->error = 'an error';
         $this->endBatch($id, 4, $this->t0 + 500);
-        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 600, $this->seen($id)));
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 600, $this->seen($id)));
         $this->endBatch($id, 5, $this->t0 + 700);
         $lifecycle->advance($id, $this->t0 + 5000);
         $this->assertSame(ChangeStatus::APPLIED, $this->changes->find($id)['status']);
@@ -251,7 +251,7 @@ class ChangeBlastRadiusTest extends TestCase
         $this->endBatch($skipped, 1, $this->t0 + 7100);
         $this->assertSame('blast_unknown', $this->changes->find($skipped)['waiting']);
         $this->assertStringContainsString('lab-sw3 (down now)', (string) $this->changes->batches[$skipped][2]['note'], 'the change page names it');
-        $this->assertNull($lifecycle->resume($skipped, self::ALICE, [], $this->t0 + 7200, $this->seen($skipped)));
+        $this->assertNull($lifecycle->resume($skipped, self::BOB, [], $this->t0 + 7200, $this->seen($skipped)));
         $this->assertSame('override', $this->changes->batches[$skipped][2]['blast']['state']);
 
         $names = RolloutPlanTest::NAMES;
@@ -273,10 +273,10 @@ class ChangeBlastRadiusTest extends TestCase
         $sw3 = implode("\n", array_column($this->events->of(503), 'message'));
         $this->assertStringContainsString('batch 4: its blast radius shrank since the approval: it cuts off 1 device fewer; it goes on', $sw3);
         $sw1 = implode("\n", array_column($this->events->of(501), 'message'));
-        $this->assertStringContainsString('batch 5: continued by alice without a blast radius (it cannot be computed: an error); its maintenance window covers its devices and no other device', $sw1);
+        $this->assertStringContainsString('batch 5: continued by bob without a blast radius (it cannot be computed: an error); its maintenance window covers its devices and no other device', $sw1);
         $this->assertStringContainsString('batch 2: its blast radius cannot be computed now (the topology plugin can no longer tell what depends on 1 device of the batch '
             . '(down now))', $sw2);
-        $this->assertStringContainsString('batch 2: continued by alice without a blast radius (it cannot be computed: the topology plugin can no longer tell what depends '
+        $this->assertStringContainsString('batch 2: continued by bob without a blast radius (it cannot be computed: the topology plugin can no longer tell what depends '
             . 'on 1 device of the batch (down now)); its maintenance window covers its devices and the 2 devices approved as cut off', $sw2);
     }
 
@@ -486,17 +486,18 @@ class ChangeBlastRadiusTest extends TestCase
         $lifecycle->advance($id, $this->t0 + 400);
         $this->assertSame(ChangeStatus::PAUSED, $this->changes->find($id)['status'], 'it waits for an admin');
 
-        $this->runner->userProblems[3] = 'no longer holds the run permission (ansible.run)';
-        $this->assertStringContainsString('You may not continue the change', (string) $lifecycle->resume($id, ['user_id' => 3, 'username' => 'carol'], [], $this->t0 + 450));
-        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 500, $this->seen($id)));
+        $this->runner->userProblems[3] = 'no longer holds the approve permission (ansible.approve)';
+        $this->assertStringContainsString('continuing a batch whose blast radius cannot be computed needs the Ansible plugin\'s approve permission',
+            (string) $lifecycle->resume($id, ['user_id' => 3, 'username' => 'carol'], [], $this->t0 + 450, $this->seen($id)));
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 500, $this->seen($id)));
         $this->assertSame([[510], [511, 512, 513, 514], [502]], $this->launched(), 'continued explicitly: batch 3 goes');
         $this->assertSame([502, 512], $this->windows->windows[102]['devices'], 'its window covers the devices approved as cut off');
-        $this->assertSame(['alice', 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)'],
+        $this->assertSame(['bob', 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)'],
             [$this->changes->batches[$id][3]['blast_override']['by'], $this->changes->batches[$id][3]['blast_override']['why']]);
         $this->assertSame('override', $this->changes->batches[$id][3]['blast']['state']);
-        $this->assertStringContainsString('Batch 3: continued by alice without a blast radius (it cannot be computed: the topology plugin is disabled', $this->messages($id));
+        $this->assertStringContainsString('Batch 3: continued by bob without a blast radius (it cannot be computed: the topology plugin is disabled', $this->messages($id));
         $this->assertCount(1, preg_grep('/without a blast radius \(it cannot be computed|goes on without a blast radius/', $this->changes->messages($id)), 'said once');
-        $this->assertNotEmpty(array_filter($this->events->entries, fn ($e) => $e['severity'] === 'warning' && str_contains($e['message'], 'continued by alice without a blast radius')),
+        $this->assertNotEmpty(array_filter($this->events->entries, fn ($e) => $e['severity'] === 'warning' && str_contains($e['message'], 'continued by bob without a blast radius')),
             'recorded in the eventlog');
 
         // the next batch is checked again, as any: the topology plugin is back
@@ -519,12 +520,12 @@ class ChangeBlastRadiusTest extends TestCase
 
         // the admin enables the topology plugin again, then continues before the plugin checked again on its own
         $this->topology->error = null;
-        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 230, $this->seen($id)));
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 230, $this->seen($id)));
         $this->assertSame([[510], [511, 512, 513, 514], [502]], $this->launched(), 'batch 3 starts');
         $batch = $this->changes->batches[$id][3];
         $this->assertNull($batch['blast_override'], 'no decision to go without a blast radius is recorded');
         $this->assertSame('same', $batch['blast']['state'], 'it was checked against its blast radius, as any batch');
-        $this->assertStringContainsString('Batch 3: its blast radius can be computed again; continued by alice.', $this->messages($id));
+        $this->assertStringContainsString('Batch 3: its blast radius can be computed again; continued by bob.', $this->messages($id));
         $this->assertStringNotContainsString('without a blast radius (it cannot be computed', $this->messages($id));
         $this->assertSame($warnings, count(array_filter($this->events->entries, fn ($e) => $e['severity'] === 'warning')), 'no warning in the eventlog');
         $this->assertSame([502, 512], $this->windows->windows[102]['devices']);
@@ -574,7 +575,7 @@ class ChangeBlastRadiusTest extends TestCase
         // back, and lab-sw2 now cuts off lab-sw5 too: the batch waits for an admin to accept that, as any
         $this->topology->error = null;
         $this->topology->cuts[502] = [512, 511];
-        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 230, $this->seen($id)));
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 230, $this->seen($id)));
         $this->assertSame([ChangeStatus::PAUSED, 'blast'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
         $this->assertSame([511], $this->changes->batches[$id][3]['blast']['added']);
         $this->assertNull($this->changes->batches[$id][3]['blast_override']);
@@ -634,18 +635,18 @@ class ChangeBlastRadiusTest extends TestCase
 
         // an admin continues it without a blast radius: its window covers lab-sw2 and lab-sw6, approved as cut off (what lab-sw2 cuts
         // off while it is down in LibreNMS is not known), and the decision is recorded
-        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 300, $this->seen($id)));
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 300, $this->seen($id)));
         $this->assertSame([[510], [511, 512, 513, 514], [502]], $this->launched());
         $this->assertSame([502, 512], $this->windows->windows[102]['devices']);
         $this->assertSame([512], $this->changes->windows[3]['cut_off']);
         $batch = $this->changes->batches[$id][3];
         $this->assertSame(['override', [512], 'the topology plugin can no longer tell what depends on lab-sw2 (down now)'],
             [$batch['blast']['state'], $batch['blast']['window'], $batch['blast_override']['why']]);
-        $this->assertStringContainsString('Batch 3: continued by alice without a blast radius (it cannot be computed: the topology plugin can no longer tell what depends '
+        $this->assertStringContainsString('Batch 3: continued by bob without a blast radius (it cannot be computed: the topology plugin can no longer tell what depends '
             . 'on lab-sw2 (down now)); its maintenance window covers its devices and the devices approved as cut off: lab-sw6', $this->messages($id));
-        $this->assertMatchesRegularExpression('/^Batch 3 of 5 launched by alice \(run #\d+\): its blast radius unknown \(continued without one\), its window covers lab-sw6\.$/m',
+        $this->assertMatchesRegularExpression('/^Batch 3 of 5 launched by bob \(run #\d+\): its blast radius unknown \(continued without one\), its window covers lab-sw6\.$/m',
             $this->messages($id));
-        $this->assertNotEmpty(preg_grep('/^Ansible change #1 \(CHG-1\), batch 3: continued by alice without a blast radius \(it cannot be computed: the topology plugin can '
+        $this->assertNotEmpty(preg_grep('/^Ansible change #1 \(CHG-1\), batch 3: continued by bob without a blast radius \(it cannot be computed: the topology plugin can '
             . 'no longer tell what depends on 1 device of the batch \(down now\)\); its maintenance window covers its devices and the 1 device approved as cut off$/',
             array_column($this->events->of(501), 'message')), 'in the eventlog, in counts');
     }
@@ -766,7 +767,7 @@ class ChangeBlastRadiusTest extends TestCase
         $change = $this->changes->find($id);
         $this->assertSame([ChangeStatus::PAUSED, 'blast_unknown', 2], [$change['status'], $change['waiting'], (int) $change['current_batch']]);
         $this->assertSame([[510]], $this->launched());
-        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 300, $this->seen($id)));
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 300, $this->seen($id)));
         $this->assertSame([[510], [511, 512, 513, 514]], $this->launched());
         $this->assertSame([511, 512, 513, 514, 510], $this->windows->windows[101]['devices'], 'its window covers what was accepted');
     }
@@ -783,7 +784,7 @@ class ChangeBlastRadiusTest extends TestCase
         $this->backups->enabled = true;
         $this->backups->succeed = false;
         $this->backups->now = $this->t0 + 300;
-        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 300, $this->seen($id)));
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 300, $this->seen($id)));
         $this->assertSame(['override', 'preparing'], [$this->changes->batches[$id][3]['blast']['state'], $this->changes->batches[$id][3]['status']]);
         $this->assertCount(2, $this->launched(), 'it waits for its backups');
 
@@ -877,6 +878,91 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame([ChangeStatus::PAUSED, 2], [$this->changes->find($id)['status'], count($this->launched())]);
     }
 
+    public function testWhoMayContinueABatchWithoutABlastRadiusIsWhoMayAcceptOne(): void
+    {
+        // a second admin approves: the requester may not go past what nobody accepted by making the blast radius unknown (the topology plugin
+        // disabled), then pressing Continue; an approver who is not the requester may
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->error = 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)';
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
+            $lifecycle->resume($id, self::ALICE, [], $this->t0 + 300, $this->seen($id)));
+        $carol = ['user_id' => 3, 'username' => 'carol'];
+        $this->runner->permissionProblems['3:approve'] = 'does not hold the approve permission (ansible.approve)';
+        $this->assertStringContainsString('needs the Ansible plugin\'s approve permission (ansible.approve)', (string) $lifecycle->resume($id, $carol, [], $this->t0 + 310, $this->seen($id)),
+            'an admin with the run permission only');
+        $this->assertSame([ChangeStatus::PAUSED, 'blast_unknown', 2], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting'], count($this->launched())]);
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 320, $this->seen($id)));
+        $this->assertSame('bob', $this->changes->batches[$id][3]['blast_override']['by']);
+
+        // without an approval: an admin with the run permission (the requester too)
+        $this->setUp();
+        $plan = self::plan();
+        $id = $this->changes->add(array_intersect_key(self::TARGETS, array_flip(array_merge(...$plan->batches))), $plan);
+        $lifecycle = $this->lifecycle(['approval' => ApprovalRules::OFF]);
+        $this->assertNull($lifecycle->startDryRun($id, self::ALICE, [], $this->t0));
+        $runId = (int) $this->changes->find($id)['dry_run_id'];
+        $names = array_intersect_key(self::TARGETS, array_flip(array_merge(...$plan->batches)));
+        $lines = ['DRY RUN ****', 'PLAY [Description] [CHECK MODE] ****', 'TASK [Set it] [CHECK MODE] ****', ...array_map(fn ($n) => "changed: [$n]", $names), 'PLAY RECAP ****',
+            ...array_map(fn ($n) => "$n : ok=1 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0", $names)];
+        $this->endRun($runId, array_fill_keys(array_keys($names), 'changed'), $lines, $this->t0 + 30);
+        $lifecycle->advance($id, $this->t0 + 35);
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+        $batchRun = (int) $this->changes->batches[$id][1]['run_id'];
+        $this->endRun($batchRun, array_fill_keys(array_keys($this->runs->targets[$batchRun]), 'changed'), [], $this->t0 + 100);
+        $this->topology->error = 'an error';
+        $lifecycle->advance($id, $this->t0 + 101);
+        $this->assertSame('blast_unknown', $this->changes->find($id)['waiting']);
+        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 200, $this->seen($id)), 'the requester, with the run permission');
+        $this->assertSame('alice', $this->changes->batches[$id][2]['blast_override']['by']);
+    }
+
+    public function testAnApproverWithoutTheRunPermissionContinuesItAsTheAdminWhoStartedIt(): void
+    {
+        // bob may accept a new blast radius but launches nothing: the batch he continues without a blast radius starts as alice, who applied
+        // the change, as after an acceptance (the secret answers he sent are not used)
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->error = 'an error';
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $this->runner->permissionProblems['2:run'] = 'does not hold the run permission (ansible.run)';
+        $this->assertNull($lifecycle->resume($id, self::BOB, ['key' => 'ignored'], $this->t0 + 300, $this->seen($id)));
+        $launch = end($this->runner->launches);
+        $this->assertSame([3, [502], 'alice', []], [$launch['number'], $launch['devices'], $launch['user'], $launch['secrets']]);
+        $this->assertSame(['bob', 'alice'], [$this->changes->batches[$id][3]['blast_override']['by'], $this->changes->batches[$id][3]['username']]);
+        $this->assertStringContainsString('Batch 3: continued by bob without a blast radius (it cannot be computed: an error)', $this->messages($id));
+        $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status']);
+
+        // a template with secret answers: the batch then waits for an admin with the run permission to give them
+        $this->setUp();
+        $secret = ['name' => 'key', 'label' => 'Key', 'type' => 'secret', 'value' => '********', 'secret' => true];
+        $id = $this->approved(null, ['has_secrets' => true, 'variables' => [$secret]]);
+        $lifecycle = $this->lifecycle();
+        $this->assertNull($lifecycle->apply($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 50));
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->assertSame('secrets', $this->changes->find($id)['waiting']);
+        $this->assertNull($lifecycle->resume($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 110));
+        $this->topology->error = 'an error';
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $this->assertSame('blast_unknown', $this->changes->find($id)['waiting']);
+        $this->runner->permissionProblems['2:run'] = 'does not hold the run permission (ansible.run)';
+        $this->assertNull($lifecycle->resume($id, self::BOB, ['key' => 'not used'], $this->t0 + 300, $this->seen($id)));
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'secrets', 'prepared', 2], [$change['status'], $change['waiting'], $this->changes->batches[$id][3]['status'],
+            count($this->launched())], 'batch 3 waits for the secret answers');
+        $this->assertSame('bob', $this->changes->batches[$id][3]['blast_override']['by']);
+        $this->assertSame('You may not continue the change: does not hold the run permission (ansible.run).',
+            $lifecycle->resume($id, self::BOB, ['key' => 's3cret'], $this->t0 + 310), 'bob does not give them');
+        $this->assertNull($lifecycle->resume($id, self::ALICE, ['key' => 's3cret'], $this->t0 + 320));
+        $launch = end($this->runner->launches);
+        $this->assertSame([3, 'alice', ['key' => 's3cret']], [$launch['number'], $launch['user'], $launch['secrets']]);
+    }
+
     public function testAContinueGoesWithoutABlastRadiusOnlyForTheReasonThePageShowed(): void
     {
         // the page shows batch 3 waiting as the topology plugin is disabled; before the minute's check, it is enabled again and lab-sw2 is
@@ -949,12 +1035,12 @@ class ChangeBlastRadiusTest extends TestCase
         $this->topology->skips[502] = 'down';
         $lifecycle->advance($id, $this->t0 + 330);
         $this->assertNotSame($shown, $this->seen($id));
-        $this->assertSame(ChangeLifecycle::SEEN_CHANGED, $lifecycle->resume($id, self::ALICE, [], $this->t0 + 340, $shown));
-        $this->assertSame(ChangeLifecycle::SEEN_CHANGED, $lifecycle->resume($id, self::ALICE, [], $this->t0 + 341), 'nor without naming the check');
+        $this->assertSame(ChangeLifecycle::SEEN_CHANGED, $lifecycle->resume($id, self::BOB, [], $this->t0 + 340, $shown));
+        $this->assertSame(ChangeLifecycle::SEEN_CHANGED, $lifecycle->resume($id, self::BOB, [], $this->t0 + 341), 'nor without naming the check');
         $this->assertNull($this->changes->batches[$id][3]['blast_override']);
         $this->assertCount(2, $this->launched());
 
-        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 350, $this->seen($id)));
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 350, $this->seen($id)));
         $this->assertSame('the topology plugin can no longer tell what depends on lab-sw2 (down now)', $this->changes->batches[$id][3]['blast_override']['why']);
         $this->assertSame([[510], [511, 512, 513, 514], [502]], $this->launched());
     }
