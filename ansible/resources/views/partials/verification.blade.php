@@ -21,13 +21,18 @@
                 $after = (array) ($verify['after'] ?? []);
                 $result = $verify['result'] ?? null;
                 $evaluation = (array) ($verify['evaluation'] ?? []);
+                // the data of a later batch, asked for with the verification of the batch before it, whose wait is over (the change paused
+                // meanwhile): it counts when the batch starts if LibreNMS discovered and polled its scope within the wait, else it is asked again
+                $asked = ($before['status'] ?? null) === 'waiting' && ! empty($before['prefetched']) && (int) ($before['deadline'] ?? 0) <= time();
             @endphp
             <tr data-batch="{{ $number }}" data-result="{{ $result ?? '' }}">
                 <td data-label="Batch">{{ $number }}</td>
                 <td class="ans-wrap ans-verify-before" data-label="Before" data-state="{{ $before['status'] ?? '' }}">
-                    {{ $beforeLabels[$before['status'] ?? ''] ?? '-' }}@if(($before['status'] ?? null) === 'taken') {{ $at($before['taken_at'] ?? null) }}@endif
+                    {{ $asked ? 'fresh data asked for' : ($beforeLabels[$before['status'] ?? ''] ?? '-') }}@if(($before['status'] ?? null) === 'taken') {{ $at($before['taken_at'] ?? null) }}@endif
                     @if(($before['status'] ?? null) === 'taken' && ($before['size'] ?? null))<div class="ans-help">{{ $before['size'] }}; {{ $before['note'] ?? '' }}</div>@endif
-                    @if(($before['status'] ?? null) === 'waiting')<div class="ans-help">until {{ $at($before['deadline'] ?? null) }}@if($before['waiting'] ?? null): {{ $before['waiting'] }}@endif</div>@endif
+                    @if($asked)<div class="ans-help ans-verify-asked">{{ $at($before['asked_at'] ?? null) }}, with the verification of batch {{ $number - 1 }}; checked when the batch
+                        starts: used if LibreNMS discovered and polled its devices within the wait, else asked for again</div>
+                    @elseif(($before['status'] ?? null) === 'waiting')<div class="ans-help">until {{ $at($before['deadline'] ?? null) }}@if($before['waiting'] ?? null): {{ $before['waiting'] }}@endif</div>@endif
                     @if(($before['status'] ?? null) === 'unknown')<div class="ans-help text-warning">{{ $before['error'] ?? '' }}</div>@endif
                     @if(($before['failed'] ?? null) && ($before['status'] ?? null) !== 'unknown')<div class="ans-help text-warning ans-verify-retry">could not be taken ({{ $before['failed'] }});
                         tried again every minute until {{ $at($before['retry_until'] ?? null) }}</div>@endif

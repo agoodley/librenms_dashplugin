@@ -72,7 +72,8 @@
         <div class="table-responsive">
         <table class="table table-condensed table-hover ans-table ans-stack" id="ans-changes">
             <thead>
-            <tr><th>#</th><th>Created</th><th>Requester</th><th>Template</th><th>Reference</th><th>Targets</th><th>Dry run</th><th>Status</th></tr>
+            <tr><th>#</th><th>Created</th><th>Requester</th><th>Template</th><th>Reference</th><th>Targets</th><th>Dry run</th><th>Status</th>
+                <th title="the outcome of its verification: the network around each batch, before and after it (topology plugin)">Verification</th></tr>
             </thead>
             <tbody>
             @forelse($rows as $change)
@@ -87,22 +88,21 @@
                         <br><span class="ans-muted">{{ \Agoodley\LibrenmsAnsible\Support\Format::count((int) $change['target_count'], 'device') }} in {{ \Agoodley\LibrenmsAnsible\Support\Format::count((int) $change['batch_count'], 'batch', 'batches') }}</span></td>
                     <td data-label="Dry run">@if($state)<span class="label label-{{ $state[0] }}">{{ $state[1] }}</span>@else<span class="text-muted">-</span>@endif</td>
                     <td data-label="Status"><span class="label label-{{ ChangeStatus::css($change['status']) }}">{{ ChangeStatus::label($change['status']) }}</span>
-                        @if(($change['verification'] ?? null) !== null)
-                            <span class="label label-{{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::css($change['verification']) }} ans-change-verification"
-                                  data-verification="{{ $change['verification'] }}" title="the outcome of its verification{{ ($change['verification_note'] ?? null) ? ': ' . \Agoodley\LibrenmsAnsible\Changes\VerificationText::note($change['verification_note']) : '' }}">{{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::listed($change['verification'], $change['verification_note'] ?? null) }}</span>
-                        @endif
                         @if(in_array($change['status'], ChangeStatus::RESERVING, true))
                             {{-- the inline form: this view's other @php is inline too (a block @php here would swallow the row) --}}
                             @php($waitText = ChangeStatus::waitingText($change['waiting']))
                             <span class="ans-muted ans-change-waiting" @if($change['waiting']) data-waiting="{{ $change['waiting'] }}" @endif>batch {{ $change['current_batch'] }} of {{ $change['batch_count'] }}{{ $waitText !== null ? ' · ' . $waitText : '' }}</span>
                         @endif
                     </td>
+                    {{-- the outcome of its verification (phase 4), in a column of its own: not the dry run's "verified" --}}
+                    <td data-label="Verification">@if(($change['verification'] ?? null) !== null)<span class="label label-{{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::css($change['verification']) }} ans-change-verification"
+                            data-verification="{{ $change['verification'] }}" title="the outcome of its verification{{ ($change['verification_note'] ?? null) ? ': ' . \Agoodley\LibrenmsAnsible\Changes\VerificationText::note($change['verification_note']) : '' }}"><i class="fa fa-sitemap" aria-hidden="true"></i> {{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::listed($change['verification'], $change['verification_note'] ?? null) }}</span>@else<span class="text-muted">-</span>@endif</td>
                 </tr>
             @empty
                 @if($total > 0)
-                    <tr><td colspan="8" class="text-muted">No changes on page {{ $page }}: <a href="{{ $pageUrl(1) }}">back to the first page</a>.</td></tr>
+                    <tr><td colspan="9" class="text-muted">No changes on page {{ $page }}: <a href="{{ $pageUrl(1) }}">back to the first page</a>.</td></tr>
                 @else
-                    <tr><td colspan="8" class="text-muted">No changes{{ array_filter($filters) ? ' match these filters' : ' yet' }}.</td></tr>
+                    <tr><td colspan="9" class="text-muted">No changes{{ array_filter($filters) ? ' match these filters' : ' yet' }}.</td></tr>
                 @endif
             @endforelse
             </tbody>

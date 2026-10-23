@@ -81,9 +81,14 @@
         $waits = ($currentBatch['status'] ?? null) === 'pending' && str_starts_with((string) ($currentBatch['note'] ?? ''), 'waits: ');
         // a batch blocked by its blast radius (it grew, or cannot be computed) waits: it is not about to start
         $blocked = $status === ChangeStatus::PAUSED && in_array($change['waiting'], ['blast', 'blast_unknown'], true) && ($currentBatch['status'] ?? null) === 'pending';
+        // phase 4: nor is a batch whose state before it waits for fresh data
+        $beforeNow = (array) (((array) ($currentBatch['verify'] ?? []))['before'] ?? []);
+        $dataWait = in_array($beforeNow['status'] ?? null, ['refresh', 'waiting', 'retake'], true) && ($currentBatch['status'] ?? null) === 'pending' && ! $final
+            ? 'waits for fresh data for the state before it' . (($beforeNow['status'] ?? null) === 'waiting' && (int) ($beforeNow['deadline'] ?? 0) > time()
+                ? ', at most until ' . Clock::show((int) $beforeNow['deadline'], 'H:i T') : '') : null;
         $logNote = $final || $currentBatch === null ? 'no batch was launched' : 'batch ' . (int) $change['current_batch'] . ($waits
             ? ' ' . Clock::localize((string) $currentBatch['note']) : ': ' . ($blocked ? (string) ChangeStatus::waitingText($change['waiting']) : match ($currentBatch['status']) { // "batch 2 waits: lab-sw3 is busy in run #92 ..."
-            'pending' => 'about to start',
+            'pending' => $dataWait ?? 'about to start',
             'preparing' => 'preparing' . ($preparing !== '' ? " ($preparing)" : ''),
             'prepared' => 'waits for the secret answers',
             'launching' => 'being launched',
