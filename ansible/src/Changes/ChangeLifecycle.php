@@ -274,7 +274,7 @@ final class ChangeLifecycle
         if (! is_array($blast) || ($blast['state'] ?? null) !== 'grew') {
             return 'Batch ' . $number . ' has no new blast radius to accept: reload the page.';
         }
-        if (! hash_equals(BlastRadius::checkId($blast), $seen)) {
+        if (! hash_equals(BlastRadius::checkId($blast, $id, $number), $seen)) {
             return self::SEEN_CHANGED;
         }
         $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]);
@@ -443,7 +443,7 @@ final class ChangeLifecycle
         }
         if ($change['waiting'] === 'blast_unknown') {
             $record = $this->changes->batches($id)[$batch]['blast'] ?? null;
-            if (! is_array($record) || ! hash_equals(BlastRadius::checkId($record), $seen)) {
+            if (! is_array($record) || ! hash_equals(BlastRadius::checkId($record, $id, $batch), $seen)) {
                 return self::SEEN_CHANGED;
             }
         }

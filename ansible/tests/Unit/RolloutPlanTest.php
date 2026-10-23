@@ -402,14 +402,16 @@ class RolloutPlanTest extends TestCase
         // be computed and what the window would cover; not when it was checked, the names, the unmanaged neighbors or the link
         $record = ['state' => 'grew', 'lost' => [512, 511], 'reference' => 'core', 'core_lost' => false, 'added' => [511], 'window' => [512, 511], 'unplanned' => [],
             'at' => '2026-10-22 10:00:00', 'names' => [511 => 'lab-sw5'], 'unmanaged' => 3, 'simulate' => 'plugin/topology/l2?fail=d%3A502', 'held' => [512]];
-        $id = BlastRadius::checkId($record);
+        $id = BlastRadius::checkId($record, 12, 3);
         $this->assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $id);
+        $this->assertNotSame($id, BlastRadius::checkId($record, 12, 4), 'another batch: another check, though it reads the same');
+        $this->assertNotSame($id, BlastRadius::checkId($record, 13, 3), 'another change: another check');
         foreach (['at' => '2026-10-22 10:01:00', 'names' => [], 'unmanaged' => 4, 'simulate' => null, 'lost' => [511, 512], 'window' => [511, 512]] as $key => $value) {
-            $this->assertSame($id, BlastRadius::checkId([$key => $value] + $record), "the same check whatever its $key");
+            $this->assertSame($id, BlastRadius::checkId([$key => $value] + $record, 12, 3), "the same check whatever its $key");
         }
         foreach (['state' => 'unknown', 'lost' => [512, 511, 510], 'reference' => 'largest part', 'core_lost' => true, 'added' => [511, 510], 'window' => [512],
             'error' => 'an error', 'unplanned' => [['device_id' => 502, 'reason' => 'down']]] as $key => $value) {
-            $this->assertNotSame($id, BlastRadius::checkId([$key => $value] + $record), "another check when its $key differs");
+            $this->assertNotSame($id, BlastRadius::checkId([$key => $value] + $record, 12, 3), "another check when its $key differs");
         }
     }
 

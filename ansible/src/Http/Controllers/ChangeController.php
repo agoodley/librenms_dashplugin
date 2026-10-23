@@ -660,7 +660,7 @@ class ChangeController extends Controller
         $record = $batches[(int) $change['current_batch']]['blast'] ?? null;
 
         return $change['status'] === ChangeStatus::PAUSED && in_array($change['waiting'], ['blast', 'blast_unknown'], true) && is_array($record)
-            ? BlastRadius::checkId($record) : null;
+            ? BlastRadius::checkId($record, (int) $change['id'], (int) $change['current_batch']) : null;
     }
 
     /**

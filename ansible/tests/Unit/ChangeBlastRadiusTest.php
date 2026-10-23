@@ -150,7 +150,9 @@ class ChangeBlastRadiusTest extends TestCase
     /** The check of the blast radius the change waits for, as its page shows it: what an acceptance or a Continue names. */
     private function seen(int $id): string
     {
-        return BlastRadius::checkId($this->changes->batches[$id][(int) $this->changes->find($id)['current_batch']]['blast'] ?? []);
+        $number = (int) $this->changes->find($id)['current_batch'];
+
+        return BlastRadius::checkId($this->changes->batches[$id][$number]['blast'] ?? [], $id, $number);
     }
 
     // ------------------------------------------------------------------ the plan of the topology plugin, applied
@@ -873,6 +875,35 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame('Batch 3 has no new blast radius to accept: reload the page.', $lifecycle->acceptBlast($id, self::BOB, true, '', $this->t0 + 300, $this->seen($id)));
         $this->assertNull($this->changes->batches[$id][3]['blast_accepted']);
         $this->assertSame([ChangeStatus::PAUSED, 2], [$this->changes->find($id)['status'], count($this->launched())]);
+    }
+
+    public function testAContinueGivenForOneBatchDoesNotContinueAnotherWhoseCheckReadsTheSame(): void
+    {
+        // batches of one leaf switch each, approved to cut off nothing; the topology plugin cannot answer after batch 1. Batch 2 waits, and
+        // so will batch 3, with a check that reads the same: admin B's page loads batch 2's wait, admin A continues batch 2 with it, and B's
+        // Continue, given for batch 2, does not continue batch 3 without a blast radius
+        $plan = RolloutPlan::make([511, 513, 514], [], 1, 1, 1, false, 0, RolloutPlanTest::planner([511, 513, 514], 1), RolloutPlan::LEAVE,
+            fn (array $batch) => RolloutPlanTest::blast($batch))['plan'];
+        $this->assertSame([[511], [513], [514]], $plan->batches);
+        $id = $this->approved($plan);
+        $lifecycle = $this->lifecycle();
+        $dave = ['user_id' => 4, 'username' => 'dave'];
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->topology->error = 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)';
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->assertSame([2, 'blast_unknown'], [(int) $this->changes->find($id)['current_batch'], $this->changes->find($id)['waiting']]);
+        $pageOfDave = $this->seen($id);
+
+        $this->assertNull($lifecycle->resume($id, self::BOB, [], $this->t0 + 150, $pageOfDave));
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $this->assertSame([3, 'blast_unknown'], [(int) $this->changes->find($id)['current_batch'], $this->changes->find($id)['waiting']]);
+        $this->assertSame(array_diff_key($this->changes->batches[$id][2]['blast'], ['state' => 1, 'at' => 1]),
+            array_diff_key($this->changes->batches[$id][3]['blast'], ['state' => 1, 'at' => 1]), 'batch 3\'s check reads as batch 2\'s did');
+        $this->assertSame(ChangeLifecycle::SEEN_CHANGED, $lifecycle->resume($id, $dave, [], $this->t0 + 250, $pageOfDave), 'given for batch 2: refused for batch 3');
+        $this->assertSame([[511], [513]], $this->launched());
+        $this->assertNull($this->changes->batches[$id][3]['blast_override']);
+        $this->assertNull($lifecycle->resume($id, $dave, [], $this->t0 + 260, $this->seen($id)), 'given for batch 3: continued');
+        $this->assertSame([[511], [513], [514]], $this->launched());
     }
 
     public function testAContinueWithoutABlastRadiusIsForWhatThePageShowed(): void

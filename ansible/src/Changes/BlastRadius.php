@@ -130,19 +130,20 @@ final class BlastRadius
     }
 
     /**
-     * The identity of a check of a batch's blast radius, as the change page shows it: its state, what the batch cuts off
-     * and what that is measured from, what grew, why it cannot be computed and what the batch's window would cover (not
-     * when it was checked: the check every minute of a batch that waits keeps its identity while it finds the same). An
-     * acceptance, or a Continue without a blast radius, names the check it was given for, and is refused when the
-     * batch's blast radius changed since (the page showed something else).
+     * The identity of a check of a batch's blast radius, as the change page shows it: the change and the batch, the
+     * check's state, what the batch cuts off and what that is measured from, what grew, why it cannot be computed and
+     * what the batch's window would cover (not when it was checked: the check every minute of a batch that waits keeps
+     * its identity while it finds the same). An acceptance, or a Continue without a blast radius, names the check it was
+     * given for, and is refused when the batch's blast radius changed since (the page showed something else), or when
+     * it was given for another batch, or another change, whose check reads the same.
      *
      * @param  array<string, mixed>  $record  the check kept on the batch
      */
-    public static function checkId(array $record): string
+    public static function checkId(array $record, int $changeId, int $batch): string
     {
         $ids = fn (mixed $list) => self::sortedIds(is_array($list) ? $list : []);
 
-        return substr(hash('sha256', (string) json_encode([(string) ($record['state'] ?? ''), $ids($record['lost'] ?? []),
+        return substr(hash('sha256', (string) json_encode([$changeId, $batch, (string) ($record['state'] ?? ''), $ids($record['lost'] ?? []),
             ($record['reference'] ?? 'core') === 'largest part', ! empty($record['core_lost']), $ids($record['added'] ?? []), $ids($record['window'] ?? []),
             (string) ($record['error'] ?? ''), $ids(array_column(array_filter((array) ($record['unplanned'] ?? []), 'is_array'), 'device_id'))])), 0, 32);
     }
