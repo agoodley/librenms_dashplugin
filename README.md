@@ -15,13 +15,17 @@ IS-IS, MPLS and IPsec, forwarding, ARP and 802.1X tables, syslog, transceiver se
 * **History:** [topology changes, a baseline and background checks](#topology-history-baseline-and-background-checks)
   that write to the eventlog
 * a **Topology** panel on the [device pages](#device-page)
-* a [planning API](#planning-api-for-other-plugins) other plugins plan with (the rollout plan and the blast radius)
+* a [planning API](#planning-api-for-other-plugins) other plugins plan with (the rollout plan and the blast radius), and
+  a [verification API](#verification-api-for-other-plugins) they verify their changes with (the state of the network
+  around some devices, two states compared, the fixes of the findings whose fix is clear)
 
 Change automation with Ansible (changes made with reviewed templates of Semaphore UI on LibreNMS devices: a proven
 dry run with the diff per device, an approval, batches that stop at the first failures, Oxidized backups and
 maintenance windows, an audit log) is a separate plugin in this repository: see [ansible/README.md](ansible/README.md).
 With this plugin it plans its batches with the rollout planner and checks what each batch cuts off before it runs,
-through the planning API.
+through the planning API; it verifies each batch (the network around it before and after, compared) and makes changes
+of the findings whose fix is clear, through the verification API. The links and spanning tree pages link such a
+finding to its *Fixes* page (*Fix with Ansible*) for admins while that plugin is enabled.
 
 ![Layer 2 map](docs/images/l2-map.png)
 
@@ -278,6 +282,10 @@ by a setting; the CDP neighbor named after ", with" is not matched.
 
 ![Spanning tree diagnostics](docs/images/stp-diagnostics.png)
 
+With the [Ansible plugin](ansible/README.md#fixes) enabled, a root bridge that is not a designated one or was elected
+with the default priority has a *Fix with Ansible* link for admins: the intended root (the first designated root bridge
+of its part of the network, else its first core device) to priority 4096, the next one to 8192.
+
 VLAN view with the STP overlay – pt-dist2 is the VLAN 120 root bridge, and pt-acc1 and pt-acc2 block their uplinks to
 pt-dist1 (`[ALT]`, dashed orange); pt-acc3 does not carry the VLAN and is faded:
 
@@ -305,6 +313,8 @@ The page also lists every link with both ends side by side (speed, duplex, MTU, 
 receive level) and highlights the values that differ. Links to monitored neighbors outside the selected group or location
 are compared too. A VLAN that is only allowed toward a switch without hosts in it (pruned by design) is not reported;
 VLANs that are local to each switch on purpose can be ignored, and every check can be switched off, in the settings.
+With the [Ansible plugin](ansible/README.md#fixes) enabled, a port description finding has a *Fix with Ansible* link for
+admins: its Fixes page makes a change of it (the descriptions as data, dry-run, approved, applied and verified).
 
 ![Link & VLAN diagnostics](docs/images/link-diagnostics.png)
 
@@ -690,6 +700,76 @@ if (class_exists(Planning::class) && (int) Planning::VERSION === 1) {   // insta
   something is added. One instance builds the redundancy analysis once (plan, then compute blast radii, with the same
   one); a new instance sees the network as it is then.
 
+## Verification API for other plugins
+
+Another plugin can take the state of the network around some devices, compare two such states, and get the findings
+whose fix is clear, in PHP: `Agoodley\LibrenmsTopology\Api\Verification` (`src/Api/Verification.php`). The
+[Ansible plugin](ansible/README.md#verification) verifies each batch of a change with it, and builds its
+[Fixes](ansible/README.md#fixes) page on it. It reuses the [topology history](#topology-history-baseline-and-background-checks):
+the facts are the ones a snapshot records, the findings the ones the background checks find, with the findings
+history's identities.
+
+```php
+use Agoodley\LibrenmsTopology\Api\PlanningUnavailable;
+use Agoodley\LibrenmsTopology\Api\Verification;
+
+if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {     // installed, a compatible API
+    try {
+        $before = Verification::forUser($user)->state([12, 13]);                    // the network around devices 12 and 13 now
+        // ... the change ...
+        $after = Verification::forUser($user)->state([12, 13], Verification::cover($before));
+        $diff = Verification::forUser($user)->compare($before, $after);
+        $fixes = Verification::forUser($user)->fixes();                              // every fix the user sees
+    } catch (PlanningUnavailable $e) {
+        // the topology plugin is disabled in LibreNMS: $e->getMessage() says so
+    }
+}
+```
+
+* **`state(array $deviceIds, array $options = [])`**: `scope` (the `subjects`; their `dependents`, whose path to the
+  core depends on them, as the [planning API](#planning-api-for-other-plugins)'s blast radius computes it; their
+  monitored LLDP/CDP `neighbors`; the devices a caller `included`; the spanning tree switches of their L2 `domain`);
+  `facts` by identity, each with its `kind` (`link`, `lag`, `stp_blocked`, `ospf`, `bgp`), its ends and its text, of
+  every device of the scope but the domain; `roots`: the root bridge each switch of the scope sees, grouped by root and
+  VLANs; `findings` by identity (`FindingHistory::hash()`), each with its `analysis`, `code`, `severity`, `title`,
+  `devices`, `subjects` and `quiet` (the checks kept out of the eventlog), of the enabled background checks, about any
+  device of the scope; `devices`: each one's role, whether it is up, since when it is down, and when its last discovery
+  and its last poll **started** (`discovered_at`, `polled_at`: LibreNMS writes when one ended and how long it took), and
+  whether a rediscovery is pending; `checks`: the enabled checks, those that failed and the kinds of facts that could
+  not be read; `names`, `taken_at`, `version` and `role_hidden`. Compact: identities, texts and the few details the
+  comparison needs, never raw rows. Options: `include` and `domain` (pass `cover()` of an earlier state, so that the
+  later one covers all it did), `dependents` (default true).
+* **`compare(array $before, array $after)`** (pure: it reads only the two states): `events` in the words of the
+  Changes page (`cable_moved`, `link_removed`, `root_changed`, `blocking_started`, `ospf_lost`, `bgp_lost`, ... with
+  `level`, `text` and `devices`; a spanning tree event has its `vlans`, a root bridge event `root_before` and
+  `root_after`); `findings` `new`, `worse`, `changed`, `milder` (each with what it `was`, by the findings history's
+  successor rule) and `resolved`; `devices` `down` and `up`; `skipped`: the kinds of facts and the checks not
+  compared, because either state could not read them (a caller must not take the rest for all of it). Only what both
+  states cover is compared.
+* **`fixes(array $deviceIds = [])`**: the findings with a clear configuration, as data, never configuration text: each
+  fix has an `id`, its `kind`, `title`, the `devices` it changes and the findings it `resolves`. A port descriptions fix
+  has `ports` (`device_id`, `port_id`, `ifName`, `ifDescr`, the `current` description and the `description` the link
+  check builds from the neighbor, cleaned: `DESCRIPTION_CHARS`, at most `DESCRIPTION_MAX`); a spanning tree root
+  priority fix the `vlans`, the `primary` and `secondary` bridges (`device_id`, `priority` `PRIMARY_PRIORITY` /
+  `SECONDARY_PRIORITY`, `mode` `pvst`, `mst` or `stp`, `instances`, `mac`, the priority they have `now`), what they were
+  `chosen_from` (the designated root bridges, else the configured core devices) and the `roots_now`. `not_fixable`:
+  the findings of those checks without a clear fix, with why (no designated root bridge or core device in their part
+  of the network). Of these devices: the fixes of them and of the findings about them (the link check still runs over
+  every device the user sees: a description names another device anywhere); of every device when none are given.
+* **`scope()`** and **`freshness()`**: a state's scope, and the devices' freshness, without a state. `cover($state)`:
+  what a later state must cover too.
+* **Scope.** `forUser($user)` sees what that LibreNMS user may see, as the plugin's pages show it to them: a device
+  outside it is never in a scope, a fact, a finding, a fix or a name, and a link to it is an unmanaged neighbor named as
+  LLDP/CDP reports it. `system()` sees every enabled device and only in console commands (anywhere else it throws a
+  `LogicException`). At most 5,000 devices per call; none is an empty scope, never the whole network.
+* **Availability and versions** as for the planning API: `Verification::unavailable()`, `PlanningUnavailable`,
+  `VERSION` `major.minor`. One instance builds its analyses once: take one state per instance.
+* **Cost.** A state runs the background checks over its scope and reads the facts of its devices. On the large test
+  network (4,922 devices, 10 PVST+ VLANs, one L2 domain), a state of five access switches (whose spanning tree domain
+  is the whole network) takes 15 s and 370 MB, and is 2.2 MB of JSON (0.26 MB gzipped: most of it the domain's 4,924
+  findings and the freshness of its 4,922 devices); comparing two takes 0.06 s; the fixes of the whole network take
+  16 s and 380 MB (4,965 fixes, 5 MB of JSON). The Ansible plugin takes each state in a process of its own.
+
 ## Requirements
 
 * LibreNMS 26.x (developed and tested against 26.10), PHP 8.2+
@@ -985,7 +1065,9 @@ not followed, and without `routing.view` every router is crossed by an estimate 
 * `src/Redundancy/RolloutPlanner.php`, `src/Redundancy/DependencyPlanner.php` – rollout batches and device dependencies
   on the graphs of the redundancy analysis (`Topology\PlanningService`, `Data\DependencyRepository`); `CoreAdvice` names
   a switch cabled like a second core switch. `src/Api/Planning.php` – the [planning API](#planning-api-for-other-plugins)
-  of other plugins, on `PlanningService`.
+  of other plugins, on `PlanningService`. `src/Api/Verification.php` – the
+  [verification API](#verification-api-for-other-plugins), on `src/Verification/` (`LibrenmsSources`: the facts, the
+  findings and the freshness of a scope; `StateCompare`: two states compared; `FixBuilder`: the fixes).
 * `src/Coverage/CoverageAnalyzer.php` – the coverage report (unmonitored, unlinked and ambiguous neighbors, devices
   without neighbor data, ports with several neighbors or many MAC addresses); `Links\NeighborReports` is the index of
   which device reports which neighbor, shared with the link checks.
