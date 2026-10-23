@@ -199,12 +199,14 @@ final class ChangeService
 
     /**
      * What the topology plugin said that a new change must keep from its preview to its creation: each batch's place,
-     * the devices it cuts off and those nothing tells about, and the devices left out (not the counts of unmanaged
-     * neighbors, nor names).
+     * the devices it cuts off, what that is measured from (the core, or the largest piece left when the batch takes
+     * every core device of its part down) and the devices nothing tells about, and the devices left out (not the counts
+     * of unmanaged neighbors, nor names).
      */
     public static function blastSignature(TopologyPlan $topology): string
     {
-        return hash('sha256', (string) json_encode([array_map(fn (array $b) => [$b['tier'], $b['hand'], $b['lost'], $b['skipped']], $topology->batches), $topology->leftOut]));
+        return hash('sha256', (string) json_encode([array_map(fn (array $b) => [$b['tier'], $b['hand'], $b['lost'], $b['reference'], $b['skipped']], $topology->batches),
+            $topology->leftOut]));
     }
 
     /**

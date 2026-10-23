@@ -190,11 +190,15 @@
             @php $names = $blastNames($waitBlast); [$heldSince, $heldWord] = \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, ! empty($waitBlast['accepted'])); @endphp
             <div class="ans-warning-loud" id="ans-blast-grew"><i class="fa fa-bolt"></i>
                 Batch {{ (int) $change['current_batch'] }} does not start: its blast radius grew since {{ $heldSince }}.
+                @if(! empty($waitBlast['core_lost']))<strong id="ans-blast-core-lost">It now takes down every core device of its part</strong> (it was {{ $heldWord }} with one left standing),
+                    so what it cuts off is measured from the largest piece left, not from the core.@endif
                 While it runs it would now cut off
-                @foreach((array) ($waitBlast['lost'] ?? []) as $lostId)<a href="{{ url('device/' . $lostId) }}" class="{{ in_array($lostId, (array) ($waitBlast['added'] ?? []), true) ? 'ans-blast-added' : '' }}">{{ $deviceName((int) $lostId, $names) }}</a>@if(! $loop->last), @endif @endforeach
-                @if((int) ($waitBlast['unmanaged'] ?? 0) > 0) and {{ (int) $waitBlast['unmanaged'] }} unmanaged {{ (int) $waitBlast['unmanaged'] === 1 ? 'neighbor' : 'neighbors' }}@endif:
-                <strong>{{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['added'] ?? []), $names) }}</strong> {{ count((array) ($waitBlast['added'] ?? [])) === 1 ? 'was' : 'were' }} not
-                {{ $heldWord }} ({{ $heldWord }}: {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['held'] ?? []), $names) }}).
+                @forelse((array) ($waitBlast['lost'] ?? []) as $lostId)<a href="{{ url('device/' . $lostId) }}" class="{{ in_array($lostId, (array) ($waitBlast['added'] ?? []), true) ? 'ans-blast-added' : '' }}">{{ $deviceName((int) $lostId, $names) }}</a>@if(! $loop->last), @endif @empty no other monitored device @endforelse
+                @if((int) ($waitBlast['unmanaged'] ?? 0) > 0) and {{ (int) $waitBlast['unmanaged'] }} unmanaged {{ (int) $waitBlast['unmanaged'] === 1 ? 'neighbor' : 'neighbors' }}@endif
+                @if((array) ($waitBlast['added'] ?? [])):
+                    <strong>{{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['added'] ?? []), $names) }}</strong> {{ count((array) ($waitBlast['added'] ?? [])) === 1 ? 'was' : 'were' }} not
+                    {{ $heldWord }}@endif
+                ({{ $heldWord }}: {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['held'] ?? []), $names) }}).
                 @if(! empty($waitBlast['unplanned']))<span id="ans-blast-grew-unplanned">Besides, {{ $waitBlast['error'] ?? '' }}: once the new blast radius is accepted, the batch waits for an admin to continue it without one.</span>@endif
                 @if(! empty($waitBlast['simulate']))<a href="{{ url($waitBlast['simulate']) }}" class="btn btn-xs btn-default" id="ans-blast-grew-simulate" target="_blank" rel="noopener"><i class="fa fa-bolt"></i> Simulate it on the L2 map</a>@endif
                 <div style="font-weight: normal; margin-top: 4px">{{ ucfirst(ApprovalRules::accepter($settings->approval)) }} accepts the new blast radius
@@ -383,10 +387,11 @@
                                             @switch($record['state'] ?? '')
                                                 @case('same')<span class="text-success">checked {{ $local($record['at'] ?? null) }}: as {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, (bool) $accepted)[1] }}</span>@break
                                                 @case('shrank')<span class="text-success">checked {{ $local($record['at'] ?? null) }}: shrank, no longer {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', (array) ($record['removed'] ?? [])), $names) }}</span>@break
-                                                @case('grew')<span class="text-danger">checked {{ $local($record['at'] ?? null) }}: grew, also {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', (array) ($record['added'] ?? [])), $names) }}</span>@break
+                                                @case('grew')<span class="text-danger">checked {{ $local($record['at'] ?? null) }}: grew{{ ! empty($record['core_lost']) ? ', it now takes down every core device of its part' : '' }}{{ ($record['added'] ?? []) ? (! empty($record['core_lost']) ? '; also ' : ', also ') . \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', (array) $record['added']), $names) : '' }}</span>@break
                                                 @case('unknown')<span class="text-danger">checked {{ $local($record['at'] ?? null) }}: cannot be computed ({{ $record['error'] ?? '' }})</span>@break
                                                 @case('override')<span class="text-warning">continued without a blast radius by {{ $override['by'] ?? '?' }} {{ $local($override['at'] ?? null) }} ({{ $record['error'] ?? '' }})</span>@break
                                             @endswitch
+                                            @if(($record['reference'] ?? 'core') === 'largest part' && in_array($record['state'] ?? '', ['same', 'shrank', 'grew'], true))<div class="ans-blast-reference">measured from the largest piece left: no core device of its part is left</div>@endif
                                         </div>
                                     @endif
                                 </td>

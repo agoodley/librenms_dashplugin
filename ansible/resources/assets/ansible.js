@@ -985,9 +985,8 @@
                         + 'maintenance window covers its devices and the devices it was held to cut off, and your decision is recorded in the timeline and in '
                         + 'the eventlog.'
                         : 'Continue with batch ' + (now.currentBatch + 1) + '? Check the devices of the batches so far first.'),
-                accept: 'Accept the new blast radius of batch ' + now.currentBatch + '? It would now also cut off the devices named above. '
-                    + 'The batch then starts again, its blast radius checked once more, and its maintenance window covers them. Your acceptance is recorded in the '
-                    + 'timeline and in the eventlog.',
+                accept: 'Accept the new blast radius of batch ' + now.currentBatch + ', as shown above? The batch then starts again, its blast radius checked '
+                    + 'once more, and its maintenance window covers what it cuts off. Your acceptance is recorded in the timeline and in the eventlog.',
                 stop: 'Stop this change? A running batch is stopped as a run\'s stop (the step in progress on each device runs on), no further batch starts, '
                     + 'and the change ends: it cannot be resumed.',
                 cancel: 'Cancel this change? It ends it: nothing is applied.'

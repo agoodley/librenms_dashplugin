@@ -8,13 +8,14 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
  * The blast radius of a batch: what goes down while it runs, as the topology plugin's failure simulation says: the
  * monitored devices it cuts off the core (lost), how many of them are switches, routers or firewalls (network), the
  * unmanaged neighbors that go down with it (phones, access points: a count), whether the core is still standing
- * (reference: "largest part" when the batch takes every core device of its part down) and the devices of the batch
- * the topology can tell nothing about (skipped: down, without LLDP/CDP neighbors, without a path to the core, or
- * unknown to it: what depends on them is unknown). The one approved with the change (TopologyPlan) is compared with
- * the one recomputed before each batch: a batch whose blast radius grew does not start without an approver, nor one
- * with a device the topology could tell about then and no longer can (unplanned(): its blast radius cannot be
- * computed) without an admin's explicit decision; its maintenance window covers its devices and the monitored devices
- * it cuts off.
+ * (reference: "largest part" when the batch takes every core device of its part down: what it cuts off is then
+ * measured from the largest piece left, and a batch held to leave a core device standing grew), and the devices of
+ * the batch the topology can tell nothing about (skipped: down, without LLDP/CDP neighbors, without a path to the
+ * core, or unknown to it: what depends on them is unknown). The one approved with the change (TopologyPlan) is
+ * compared with the one recomputed before each batch: a batch whose blast radius grew does not start without an
+ * approver, nor one with a device the topology could tell about then and no longer can (unplanned(): its blast
+ * radius cannot be computed) without an admin's explicit decision; its maintenance window covers its devices and the
+ * monitored devices it cuts off.
  */
 final class BlastRadius
 {
@@ -90,20 +91,25 @@ final class BlastRadius
 
     /**
      * What changed between the blast radius a batch is held to (approved with the change, or accepted by an approver
-     * since) and the one recomputed now: the monitored devices it cuts off now that it did not (added: it grew) and
-     * those it no longer cuts off (removed: it shrank). Unmanaged neighbors are counted, not compared: a phone plugged
-     * in does not stop a change.
+     * since) and the one recomputed now: the monitored devices it cuts off now that it did not (added: it grew), those
+     * it no longer cuts off (removed: it shrank), and whether it now takes down every core device of its part while it
+     * was held to leave one standing (core_lost: it grew, whatever it cuts off, as that is then measured from the
+     * largest piece left rather than from the core). Unmanaged neighbors are counted, not compared: a phone plugged in
+     * does not stop a change.
      *
      * @param  int[]  $held
      * @param  int[]  $now
-     * @return array{added: int[], removed: int[]}
+     * @param  string  $heldReference  what the held blast radius is measured from: "core", or "largest part"
+     * @param  string  $nowReference  what the one recomputed now is measured from
+     * @return array{added: int[], removed: int[], core_lost: bool}
      */
-    public static function compare(array $held, array $now): array
+    public static function compare(array $held, array $now, string $heldReference = 'core', string $nowReference = 'core'): array
     {
         $held = array_values(array_unique(array_map('intval', $held)));
         $now = array_values(array_unique(array_map('intval', $now)));
 
-        return ['added' => array_values(array_diff($now, $held)), 'removed' => array_values(array_diff($held, $now))];
+        return ['added' => array_values(array_diff($now, $held)), 'removed' => array_values(array_diff($held, $now)),
+            'core_lost' => $heldReference !== 'largest part' && $nowReference === 'largest part'];
     }
 
     /**

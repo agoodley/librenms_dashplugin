@@ -708,6 +708,82 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame([511, 512, 513, 514, 510], $this->windows->windows[101]['devices'], 'its window covers what was accepted');
     }
 
+    // ------------------------------------------------------------------ the last core device of its part
+
+    public function testABatchThatNowTakesDownEveryCoreDeviceOfItsPartGrew(): void
+    {
+        // lab-sw1 shares the core of its part with a core device outside the change: its batch was approved as cutting off nothing,
+        // measured from the core left standing. That one went down since: lab-sw1 is the last core device of its part, and what its
+        // batch cuts off is measured from the largest piece left (nothing, here). Its blast radius grew all the same
+        $id = $this->approved(self::plan([501]));
+        $this->assertSame(['core', []], [$this->changes->changes[$id]['plan']['topology']['batches'][0]['reference'], $this->changes->changes[$id]['plan']['topology']['batches'][0]['lost']]);
+        $this->topology->lastCore = [501];
+        $lifecycle = $this->lifecycle();
+        $this->assertNull($lifecycle->apply($id, self::ALICE, [], $this->t0 + 50));
+
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'blast', 1], [$change['status'], $change['waiting'], (int) $change['current_batch']]);
+        $this->assertSame([], $this->launched(), 'lab-sw1 is not rebooted');
+        $record = $this->changes->batches[$id][1]['blast'];
+        $this->assertSame(['grew', true, [], 'largest part', 'core'], [$record['state'], $record['core_lost'], $record['added'], $record['reference'], $record['held_reference']],
+            'the record keeps the reference of the check and the one it is held to');
+        $this->assertSame('Its blast radius grew since the approval: it now takes down every core device of its part, so what it cuts off is measured from the largest piece left',
+            $this->changes->batches[$id][1]['note']);
+        $this->assertStringContainsString('Batch 1: its blast radius grew since the approval: it now takes down every core device of its part, so what it cuts off is measured '
+            . 'from the largest piece left (approved: no other monitored device). The batch does not start until an admin with the approve permission (not the requester) '
+            . 'accepts the new blast radius.', $this->messages($id));
+        $this->assertSame('Ansible change #1 (CHG-1), batch 1: its blast radius grew since the approval: it now takes down every core device of its part, so what it cuts off '
+            . 'is measured from the largest piece left (no other monitored device in all). The batch does not start until an admin with the approve permission (not the '
+            . 'requester) accepts the new blast radius.', end($this->events->entries)['message']);
+
+        // accepted: held to it from then on, the batch starts, its window as the topology plugin models it (the batch, and what it cuts
+        // off from the largest piece left)
+        $this->assertNull($lifecycle->acceptBlast($id, self::BOB, true, 'the other core is being replaced', $this->t0 + 100));
+        $this->assertSame([[501]], $this->launched());
+        $this->assertSame(['largest part', 'same'], [$this->changes->batches[$id][1]['blast_accepted']['reference'], $this->changes->batches[$id][1]['blast']['state']]);
+        $this->assertSame([[501]], $this->windowDevices());
+        $this->assertStringContainsString('Batch 1: its new blast radius accepted by bob: it cuts off no other monitored device, measured from the largest piece left (it takes '
+            . 'down every core device of its part): "the other core is being replaced"', $this->messages($id));
+    }
+
+    public function testTheCoresOwnBatchMeasuredFromTheLargestPieceLeftIsHeldToThat(): void
+    {
+        // the only core device of its part: approved as taking every core device down, checked so: the same (and not more when a second
+        // core device appears meanwhile)
+        $plan = RolloutPlan::make([502, 501], [], 1, 5, 1, false, 0, RolloutPlanTest::planner([502, 501], 5), RolloutPlan::LEAVE,
+            fn (array $batch) => ['reference' => in_array(501, $batch, true) ? 'largest part' : 'core'] + RolloutPlanTest::blast($batch))['plan'];
+        $id = $this->approved($plan);
+        $this->topology->lastCore = [501];
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->assertSame([[502], [501]], $this->launched());
+        $this->assertSame(['same', 'largest part'], [$this->changes->batches[$id][2]['blast']['state'], $this->changes->batches[$id][2]['blast']['reference']]);
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $this->assertSame(ChangeStatus::APPLIED, $this->changes->find($id)['status']);
+
+        $id = $this->approved($plan);
+        $this->topology->lastCore = [];
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 300);
+        $this->endBatch($id, 1, $this->t0 + 400);
+        $this->assertSame(['same', 'core'], [$this->changes->batches[$id][2]['blast']['state'], $this->changes->batches[$id][2]['blast']['reference']]);
+    }
+
+    public function testARefusedBatchThatNowTakesDownEveryCoreDeviceOfItsPartEndsTheChange(): void
+    {
+        $id = $this->approved(self::plan([501]));
+        $this->topology->lastCore = [501];
+        $this->topology->cuts[501] = [503];
+        $this->assertNull($this->lifecycle(['refuseGrownBlast' => true])->apply($id, self::ALICE, [], $this->t0 + 50));
+        $change = $this->changes->find($id);
+        $this->assertSame(ChangeStatus::FAILED, $change['status']);
+        $this->assertSame('batch 1 was not started: its blast radius grew since the approval: it now takes down every core device of its part, so what it cuts off is '
+            . 'measured from the largest piece left, and it would also cut off lab-sw3 (setting When the blast radius grew: refuse the batch)', $change['error']);
+        $this->assertNotEmpty(preg_grep('/batch 1 was not started: its blast radius grew since the approval: it now takes down every core device of its part, so what it cuts '
+            . 'off is measured from the largest piece left, and it would cut off 1 more device than approved \(setting/', array_column($this->events->of(501), 'message')));
+        $this->assertSame([], $this->launched());
+    }
+
     // ------------------------------------------------------------------ shrank: it goes on, and the window covers what it cuts off now
 
     public function testABlastRadiusThatShrankGoesOnAndSaysSo(): void

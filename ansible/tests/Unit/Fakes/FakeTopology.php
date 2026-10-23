@@ -19,6 +19,9 @@ final class FakeTopology implements Topology
     /** @var array<int, string> device => why the topology can tell nothing about it now (down, isolated, unconnected, unknown) */
     public array $skips = [];
 
+    /** @var int[] the last core devices of their part now (the other core devices are down): a batch with one takes every core device down */
+    public array $lastCore = [];
+
     public ?string $unavailable = null;
 
     /** blastRadius() fails with this error (the topology plugin disabled, an error). */
@@ -50,6 +53,11 @@ final class FakeTopology implements Topology
             throw new TopologyError($this->error);
         }
 
-        return RolloutPlanTest::blast($deviceIds, $this->cuts, $this->skips);
+        $answer = RolloutPlanTest::blast($deviceIds, $this->cuts, $this->skips);
+        if (array_intersect(array_map('intval', $deviceIds), $this->lastCore)) {
+            $answer['reference'] = 'largest part'; // what it cuts off is measured from the largest piece left
+        }
+
+        return $answer;
     }
 }

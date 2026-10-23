@@ -275,11 +275,12 @@ final class ChangeLifecycle
         }
         $comment = self::comment($comment);
         $lost = array_values(array_map('intval', (array) ($blast['lost'] ?? [])));
-        $this->changes->updateBatch($id, $number, ['blast_accepted' => ['lost' => $lost, 'unmanaged' => (int) ($blast['unmanaged'] ?? 0),
+        $reference = ($blast['reference'] ?? 'core') === 'largest part' ? 'largest part' : 'core';
+        $this->changes->updateBatch($id, $number, ['blast_accepted' => ['lost' => $lost, 'unmanaged' => (int) ($blast['unmanaged'] ?? 0), 'reference' => $reference,
             'added' => array_values(array_map('intval', (array) ($blast['added'] ?? []))), 'by' => mb_substr($user['username'], 0, 255),
             'user_id' => (int) $user['user_id'], 'at' => Clock::store($now), 'comment' => $comment]]);
         $text = ChangeText::blastAccepted($resumed, $number, $user['username'], BlastRadius::text(['lost' => $lost, 'unmanaged' => (int) ($blast['unmanaged'] ?? 0)],
-            $this->blastNames($resumed, $number)), $comment);
+            $this->blastNames($resumed, $number)) . ($reference === 'largest part' ? ChangeText::LARGEST_PART : ''), $comment);
         $this->timeline($resumed, 'blast', $text, $user['username'], $now);
         // the eventlog of each target counts the devices: it names no other device
         $this->eventAll($resumed, ChangeText::blastAcceptedEvent($resumed, $number, $user['username'], count($lost), (int) ($blast['unmanaged'] ?? 0), $comment),
@@ -1830,7 +1831,8 @@ final class ChangeLifecycle
 
     /**
      * The blast radius of batch $number computed now, as $user sees the network, against the one the batch is held to:
-     * the check kept on the batch. Its state: "grew" (it would cut off a monitored device it is not held to), "unknown"
+     * the check kept on the batch. Its state: "grew" (it would cut off a monitored device it is not held to, or it now
+     * takes down every core device of its part while it was held to leave one standing: core_lost), "unknown"
      * (the topology plugin cannot answer, or can no longer tell what depends on a device of the batch it could tell
      * about when the change was made: BlastRadius::unplanned(), named with the reason in its error), "shrank" or
      * "same"; a blast radius that grew is said so first, also while a device is skipped (an approver accepts it, then
@@ -1846,7 +1848,8 @@ final class ChangeLifecycle
     private function blastNow(array $change, int $number, array $batch, array $user, int $now): array
     {
         $held = self::heldOf($change, $number, $batch);
-        $base = ['held' => $held, 'accepted' => is_array($batch['blast_accepted'] ?? null), 'at' => Clock::store($now)];
+        $heldReference = self::heldReferenceOf($change, $number, $batch);
+        $base = ['held' => $held, 'held_reference' => $heldReference, 'accepted' => is_array($batch['blast_accepted'] ?? null), 'at' => Clock::store($now)];
         $this->beat();
         try {
             if ($this->topology === null) {
@@ -1861,11 +1864,14 @@ final class ChangeLifecycle
             return ['state' => 'unknown', 'error' => $why, 'event_error' => $why, 'lost' => $held, 'window' => $held] + $base;
         }
         $blast = $answer['blast'];
-        $diff = BlastRadius::compare($held, $blast['lost']);
+        // a batch held to leave a core device of its part standing that now takes them all down grew, whatever it cuts off (that is
+        // measured from the largest piece left then, not from the core)
+        $diff = BlastRadius::compare($held, $blast['lost'], $heldReference, $blast['reference']);
         $unplanned = BlastRadius::unplanned(BatchPlan::topologyOf($change['plan'] ?? null, $number)['skipped'] ?? [], $blast['skipped']);
         $mentioned = array_unique([...$blast['lost'], ...$diff['removed'], ...array_column($blast['skipped'], 'device_id')]);
-        $record = $blast + ['state' => $diff['added'] ? 'grew' : ($unplanned ? 'unknown' : ($diff['removed'] ? 'shrank' : 'same')), 'added' => $diff['added'],
-            'removed' => $diff['removed'], 'unplanned' => $unplanned, 'window' => $unplanned ? array_values(array_unique([...$held, ...$blast['lost']])) : $blast['lost'],
+        $record = $blast + ['state' => $diff['added'] || $diff['core_lost'] ? 'grew' : ($unplanned ? 'unknown' : ($diff['removed'] ? 'shrank' : 'same')),
+            'added' => $diff['added'], 'removed' => $diff['removed'], 'core_lost' => $diff['core_lost'], 'unplanned' => $unplanned,
+            'window' => $unplanned ? array_values(array_unique([...$held, ...$blast['lost']])) : $blast['lost'],
             'names' => array_intersect_key($answer['names'] + $this->blastNames($change, $number), array_flip($mentioned))] + $base;
         if ($unplanned) {
             // what depends on them is not in what it cuts off: the batch's blast radius cannot be computed (even when it shrank)
@@ -1974,12 +1980,13 @@ final class ChangeLifecycle
         if ($grew) {
             [$since, $word] = ChangeText::held($change, ! empty($record['accepted']));
             $added = (array) $record['added'];
-            $why = "its blast radius grew since $since: it would now also cut off " . BlastRadius::listText($added, $names);
-            $eventWhy = "its blast radius grew since $since: it would now cut off " . Format::count(count($added), 'more device', 'more devices') . " than $word";
-            $text = ChangeText::blastGrew($change, $number, BlastRadius::listText($added, $names),
-                BlastRadius::listText((array) $record['held'], $names), $refuse, ! empty($record['accepted']), ApprovalRules::accepter($this->settings->approval));
+            $coreLost = ! empty($record['core_lost']);
+            $why = "its blast radius grew since $since: " . ChangeText::grewText($added ? BlastRadius::listText($added, $names) : '', $coreLost);
+            $eventWhy = "its blast radius grew since $since: " . ChangeText::grewCount(count($added), $coreLost, $word);
+            $text = ChangeText::blastGrew($change, $number, $added ? BlastRadius::listText($added, $names) : '',
+                BlastRadius::listText((array) $record['held'], $names), $refuse, ! empty($record['accepted']), ApprovalRules::accepter($this->settings->approval), $coreLost);
             $event = ChangeText::blastGrewEvent($change, $number, count($added), count((array) ($record['lost'] ?? [])), (int) ($record['unmanaged'] ?? 0), $refuse,
-                ! empty($record['accepted']), ApprovalRules::accepter($this->settings->approval));
+                ! empty($record['accepted']), ApprovalRules::accepter($this->settings->approval), $coreLost);
         } else {
             $why = 'its blast radius cannot be computed now (' . $record['error'] . ')';
             $eventWhy = 'its blast radius cannot be computed now (' . ($record['event_error'] ?? $record['error']) . ')';
@@ -2018,6 +2025,20 @@ final class ChangeLifecycle
     private function heldLost(array $change, int $number): array
     {
         return self::heldOf($change, $number, $this->changes->batches((int) $change['id'])[$number] ?? []);
+    }
+
+    /**
+     * What the blast radius batch $number is held to is measured from, as accepted or approved: "core", or "largest
+     * part" (it takes every core device of its part down).
+     *
+     * @param  array<string, mixed>  $batch  the batch's row
+     */
+    private static function heldReferenceOf(array $change, int $number, array $batch): string
+    {
+        $accepted = $batch['blast_accepted'] ?? null;
+        $reference = is_array($accepted) ? ($accepted['reference'] ?? 'core') : (BatchPlan::topologyOf($change['plan'] ?? null, $number)['reference'] ?? 'core');
+
+        return $reference === 'largest part' ? 'largest part' : 'core';
     }
 
     /**

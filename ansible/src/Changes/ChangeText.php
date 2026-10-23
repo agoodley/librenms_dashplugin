@@ -176,20 +176,56 @@ final class ChangeText
         };
     }
 
+    /** What a blast radius measured from the largest piece left takes down, after what it cuts off. */
+    public const LARGEST_PART = ', measured from the largest piece left (it takes down every core device of its part)';
+
+    /** A batch that now takes down every core device of its part, while it was held to leave one standing. */
+    private const CORE_LOST = 'it now takes down every core device of its part, so what it cuts off is measured from the largest piece left';
+
+    /**
+     * How a blast radius grew, in words: "it would now also cut off lab-sw5", "it now takes down every core device of its
+     * part, so what it cuts off is measured from the largest piece left[, and it would also cut off lab-sw5]".
+     *
+     * @param  string  $added  the devices it cuts off now that it was not held to, in words ("" for none)
+     */
+    public static function grewText(string $added, bool $coreLost): string
+    {
+        return match (true) {
+            $coreLost && $added !== '' => self::CORE_LOST . ', and it would also cut off ' . UntrustedText::line($added, 400),
+            $coreLost => self::CORE_LOST,
+            default => 'it would now also cut off ' . UntrustedText::line($added, 400),
+        };
+    }
+
+    /**
+     * grewText() in counts, for the eventlog: "it would now cut off 2 more devices than approved".
+     */
+    public static function grewCount(int $added, bool $coreLost, string $word): string
+    {
+        $more = 'cut off ' . Format::count($added, 'more device', 'more devices') . " than $word";
+
+        return match (true) {
+            $coreLost && $added > 0 => self::CORE_LOST . ", and it would $more",
+            $coreLost => self::CORE_LOST,
+            default => "it would now $more",
+        };
+    }
+
     /**
      * A batch's blast radius grew since the approval (or the acceptance, or the change was made): it does not start.
      *
-     * @param  string  $added  the devices it cuts off now that it was not held to, in words
+     * @param  string  $added  the devices it cuts off now that it was not held to, in words ("" for none: it now takes down every core device of its part)
      * @param  string  $held  what it was held to cut off, in words
      * @param  bool  $accepted  the blast radius it is held to was accepted by an admin since
      * @param  string  $accepter  who accepts the new one (ApprovalRules::accepter())
+     * @param  bool  $coreLost  it now takes down every core device of its part, while it was held to leave one standing
      */
     public static function blastGrew(array $change, int $batch, string $added, string $held, bool $refused, bool $accepted = false,
-        string $accepter = 'an admin with the approve permission'): string
+        string $accepter = 'an admin with the approve permission', bool $coreLost = false): string
     {
         [$since, $word] = self::held($change, $accepted);
 
-        return self::name($change) . ", batch $batch: its blast radius grew since $since: it would now also cut off " . UntrustedText::line($added, 400)
+        return self::name($change) . ", batch $batch: its blast radius grew since $since: " . self::grewText($added, $coreLost)
             . " ($word: " . UntrustedText::line($held, 300) . '). '
             . ($refused ? 'The batch is refused (setting When the blast radius grew: refuse the batch).'
                 : "The batch does not start until $accepter accepts the new blast radius.");
@@ -256,13 +292,15 @@ final class ChangeText
      *
      * @param  int  $added  the devices it would now cut off that it was not held to
      * @param  int  $lost  the monitored devices it would cut off in all
+     * @param  bool  $coreLost  as for blastGrew()
      */
-    public static function blastGrewEvent(array $change, int $batch, int $added, int $lost, int $unmanaged, bool $refused, bool $accepted, string $accepter): string
+    public static function blastGrewEvent(array $change, int $batch, int $added, int $lost, int $unmanaged, bool $refused, bool $accepted, string $accepter,
+        bool $coreLost = false): string
     {
         [$since, $word] = self::held($change, $accepted);
 
-        return self::name($change) . ", batch $batch: its blast radius grew since $since: it would now cut off " . Format::count($added, 'more device', 'more devices')
-            . " than $word (" . self::devicesCount($lost, $unmanaged) . ' in all). '
+        return self::name($change) . ", batch $batch: its blast radius grew since $since: " . self::grewCount($added, $coreLost, $word)
+            . ' (' . self::devicesCount($lost, $unmanaged) . ' in all). '
             . ($refused ? 'The batch is refused (setting When the blast radius grew: refuse the batch).'
                 : "The batch does not start until $accepter accepts the new blast radius.");
     }

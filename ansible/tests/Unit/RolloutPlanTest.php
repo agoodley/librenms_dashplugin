@@ -7,6 +7,7 @@ use Agoodley\LibrenmsAnsible\Changes\BlastRadius;
 use Agoodley\LibrenmsAnsible\Changes\Fingerprint;
 use Agoodley\LibrenmsAnsible\Changes\RolloutPlan;
 use Agoodley\LibrenmsAnsible\Changes\TopologyPlan;
+use Agoodley\LibrenmsAnsible\Services\ChangeService;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -306,11 +307,37 @@ class RolloutPlanTest extends TestCase
 
     public function testABlastRadiusGrewWhenItCutsOffDevicesThatWereNotHeld(): void
     {
-        $this->assertSame(['added' => [], 'removed' => []], BlastRadius::compare([512], [512]));
-        $this->assertSame(['added' => [511], 'removed' => []], BlastRadius::compare([512], [512, 511]), 'grew: lab-sw5 lost its other uplink');
-        $this->assertSame(['added' => [], 'removed' => [512]], BlastRadius::compare([512], []), 'shrank');
-        $this->assertSame(['added' => [511], 'removed' => [512]], BlastRadius::compare([512], [511]), 'both: it grew');
-        $this->assertSame(['added' => [513], 'removed' => []], BlastRadius::compare([], [513]), 'a batch planned by hand that the topology now knows: it grew');
+        $this->assertSame(['added' => [], 'removed' => [], 'core_lost' => false], BlastRadius::compare([512], [512]));
+        $this->assertSame(['added' => [511], 'removed' => [], 'core_lost' => false], BlastRadius::compare([512], [512, 511]), 'grew: lab-sw5 lost its other uplink');
+        $this->assertSame(['added' => [], 'removed' => [512], 'core_lost' => false], BlastRadius::compare([512], []), 'shrank');
+        $this->assertSame(['added' => [511], 'removed' => [512], 'core_lost' => false], BlastRadius::compare([512], [511]), 'both: it grew');
+        $this->assertSame(['added' => [513], 'removed' => [], 'core_lost' => false], BlastRadius::compare([], [513]), 'a batch planned by hand that the topology now knows: it grew');
+    }
+
+    public function testABlastRadiusGrewWhenItNowTakesDownEveryCoreDeviceOfItsPart(): void
+    {
+        // held with a core device of its part left standing, measured now from the largest piece left: it grew, whatever it cuts off
+        $this->assertSame(['added' => [], 'removed' => [512], 'core_lost' => true], BlastRadius::compare([512], [], 'core', 'largest part'));
+        $this->assertTrue(BlastRadius::compare([], [], 'core', 'largest part')['core_lost']);
+        $this->assertFalse(BlastRadius::compare([], [], 'largest part', 'largest part')['core_lost'], 'the core\'s own batch, approved so: the same');
+        $this->assertFalse(BlastRadius::compare([], [], 'largest part', 'core')['core_lost'], 'a core device back: not more');
+        $this->assertFalse(BlastRadius::compare([512], [512])['core_lost']);
+    }
+
+    public function testWhatANewChangeKeepsFromItsPreviewIsWhatEachBatchCutsOffAndWhatThatIsMeasuredFrom(): void
+    {
+        $plan = fn (\Closure $blast) => RolloutPlan::make([501, 502], [], 1, 5, 1, false, 0, self::planner([501, 502]), RolloutPlan::LEAVE, $blast)['plan']->topology;
+        $signature = ChangeService::blastSignature($plan(fn (array $batch) => self::blast($batch)));
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{64}$/', $signature);
+        $this->assertSame($signature, ChangeService::blastSignature($plan(fn (array $batch) => self::blast($batch))), 'the same plan, the same signature');
+        $this->assertNotSame($signature, ChangeService::blastSignature($plan(fn (array $batch) => self::blast($batch, [502 => [512, 511]] + self::CUTS))),
+            'lab-sw2 cuts off more: another signature');
+        $this->assertNotSame($signature, ChangeService::blastSignature($plan(fn (array $batch) => ['reference' => in_array(501, $batch, true) ? 'largest part' : 'core']
+            + self::blast($batch))), 'lab-sw1 takes down every core device of its part: another signature');
+        $this->assertNotSame($signature, ChangeService::blastSignature($plan(fn (array $batch) => self::blast($batch, self::CUTS, [502 => 'down']))),
+            'lab-sw2 skipped: another signature');
+        $this->assertSame($signature, ChangeService::blastSignature($plan(fn (array $batch) => ['unmanaged' => 7, 'names' => []] + self::blast($batch))),
+            'unmanaged neighbors and names are not kept');
     }
 
     public function testTheWindowCoversTheBatchAndWhatItCutsOff(): void

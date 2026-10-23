@@ -737,7 +737,8 @@ change page and the change's timeline say that **the blast radius is unknown**, 
 What goes down while a batch runs: the **monitored devices that lose their path to the core** while the batch's
 devices are down, linked to their pages, and the **unmanaged neighbors** that go down with them (phones, access points:
 LLDP/CDP neighbors LibreNMS does not monitor), counted. A batch that takes down every core device of its part of the
-network (the core's own batch) is measured from the largest part that stays together. The new change page, the change
+network (the core's own batch) is measured from the largest part that stays together, as the topology plugin's
+simulation does (see [Limitations](#limitations)). The new change page, the change
 page (so approvers see it before they approve) and the timeline show it per batch, with **Simulate**: the topology
 plugin's failure simulation of the batch on the L2 map, on the network as it is now.
 
@@ -748,7 +749,9 @@ plugin computes the batch's blast radius **on the network as it is then**, as th
 applied the change or continued it) sees it, also when the sync command starts it, and compares the monitored devices
 it cuts off with those approved, or accepted since:
 
-* **It grew** (it would cut off a device that was not approved: a redundant link went down since): **the batch does
+* **It grew** (it would cut off a device that was not approved: a redundant link went down since; or it now takes down
+  every core device of its part while it was approved with one left standing: another core device went down since,
+  and what it cuts off is then measured from the largest piece left, whatever that is): **the batch does
   not start.** The change pauses, its page names the devices that were not approved and links the simulation, and an
   admin **accepts the new blast radius**, with an optional comment: one with the approve permission (never the requester with a
   second admin) while the settings ask for an approval, else one with the run permission, who may continue the change
@@ -1095,6 +1098,10 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   devices*, or its guess): a link LibreNMS does not see does not exist for the planner, a wrong core makes a wrong
   plan, and unmanaged neighbors are those LLDP/CDP reports. **Devices without neighbors cannot be planned**: they are
   left out or planned by hand, with an unknown blast radius.
+* **A batch that takes down every core device of its part** (the core's own batch, or one whose other core devices
+  are down) is measured as the topology plugin's simulation measures it: from the largest piece of the network left
+  standing. Devices that reach LibreNMS only through that core (LibreNMS' own link to the network, a management
+  network behind it) are not in its blast radius, nor under its maintenance window.
 * **Port states are as LibreNMS last polled them:** a link that went down since its last poll is still up for the
   planner, so the check right before a launch is only as fresh as the polling.
 * **A link that fails while a batch runs is not caught then.** The blast radius is computed only before each batch
