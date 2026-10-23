@@ -10,8 +10,9 @@ use LibreNMS\Interfaces\Plugins\PluginManagerInterface;
 /**
  * The link of a finding whose fix is clear (FixBuilder: port descriptions, the spanning tree root priority) to the
  * Ansible plugin's Fixes page, which makes a change of it: only when that plugin is enabled and has the page, and for a
- * LibreNMS admin (the page is theirs). Without the Ansible plugin the topology plugin's pages are as they were: no link.
- * The topology plugin never uses the Ansible plugin's classes: it knows its plugin name and the page's route only.
+ * LibreNMS admin who holds the permission the page needs (it is for making changes). Without the Ansible plugin the
+ * topology plugin's pages are as they were: no link. The topology plugin never uses the Ansible plugin's classes: it
+ * knows its plugin name, the page's route and the permission's name only.
  */
 final class AnsibleFixes
 {
@@ -21,13 +22,17 @@ final class AnsibleFixes
     /** The route of its Fixes page (since its phase 4). */
     public const ROUTE = 'ansible.fixes';
 
+    /** The permission its Fixes page needs (a direct permission of the user, as the Ansible plugin reads it). */
+    public const PERMISSION = 'ansible.run';
+
     /**
      * The URL of the Fixes page for this user, null when there is none for them.
      */
     public static function pageUrl(mixed $user): ?string
     {
         try {
-            if (! is_object($user) || ! method_exists($user, 'can') || ! $user->can('admin') || ! Route::has(self::ROUTE)
+            if (! is_object($user) || ! method_exists($user, 'can') || ! $user->can('admin') || ! method_exists($user, 'hasDirectPermission')
+                || ! $user->hasDirectPermission(self::PERMISSION) || ! Route::has(self::ROUTE)
                 || ! app(PluginManagerInterface::class)->pluginEnabled(self::PLUGIN)) {
                 return null;
             }

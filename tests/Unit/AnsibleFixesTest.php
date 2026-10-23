@@ -30,7 +30,7 @@ class AnsibleFixesTest extends TestCase
         $this->assertNull(AnsibleFixes::link(null, 'links', $wrong), 'no Fixes page for the user: no link');
     }
 
-    public function testOnlyAnAdminHasTheFixesPage(): void
+    public function testOnlyAnAdminWithTheRunPermissionHasTheFixesPage(): void
     {
         $user = new class {
             public function can(string $ability): bool
@@ -41,5 +41,19 @@ class AnsibleFixesTest extends TestCase
 
         $this->assertNull(AnsibleFixes::pageUrl($user));
         $this->assertNull(AnsibleFixes::pageUrl(null));
+
+        // an admin without the Ansible plugin's run permission: the page is for making changes, theirs it is not
+        $admin = new class {
+            public function can(string $ability): bool
+            {
+                return $ability === 'admin';
+            }
+
+            public function hasDirectPermission(string $permission): bool
+            {
+                return false;
+            }
+        };
+        $this->assertNull(AnsibleFixes::pageUrl($admin));
     }
 }

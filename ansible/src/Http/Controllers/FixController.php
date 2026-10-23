@@ -14,18 +14,25 @@ use Agoodley\LibrenmsAnsible\Support\Access;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * The Fixes page (phase 4): the topology plugin's findings whose fix is clear (its verification API's fixes(), as the
  * admin sees the network), by kind, each with what it changes and the findings it resolves, and those it cannot fix with
  * why; Fix opens a new change made from the chosen fixes of one kind (ChangeController::create(): the template the
- * settings map to the kind, the devices, the lines read only). LibreNMS admins; making the change needs the run
- * permission. The list is loaded after the page (on a large network the topology plugin takes some seconds), of every
+ * settings map to the kind, the devices, the lines read only). LibreNMS admins with the run permission, as New change.
+ * The list is loaded after the page (on a large network the topology plugin takes some seconds), of every
  * device the admin sees or, as the topology plugin's pages filter, of a device, a device group, a location (each one
  * given narrows it): the topology plugin then computes the fixes of those devices only.
  */
 class FixController extends Controller
 {
+    /** The cache lock of an admin's computation of the fixes (with their user id). */
+    public const LOCK = 'ansible-plugin-fixes-';
+
+    /** The longest a computation holds it (a crashed request's lock ends then). */
+    private const LOCK_SECONDS = 300;
+
     /**
      * plugin/ansible/fixes[?device=&group=&location=]
      */
@@ -37,7 +44,7 @@ class FixController extends Controller
         $device = $filter['device'] ?? null;
         $deviceName = $device !== null ? (isset($devices->visibleTo($request->user())[$device]) ? ($devices->names([$device])[$device] ?? null) : null) ?? "#$device" : null;
 
-        return view('ansible::fixes', ['assetVersion' => self::assetVersion(), 'canRun' => Access::canRun($request->user()),
+        return view('ansible::fixes', ['assetVersion' => self::assetVersion(),
             'unavailable' => (new TopologyVerification())->unavailable(), 'templates' => array_map(fn (string $kind) => $this->settings()->fixTemplate($kind),
                 array_combine(FixAnswers::KINDS, FixAnswers::KINDS)),
             'filter' => $filter ?? [], 'filterInvalid' => $filter === null, 'groups' => $devices->deviceGroups(), 'locations' => $devices->locations(),
@@ -59,6 +66,25 @@ class FixController extends Controller
         if ($why !== null) {
             return response()->json(['error' => 'The topology plugin cannot list the fixes: ' . $why . '.'], 503);
         }
+        // one computation of the fixes per admin at a time: of the whole network it takes some seconds and some hundred MB
+        $lock = Cache::lock(self::LOCK . (int) $request->user()->user_id, self::LOCK_SECONDS);
+        if (! $lock->get()) {
+            return response()->json(['error' => 'The fixes are being computed for you already (in another page or tab): wait for it, then load this page again.'], 429);
+        }
+        try {
+            return $this->listFor($request, $verification, $filter);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * The fixes of the devices the filter keeps (list()), as JSON.
+     *
+     * @param  array<string, int>  $filter
+     */
+    private function listFor(Request $request, TopologyVerification $verification, array $filter): JsonResponse
+    {
         $ids = [];
         if ($filter) {
             $devices = new DeviceRepository();

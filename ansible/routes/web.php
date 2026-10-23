@@ -30,10 +30,6 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
         Route::get('runs/{id}', [RunController::class, 'show'])->whereNumber('id')->name('runs.show');
         Route::get('api/runs/{id}', [RunController::class, 'poll'])->whereNumber('id')->name('api.runs.show');
 
-        // the topology plugin's findings whose fix is clear (phase 4); making a change of them needs the run permission
-        Route::get('fixes', [FixController::class, 'index'])->name('fixes');
-        Route::get('api/fixes', [FixController::class, 'list'])->name('api.fixes');
-
         Route::get('inventory', [InventoryController::class, 'show'])->name('inventory');
         Route::get('inventory/download', [InventoryController::class, 'download'])->name('inventory.download');
 
@@ -45,6 +41,10 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
         Route::get('assets/{file}', AssetController::class)->where('file', '[A-Za-z0-9_-]+\.(js|css)')->name('asset');
 
         Route::middleware(RequireAdmin::class . ':run')->group(function (): void {
+            // the topology plugin's findings whose fix is clear (phase 4): a page to make changes from, as New change is; its list runs the
+            // topology plugin's checks (of the whole network without a filter), one computation per admin at a time
+            Route::get('fixes', [FixController::class, 'index'])->name('fixes');
+            Route::get('api/fixes', [FixController::class, 'list'])->name('api.fixes');
             Route::get('changes/new', [ChangeController::class, 'create'])->name('changes.new');
             Route::get('runs/new', fn () => redirect()->route('ansible.changes.new', array_filter(['template' => request()->query('template'),
                 'device' => request()->query('device')], fn ($v) => is_string($v) && ctype_alnum($v))))->name('runs.new');

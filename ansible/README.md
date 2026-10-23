@@ -476,10 +476,11 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 
 ## Permissions
 
-* **Viewing** the changes, the runs, the fixes, the inventory, the JSON and the device panel is for LibreNMS
-  **admins**. Everyone else gets HTTP 403 on every route of the plugin and sees no menu entry, panel or button.
-* **Preparing and applying** changes (a new change, also one made from fixes, its dry run, *Apply*, *Continue* but
-  for a batch whose blast radius cannot be computed (below), *Stop*, *Cancel*), stopping a run and releasing the
+* **Viewing** the changes, the runs, the inventory, the JSON and the device panel is for LibreNMS **admins**.
+  Everyone else gets HTTP 403 on every route of the plugin and sees no menu entry, panel or button.
+* **Preparing and applying** changes (a new change, its dry run, *Apply*, *Continue* but for a batch whose blast
+  radius cannot be computed (below), *Stop*, *Cancel*), the **Fixes** page and its list (they make changes from
+  fixes, and run the topology plugin's checks: one computation per admin at a time), stopping a run and releasing the
   devices of a run the runner could not be asked about, or of a stopped run, also needs the plugin's **run
   permission**, `ansible.run`.
   **Approving and rejecting** changes needs its **approve permission**, `ansible.approve`. An admin grants them on the

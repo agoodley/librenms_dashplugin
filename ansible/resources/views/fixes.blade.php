@@ -22,10 +22,6 @@
     @if($unavailable !== null)
         <div class="alert alert-warning" id="ans-fixes-unavailable"><i class="fa fa-exclamation-triangle"></i> The topology plugin cannot list fixes now: {{ $unavailable }}.</div>
     @endif
-    @unless($canRun)
-        <div class="alert alert-info" id="ans-fixes-no-run"><i class="fa fa-info-circle"></i> Making a change needs the Ansible plugin's run permission: an admin grants it on
-            the plugin's <a href="{{ url('plugin/settings/ansible') }}#ans-permission">settings page</a>.</div>
-    @endunless
     {{-- as the topology plugin's pages filter: a device, a device group, a location (each one given narrows the list; the topology
          plugin then computes the fixes of those devices only) --}}
     <form class="form-inline ans-filterbar" method="get" action="{{ route('ansible.fixes') }}" id="ans-fixes-filter" style="margin: 0 0 8px">
