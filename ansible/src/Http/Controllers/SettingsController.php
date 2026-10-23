@@ -204,12 +204,15 @@ class SettingsController extends Controller
             return $this->back($section)->with('ansible_status', $action === 'grant' ? "{$user['username']} already holds the $what permission." : "{$user['username']} does not hold the $what permission.");
         }
         $by = (string) $request->user()->username;
-        $can = $permission === Access::APPROVE ? 'approve and reject changes' : 'create, dry-run, apply and stop changes, and stop runs';
+        $can = $permission === Access::APPROVE ? 'approve and reject changes, and accept the new blast radius of a batch that grew'
+            : 'create, dry-run, apply and stop changes, and stop runs';
         if ($action === 'grant') {
             $name = (string) $repository->grant($userId, $permission);
             $this->audit(AuditText::permissionGranted($by, $name, $permission));
 
-            return $this->back($section)->with('ansible_status', "$name may now $can.");
+            return $this->back($section)->with('ansible_status', "$name may now $can."
+                . ($permission === Access::APPROVE ? '' : " $name may also continue a batch whose blast radius cannot be computed, and, while Approval is off, accept "
+                    . 'the new blast radius of a batch that grew.'));
         }
         $name = (string) $repository->revoke($userId, $permission);
         $this->audit(AuditText::permissionRevoked($by, $name, $permission));

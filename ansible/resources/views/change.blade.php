@@ -199,6 +199,11 @@
                 <div style="font-weight: normal; margin-top: 4px">{{ ucfirst(ApprovalRules::accepter($settings->approval)) }} accepts the new blast radius
                     (recorded in the timeline and the eventlog), and the batch starts again; or stop the change. Computed {{ $local($waitBlast['at'] ?? null) }}, as {{ $waitBatch['username'] ?: 'the admin who starts the batch' }} sees the network.</div>
             </div>
+            @if($noAccepter)
+                <div class="alert alert-warning" id="ans-no-accepter"><i class="fa fa-user-times"></i> {{ $noAccepter }} The change waits, its devices reserved for it,
+                    until an admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#{{ ApprovalRules::acceptPermission($settings->approval) === 'run' ? 'ans-permission' : 'ans-approve-permission' }}">settings page</a>,
+                    or stops the change.</div>
+            @endif
         @elseif($waitBatch !== null && $change['waiting'] === 'blast_unknown')
             @php $names = $blastNames($waitBlast); $held = (array) ($waitBlast['lost'] ?? []); @endphp
             <div class="ans-warning-loud" id="ans-blast-unknown"><i class="fa fa-question-circle"></i>

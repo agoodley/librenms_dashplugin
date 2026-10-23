@@ -303,6 +303,11 @@
                     @include('ansible::partials.settings-answer', ['failed' => 'Nothing was saved:'])
                 @endif
                 <p class="help-block">{{ $intro }} Saved by the plugin; each change goes to the eventlog.</p>
+                @if($formId === 'ans-topology-form' && $a['topology'] !== 'the topology plugin is not installed')
+                    <p class="help-block" id="ans-topology-links">The core the plans are measured from is the topology plugin's
+                        <a href="{{ url('plugin/settings/topology') }}">Core devices</a> setting (empty: it guesses the core, and the plans say so); its
+                        <a href="{{ url('plugin/topology/rollout') }}">Rollout Planner</a> shows what it would plan.</p>
+                @endif
                 @foreach($fields as [$name, $label, $help])
                     <div class="form-group row">
                         <label class="col-sm-4 control-label" for="ans-setting-{{ $name }}" style="font-weight: normal">{{ $label }}</label>
@@ -334,8 +339,9 @@
             @if($section === 'ans-permission')
                 @include('ansible::partials.settings-answer', ['failed' => 'Nothing was changed:'])
             @endif
-            <p class="help-block">LibreNMS admins see the changes, the runs and the inventory; to create, dry-run, apply and stop changes (and stop runs) they also need this permission
-                (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::PERMISSION }}</span>). It is given to each user directly:
+            <p class="help-block">LibreNMS admins see the changes, the runs and the inventory; to create, dry-run, apply, continue and stop changes (and stop runs) they also need this permission
+                (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::PERMISSION }}</span>). With it they also continue a batch whose blast radius cannot be
+                computed, and, while Approval is off, accept the new blast radius of a batch that grew. It is given to each user directly:
                 LibreNMS' role editor keeps only its own permissions, so a role would lose it the next time it is saved. Any LibreNMS admin can
                 grant it, also to themselves: it is an explicit opt-in, written to the eventlog with who granted or revoked it, not a separation
                 of duties between admins.</p>
@@ -380,8 +386,9 @@
                 @include('ansible::partials.settings-answer', ['failed' => 'Nothing was changed:'])
             @endif
             <p class="help-block">To approve or reject a change after its verified dry run, a LibreNMS admin needs this permission
-                (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::APPROVE }}</span>), given to each user directly like the run permission and written to the eventlog.
-                With "an approval from a second admin" (Changes, above) the requester of a change can never approve it, whoever holds this permission.</p>
+                (<span class="ans-code">{{ \Agoodley\LibrenmsAnsible\Support\Access::APPROVE }}</span>), given to each user directly like the run permission and written to the eventlog;
+                while an approval is asked for, also to accept the new blast radius of a batch that grew since the approval.
+                With "an approval from a second admin" (Changes, above) the requester of a change can never approve it, nor accept its new blast radius, whoever holds this permission.</p>
             <table class="table table-condensed ans-table" id="ans-approve-holders" style="max-width: 700px">
                 <thead><tr><th>User</th><th>Name</th><th></th></tr></thead>
                 <tbody>

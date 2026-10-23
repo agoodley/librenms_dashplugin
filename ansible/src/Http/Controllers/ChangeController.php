@@ -510,6 +510,8 @@ class ChangeController extends Controller
             'topologyPlanned' => \Agoodley\LibrenmsAnsible\Changes\BatchPlan::isTopology($change['plan'] ?? null),
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
             'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($settings->approval, $change) : null,
+            // a batch whose blast radius grew waits for an admin to accept it: said when nobody can
+            'noAccepter' => $status === ChangeStatus::PAUSED && $change['waiting'] === 'blast' ? self::noAccepter($settings->approval, $change) : null,
             // before the apply: the targets Oxidized cannot back up (asked at the dry run), whose batches the setting would refuse
             'backupWarning' => $settings->backups && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true)
                 ? BackupCheck::warning(BackupCheck::missing(array_map(fn ($t) => $t['backup_check'] ?? null, $targets), array_map(fn ($t) => NextChange::name($t), $targets)),
@@ -673,6 +675,31 @@ class ChangeController extends Controller
         return $mode === ApprovalRules::SECOND && (int) ($change['user_id'] ?? 0) > 0
             ? 'No admin can approve it yet: no admin other than the requester holds the approve permission, and the settings ask for a second admin.'
             : 'No admin can approve it yet: no admin holds the approve permission.';
+    }
+
+    /**
+     * Why nobody can accept the new blast radius of a batch that grew (no enabled admin holds the permission the settings
+     * ask for, or, with a second admin, only the requester does); null when someone can.
+     */
+    private static function noAccepter(string $mode, array $change): ?string
+    {
+        $run = ApprovalRules::acceptPermission($mode) === 'run';
+        try {
+            $able = array_filter((new \Agoodley\LibrenmsAnsible\Data\PermissionRepository())->holders($run ? Access::PERMISSION : Access::APPROVE),
+                fn ($user) => $user['admin'] && $user['enabled'] && ! ($mode === ApprovalRules::SECOND && $user['user_id'] === (int) ($change['user_id'] ?? 0)));
+        } catch (\Throwable) {
+            return null;
+        }
+        if ($able) {
+            return null;
+        }
+
+        return match (true) {
+            $run => 'Nobody can accept it yet: no admin holds the run permission.',
+            $mode === ApprovalRules::SECOND && (int) ($change['user_id'] ?? 0) > 0
+                => 'Nobody can accept it yet: no admin other than the requester holds the approve permission, and the settings ask for a second admin.',
+            default => 'Nobody can accept it yet: no admin holds the approve permission.',
+        };
     }
 
     /**
