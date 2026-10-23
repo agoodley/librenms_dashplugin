@@ -749,7 +749,7 @@ it cuts off with those approved, or accepted since:
 
 * **It grew** (it would cut off a device that was not approved: a redundant link went down since): **the batch does
   not start.** The change pauses, its page names the devices that were not approved and links the simulation, and an
-  admin **accepts the new blast radius**, with a comment: one with the approve permission (never the requester with a
+  admin **accepts the new blast radius**, with an optional comment: one with the approve permission (never the requester with a
   second admin) while the settings ask for an approval, else one with the run permission, who may continue the change
   anyway (a change applied without an approval says *since the change was made* and *planned* where others say *since
   the approval* and *approved*). That is recorded in the timeline and in the eventlog of the change's devices, and the batch starts again
@@ -803,7 +803,8 @@ the topology plugin has learned meanwhile what it cuts off: then it waits like a
 
 lab-sw2 and lab-sw3 are cabled to the core lab-sw1; lab-sw4 and lab-sw5 are dual-homed to both; lab-sw6 hangs on
 lab-sw2 only, lab-sw7 and lab-sw8 on lab-sw3; phones and access points on the access switches. A change on the eight
-switches (and lab-dead, which is down: left out) is planned as:
+switches (lab-dead, which is down, and lab-other, which has no LLDP/CDP neighbors, chosen too: the topology plugin
+cannot plan them, and they are left out, as in the screenshot of the new change page) is planned as:
 
 | Batch | Devices | Where | Cuts off while it runs |
 |---|---|---|---|
@@ -931,7 +932,8 @@ released has stopped by then.
 * **The planner's batches are the ones applied:** the plan is fixed when the change is created, is part of what is
   dry-run and approved, and the batches launch their own devices, in their order.
 * **A batch's maintenance window covers its devices and every monitored device the blast radius computed right before
-  its launch says it cuts off**, nothing else, and closes like every window.
+  its launch says it cuts off** (for a batch an admin continued without a blast radius: the devices approved, or
+  accepted, as cut off), nothing else, and closes like every window.
 * **The topology plugin answers as the admin sees the network:** the plugin asks its planning API as the LibreNMS user
   who makes the change or starts the batch (scoped like the topology pages), never with its console-only system scope.
 * **Maintenance windows and backups** are always ended or recorded: a window ends with its batch plus the settle time,
