@@ -747,24 +747,25 @@ plugin's failure simulation of the batch on the L2 map, on the network as it is 
 
 Before each batch starts (before its window opens and its backups are taken) and again right before its launch, the
 plugin computes the batch's blast radius **on the network as it is then**, as the admin who starts the batch (who
-applied the change or continued it) sees it, also when the sync command starts it, and compares the monitored devices
-it cuts off with those approved, or accepted since:
+applied the change or continued it) sees it, also when the sync command starts it, and compares it with the one
+approved, or accepted since: the monitored devices it cuts off, what that is measured from, and the devices of the
+batch the topology plugin can tell about. Each check is kept with the batch, and the change page shows it.
 
-* **It grew** (it would cut off a device that was not approved: a redundant link went down since; or it now takes down
-  every core device of its part while it was approved with one left standing: another core device went down since,
-  and what it cuts off is then measured from the largest piece left, whatever that is): **the batch does
-  not start.** The change pauses, its page names the devices that were not approved and links the simulation, and an
-  admin **accepts the new blast radius**, with an optional comment: one with the approve permission (never the requester with a
-  second admin) while the settings ask for an approval, else one with the run permission, who may continue the change
-  anyway (a change applied without an approval says *since the change was made* and *planned* where others say *since
-  the approval* and *approved*). That is recorded in the timeline and in the eventlog of the change's devices, and the batch starts again
-  (its blast radius computed once more, and held to what was accepted from then on). *Continue* does not start it,
-  and a batch whose blast radius grows again waits again. An acceptance is for the blast radius the page showed: when
-  it changed since the page was loaded (two approvers accepted at the same moment, and the batch grew again meanwhile),
-  the plugin refuses it (*the blast radius of the batch changed since you loaded the page: look again*), and the page
-  shows the new one. With *When the blast radius grew: refuse the batch*, the
-  change ends as failed instead. Found right before the launch (after the backups), it stops the launch the same way,
-  and the window opened for the batch closes.
+* **It grew** (it would cut off a device that was not approved: a redundant link went down since; or it now takes
+  down every core device of its part while it was approved with one left standing: another core device went down
+  since, and what it cuts off is then measured from the largest piece left, whatever that is): **the batch does not
+  start.** The change pauses, its page names the devices that were not approved and links the simulation, and an
+  admin **accepts the new blast radius**, with an optional comment: one with the approve permission (never the
+  requester with a second admin) while the settings ask for an approval, else one with the run permission, who may
+  continue the change anyway (a change applied without an approval says *since the change was made* and *planned*
+  where others say *since the approval* and *approved*). That is recorded in the timeline and in the eventlog of the
+  change's devices, and the batch starts again (its blast radius computed once more, and held to what was accepted
+  from then on). *Continue* does not start it, and a batch whose blast radius grows again waits again. An acceptance
+  is for the blast radius the page showed: when it changed since the page was loaded (two approvers accepted at the
+  same moment, and the batch grew again meanwhile), the plugin refuses it (*The blast radius of the batch changed
+  since you loaded the page: look again.*), and the page shows the new one. With *When the blast radius grew: refuse
+  the batch*, the change ends as failed instead. Found right before the launch (after the backups), it stops the
+  launch the same way, and the window opened for the batch closes.
 * **It shrank:** the batch goes on, and the timeline says what it no longer cuts off.
 * **It cannot be computed** (the topology plugin disabled meanwhile, an error, a LibreNMS role that may not view the
   links), or **a device of the batch is one the topology plugin could tell about when the change was made and no
@@ -779,10 +780,10 @@ it cuts off with those approved, or accepted since:
   computed does the batch go without one, recorded in the timeline and in the eventlog, its window then covering its
   devices and the devices approved (or accepted) as cut off, with what it cuts off now as far as the topology plugin
   can tell; like an acceptance, it is refused when why it cannot be computed, or what the window would cover, changed
-  since the page was loaded. A device of a batch planned by hand, which the topology plugin could not tell about when the change was
-  made either, changes nothing: the batch is held to what was approved for it. A blast radius that grew is said first,
-  also while a device is skipped: an approver accepts it, then the batch waits for the admin's decision. With *When
-  the blast radius cannot be computed: refuse the batch*, the change ends.
+  since the page was loaded. A device of a batch planned by hand, which the topology plugin could not tell about when
+  the change was made either, changes nothing: the batch is held to what was approved for it. A blast radius that
+  grew is said first, also while a device is skipped: an approver accepts it, then the batch waits for the admin's
+  decision. With *When the blast radius cannot be computed: refuse the batch*, the change ends.
 
 Unmanaged neighbors are counted, not compared: a phone more or less does not stop a batch. A change planned by the
 settings has no approved blast radius, and goes as in phase 2. Nothing is computed while a batch runs (see
