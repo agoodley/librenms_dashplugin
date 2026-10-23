@@ -240,7 +240,12 @@ Then:
    cannot be verified.
    Without the topology plugin (or with one too old for the verification API) a change runs as in phase 3: it is
    *not verified*, and says why.
-3. Changes applied before go on unverified.
+3. A change applied before the upgrade goes on as in phase 3, whatever its state (paused after a batch, waiting for its
+   next batch): whether a change is verified is decided at its *Apply*, and its first batch ran before the upgrade, not
+   verified. None of its batches is verified, waits or pauses for a verification; it ends **not verified (applied
+   before the upgrade)**, and its page says that batch 1 ran before the upgrade. One whose first batch had not started
+   yet at the upgrade (it waited for its blast radius, or for a device busy in another run) is verified from that batch
+   on, as a change applied now.
 4. For the Fixes page: set *Designated root bridges* or *Core devices* in the topology plugin's settings (no root
    fix without them), copy the [example fix playbooks](contrib/playbooks) into the playbook repository (review and
    adapt them), make a template for each kind with its survey variable ([Fixes](#fixes)), and enter their ids in the
@@ -939,7 +944,9 @@ pauses for a verification, and it ends **not verified**, with why: *the topology
 for the verification API: update both plugins together*, or *switched off* (said on its page and in the Changes list
 only, as in phase 3; the others also in the timeline and the eventlog). A change applied with the API is verified to
 its end, whatever the setting says meanwhile: an API that fails later (the topology plugin disabled since, an error)
-makes batches that **cannot be verified**, which follow *When a batch cannot be verified*.
+makes batches that **cannot be verified**, which follow *When a batch cannot be verified*. A change applied before the
+upgrade to phase 4 goes on as in phase 3 and ends *not verified (applied before the upgrade)*: its first batch ran
+before the upgrade, not verified (*From phase 3* in [Installation](#installation)).
 
 ### What a state covers
 
@@ -1047,7 +1054,7 @@ verification is done, or its wait for fresh data is over.
 A change ends **verified** (every batch verified), **verified with accepted changes** (an admin accepted what a batch
 changed) or **not verified** (a batch that could not be verified, even when an admin went on without its
 verification, unexpected changes only recorded or found by the last batch; or, from its *Apply* on, a change applied
-without verification, with why). A batch verified from a state before it that was taken on older data (its wait for
+without verification, with why; or a change applied before the upgrade to phase 4: *applied before the upgrade*). A batch verified from a state before it that was taken on older data (its wait for
 fresh data over) says so in its result and in the outcome: *verified (batch 1 on data older than the Apply before
 it)*. The Changes list and the change page show it; the timeline names what changed, the eventlog of each target counts
 it (it names no other device). The change page shows each batch's verification: its state before it, the wait for

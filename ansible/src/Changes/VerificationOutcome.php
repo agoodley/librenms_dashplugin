@@ -6,12 +6,12 @@ namespace Agoodley\LibrenmsAnsible\Changes;
  * The outcome of a change's verification, from its batches as they ended (pure): verified (every batch that ran was
  * verified, nothing unexpected changed), accepted (verified with accepted changes: an admin accepted what a batch
  * changed), or not verified (a batch that ran could not be verified, made unexpected changes nobody accepted, failed or
- * was stopped before its verification ended). Null when no batch ran, or the change was not verified at all (applied
- * before phase 4).
+ * was stopped before its verification ended). Null when no batch ran.
  *
  * A change applied with Verify changes off, or without the topology plugin's verification API, is not verified from its
  * Apply on (ChangeLifecycle::apply()): its outcome is not verified with why (SWITCHED_OFF, the topology plugin not
- * installed, too old) and stays so.
+ * installed, too old) and stays so. One applied before the upgrade to phase 4 goes on as in phase 3 (its first batch
+ * ran before it: ChangeLifecycle::appliedBefore()), and ends not verified (BEFORE_UPGRADE).
  */
 final class VerificationOutcome
 {
@@ -23,6 +23,9 @@ final class VerificationOutcome
 
     /** Why a change applied with Verify changes off is not verified: it ran as in phase 3. */
     public const SWITCHED_OFF = 'switched off';
+
+    /** Why a change applied before the upgrade to phase 4 is not verified: its first batch ran before it, and it goes on as in phase 3. */
+    public const BEFORE_UPGRADE = 'applied before the upgrade';
 
     /**
      * @param  array<int, array>  $batches  the change's batches (ChangeStore::batches())

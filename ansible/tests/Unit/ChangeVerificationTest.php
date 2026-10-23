@@ -782,7 +782,7 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame('taken', $this->verify($id, 2)['before']['status']);
     }
 
-    public function testAChangeAppliedBeforePhase4GoesOnUnverified(): void
+    public function testAChangeAppliedBeforePhase4GoesOnUnverifiedAndEndsNotVerified(): void
     {
         $this->settings = ['verify' => false];
         $id = $this->approved();
@@ -790,12 +790,61 @@ class ChangeVerificationTest extends TestCase
         // as phase 3 applied it: no outcome (the columns phase 4 adds are empty), its first batch without a verification
         $this->changes->changes[$id] = array_merge($this->changes->changes[$id], ['verification' => null, 'verification_note' => null]);
         $this->settings = [];
+        $this->assertTrue(ChangeLifecycle::appliedBefore($this->changes->find($id), $this->changes->batches($id)), 'its page says it was applied before the upgrade');
         $this->endBatch($id, 1, $this->t0 + 300);
-        $this->assertSame([[510], [502]], $this->launched(), 'its next batch starts at once');
+        $this->assertSame([[510], [502]], $this->launched(), 'its next batch starts at once: as in phase 3, decided at its Apply');
         $this->endBatch($id, 2, $this->t0 + 400);
         $change = $this->changes->find($id);
-        $this->assertSame([ChangeStatus::APPLIED, null], [$change['status'], $change['verification']]);
+        $this->assertSame([ChangeStatus::APPLIED, VerificationOutcome::NOT_VERIFIED, VerificationOutcome::BEFORE_UPGRADE],
+            [$change['status'], $change['verification'], $change['verification_note']], 'it ends not verified: applied before the upgrade');
         $this->assertSame([], $this->verifier->calls);
+        // as phase 3 ran it, on its page and in the Changes list only: no verification entry in the timeline or the eventlog
+        $this->assertStringNotContainsString('Verification:', $this->messages($id));
+        $this->assertSame([], preg_grep('/[Vv]erification/', array_column($this->events->of(510), 'message')));
+        $this->assertSame('not verified (applied before the upgrade)', VerificationText::listed($change['verification'], $change['verification_note']));
+        $this->assertSame('applied before the upgrade to phase 4: batch 1 ran before the upgrade, not verified, and the batches after it run as in phase 3, without a '
+            . 'verification (whether a change is verified is decided at its Apply)', VerificationText::note($change['verification_note'], true));
+    }
+
+    public function testAChangeWhoseFirstBatchHadNotStartedAtTheUpgradeIsVerified(): void
+    {
+        $id = $this->approved();
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        // as phase 3 left it: applied, its first batch not started yet (it waited, e.g. for its blast radius), no verification
+        $this->changes->updateBatch($id, 1, ['verify' => null]);
+        $this->assertSame('pending', $this->changes->batches($id)[1]['status']);
+        $this->assertFalse(ChangeLifecycle::appliedBefore($this->changes->find($id), $this->changes->batches($id)));
+        $this->sync($id, $this->t0 + 60);
+        $this->fresh($this->t0 + 90);
+        $this->sync($id, $this->t0 + 120);
+        $this->assertSame([[510]], $this->launched(), 'its first batch launched once the state before it was taken');
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->fresh($this->t0 + 1000);
+        $this->sync($id, $this->t0 + 1080);
+        $this->assertSame('verified', $this->verify($id, 1)['result'], 'verified from its first batch on');
+        $this->endBatch($id, 2, $this->t0 + 1200);
+        $this->sync($id, $this->t0 + 1900);
+        $this->fresh($this->t0 + 1950);
+        $this->sync($id, $this->t0 + 2000);
+        $this->assertSame([ChangeStatus::APPLIED, 'verified'], [$this->changes->find($id)['status'], $this->changes->find($id)['verification']]);
+    }
+
+    public function testAChangeOfPhase4IsNeverTakenForOneAppliedBeforeTheUpgrade(): void
+    {
+        // a change stopped while its first batch waited for the state before it: its batch 1 kept its verification record
+        $id = $this->approved();
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->assertNull($this->web($this->t0 + 55)->stop($id, 'alice', $this->t0 + 55));
+        $this->sync($id, $this->t0 + 60);
+        $change = $this->changes->find($id);
+        $this->assertTrue(ChangeStatus::isFinal($change['status']), $change['status']);
+        $this->assertFalse(ChangeLifecycle::appliedBefore($change, $this->changes->batches($id)));
+        $this->assertNotSame(VerificationOutcome::BEFORE_UPGRADE, $change['verification_note']);
+        // nor one applied without verification, nor one never applied
+        $this->assertFalse(ChangeLifecycle::appliedBefore(['apply_started_at' => '2026-10-22 10:00:00', 'verification' => 'not_verified'], [1 => ['status' => 'done', 'verify' => null]]));
+        $this->assertFalse(ChangeLifecycle::appliedBefore(['apply_started_at' => null, 'verification' => null], [1 => ['status' => 'cancelled', 'verify' => null]]));
+        $this->assertTrue(ChangeLifecycle::appliedBefore(['apply_started_at' => '2026-10-22 10:00:00', 'verification' => null], [1 => ['status' => 'done', 'verify' => null]]));
     }
 
     public function testTheLastBatchDoesNotPauseAndKeepsItsDevicesUntilItsVerificationEnds(): void

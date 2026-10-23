@@ -1610,11 +1610,15 @@ final class ChangeLifecycle
         if (ChangeStatus::isFinal($current['status'])) {
             return;
         }
-        // the outcome of its verification: a change not verified keeps the one its Apply gave it (why), the others take it from
-        // the batches that ran (null when none ran, or none was verified)
-        $outcome = ($current['verification'] ?? null) !== null ? ['outcome' => (string) $current['verification'], 'note' => $current['verification_note'] ?? null]
-            : (in_array($status, [ChangeStatus::APPLIED, ChangeStatus::FAILED, ChangeStatus::STOPPED], true) ? VerificationOutcome::of($this->changes->batches($id))
-                : ['outcome' => null, 'note' => null]);
+        // the outcome of its verification: a change not verified keeps the one its Apply gave it (why), one applied before the upgrade
+        // to phase 4 is not verified, the others take it from the batches that ran (null when none ran)
+        $batches = $this->changes->batches($id);
+        $outcome = match (true) {
+            ($current['verification'] ?? null) !== null => ['outcome' => (string) $current['verification'], 'note' => $current['verification_note'] ?? null],
+            self::appliedBefore($current, $batches) => ['outcome' => VerificationOutcome::NOT_VERIFIED, 'note' => VerificationOutcome::BEFORE_UPGRADE],
+            in_array($status, [ChangeStatus::APPLIED, ChangeStatus::FAILED, ChangeStatus::STOPPED], true) => VerificationOutcome::of($batches),
+            default => ['outcome' => null, 'note' => null],
+        };
         $done = $this->update($current, ['status' => $status, 'finished_at' => Clock::store($now), 'waiting' => null, 'resume_at' => null,
             'error' => $reason !== null ? UntrustedText::line($reason, 1000) : null, 'verification' => $outcome['outcome'],
             'verification_note' => $outcome['note'] !== null ? UntrustedText::line($outcome['note'], 1000) : null]);
@@ -1639,8 +1643,8 @@ final class ChangeLifecycle
             ChangeStatus::FAILED => 'error',
             default => 'warning',
         }, $user);
-        // switched off at its Apply, the change ran as in phase 3: its outcome says so on its page and in the list only
-        if ($outcome['outcome'] !== null && $outcome['note'] !== VerificationOutcome::SWITCHED_OFF) {
+        // switched off at its Apply, or applied before the upgrade, the change ran as in phase 3: its outcome says so on its page and in the list only
+        if ($outcome['outcome'] !== null && ! in_array($outcome['note'], [VerificationOutcome::SWITCHED_OFF, VerificationOutcome::BEFORE_UPGRADE], true)) {
             $text = VerificationText::outcome($outcome['outcome'], $outcome['note']);
             $this->timeline($done, 'verify', $text, null, $now);
             $this->eventAll($done, ChangeText::name($done) . ': ' . lcfirst($text), $outcome['outcome'] === VerificationOutcome::VERIFIED ? 'ok' : 'warning', $user);
@@ -2373,8 +2377,7 @@ final class ChangeLifecycle
 
     /**
      * Are the change's batches verified? Decided at its Apply (apply()): not when its outcome says so from then on (Verify
-     * changes off, or no verification API then). A change applied before phase 4 goes on unverified: its first batch
-     * started without a verification (it has none, and is no longer pending).
+     * changes off, or no verification API then), nor for a change applied before the upgrade to phase 4 (appliedBefore()).
      */
     private function verifying(array $change, int $number): bool
     {
@@ -2384,6 +2387,22 @@ final class ChangeLifecycle
         $first = $this->changes->batches((int) $change['id'])[1] ?? [];
 
         return isset($first['verify']) || ($number === 1 && ($first['status'] ?? null) === 'pending');
+    }
+
+    /**
+     * Was the change applied before the upgrade to phase 4? Its first batch started without a verification (it has none,
+     * and is no longer pending), and its Apply gave it no outcome: it goes on as in phase 3, its batches never verified,
+     * and ends not verified (VerificationOutcome::BEFORE_UPGRADE). One whose first batch had not started yet at the
+     * upgrade is verified from it on.
+     *
+     * @param  array<int, array>  $batches  its batches (ChangeStore::batches())
+     */
+    public static function appliedBefore(array $change, array $batches): bool
+    {
+        $first = $batches[1] ?? [];
+
+        return ($change['apply_started_at'] ?? null) !== null && ($change['verification'] ?? null) === null && ! isset($first['verify'])
+            && ($first['status'] ?? 'pending') !== 'pending';
     }
 
     /**

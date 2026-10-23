@@ -50,7 +50,9 @@
     // one not applied yet says when a change applied now would not be verified ($verifyWhy)
     $outcome = $change['verification'] ?? null;
     $verifyWhy = $change['apply_started_at'] === null && ! $final ? ($verifyWhy ?? null) : null;
-    $verifyOn = $settings->verify || $verification || $outcome !== null;
+    // applied before the upgrade to phase 4: its first batch ran before it, not verified, and it goes on as in phase 3
+    $beforeUpgrade = \Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::appliedBefore($change, $batches);
+    $verifyOn = $settings->verify || $verification || $outcome !== null || $beforeUpgrade;
     $verifyCurrent = $verification[(int) $change['current_batch']] ?? null;
     $verifyWait = in_array($change['waiting'], \Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::VERIFY_WAITS, true) && ! $final ? $verifyCurrent : null;
     $resultCss = ['verified' => 'success', 'unexpected' => 'danger', 'unknown' => 'warning'];
@@ -136,9 +138,9 @@
         @if($verifyOn)
             @php
                 $verifyCss = $outcome !== null ? ['verified' => 'ok', 'accepted' => 'warning', 'not_verified' => 'critical'][$outcome] ?? 'info'
-                    : (($verifyCurrent['result'] ?? null) === 'unexpected' ? 'critical' : (($verifyCurrent['result'] ?? null) === 'unknown' || $verifyWhy !== null ? 'warning' : 'info'));
+                    : ($beforeUpgrade || ($verifyCurrent['result'] ?? null) === 'unexpected' ? 'critical' : (($verifyCurrent['result'] ?? null) === 'unknown' || $verifyWhy !== null ? 'warning' : 'info'));
                 $verifyNow = $outcome !== null ? ucfirst((string) \Agoodley\LibrenmsAnsible\Changes\VerificationText::label($outcome))
-                    : ($final ? 'Not verified' : ($change['apply_started_at'] === null ? ($verifyWhy !== null ? 'Not if applied now' : 'Each batch') : 'Batch ' . (int) $change['current_batch'] . ': '
+                    : ($final || $beforeUpgrade ? 'Not verified' : ($change['apply_started_at'] === null ? ($verifyWhy !== null ? 'Not if applied now' : 'Each batch') : 'Batch ' . (int) $change['current_batch'] . ': '
                         . (isset($verifyCurrent['result']) ? $resultLabels[$verifyCurrent['result']] ?? $verifyCurrent['result'] : (in_array($verifyCurrent['after']['status'] ?? null, ['waiting', 'settling'], true)
                             ? 'waits for fresh data' : (in_array($verifyCurrent['before']['status'] ?? null, ['refresh', 'waiting', 'take'], true) ? 'state before it' : 'to do')))));
             @endphp
@@ -146,7 +148,8 @@
                 <h4>Verification</h4>
                 <div class="ans-card-value" style="font-size: 17px" id="ans-verify-state">{{ $verifyNow }}</div>
                 <p id="ans-verify-note">@if($outcome !== null && ($change['verification_note'] ?? null)){{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::note($change['verification_note'],
-                        ! $verification && $change['apply_started_at'] !== null) }}@elseif($verifyWhy !== null){{ ucfirst($verifyWhy) }}: a change applied now runs without a verification
+                        ! $verification && $change['apply_started_at'] !== null) }}@elseif($beforeUpgrade){{ ucfirst((string) \Agoodley\LibrenmsAnsible\Changes\VerificationText::note(
+                        \Agoodley\LibrenmsAnsible\Changes\VerificationOutcome::BEFORE_UPGRADE)) }}@elseif($verifyWhy !== null){{ ucfirst($verifyWhy) }}: a change applied now runs without a verification
                     @elseif(! $settings->verify && ! $final)switched off in the settings @else the network around each batch, before and after it (topology plugin)@endif</p>
             </div>
         @endif

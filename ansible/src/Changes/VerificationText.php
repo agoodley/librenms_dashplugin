@@ -29,21 +29,31 @@ final class VerificationText
 
     /**
      * The outcome as the Changes list shows it: its label, and "(switched off)" for a change applied with Verify changes
-     * off (why the others are not verified is the label's title).
+     * off, "(applied before the upgrade)" for one applied before phase 4 (why the others are not verified is the label's
+     * title).
      */
     public static function listed(?string $outcome, ?string $note): ?string
     {
-        return $outcome === null ? null : self::label($outcome) . ($note === VerificationOutcome::SWITCHED_OFF ? ' (switched off)' : '');
+        return $outcome === null ? null : self::label($outcome) . match ($note) {
+            VerificationOutcome::SWITCHED_OFF => ' (switched off)',
+            VerificationOutcome::BEFORE_UPGRADE => ' (applied before the upgrade)',
+            default => '',
+        };
     }
 
     /**
      * Why a change is not verified, as its page says it: one applied without verification ($atApply: its outcome is its
-     * Apply's) says that its batches run without one; one applied with Verify changes off says where.
+     * Apply's) says that its batches run without one; one applied with Verify changes off says where; one applied before
+     * the upgrade to phase 4, that its first batch ran before it.
      */
     public static function note(?string $note, bool $atApply = false): ?string
     {
         if ($note === VerificationOutcome::SWITCHED_OFF) {
             return 'switched off in the settings (Verify changes) when it was applied: its batches run without a verification';
+        }
+        if ($note === VerificationOutcome::BEFORE_UPGRADE) {
+            return 'applied before the upgrade to phase 4: batch 1 ran before the upgrade, not verified, and the batches after it run as in phase 3, without a '
+                . 'verification (whether a change is verified is decided at its Apply)';
         }
 
         return $note !== null && $atApply ? "$note when it was applied: its batches run without a verification" : $note;
