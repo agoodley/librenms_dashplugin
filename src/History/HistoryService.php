@@ -381,17 +381,50 @@ class HistoryService
     }
 
     /**
+     * The facts of some devices as a snapshot would record them now (the verification API's states): the links,
+     * port-channel members, blocked ports, OSPF adjacencies and BGP sessions of $ids, and the root bridges $rootIds see;
+     * only the kinds the user's role may read. The devices are scoped by the caller; a far end outside $nameIds keeps its
+     * LLDP/CDP name. A kind that cannot be read is left out and named in $failed.
+     *
+     * @param  int[]  $ids
+     * @param  int[]  $rootIds
+     * @param  int[]  $nameIds  the devices whose names the facts may use (those the user may see)
+     * @param  string[]  $failed  set to the kinds that could not be read
+     * @return array<string, array> hash => fact (FactCollector)
+     */
+    public function currentFacts(TopologyRepository $topology, array $ids, array $rootIds, array $nameIds, ?array &$failed = null): array
+    {
+        $failed = [];
+        $facts = [];
+        $leftOut = [];
+        $readers = array_filter($this->sources($topology, $ids, $leftOut, $nameIds), fn ($kind) => $kind !== FactCollector::STP_ROOT && $this->factAllowed($kind),
+            ARRAY_FILTER_USE_KEY);
+        if ($this->factAllowed(FactCollector::STP_ROOT)) {
+            $readers[FactCollector::STP_ROOT] = $this->sources($topology, $rootIds, $leftOut, $nameIds)[FactCollector::STP_ROOT];
+        }
+        foreach (Jobs::read($readers, function (string $kind, \Throwable $e) use (&$failed): void {
+            Log::error("topology plugin: the facts of $kind could not be read: " . $e->getMessage());
+            $failed[] = $kind;
+        }) as $current) {
+            $facts += $current;
+        }
+
+        return $facts;
+    }
+
+    /**
      * The facts of the devices as they are now, from the LibreNMS tables: one reader per kind, so a
      * large network is read a kind at a time and a kind that cannot be read is skipped alone.
      *
      * @param  int[]  $ids
      * @param  array<string, string[]>  $leftOut  set by a reader to the hashes of what it no longer records (FactDiff)
+     * @param  int[]|null  $nameIds  the devices whose names the facts use (default: $ids)
      * @return array<string, callable(): array<string, array>> kind => reader (hash => fact)
      */
-    private function sources(TopologyRepository $topology, array $ids, array &$leftOut): array
+    private function sources(TopologyRepository $topology, array $ids, array &$leftOut, ?array $nameIds = null): array
     {
-        $names = $this->history->names($ids);
-        $hostNames = $this->history->hostNames($ids);
+        $names = $this->history->names($nameIds ?? $ids);
+        $hostNames = $this->history->hostNames($nameIds ?? $ids);
         $collector = fn (array $portIds) => new FactCollector($names, $topology->ports($portIds, self::PORT_COLUMNS), $hostNames);
 
         return [

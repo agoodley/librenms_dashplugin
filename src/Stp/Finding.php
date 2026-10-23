@@ -17,6 +17,9 @@ class Finding
      * @param  int[]  $devices
      * @param  int[]  $ports
      * @param  string  $config  suggested configuration lines (empty when there are none)
+     * @param  array<string, mixed>  $fix  what a fix of the finding would set, as data (empty when it has no clear one): the port
+     *                                     descriptions of the description checks (ports: port_id => description), the root bridge of
+     *                                     the root placement checks (root, root_priority, root_mac); the verification API's fixes
      */
     public function __construct(
         public readonly string $severity,
@@ -28,11 +31,12 @@ class Finding
         public readonly array $devices = [],
         public readonly array $ports = [],
         public readonly string $config = '',
+        public readonly array $fix = [],
     ) {
     }
 
     /**
-     * Array form used by the views and the JSON API.
+     * Array form used by the views and the JSON API; "fix" only for a finding that has one.
      */
     public function toArray(): array
     {
@@ -48,7 +52,7 @@ class Finding
             'devices' => array_values(array_unique($this->devices)),
             'ports' => array_values(array_unique($this->ports)),
             'config' => $this->config,
-        ];
+        ] + ($this->fix ? ['fix' => $this->fix] : []);
     }
 
     /**

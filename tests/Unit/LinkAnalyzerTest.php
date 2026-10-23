@@ -319,6 +319,28 @@ class LinkAnalyzerTest extends TestCase
 
         $this->assertCount(1, $codes['description_missing']);
         $this->assertSame('1 port: Te1/1/2 (core2 Te1/0/3).', $codes['description_missing'][0]['detail']);
+
+        // the same descriptions as data, for the verification API's fixes: port id => description
+        $this->assertSame(['ports' => [31 => 'core1 Te1/0/3', 33 => 'lab-sw Gi0/1', 34 => 'ap-12 eth0']], $wrong['fix']);
+        $this->assertSame(['ports' => [32 => 'core2 Te1/0/3']], $codes['description_missing'][0]['fix']);
+    }
+
+    public function testADescriptionKeepsItsCharactersAndLength(): void
+    {
+        $this->assertSame('core1 Te1/0/3', LinkAnalyzer::cleanDescription('core1 Te1/0/3'));
+        $this->assertSame('sw_shut_end', LinkAnalyzer::cleanDescription("sw\n!\nshut\r\nend"), 'each run of other characters is one underscore');
+        $this->assertSame('a b', LinkAnalyzer::cleanDescription('  a    b  '));
+        $this->assertSame('x_y_z', LinkAnalyzer::cleanDescription('x"y\'z'));
+        $this->assertSame('ap-12.example.net Gi1/0/1 (port 1) #2 @rack:3,+_', LinkAnalyzer::cleanDescription('ap-12.example.net Gi1/0/1 (port 1) #2 @rack:3,+;'));
+        $long = LinkAnalyzer::cleanDescription(str_repeat('abcdefghij', 12));
+        $this->assertSame(LinkAnalyzer::DESCRIPTION_MAX, mb_strlen($long));
+        foreach (["\u{00e9}t\u{00e9} \u{2192} <b>&amp;</b> `rm -rf` \$(id) {x} [y] |z| ~ ^ % * = ? !", str_repeat(' ', 100) . 'a', "\0\x1b[31m"] as $hostile) {
+            $clean = LinkAnalyzer::cleanDescription($hostile);
+            $this->assertMatchesRegularExpression('/^[' . LinkAnalyzer::DESCRIPTION_CHARS . ']*$/D', $clean);
+            $this->assertLessThanOrEqual(LinkAnalyzer::DESCRIPTION_MAX, strlen($clean));
+            $this->assertSame(trim($clean), $clean);
+            $this->assertStringNotContainsString('  ', $clean);
+        }
     }
 
     public function testDescriptionConfigUsesTheSyntaxOfTheOs(): void
@@ -442,6 +464,7 @@ class LinkAnalyzerTest extends TestCase
 
         $config = $codes['description_wrong'][0]['config'];
         $this->assertSame(['interface GigabitEthernet1/0/33', ' description switch_username backdoor privilege 15 secret 0 pw port 1_end'], explode("\n", $config));
+        $this->assertSame([33 => 'switch_username backdoor privilege 15 secret 0 pw port 1_end'], $codes['description_wrong'][0]['fix']['ports']);
     }
 
     public function testPortWithTwoMonitoredNeighborsMayNameEither(): void

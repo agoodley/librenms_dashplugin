@@ -29,6 +29,8 @@ class RoleData
         'rollout' => ['links', 'ports', 'ports_stack'],
         'dependencies' => ['links', 'device_outages', 'ports', 'ports_stack'],
         'changes' => ['links', 'ports', 'stp', 'ports_stp', 'ospf_nbrs', 'bgpPeers'],
+        // the verification API (no page): the history's facts and the background checks' data
+        'verification' => ['links', 'ports', 'ports_stack', 'stp', 'ports_stp', 'ospf_nbrs', 'bgpPeers', 'device_outages'],
         // saved views open the L2 and L3 maps
         'views' => [...self::L2, ...self::L3],
     ];

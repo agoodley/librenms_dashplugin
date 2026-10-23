@@ -31,6 +31,14 @@ class LinkAnalyzer
     private const MIN_DISCARDS = 100;
 
     /** Names too generic to identify a device in a port description. */
+    /**
+     * The characters a description cleanDescription() makes may have (a character class body), and its most characters:
+     * what host and port names use, so no line break, quote or variable reaches a configuration.
+     */
+    public const DESCRIPTION_CHARS = 'A-Za-z0-9 ._\\/:+()#@,-';
+
+    public const DESCRIPTION_MAX = 80;
+
     private const GENERIC_NAMES = ['switch', 'router', 'core', 'access', 'uplink', 'downlink', 'trunk', 'link', 'port', 'server', 'firewall', 'stack', 'local', 'default'];
 
     /** Check codes and their category; the "disabled checks" setting accepts either. */
@@ -1048,6 +1056,7 @@ class LinkAnalyzer
                 'Stale descriptions mislead troubleshooting. The configuration below describes each port with its current LLDP/CDP neighbor.',
                 null, [$deviceId], $ports,
                 $this->config($deviceId, array_map(fn ($item) => $item[2], $items)),
+                ['ports' => self::fixPorts(array_map(fn ($item) => $item[2], $items))],
             ));
         }
 
@@ -1064,6 +1073,7 @@ class LinkAnalyzer
                 'Describe inter-switch ports with the neighbor name and port, for example with the configuration below.',
                 null, [$deviceId], array_keys($items),
                 $this->config($deviceId, $items),
+                ['ports' => self::fixPorts($items)],
             ));
         }
     }
@@ -1098,15 +1108,34 @@ class LinkAnalyzer
     }
 
     /**
+     * What a fix of a description finding sets, as data: port_id => the description cleanDescription() makes (the
+     * same text as its configuration lines), in port order.
+     *
+     * @param  array<int, string>  $descriptions  port_id => description
+     * @return array<int, string>
+     */
+    private static function fixPorts(array $descriptions): array
+    {
+        $ports = [];
+        foreach ($descriptions as $portId => $description) {
+            $ports[(int) $portId] = self::cleanDescription($description);
+        }
+        ksort($ports);
+
+        return $ports;
+    }
+
+    /**
      * A description that is safe to paste into a CLI. Neighbour names come from LLDP/CDP, which
      * any device can advertise: keep only characters host and port names use, so no line break,
-     * quote or variable can smuggle further commands into the configuration.
+     * quote or variable can smuggle further commands into the configuration. The verification
+     * API's fixes and the Ansible plugin rely on this set and length (DESCRIPTION_CHARS, DESCRIPTION_MAX).
      */
-    private static function cleanDescription(string $text): string
+    public static function cleanDescription(string $text): string
     {
-        $text = preg_replace('/[^A-Za-z0-9 ._\/:+()#@,-]+/', '_', $text) ?? '';
+        $text = preg_replace('/[^' . self::DESCRIPTION_CHARS . ']+/', '_', $text) ?? '';
 
-        return mb_substr(trim((string) preg_replace('/ {2,}/', ' ', $text)), 0, 80);
+        return trim(mb_substr(trim((string) preg_replace('/ {2,}/', ' ', $text)), 0, self::DESCRIPTION_MAX));
     }
 
     /**
