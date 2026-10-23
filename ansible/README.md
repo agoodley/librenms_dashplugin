@@ -237,9 +237,8 @@ Then:
    starts within a minute of *Apply*, from the sync command (its state before it is taken there), once LibreNMS
    discovered its devices again (*Fresh data: ask*): check that LibreNMS' discovery runs (the discovery cron or the
    dispatcher service; `./validate.php`), else every batch waits *Wait for fresh data* and then cannot be verified.
-   **Without the topology plugin, switch *Verify changes* off** (or set *When a batch cannot be verified* to *only
-   record it*): else every change of more than one batch pauses after its first batch, *not verified*, until an
-   admin accepts going on.
+   Without the topology plugin (or with one too old for the verification API) a change runs as in phase 3: it is
+   *not verified*, and says why.
 3. Changes applied before go on unverified.
 4. For the Fixes page: set *Designated root bridges* or *Core devices* in the topology plugin's settings (no root
    fix without them), copy the [example fix playbooks](contrib/playbooks) into the playbook repository (review and
@@ -435,11 +434,11 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | When the blast radius grew | pause until an admin accepts it | a batch that would cut off devices that were not approved, or now takes down every core device of its part (approved with one left standing), waits for an admin to accept the new blast radius: one with the approve permission (not the requester with a second admin), or, while *Approval* is off, one with the run permission; or *refuse the batch*: the change ends |
 | When the blast radius cannot be computed | pause for an admin | a batch whose blast radius cannot be computed (the topology plugin disabled, an error, a device of the batch it can no longer tell about) does not start: it is checked again every minute and starts on its own once it can be computed; meanwhile an admin who may accept a new blast radius (the approve permission, not the requester with a second admin; the run permission while *Approval* is off) may continue it (*Continue* computes it first, and only while it still cannot be computed does the batch go without one); or *refuse the batch* |
 | *Verification and fixes* | | the part says whether the topology plugin can verify now, and why not |
-| Verify changes | on | each batch is verified with the topology plugin: the state of the network around it taken before it and again after it on fresh data, compared ([Verification](#verification)); off, every batch goes as in phase 3 |
+| Verify changes | on | each batch is verified with the topology plugin: the state of the network around it taken before it and again after it on fresh data, compared ([Verification](#verification)); off, a change applied then runs as in phase 3, *not verified (switched off)*. Decided at *Apply*: a change applied without the topology plugin's verification API runs the same way, not verified with why |
 | Fresh data | ask LibreNMS for a discovery | before a batch and after it, LibreNMS is asked to discover its scope again (as its *Rediscover* button does, or a discovery job each with LibreNMS' scheduler); or *wait for LibreNMS' own discovery and polling* |
 | Wait for fresh data | 30 min | after a batch and its settle time, the longest the plugin waits for a discovery and a poll of its scope that started after it: then the batch cannot be verified; before the first batch, the longest it waits for the refresh it asked: then the state is taken anyway, older than the Apply (1–1440) |
 | When a batch makes unexpected changes | pause until an admin accepts them | an uplink lost, a cable moved, a root bridge moved, a port that started blocking, an OSPF adjacency or BGP session lost, a device down, a new or worse finding: the next batch waits for an admin to accept them (as a new blast radius is accepted); or *stop the change*, or *only record them*. The last batch never pauses |
-| When a batch cannot be verified | pause until an admin accepts it | no fresh data within the wait, the topology plugin disabled, a state that cannot be taken: the next batch waits for an admin to accept going on without the verification (checked again every minute meanwhile); or *stop the change*, or *only record it* |
+| When a batch cannot be verified | pause until an admin accepts it | no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be taken: the next batch waits for an admin to accept going on without the verification (checked again every minute meanwhile); or *stop the change*, or *only record it* |
 | Count findings from | warning | the lowest severity of a new or worse finding of the topology plugin that counts as unexpected (*critical*, *warning*, *info*); lower ones are listed, never pause |
 | Template for port description fixes | none | the id of the template the Fixes page uses for port descriptions; it must have the survey variable `port_descriptions` of type *Text* (checked with the runner when it is saved, and at each new change) |
 | Template for root priority fixes | none | the same for the spanning tree root priority, with the survey variable `stp_priorities` |
@@ -928,8 +927,16 @@ With the topology plugin's [verification API](../README.md#verification-api-for-
 *Verify changes* on (the default), the plugin verifies each batch: it takes **the state of the network around the
 batch** before it, and again after it once LibreNMS' data of those devices is fresh, compares the two, and holds the
 change when the batch changed something nobody asked for. It never reads the topology plugin's tables or other
-classes. Without it (not installed, disabled in *Plugin Admin*, an API of another major version) no batch can be
-verified, and the change goes on as *When a batch cannot be verified* says: switch *Verify changes* off there.
+classes.
+
+**Whether a change is verified is decided at its *Apply*.** Without the API then (the topology plugin not installed,
+disabled in *Plugin Admin*, too old for the verification API, an API of another major version), or with *Verify
+changes* off, the change runs as in phase 3: no state is taken, the Apply launches its first batch, no batch waits or
+pauses for a verification, and it ends **not verified**, with why: *the topology plugin is not installed*, *too old
+for the verification API: update both plugins together*, or *switched off* (said on its page and in the Changes list
+only, as in phase 3; the others also in the timeline and the eventlog). A change applied with the API is verified to
+its end, whatever the setting says meanwhile: an API that fails later (the topology plugin disabled since, an error)
+makes batches that **cannot be verified**, which follow *When a batch cannot be verified*.
 
 ### What a state covers
 
@@ -998,7 +1005,7 @@ the batch changed** on the change page, with an optional comment, as a new blast
 permission, never the requester with a second admin, while the settings ask for an approval; the run permission while
 they ask for none); the acceptance is for what the page showed, and refused when the verification changed since it
 was loaded. **Stop the change**: it ends as failed. **Only record them**: the change goes on. A batch that **cannot
-be verified** (no fresh data within the wait, the topology plugin disabled, a state that cannot be taken, a LibreNMS
+be verified** (no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be taken, a LibreNMS
 role that may not view the links, a part of the network the topology plugin could not read in either state, or for a
 fix the check that found its findings not run) follows **When a batch cannot be verified** the same way. While it
 pauses, the plugin checks every minute whether the data became fresh (when the state before the batch was taken), or
@@ -1012,8 +1019,9 @@ verification is done, or its wait for fresh data is over.
 ### The outcome
 
 A change ends **verified** (every batch verified), **verified with accepted changes** (an admin accepted what a batch
-changed, or going on without its verification) or **not verified** (a batch that could not be verified, unexpected
-changes only recorded or found by the last batch). The Changes list and the change page show it; the timeline names
+changed) or **not verified** (a batch that could not be verified, even when an admin went on without its
+verification, unexpected changes only recorded or found by the last batch; or, from its *Apply* on, a change applied
+without verification, with why). The Changes list and the change page show it; the timeline names
 what changed, the eventlog of each target counts it (it names no other device). The change page shows each batch's
 verification: its state before it, the wait for fresh data after it, and what the comparison found, sorted as above.
 
@@ -1200,7 +1208,9 @@ released has stopped by then.
 * **No batch after one whose verification found unexpected changes, or that could not be verified,** unless an admin
   accepted that explicitly (the rule of a new blast radius: the approve permission, never the requester with a second
   admin; the run permission while no approval is asked for), for what the change page showed; never with *stop the
-  change*. Both are recorded in the timeline and the eventlog. A paused batch is not started by *Continue*.
+  change*. Both are recorded in the timeline and the eventlog. A paused batch is not started by *Continue*. A change
+  applied without verification (*Verify changes* off, or no verification API at its *Apply*) is never verified, and
+  its outcome says so from its Apply on.
 * **Never a comparison on stale data:** the state after a batch is taken only from a discovery and a poll of its scope
   that started after the batch ended and its settle time; without them within the wait, the batch is not verified,
   never verified.

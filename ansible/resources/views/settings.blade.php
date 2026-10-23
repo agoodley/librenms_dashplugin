@@ -71,7 +71,8 @@
     $verifyFields = [
         ['verify', 'Verify changes', 'before each batch the state of the network around it is taken (its devices, what it cuts off, their LLDP/CDP neighbors and spanning tree '
             . 'domains: links, port-channels, blocked ports, root bridges, OSPF and BGP, and the topology plugin\'s findings), and again after it once LibreNMS\' data is '
-            . 'fresh; the two are compared. Needs the topology plugin'],
+            . 'fresh; the two are compared. Needs the topology plugin. Decided at Apply: a change applied while it is off, or without the topology plugin, runs without a '
+            . 'verification and ends not verified'],
         ['verify_fresh', 'Fresh data', 'ask: LibreNMS is asked for a discovery of the devices before a batch and after it (its devices, what it cuts off and their neighbors), as its '
             . 'Rediscover button does; wait: the plugin waits for LibreNMS\' own discovery and polling (by default every 6 hours and 5 minutes)'],
         ['verify_wait_minutes', 'Wait for fresh data (minutes)', 'after a batch (and its settle time), the longest the plugin waits for a discovery and a poll of its devices '
@@ -80,7 +81,7 @@
         ['verify_unexpected', 'When a batch makes unexpected changes', 'a link gone, a cable moved, a root bridge moved, a port that started blocking, an OSPF adjacency or BGP '
             . 'session lost, a device down, a new or worse finding: pause until an admin accepts them (as a new blast radius is accepted), stop the change, or only record '
             . 'them. The last batch never pauses: the change ends, not verified'],
-        ['verify_unknown', 'When a batch cannot be verified', 'no fresh data within the wait, the topology plugin disabled, a state that cannot be taken: pause until an admin '
+        ['verify_unknown', 'When a batch cannot be verified', 'no fresh data within the wait, the topology plugin disabled since the Apply, a state that cannot be taken: pause until an admin '
             . 'accepts going on without the verification (checked again every minute meanwhile), stop the change, or only record it'],
         ['verify_minimum', 'Count findings from', 'the lowest severity of the topology plugin\'s findings that counts as an unexpected change when new or worse; lower ones are '
             . 'listed, never pause'],
@@ -372,8 +373,8 @@
             @endif
             <p class="help-block" id="ans-verify-intro">@if(array_key_exists('verification', $a) && $a['verification'] === null)The topology plugin offers its verification API: each batch can be
                 verified, and its Fixes page lists the findings whose fix is clear.@else<span class="text-warning"><i class="fa fa-exclamation-triangle"></i> The topology plugin
-                cannot verify now: {{ $a['verification'] }}.</span> With Verify changes on, every batch is then not verified, and with "When a batch cannot be verified: pause"
-                each change waits for an admin after its first batch: switch verification off, or choose "only record it", while the topology plugin is not there.@endif
+                cannot verify now: {{ $a['verification'] }}.</span> A change applied meanwhile is not verified: it runs without a verification (none of its batches waits or
+                pauses for one), and its outcome says why. A change applied before goes on as When a batch cannot be verified says.@endif
                 Saved by the plugin; each change goes to the eventlog.</p>
             @foreach($verifyFields as [$name, $label, $help])
                 <div class="form-group row">

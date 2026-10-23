@@ -27,6 +27,28 @@ final class VerificationText
         return $outcome === null ? null : (self::OUTCOMES[$outcome][1] ?? $outcome);
     }
 
+    /**
+     * The outcome as the Changes list shows it: its label, and "(switched off)" for a change applied with Verify changes
+     * off (why the others are not verified is the label's title).
+     */
+    public static function listed(?string $outcome, ?string $note): ?string
+    {
+        return $outcome === null ? null : self::label($outcome) . ($note === VerificationOutcome::SWITCHED_OFF ? ' (switched off)' : '');
+    }
+
+    /**
+     * Why a change is not verified, as its page says it: one applied without verification ($atApply: its outcome is its
+     * Apply's) says that its batches run without one; one applied with Verify changes off says where.
+     */
+    public static function note(?string $note, bool $atApply = false): ?string
+    {
+        if ($note === VerificationOutcome::SWITCHED_OFF) {
+            return 'switched off in the settings (Verify changes) when it was applied: its batches run without a verification';
+        }
+
+        return $note !== null && $atApply ? "$note when it was applied: its batches run without a verification" : $note;
+    }
+
     public static function css(?string $outcome): string
     {
         return self::OUTCOMES[$outcome ?? ''][0] ?? 'default';

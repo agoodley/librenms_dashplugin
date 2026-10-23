@@ -7,6 +7,7 @@ use Agoodley\LibrenmsAnsible\Changes\FixExpectation;
 use Agoodley\LibrenmsAnsible\Changes\Freshness;
 use Agoodley\LibrenmsAnsible\Changes\VerificationOutcome;
 use Agoodley\LibrenmsAnsible\Changes\VerificationRules;
+use Agoodley\LibrenmsAnsible\Changes\VerificationText;
 use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
 use Agoodley\LibrenmsAnsible\Runner\SurveyVar;
 use PHPUnit\Framework\TestCase;
@@ -197,7 +198,19 @@ class VerificationRulesTest extends TestCase
         $this->assertSame('not_verified', VerificationOutcome::of([1 => $batch('done', ['result' => 'unknown', 'accepted' => ['by' => 'bob']])])['outcome'],
             'going on without a verification does not make it one');
         $this->assertSame(['outcome' => null, 'note' => null], VerificationOutcome::of([1 => $batch('cancelled', null)]), 'nothing ran');
-        $this->assertSame(['outcome' => null, 'note' => null], VerificationOutcome::of([1 => $batch('done', null)]), 'not verified at all (verification off)');
+        $this->assertSame(['outcome' => null, 'note' => null], VerificationOutcome::of([1 => $batch('done', null)]), 'not verified at all (applied before phase 4)');
+    }
+
+    public function testTheOutcomeOfAChangeAppliedWithoutVerificationSaysWhy(): void
+    {
+        $this->assertSame('not verified (switched off)', VerificationText::listed('not_verified', VerificationOutcome::SWITCHED_OFF));
+        $this->assertSame('not verified', VerificationText::listed('not_verified', 'the topology plugin is not installed'), 'why is the label\'s title');
+        $this->assertSame('verified with accepted changes', VerificationText::listed('accepted', 'what batch 1 changed was accepted'));
+        $this->assertNull(VerificationText::listed(null, null));
+        $this->assertSame('the topology plugin is not installed when it was applied: its batches run without a verification',
+            VerificationText::note('the topology plugin is not installed', true));
+        $this->assertSame('batch 1 could not be verified', VerificationText::note('batch 1 could not be verified'));
+        $this->assertStringStartsWith('switched off in the settings (Verify changes) when it was applied', (string) VerificationText::note(VerificationOutcome::SWITCHED_OFF));
     }
 
     // ------------------------------------------------------------------ the fix templates' contract

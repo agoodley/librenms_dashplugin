@@ -102,8 +102,11 @@ class ChangeController extends Controller
             'target_names' => $change['target_names'], 'batches' => (int) $change['batch_count'], 'current_batch' => (int) $change['current_batch'],
             // what a paused change waits for: an admin, the secret answers, the pause, the acceptance of a batch's new blast radius ...
             'waiting' => $change['waiting'], 'waiting_text' => ChangeStatus::waitingText($change['waiting']),
-            // the outcome of its verification (phase 4): verified, verified with accepted changes, not verified; null while it runs or without one
-            'verification' => $change['verification'] ?? null, 'verification_label' => \Agoodley\LibrenmsAnsible\Changes\VerificationText::label($change['verification'] ?? null),
+            // the outcome of its verification (phase 4): verified, verified with accepted changes, not verified (and why: from its Apply on for
+            // a change applied without verification); null while it runs or without one
+            'verification' => $change['verification'] ?? null,
+            'verification_label' => \Agoodley\LibrenmsAnsible\Changes\VerificationText::listed($change['verification'] ?? null, $change['verification_note'] ?? null),
+            'verification_note' => \Agoodley\LibrenmsAnsible\Changes\VerificationText::note($change['verification_note'] ?? null),
             'url' => route('ansible.changes.show', $change['id']),
         ], $result['rows'])]);
     }
@@ -608,6 +611,9 @@ class ChangeController extends Controller
             'continueAs' => $actions['continue'] && ! $canRun ? ChangeLifecycle::startedBy($change, $batches[(int) $change['current_batch']] ?? [])['username'] : null,
             'laterBusy' => $laterBusy, 'topology' => $topology, 'blast' => $blast, 'blastCheck' => self::blastCheck($change, $batches),
             'verification' => $verification, 'verifyCheck' => self::verifyCheck($change, $batches), 'verifyRefusal' => $verifyRefusal,
+            // before the apply: why a change applied now would not be verified (the topology plugin's verification API not there)
+            'verifyWhy' => $settings->verify && $change['apply_started_at'] === null && ! ChangeStatus::isFinal($status)
+                ? (new \Agoodley\LibrenmsAnsible\Services\TopologyVerification())->unavailable() : null,
             'topologyPlanned' => \Agoodley\LibrenmsAnsible\Changes\BatchPlan::isTopology($change['plan'] ?? null),
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
             'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($settings->approval, $change) : null,

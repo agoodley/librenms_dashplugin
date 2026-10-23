@@ -490,7 +490,7 @@ final class ChangeRepository implements ChangeStore
         $total = (clone $query)->count();
         $rows = $query->orderByDesc('c.id')->forPage(max(1, $page), $perPage)
             ->get(['c.id', 'c.username', 'c.template_id', 'c.template_name', 'c.reference', 'c.status', 'c.target_count', 'c.batch_count', 'c.current_batch',
-                'c.dry_run_state', 'c.waiting', 'c.created_at', 'c.finished_at', 'c.verification'])
+                'c.dry_run_state', 'c.waiting', 'c.created_at', 'c.finished_at', 'c.verification', 'c.verification_note'])
             ->map(fn ($r) => (array) $r)->all();
         $names = [];
         if ($rows) {

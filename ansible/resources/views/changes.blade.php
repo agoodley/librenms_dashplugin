@@ -89,7 +89,7 @@
                     <td data-label="Status"><span class="label label-{{ ChangeStatus::css($change['status']) }}">{{ ChangeStatus::label($change['status']) }}</span>
                         @if(($change['verification'] ?? null) !== null)
                             <span class="label label-{{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::css($change['verification']) }} ans-change-verification"
-                                  data-verification="{{ $change['verification'] }}" title="the outcome of its verification">{{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::label($change['verification']) }}</span>
+                                  data-verification="{{ $change['verification'] }}" title="the outcome of its verification{{ ($change['verification_note'] ?? null) ? ': ' . \Agoodley\LibrenmsAnsible\Changes\VerificationText::note($change['verification_note']) : '' }}">{{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::listed($change['verification'], $change['verification_note'] ?? null) }}</span>
                         @endif
                         @if(in_array($change['status'], ChangeStatus::RESERVING, true))
                             {{-- the inline form: this view's other @php is inline too (a block @php here would swallow the row) --}}

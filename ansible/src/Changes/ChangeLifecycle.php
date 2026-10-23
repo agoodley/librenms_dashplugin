@@ -51,7 +51,10 @@ use Agoodley\LibrenmsAnsible\Support\Format;
  *   it, or only record it; the last batch does not pause (nothing is left to hold): the change ends with its outcome
  *   (verified, verified with accepted changes, not verified), its devices reserved until that last verification is
  *   done or timed out. Only the sync command takes states (a large analysis, in a process of its own), never a page's
- *   request; no batch compares data older than its end.
+ *   request; no batch compares data older than its end. Whether a change is verified is decided at its Apply: with
+ *   Verify changes off, or without the verification API then (the topology plugin not installed, disabled, too old),
+ *   it runs as in phase 3, never waits or pauses for a verification, and ends not verified with why; one applied with
+ *   it is verified to its end (an API that fails later makes batches that cannot be verified).
  *
  * Every write of the change's row is a compare-and-set on its version, and only the request whose write succeeded
  * writes the rest (batches, events); a batch's run has a one-time token, so it is launched once at most. The callers
@@ -381,11 +384,15 @@ final class ChangeLifecycle
 
             return 'The approval no longer counts (' . $approval . '): the change needs a new approval.';
         }
+        // phase 4: whether its batches are verified is decided now. Verify changes off, or the topology plugin's verification
+        // API not there (not installed, disabled, too old): the change runs as in phase 3, never waits or pauses for a
+        // verification, and its outcome says why it is not verified
+        $unverified = $this->unverifiedWhy();
         // the switch to applying reserves the change's devices: checked and written under the lock of the launches, so
         // neither another change's apply nor a run takes one of them in between
         $targets = $this->changes->targets($id);
         $started = null;
-        $refusal = $this->runner->exclusive(function () use ($id, $change, $user, $now, $targets, &$started): ?string {
+        $refusal = $this->runner->exclusive(function () use ($id, $change, $user, $now, $targets, $unverified, &$started): ?string {
             $reserved = array_intersect_key($this->changes->reserved($id), $targets);
             if ($reserved) {
                 return self::reservedText($reserved, $targets);
@@ -398,7 +405,7 @@ final class ChangeLifecycle
             }
             $started = $this->update($change, ['status' => ChangeStatus::APPLYING, 'applied_by' => mb_substr($user['username'], 0, 255),
                 'applied_user_id' => (int) $user['user_id'], 'apply_started_at' => Clock::store($now), 'current_batch' => 1, 'waiting' => null, 'resume_at' => null,
-                'error' => null]);
+                'error' => null, 'verification' => $unverified !== null ? VerificationOutcome::NOT_VERIFIED : null, 'verification_note' => $unverified]);
 
             return $started === null ? 'The change changed meanwhile: reload the page.' : null;
         });
@@ -406,6 +413,9 @@ final class ChangeLifecycle
             return $refusal ?? 'The change changed meanwhile: reload the page.';
         }
         $this->timeline($started, 'apply', 'Apply started (' . self::planText($started, array_keys($targets)) . ').', $user['username'], $now);
+        if ($unverified !== null && $unverified !== VerificationOutcome::SWITCHED_OFF) {
+            $this->timeline($started, 'verify', "The change is not verified: $unverified. Its batches run without a verification: none waits or pauses for one.", null, $now);
+        }
         // a device of a later batch busy in another run now: that batch will wait for it (busyWaits()), or end the change; said
         // before the first batch runs
         $later = $this->laterBusyText($started, 1);
@@ -1533,9 +1543,11 @@ final class ChangeLifecycle
         if (ChangeStatus::isFinal($current['status'])) {
             return;
         }
-        // the outcome of its verification, from the batches that ran (null when none ran, or none was verified)
-        $outcome = in_array($status, [ChangeStatus::APPLIED, ChangeStatus::FAILED, ChangeStatus::STOPPED], true) ? VerificationOutcome::of($this->changes->batches($id))
-            : ['outcome' => null, 'note' => null];
+        // the outcome of its verification: a change not verified keeps the one its Apply gave it (why), the others take it from
+        // the batches that ran (null when none ran, or none was verified)
+        $outcome = ($current['verification'] ?? null) !== null ? ['outcome' => (string) $current['verification'], 'note' => $current['verification_note'] ?? null]
+            : (in_array($status, [ChangeStatus::APPLIED, ChangeStatus::FAILED, ChangeStatus::STOPPED], true) ? VerificationOutcome::of($this->changes->batches($id))
+                : ['outcome' => null, 'note' => null]);
         $done = $this->update($current, ['status' => $status, 'finished_at' => Clock::store($now), 'waiting' => null, 'resume_at' => null,
             'error' => $reason !== null ? UntrustedText::line($reason, 1000) : null, 'verification' => $outcome['outcome'],
             'verification_note' => $outcome['note'] !== null ? UntrustedText::line($outcome['note'], 1000) : null]);
@@ -1560,7 +1572,8 @@ final class ChangeLifecycle
             ChangeStatus::FAILED => 'error',
             default => 'warning',
         }, $user);
-        if ($outcome['outcome'] !== null) {
+        // switched off at its Apply, the change ran as in phase 3: its outcome says so on its page and in the list only
+        if ($outcome['outcome'] !== null && $outcome['note'] !== VerificationOutcome::SWITCHED_OFF) {
             $text = VerificationText::outcome($outcome['outcome'], $outcome['note']);
             $this->timeline($done, 'verify', $text, null, $now);
             $this->eventAll($done, ChangeText::name($done) . ': ' . lcfirst($text), $outcome['outcome'] === VerificationOutcome::VERIFIED ? 'ok' : 'warning', $user);
@@ -2273,14 +2286,44 @@ final class ChangeLifecycle
     }
 
     /**
-     * Does batch $number wait for the state before it (taken by the sync command, which then starts the batch)? Verification
-     * switched on, the state not taken yet (nor known to be impossible). The first time, it says so and asks for it: from data
-     * LibreNMS discovers again for it (Fresh data: ask), or as LibreNMS has it (wait). Without the topology plugin's
-     * verification API the batch goes on, not to be verified.
+     * Why a change applied now is not verified (it runs as in phase 3), null when it is: Verify changes off, or the topology
+     * plugin's verification API not there (not installed, disabled, too old).
+     */
+    private function unverifiedWhy(): ?string
+    {
+        if (! $this->settings->verify) {
+            return VerificationOutcome::SWITCHED_OFF;
+        }
+        $why = $this->verifier === null ? 'the topology plugin is not available to this plugin' : $this->verifier->unavailable();
+
+        return $why !== null ? UntrustedText::line($why, 300) : null;
+    }
+
+    /**
+     * Are the change's batches verified? Decided at its Apply (apply()): not when its outcome says so from then on (Verify
+     * changes off, or no verification API then). A change applied before phase 4 goes on unverified: its first batch
+     * started without a verification (it has none, and is no longer pending).
+     */
+    private function verifying(array $change, int $number): bool
+    {
+        if (($change['verification'] ?? null) !== null) {
+            return false;
+        }
+        $first = $this->changes->batches((int) $change['id'])[1] ?? [];
+
+        return isset($first['verify']) || ($number === 1 && ($first['status'] ?? null) === 'pending');
+    }
+
+    /**
+     * Does batch $number wait for the state before it (taken by the sync command, which then starts the batch)? A change
+     * verified (decided at its Apply), the state not taken yet (nor known to be impossible). The first time, it says so
+     * and asks for it: from data LibreNMS discovers again for it (Fresh data: ask), or as LibreNMS has it (wait). A
+     * verification API that is no longer there (disabled since the Apply) leaves the batch to go on: it cannot be
+     * verified after it, and the change then follows When a batch cannot be verified.
      */
     private function beforePending(array $change, int $number, int $now): bool
     {
-        if (! $this->settings->verify) {
+        if (! $this->verifying($change, $number)) {
             return false;
         }
         $id = (int) $change['id'];
@@ -2294,7 +2337,7 @@ final class ChangeLifecycle
         if ($why !== null) {
             $why = UntrustedText::line($why, 300);
             $this->setVerify($id, $number, ['before' => ['status' => 'unknown', 'error' => $why, 'at' => $now]]);
-            $this->timeline($change, 'verify', "Batch $number will not be verified: $why.", null, $now);
+            $this->timeline($change, 'verify', "The state before batch $number cannot be taken: $why. The batch runs, and cannot be verified after it.", null, $now);
 
             return false;
         }
@@ -2386,7 +2429,7 @@ final class ChangeLifecycle
      */
     private function verified(array $change, int $number, int $now): bool
     {
-        if (! $this->settings->verify) {
+        if (! $this->verifying($change, $number)) {
             return true;
         }
         $id = (int) $change['id'];

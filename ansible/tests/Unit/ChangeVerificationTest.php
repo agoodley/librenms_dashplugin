@@ -8,6 +8,8 @@ use Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle;
 use Agoodley\LibrenmsAnsible\Changes\ChangeSettings;
 use Agoodley\LibrenmsAnsible\Changes\ChangeStatus;
 use Agoodley\LibrenmsAnsible\Changes\TopologyError;
+use Agoodley\LibrenmsAnsible\Changes\VerificationOutcome;
+use Agoodley\LibrenmsAnsible\Changes\VerificationText;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeBackups;
 use Agoodley\LibrenmsAnsible\Tests\Unit\Fakes\FakeChangeRunner;
@@ -454,25 +456,132 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status']);
     }
 
-    public function testWithoutTheTopologyPluginTheBatchesAreNotVerified(): void
+    // ------------------------------------------------------------------ decided at Apply
+
+    /** @return array<string, array{string}> why the topology plugin's verification API is not there at the Apply */
+    public static function unavailableAtApply(): array
     {
-        $this->verifier->unavailable = 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)';
+        return [
+            'not installed' => ['the topology plugin is not installed'],
+            'too old' => ['the topology plugin is too old for the verification API this plugin needs: update both plugins together (this plugin\'s README, Upgrade from phase 3)'],
+            'disabled' => ['the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unavailableAtApply')]
+    public function testWithoutTheVerificationApiAtTheApplyTheChangeRunsWithoutAVerification(string $why): void
+    {
+        $this->verifier->unavailable = $why;
         $id = $this->approved();
         $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
-        $this->assertSame([[510]], $this->launched(), 'the batch goes on: there is nothing to wait for');
-        $this->assertStringContainsString('Batch 1 will not be verified: the topology plugin is disabled in LibreNMS', $this->messages($id));
-        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->assertSame([[510]], $this->launched(), 'the Apply launches batch 1 itself, as in phase 3: no state to take first');
         $change = $this->changes->find($id);
-        $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown'], [$change['status'], $change['waiting']], 'after it, it cannot be verified: the change pauses');
-        $this->assertSame(0, count($this->verifier->calls));
+        $this->assertSame([ChangeStatus::APPLYING, 'not_verified', $why], [$change['status'], $change['verification'], $change['verification_note']],
+            'its outcome from its Apply on');
+        $this->assertStringContainsString("The change is not verified: $why. Its batches run without a verification: none waits or pauses for one.", $this->messages($id));
 
-        $this->assertNull($this->web($this->t0 + 400)->acceptVerification($id, self::BOB, true, '', $this->t0 + 400, $this->seen($id)));
-        $this->assertStringContainsString('bob accepted going on without the verification of batch 1', $this->messages($id));
-        $this->assertSame([[510], [502]], $this->launched());
+        // the topology plugin back meanwhile changes nothing: decided at the Apply
+        $this->verifier->unavailable = null;
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->assertSame([[510], [502]], $this->launched(), 'batch 2 starts right after batch 1: nothing waits or pauses for a verification');
+        $this->sync($id, $this->t0 + 400);
         $this->endBatch($id, 2, $this->t0 + 500);
         $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::APPLIED, 'not_verified', $why], [$change['status'], $change['verification'], $change['verification_note']]);
+        $this->assertSame([], $this->verifier->calls, 'nothing asked of the topology plugin: no freshness, scope or state');
+        $this->assertSame([], $this->refresh->requests, 'nor of LibreNMS');
+        $this->assertSame([[], []], [$this->verify($id, 1), $this->verify($id, 2)]);
+        $this->assertStringContainsString("Verification: not verified ($why)", $this->messages($id));
+        $this->assertContains('warning', array_column(array_filter($this->events->of(510), fn ($e) => str_contains($e['message'], "not verified ($why)")), 'severity'),
+            'the eventlog of each target says it');
+    }
+
+    public function testAnApiThatFailsAfterTheApplyLeavesBatchesThatCannotBeVerified(): void
+    {
+        $id = $this->applied();
+        $this->assertSame([null, null], [$this->changes->find($id)['verification'], $this->changes->find($id)['verification_note']], 'verified: no outcome before its end');
+        // the topology plugin disabled while batch 1 runs
+        $this->verifier->unavailable = 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)';
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown'], [$change['status'], $change['waiting']], 'batch 1 cannot be verified: the setting pauses the change');
+        $this->assertStringContainsString('Batch 1 cannot be verified: the topology plugin is disabled in LibreNMS', $this->messages($id));
+        $this->assertSame([[510]], $this->launched());
+
+        $this->assertNull($this->web($this->t0 + 1000)->acceptVerification($id, self::BOB, true, '', $this->t0 + 1000, $this->seen($id)));
+        $this->assertStringContainsString('bob accepted going on without the verification of batch 1', $this->messages($id));
+        $this->assertStringContainsString('The state before batch 2 cannot be taken: the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin). The batch runs, '
+            . 'and cannot be verified after it.', $this->messages($id));
+        $this->assertSame([[510], [502]], $this->launched());
+        $this->endBatch($id, 2, $this->t0 + 1100);
+        $change = $this->changes->find($id);
         $this->assertSame([ChangeStatus::APPLIED, 'not_verified'], [$change['status'], $change['verification']], 'the last batch does not pause');
-        $this->assertStringContainsString('batch 1 could not be verified; batch 2 could not be verified', $change['verification_note']);
+        $this->assertSame('batch 1 could not be verified; batch 2 could not be verified', $change['verification_note']);
+    }
+
+    public function testRecordOnlyGoesOnWhenTheApiFailsAfterTheApply(): void
+    {
+        $this->settings = ['verifyUnknown' => 'record'];
+        $id = $this->applied();
+        $this->verifier->unavailable = 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)';
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->assertSame([[510], [502]], $this->launched(), 'recorded: the change goes on');
+        $this->assertStringContainsString('Recorded; the change goes on (setting When a batch cannot be verified: only record)', $this->messages($id));
+    }
+
+    public function testWithVerifyChangesOffTheChangeRunsWithoutAVerification(): void
+    {
+        $this->settings = ['verify' => false];
+        $id = $this->approved();
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->assertSame([[510]], $this->launched(), 'the Apply launches batch 1 itself, as in phase 3');
+        $change = $this->changes->find($id);
+        $this->assertSame(['not_verified', VerificationOutcome::SWITCHED_OFF], [$change['verification'], $change['verification_note']]);
+
+        // switched on meanwhile: decided at the Apply
+        $this->settings = [];
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->assertSame([[510], [502]], $this->launched());
+        $this->endBatch($id, 2, $this->t0 + 400);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::APPLIED, 'not_verified', 'switched off'], [$change['status'], $change['verification'], $change['verification_note']],
+            'not verified (switched off)');
+        $this->assertSame([], $this->verifier->calls);
+        $this->assertStringNotContainsString('not verified', $this->messages($id), 'as in phase 3: no word of it in the timeline');
+        $this->assertSame([], array_filter($this->events->of(510), fn ($e) => str_contains($e['message'], 'not verified')), 'nor in the eventlog');
+        $this->assertSame('not verified (switched off)', VerificationText::listed($change['verification'], $change['verification_note']), 'the Changes list');
+    }
+
+    public function testVerifyChangesSwitchedOffWhileAChangeIsVerifiedGoesOnVerifyingIt(): void
+    {
+        $id = $this->applied();
+        $this->settings = ['verify' => false];
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->assertSame([[510]], $this->launched(), 'batch 1 is verified first');
+        $this->fresh($this->t0 + 1000);
+        $this->sync($id, $this->t0 + 1080);
+        $this->assertSame('verified', $this->verify($id, 1)['result']);
+        $this->assertSame([[510], [502]], $this->launched(), 'batch 2 started from the state before it, taken with batch 1\'s verification');
+        $this->assertSame('taken', $this->verify($id, 2)['before']['status']);
+    }
+
+    public function testAChangeAppliedBeforePhase4GoesOnUnverified(): void
+    {
+        $this->settings = ['verify' => false];
+        $id = $this->approved();
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        // as phase 3 applied it: no outcome (the columns phase 4 adds are empty), its first batch without a verification
+        $this->changes->changes[$id] = array_merge($this->changes->changes[$id], ['verification' => null, 'verification_note' => null]);
+        $this->settings = [];
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->assertSame([[510], [502]], $this->launched(), 'its next batch starts at once');
+        $this->endBatch($id, 2, $this->t0 + 400);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::APPLIED, null], [$change['status'], $change['verification']]);
+        $this->assertSame([], $this->verifier->calls);
     }
 
     public function testTheLastBatchDoesNotPauseAndKeepsItsDevicesUntilItsVerificationEnds(): void

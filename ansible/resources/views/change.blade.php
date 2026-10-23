@@ -42,10 +42,13 @@
         'verify_unknown' => 'batch ' . (int) $change['current_batch'] . ' cannot be verified (checked again every minute): batch ' . ((int) $change['current_batch'] + 1)
             . ' waits for an admin to accept going on without its verification'];
     // phase 4: the verification of the batches
-    $verifyOn = $settings->verify || $verification;
+    // a change applied without verification (Verify changes off, or no topology plugin then) has its outcome from its Apply on;
+    // one not applied yet says when a change applied now would not be verified ($verifyWhy)
+    $outcome = $change['verification'] ?? null;
+    $verifyWhy = $change['apply_started_at'] === null && ! $final ? ($verifyWhy ?? null) : null;
+    $verifyOn = $settings->verify || $verification || $outcome !== null;
     $verifyCurrent = $verification[(int) $change['current_batch']] ?? null;
     $verifyWait = in_array($change['waiting'], \Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::VERIFY_WAITS, true) && ! $final ? $verifyCurrent : null;
-    $outcome = $change['verification'] ?? null;
     $resultCss = ['verified' => 'success', 'unexpected' => 'danger', 'unknown' => 'warning'];
     $resultLabels = ['verified' => 'verified', 'unexpected' => 'unexpected changes', 'unknown' => 'cannot be verified'];
     // the blast radius of the batch the change waits for (it grew, or cannot be computed), as computed before it
@@ -129,17 +132,18 @@
         @if($verifyOn)
             @php
                 $verifyCss = $outcome !== null ? ['verified' => 'ok', 'accepted' => 'warning', 'not_verified' => 'critical'][$outcome] ?? 'info'
-                    : (($verifyCurrent['result'] ?? null) === 'unexpected' ? 'critical' : (($verifyCurrent['result'] ?? null) === 'unknown' ? 'warning' : 'info'));
+                    : (($verifyCurrent['result'] ?? null) === 'unexpected' ? 'critical' : (($verifyCurrent['result'] ?? null) === 'unknown' || $verifyWhy !== null ? 'warning' : 'info'));
                 $verifyNow = $outcome !== null ? ucfirst((string) \Agoodley\LibrenmsAnsible\Changes\VerificationText::label($outcome))
-                    : ($final ? 'Not verified' : ($change['apply_started_at'] === null ? 'Each batch' : 'Batch ' . (int) $change['current_batch'] . ': '
+                    : ($final ? 'Not verified' : ($change['apply_started_at'] === null ? ($verifyWhy !== null ? 'Not if applied now' : 'Each batch') : 'Batch ' . (int) $change['current_batch'] . ': '
                         . (isset($verifyCurrent['result']) ? $resultLabels[$verifyCurrent['result']] ?? $verifyCurrent['result'] : (in_array($verifyCurrent['after']['status'] ?? null, ['waiting', 'settling'], true)
                             ? 'waits for fresh data' : (in_array($verifyCurrent['before']['status'] ?? null, ['refresh', 'waiting', 'take'], true) ? 'state before it' : 'to do')))));
             @endphp
             <div class="ans-card ans-{{ $verifyCss }}" id="ans-verify-card">
                 <h4>Verification</h4>
                 <div class="ans-card-value" style="font-size: 17px" id="ans-verify-state">{{ $verifyNow }}</div>
-                <p>@if($outcome !== null && ($change['verification_note'] ?? null)){{ $change['verification_note'] }}@elseif(! $settings->verify && ! $final)switched off in the settings
-                    @else the network around each batch, before and after it (topology plugin)@endif</p>
+                <p id="ans-verify-note">@if($outcome !== null && ($change['verification_note'] ?? null)){{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::note($change['verification_note'],
+                        ! $verification && $change['apply_started_at'] !== null) }}@elseif($verifyWhy !== null){{ ucfirst($verifyWhy) }}: a change applied now runs without a verification
+                    @elseif(! $settings->verify && ! $final)switched off in the settings @else the network around each batch, before and after it (topology plugin)@endif</p>
             </div>
         @endif
     </div>
