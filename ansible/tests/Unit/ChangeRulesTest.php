@@ -336,6 +336,8 @@ class ChangeRulesTest extends TestCase
         $this->assertNull(ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 2, true), 'an approver who is not the requester');
         $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
             ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 1, true));
+        $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
+            ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 1, false), 'the requester without the permission: not told to get it (it would not help)');
         $this->assertStringContainsString('needs the Ansible plugin\'s approve permission (ansible.approve), as accepting a new blast radius does',
             (string) ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 2, false));
         $this->assertNull(ApprovalRules::continueRefusal(ApprovalRules::REQUIRED, $change, 1, true), 'the requester who approves, when no second admin is needed');

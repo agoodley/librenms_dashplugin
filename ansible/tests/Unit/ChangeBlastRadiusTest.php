@@ -890,6 +890,9 @@ class ChangeBlastRadiusTest extends TestCase
         $this->endBatch($id, 2, $this->t0 + 200);
         $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
             $lifecycle->resume($id, self::ALICE, [], $this->t0 + 300, $this->seen($id)));
+        $this->runner->permissionProblems['1:approve'] = 'does not hold the approve permission (ansible.approve)';
+        $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
+            $lifecycle->resume($id, self::ALICE, [], $this->t0 + 305, $this->seen($id)), 'also without the approve permission: another admin continues it');
         $carol = ['user_id' => 3, 'username' => 'carol'];
         $this->runner->permissionProblems['3:approve'] = 'does not hold the approve permission (ansible.approve)';
         $this->assertStringContainsString('needs the Ansible plugin\'s approve permission (ansible.approve)', (string) $lifecycle->resume($id, $carol, [], $this->t0 + 310, $this->seen($id)),

@@ -123,14 +123,16 @@ final class ApprovalRules
      */
     public static function continueRefusal(string $mode, array $change, int $userId, bool $holds): ?string
     {
+        // the requester never may while the settings ask for a second admin, whatever they hold: said first (a permission granted
+        // would not let them)
+        if ($mode === self::SECOND && $change['user_id'] !== null && (int) $change['user_id'] === $userId) {
+            return 'The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.';
+        }
         if (! $holds) {
             return self::acceptPermission($mode) === 'run'
                 ? 'Continuing a batch whose blast radius cannot be computed needs the Ansible plugin\'s run permission (ansible.run): an admin grants it on the plugin\'s settings page.'
                 : 'While the settings ask for an approval, continuing a batch whose blast radius cannot be computed needs the Ansible plugin\'s approve permission '
                     . '(ansible.approve), as accepting a new blast radius does: an admin grants it on the plugin\'s settings page.';
-        }
-        if ($mode === self::SECOND && $change['user_id'] !== null && (int) $change['user_id'] === $userId) {
-            return 'The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.';
         }
 
         return null;
