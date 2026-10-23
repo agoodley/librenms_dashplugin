@@ -192,10 +192,14 @@ final class VerificationText
             . " of batch $batch") . ($comment !== '' ? ': "' . $comment . '"' : '') . '; the change goes on';
     }
 
-    public static function acceptedEvent(array $change, int $batch, string $by, bool $unknown, int $count): string
+    /**
+     * The same for the eventlog of each target, with the comment as written (as an approval's and a blast radius
+     * acceptance's are): it names no other device unless the comment does.
+     */
+    public static function acceptedEvent(array $change, int $batch, string $by, bool $unknown, int $count, string $comment): string
     {
         return ChangeText::name($change) . ': ' . UntrustedText::line($by, 60) . ($unknown ? " accepted going on without the verification of batch $batch"
-            : ' accepted the ' . Format::count($count, 'unexpected change') . " of batch $batch");
+            : ' accepted the ' . Format::count($count, 'unexpected change') . " of batch $batch") . ChangeText::comment($comment);
     }
 
     /**

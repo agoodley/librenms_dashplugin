@@ -2339,7 +2339,8 @@ final class ChangeLifecycle
         $this->setVerify($id, $number, ['decision' => 'go', 'accepted' => ['by' => mb_substr($user['username'], 0, 255), 'user_id' => (int) $user['user_id'],
             'at' => Clock::store($now), 'comment' => $comment, 'result' => $verify['result']]]);
         $this->timeline($resumed, 'verify', VerificationText::accepted($number, $user['username'], $unknown, $count, $comment), $user['username'], $now);
-        $this->eventAll($resumed, VerificationText::acceptedEvent($resumed, $number, $user['username'], $unknown, $count), 'notice', $user['username']);
+        $this->eventAll($resumed, VerificationText::acceptedEvent($resumed, $number, $user['username'], $unknown, $count, $comment), 'notice',
+            $user['username']);
         // the change goes on as after a verified batch: the next batch, the wait after the first one, the pause, or its end
         $this->afterBatch($resumed, $number, 'done', null, $now, null);
 

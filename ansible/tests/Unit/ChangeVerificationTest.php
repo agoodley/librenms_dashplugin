@@ -340,6 +340,11 @@ class ChangeVerificationTest extends TestCase
 
         $this->assertNull($this->web($this->t0 + 7300)->acceptVerification($id, self::BOB, true, 'uplink being replaced', $this->t0 + 7300, $this->seen($id)));
         $this->assertStringContainsString('bob accepted the 2 unexpected changes of batch 1: "uplink being replaced"; the change goes on', $this->messages($id));
+        // the eventlog of each target quotes the comment as written, as an approval's is
+        foreach ([510, 502] as $deviceId) {
+            $this->assertContains('Ansible change #1 (CHG-1): bob accepted the 2 unexpected changes of batch 1: "uplink being replaced"',
+                array_column($this->events->of($deviceId), 'message'), "device $deviceId");
+        }
         // the refresh asked for batch 2's state with batch 1's verification is older than the wait now: asked again
         $this->sync($id, $this->t0 + 7320);
         $this->assertSame([[510]], $this->launched());
@@ -714,8 +719,10 @@ class ChangeVerificationTest extends TestCase
         $this->assertStringContainsString('Batch 1 cannot be verified: the topology plugin is disabled in LibreNMS', $this->messages($id));
         $this->assertSame([[510]], $this->launched());
 
-        $this->assertNull($this->web($this->t0 + 1000)->acceptVerification($id, self::BOB, true, '', $this->t0 + 1000, $this->seen($id)));
-        $this->assertStringContainsString('bob accepted going on without the verification of batch 1', $this->messages($id));
+        $this->assertNull($this->web($this->t0 + 1000)->acceptVerification($id, self::BOB, true, "topology plugin back\ntomorrow", $this->t0 + 1000, $this->seen($id)));
+        $this->assertStringContainsString('bob accepted going on without the verification of batch 1: "topology plugin back tomorrow"', $this->messages($id));
+        $this->assertContains('Ansible change #1 (CHG-1): bob accepted going on without the verification of batch 1: "topology plugin back tomorrow"',
+            array_column($this->events->of(510), 'message'), 'its eventlog entry quotes the comment, on one line');
         $this->assertStringContainsString('The state before batch 2 cannot be taken: the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin). The batch runs, '
             . 'and cannot be verified after it.', $this->messages($id));
         $this->assertSame([[510], [502]], $this->launched());

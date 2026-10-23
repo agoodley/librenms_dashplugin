@@ -492,7 +492,10 @@ final class ChangeText
         return "'" . UntrustedText::line($name, 100) . "'";
     }
 
-    private static function comment(string $comment): string
+    /**
+     * An admin's comment as the eventlog entries of a step quote it (as written, one line, cut): ': "..."', nothing without one.
+     */
+    public static function comment(string $comment): string
     {
         $comment = UntrustedText::line($comment, 300);
 
