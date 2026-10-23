@@ -282,7 +282,7 @@ final class ChangeService
         $planner = $preview['planner'] ?? [];
         if ($batches->topology !== null) {
             $displays = array_map(fn (array $target) => (string) (($target['display'] ?? '') ?: ($target['name'] ?? '')), $plan->targets);
-            $this->changes->addEvent($id, 'created', 'What each batch cuts off while it runs, as the topology plugin computed it (approved with the change): '
+            $this->changes->addEvent($id, 'created', 'What each batch cuts off while it runs, as the topology plugin computed it when the change was made (checked again before each batch): '
                 . $batches->topology->summary($batches->batches, array_filter($displays)) . '.', (string) $user->username, time());
         }
         if ($batches->topology !== null && $batches->topology->leftOut) {
