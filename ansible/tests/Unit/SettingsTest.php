@@ -129,7 +129,11 @@ class SettingsTest extends TestCase
             'verify_unknown' => 'go', 'verify_minimum' => 'notice', 'fix_template_port_descriptions' => '21a'], new PluginSettings(), self::GROUPS, self::USERS);
         $this->assertSame(['verify', 'verify_fresh', 'verify_wait_minutes', 'verify_unexpected', 'verify_unknown', 'verify_minimum', 'fix_template_port_descriptions'],
             array_values(array_intersect(array_keys(PluginSettings::DEFAULTS), array_keys($result['errors']))), 'each wrong value is refused');
-        $this->assertSame('Wait for fresh data (minutes) is a whole number from 1 to 1440.', $result['errors']['verify_wait_minutes']);
+        $this->assertSame('Wait for fresh data (minutes) is a whole number from 10 to 1440.', $result['errors']['verify_wait_minutes']);
+        // above LibreNMS' polling and discovery intervals (5 minutes each): at least 10 minutes; a smaller value stored before counts as 10
+        $this->assertArrayHasKey('verify_wait_minutes', PluginSettings::fromInput(['verify_wait_minutes' => '9'], new PluginSettings(), self::GROUPS, self::USERS)['errors']);
+        $this->assertArrayNotHasKey('verify_wait_minutes', PluginSettings::fromInput(['verify_wait_minutes' => '10'], new PluginSettings(), self::GROUPS, self::USERS)['errors']);
+        $this->assertSame(600, (new PluginSettings(['verify_wait_minutes' => '5']))->changeSettings()->verifyWaitSeconds);
         $this->assertSame('Count findings from is one of: critical, warning, info.', $result['errors']['verify_minimum']);
         $this->assertSame('Template for port description fixes is the id of a template of the runner, or none.', $result['errors']['fix_template_port_descriptions']);
 

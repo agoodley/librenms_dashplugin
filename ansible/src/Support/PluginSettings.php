@@ -90,7 +90,8 @@ final class PluginSettings
         'backup_timeout_minutes' => [1, 120],
         'maintenance_minutes' => [5, 1440],
         'settle_minutes' => [0, 1440],
-        'verify_wait_minutes' => [1, 1440],
+        // above LibreNMS' polling and discovery intervals (5 minutes each by default): fresh data takes 5 to 10 minutes
+        'verify_wait_minutes' => [10, 1440],
     ];
 
     /** Names of the settings in messages and the eventlog. */

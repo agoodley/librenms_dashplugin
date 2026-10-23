@@ -77,7 +77,8 @@
             . 'Rediscover button does; wait: the plugin waits for LibreNMS\' own discovery and polling (by default every 6 hours and 5 minutes)'],
         ['verify_wait_minutes', 'Wait for fresh data (minutes)', 'after a batch (and its settle time), the longest the plugin waits for a discovery and a poll of its devices '
             . 'that started after it: then the batch cannot be verified. Before the first batch, the longest it waits for the refresh it asked: then the state is taken anyway, '
-            . 'older than the Apply'],
+            . 'older than the Apply. It must exceed LibreNMS\' polling and discovery intervals (with ask, the discovery cron takes a device marked for rediscovery within '
+            . '5 minutes and the poller polls it within the next 5: a batch starts 5 to 10 minutes after its request): at least 10'],
         ['verify_unexpected', 'When a batch makes unexpected changes', 'a link gone, a cable moved, a root bridge moved, a port that started blocking, an OSPF adjacency or BGP '
             . 'session lost, a device down, a new or worse finding: pause until an admin accepts them (as a new blast radius is accepted), stop the change, or only record '
             . 'them. The last batch never pauses: the change ends, not verified'],

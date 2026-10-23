@@ -234,10 +234,11 @@ Then:
    old for the verification API* on the settings page and the Fixes page, and on the change page of each batch it
    cannot verify.
 2. **Verify changes** is on by default. With the topology plugin, the first batch of a change applied from then on
-   starts within a minute of *Apply*, from the sync command (its state before it is taken there, right before its
-   launch), once LibreNMS discovered its devices again (*Fresh data: ask*): check that LibreNMS' discovery runs (the
+   starts some minutes after *Apply*, from the sync command (its state before it is taken there, right before its
+   launch), once LibreNMS discovered and polled its devices again (*Fresh data: ask*): with the discovery cron (every
+   5 minutes) and 5-minute polls, expect 5 to 10 minutes (3 to 4 in the lab). Check that LibreNMS' discovery runs (the
    discovery cron or the dispatcher service; `./validate.php`), else every batch waits *Wait for fresh data* and then
-   cannot be verified.
+   cannot be verified; and keep that wait above LibreNMS' polling and discovery intervals (at least 10 minutes).
    Without the topology plugin (or with one too old for the verification API) a change runs as in phase 3: it is
    *not verified*, and says why.
 3. A change applied before the upgrade goes on as in phase 3, whatever its state (paused after a batch, waiting for its
@@ -442,7 +443,7 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | *Verification and fixes* | | the part says whether the topology plugin can verify now, and why not |
 | Verify changes | on | each batch is verified with the topology plugin: the state of the network around it taken before it and again after it on fresh data, compared ([Verification](#verification)); off, a change applied then runs as in phase 3, *not verified (switched off)*. Decided at *Apply*: a change applied without the topology plugin's verification API runs the same way, not verified with why |
 | Fresh data | ask LibreNMS for a discovery | before a batch and after it, LibreNMS is asked to discover its scope again (as its *Rediscover* button does, or a discovery job each with LibreNMS' scheduler); or *wait for LibreNMS' own discovery and polling* |
-| Wait for fresh data | 30 min | after a batch and its settle time, the longest the plugin waits for a discovery and a poll of its scope that started after it: then the batch cannot be verified; before the first batch, the longest it waits for the refresh it asked: then the state is taken anyway, older than the Apply (1–1440) |
+| Wait for fresh data | 30 min | after a batch and its settle time, the longest the plugin waits for a discovery and a poll of its scope that started after it: then the batch cannot be verified; before the first batch, the longest it waits for the refresh it asked: then the state is taken anyway, older than the Apply. It must exceed LibreNMS' polling and discovery intervals (with *ask*, the discovery cron's 5 minutes and the poller's 5): 10–1440 |
 | When a batch makes unexpected changes | pause until an admin accepts them | an uplink lost, a cable moved, a root bridge moved, a port that started blocking, an OSPF adjacency or BGP session lost, a device down, a new or worse finding: the next batch waits for an admin to accept them (as a new blast radius is accepted); or *stop the change*, or *only record them*. The last batch never pauses |
 | When a batch cannot be verified | pause until an admin accepts it | no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be taken within the wait (tried again every minute): the next batch waits for an admin to accept going on without the verification (checked again every minute meanwhile); or *stop the change*, or *only record it* |
 | Count findings from | warning | the lowest severity of a new or worse finding of the topology plugin that counts as unexpected (*critical*, *warning*, *info*); lower ones are listed, never pause |
@@ -989,7 +990,10 @@ already running when LibreNMS was asked takes the request up and ends with older
 discovery job for a device that has one queued; the data still counts from the first request.
 
 The plugin waits at most **Wait for fresh data** (30 minutes); without fresh data by then the batch **cannot be
-verified**.
+verified**. How long fresh data takes is LibreNMS' own pace: with *ask*, a device marked for rediscovery is discovered
+by the discovery cron within 5 minutes and polled within the next 5 (a discovery job each is taken up as soon as a
+worker is free), so a batch starts, and its verification ends, **5 to 10 minutes** after its request (3 to 4 in the
+lab); with *wait*, after LibreNMS' next discovery. The wait must exceed those intervals: it is at least 10 minutes.
 
 **The state before a batch is the last step before its launch:** it is taken once the batch's blast radius was
 checked again, its maintenance window opened and its backups taken, so that it is the network the batch then changes.
@@ -1008,7 +1012,8 @@ waits for (*lab-sw4 (a discovery), lab-sw2 (a poll)*).
 Only the sync command takes states, each in a process of its own (`artisan ansible:state`, as the topology plugin
 runs each background check: on a large network a state takes some seconds and a few hundred MB, which never stay in
 the sync command's process). So with verification, neither *Apply* nor *Continue* nor an acceptance launches a batch
-in its request: the sync command starts it within a minute, and launches it right after its state before it. A
+in its request: the sync command takes it up within a minute, and launches it right after its state before it, once
+its data is fresh (minutes later: see above). A
 template's secret answers then reach the runner only while the change page that holds them is open (see
 [Limitations](#limitations)): it launches the batch within seconds of its state; answers given later (the page was
 closed, an admin enters them again) wait for the state to be taken again, and that page launches the batch then.
