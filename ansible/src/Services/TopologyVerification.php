@@ -120,19 +120,26 @@ final class TopologyVerification implements Verifier
 
     /**
      * The findings whose fix is clear, as the user sees the network (the verification API's fixes()): of these devices, every
-     * device the user sees when none are given. Asked in the request itself (the Fixes page and a new change from fixes).
+     * device the user sees when none are given; of one kind only when given (a change made from fixes computes what its
+     * fixes need: a description fix the link check of its devices and their neighbors, a root fix the spanning tree check of
+     * its domain). Asked in the request itself (the Fixes page and a new change from fixes).
      *
      * @param  int[]  $deviceIds
+     * @param  ?string  $kind  port_descriptions or stp_root_priority (Changes\FixAnswers::KINDS)
      * @return array<string, mixed>
      *
      * @throws TopologyError
      */
-    public function fixes(array $deviceIds, int $userId): array
+    public function fixes(array $deviceIds, int $userId, ?string $kind = null): array
     {
-        // the link and spanning tree checks of the whole network the user sees: some hundred MB on a large one
-        MemoryLimit::raise(self::FIXES_MEMORY_MB);
+        // the link and spanning tree checks of the whole network the user sees, or a spanning tree domain that may be all of it: some
+        // hundred MB on a large one (the link check of some devices takes little)
+        if (! $deviceIds || $kind !== 'port_descriptions') {
+            MemoryLimit::raise(self::FIXES_MEMORY_MB);
+        }
+        $options = $kind !== null ? ['kinds' => [$kind]] : [];
 
-        return $this->call('list the fixes', fn () => ($this->api)::forUser(self::user($userId))->fixes(self::ids($deviceIds)));
+        return $this->call('list the fixes', fn () => ($this->api)::forUser(self::user($userId))->fixes(self::ids($deviceIds), $options));
     }
 
     public function compare(array $before, array $after): array

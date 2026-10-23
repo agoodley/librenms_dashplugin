@@ -77,7 +77,9 @@ final class ChangeService
             $draft['errors'][] = 'No template is set for ' . strtolower($draft['label']) . ' fixes: an admin sets it in the plugin\'s settings (Verification and fixes).';
         }
         try {
-            $answer = ($this->fixes ?? fn (array $devices, int $user) => (new TopologyVerification())->fixes($devices, $user))($draft['scope'], $userId);
+            // only what the fixes of this kind need: of a description fix, the link check of its devices and their neighbors; of a root
+            // fix, the spanning tree check of its domain
+            $answer = ($this->fixes ?? fn (array $devices, int $user, string $kind) => (new TopologyVerification())->fixes($devices, $user, $kind))($draft['scope'], $userId, $kind);
         } catch (TopologyError $e) {
             return ['errors' => [...$draft['errors'], 'The topology plugin cannot list the fixes now: ' . $e->getMessage() . '.']] + $draft;
         }

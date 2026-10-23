@@ -305,10 +305,13 @@ final class Verification
     }
 
     /**
-     * The findings whose fix is clear, as data: of these devices (their port descriptions, the root bridges of their L2
-     * domains), every device the scope sees when none are given.
+     * The findings whose fix is clear, as data: of these devices (their port descriptions: the link check of them and
+     * their LLDP/CDP neighbors, which knows the name of every device the scope sees, as a description may name any; the
+     * root bridges of their L2 domains: the spanning tree check of the domains), of every device the scope sees when none
+     * are given. Only the kinds asked for are computed.
      *
      * @param  int[]  $deviceIds
+     * @param  array{kinds?: string[]}  $options  kinds: PORT_DESCRIPTIONS, STP_ROOT_PRIORITY (default both)
      * @return array{version: string, fixes: list<array>, not_fixable: list<array{identity: string, code: string, title: string, devices: int[], why: string}>,
      *     names: array<int, string>, role_hidden: string[]}
      *     each fix: id (its kind and the findings it resolves), kind (PORT_DESCRIPTIONS, STP_ROOT_PRIORITY), title, devices (those it changes),
@@ -316,31 +319,41 @@ final class Verification
      *     chosen_from, domain_size, primary and secondary (device_id, priority, mode pvst|mst|stp, instances, mac, now: the priority in each VLAN)
      *     and roots_now (VLAN key => the root bridge now)
      */
-    public function fixes(array $deviceIds = []): array
+    public function fixes(array $deviceIds = [], array $options = []): array
     {
         $ids = $deviceIds ? $this->sources->visible(self::ids($deviceIds)) : null;
-        if ($ids === []) {
+        $kinds = array_values(array_intersect([FixBuilder::PORT_DESCRIPTIONS, FixBuilder::STP_ROOT_PRIORITY],
+            array_map('strval', (array) ($options['kinds'] ?? [FixBuilder::PORT_DESCRIPTIONS, FixBuilder::STP_ROOT_PRIORITY]))));
+        if ($ids === [] || ! $kinds) {
             return ['version' => self::VERSION, 'fixes' => [], 'not_fixable' => [], 'names' => [], 'role_hidden' => $this->sources->roleHidden()];
         }
-        // the link check runs over every device the user sees, as on its page, and its fixes are kept for these devices at the
-        // end: a description is wrong when it names another monitored device, which may be anywhere in the network
-        $links = array_map(fn (array $finding) => $finding + ['identity' => FindingHistory::hash('links', $finding), 'analysis' => 'links'],
-            array_values(array_filter($this->sources->linkFindings(null), fn (array $finding) => in_array($finding['code'], FixBuilder::CODES[FixBuilder::PORT_DESCRIPTIONS], true)
-                && $this->visibleFinding($finding))));
-        if ($ids !== null) {
-            $wanted = array_fill_keys($ids, true);
-            $links = array_values(array_filter($links, fn (array $finding) => array_intersect_key(array_flip(array_map('intval', $finding['devices'])), $wanted)));
+        $wanted = $ids !== null ? array_fill_keys($ids, true) : null;
+        // the link check of these devices (it knows every name: a description is wrong when it names another monitored device,
+        // which may be anywhere in the network), or of every device the user sees, as on its page
+        $links = [];
+        if (in_array(FixBuilder::PORT_DESCRIPTIONS, $kinds, true)) {
+            $links = array_map(fn (array $finding) => $finding + ['identity' => FindingHistory::hash('links', $finding), 'analysis' => 'links'],
+                array_values(array_filter($this->sources->linkFindings($ids), fn (array $finding) => in_array($finding['code'], FixBuilder::CODES[FixBuilder::PORT_DESCRIPTIONS], true)
+                    && $this->visibleFinding($finding) && ($wanted === null || array_intersect_key(array_flip(array_map('intval', $finding['devices'])), $wanted)))));
         }
         $ports = [];
         foreach ($links as $finding) {
             array_push($ports, ...array_keys((array) ($finding['fix']['ports'] ?? [])));
         }
-        $stp = $this->sources->stpAnalysis($ids === null ? null : $this->sources->stpDomain($ids));
-        $roots = array_map(fn (array $finding) => $finding + ['identity' => FindingHistory::hash('stp', $finding), 'analysis' => 'stp'],
-            array_values(array_filter($stp['findings'], fn (array $finding) => in_array($finding['code'], FixBuilder::CODES[FixBuilder::STP_ROOT_PRIORITY], true)
-                && $this->visibleFinding($finding))));
-        $designated = $this->sources->devicesOfSetting('stp_preferred_roots');
-        $core = $this->sources->devicesOfSetting('redundancy_core');
+        // the spanning tree check of their L2 domains, or of every switch
+        $roots = [];
+        $built = ['fixes' => [], 'not_fixable' => []];
+        $designated = [];
+        $core = [];
+        $stp = ['findings' => [], 'domains' => []];
+        if (in_array(FixBuilder::STP_ROOT_PRIORITY, $kinds, true)) {
+            $stp = $this->sources->stpAnalysis($ids === null ? null : $this->sources->stpDomain($ids));
+            $roots = array_map(fn (array $finding) => $finding + ['identity' => FindingHistory::hash('stp', $finding), 'analysis' => 'stp'],
+                array_values(array_filter($stp['findings'], fn (array $finding) => in_array($finding['code'], FixBuilder::CODES[FixBuilder::STP_ROOT_PRIORITY], true)
+                    && $this->visibleFinding($finding))));
+            $designated = $this->sources->devicesOfSetting('stp_preferred_roots');
+            $core = $this->sources->devicesOfSetting('redundancy_core');
+        }
         $keys = [];
         foreach ($roots as $finding) {
             foreach ([...$designated, ...$core] as $deviceId) {
@@ -351,11 +364,12 @@ final class Verification
         }
         $mentioned = array_merge(array_merge([], ...array_column($links, 'devices')), array_merge([], ...array_column($roots, 'devices')), $designated, $core);
         $names = $this->sources->names(array_values(array_unique(array_map('intval', $mentioned))));
-        $built = FixBuilder::rootPriorities($roots, $stp['domains'], $designated, $core, $this->sources->bridges(array_map('array_values', $keys)), $names);
-        $fixes = [...FixBuilder::descriptions($links, $this->sources->portNames($ports), $names), ...$built['fixes']];
-        if ($ids !== null) {
+        if ($roots) {
+            $built = FixBuilder::rootPriorities($roots, $stp['domains'], $designated, $core, $this->sources->bridges(array_map('array_values', $keys)), $names);
+        }
+        $fixes = [...FixBuilder::descriptions($links, $ports ? $this->sources->portNames($ports) : [], $names), ...$built['fixes']];
+        if ($wanted !== null) {
             // of these devices: a fix of one of them, or of a finding about one
-            $wanted = array_fill_keys($ids, true);
             $fixes = array_values(array_filter($fixes, fn (array $fix) => array_intersect_key(array_flip($fix['devices']), $wanted)
                 || array_filter($fix['findings'], fn (array $finding) => array_intersect_key(array_flip($finding['devices']), $wanted))));
         }

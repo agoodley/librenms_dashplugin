@@ -1055,8 +1055,10 @@ Each fix shows what it changes and the findings it resolves. The topology plugin
 enabled), and the page then marks that fix. **Fix the selected** (one or several fixes of one kind) opens **New
 change** made from them: the template the settings map to the kind, the fixes' devices, the survey answer as the
 fixes' lines (read only), a reference naming them (*Fix: Port descriptions of lab-sw2*), and what the change is meant
-to do. The preview and *Create* compute the lines again from the findings as they are then, and refuse the change
-when they are not what the page showed (*The fix changed since you loaded the page: look again.*). From there it is a
+to do. The preview and *Create* compute the lines again from the findings as they are then, only what the chosen
+fixes need (a description fix: the link check of its devices and their neighbors; a root fix: the spanning tree check
+of its domain), and refuse the change when they are not what the page showed (*The fix changed since you loaded the
+page: look again.*). From there it is a
 change like any other: dry-run with its diff, approved, applied in batches, each batch verified; the verification
 expects the batch's findings resolved, and nothing else changed.
 
@@ -1406,9 +1408,12 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   rule for a finding that takes another's place (the same check about the same devices): a finding whose devices or
   ports changed reads as a new one and the old one as resolved; one the topology plugin words differently but about
   the same thing is the same finding. A finding of a check that failed in either state is not compared (see above).
-* **Fixes on a large network:** listing them runs the topology plugin's link and spanning tree checks of the whole
-  network the admin sees (on its large test network, 4,922 devices: 16 s and 380 MB, which the request raises PHP's
-  memory limit for); a change made from fixes computes them again at its preview and at its creation.
+* **The Fixes page on a large network:** listing every fix runs the topology plugin's link and spanning tree checks
+  of the whole network the admin sees, in the page's request: on its large test network (4,922 devices, 10 PVST+
+  VLANs, one L2 domain) 15 to 16 s and 380 MB, which the request raises PHP's memory limit for. A change made from fixes
+  computes only what its fixes need, at its preview and at its creation: a description fix of a switch there 0.3 s
+  and 12 MB (the link check of the switch and its neighbors, with the name of every device); a root fix the spanning
+  tree check of its domain, which there is the whole network: 12 s and 330 MB.
 * **Secret answers and the first batch:** with verification, the first batch starts from the sync command, so the
   secret answers given at *Apply* reach it only while the change page that holds them is open, as for any later
   batch; otherwise it waits for an admin to enter them (for the *Expected batch time*).

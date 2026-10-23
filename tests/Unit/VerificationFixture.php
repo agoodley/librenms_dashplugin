@@ -192,6 +192,8 @@ final class VerificationFixture implements Sources
 
     public function stpAnalysis(?array $ids): array
     {
+        $this->calls[] = ['stpAnalysis', $ids];
+
         return ['findings' => $this->findings['stp'], 'domains' => [0 => [array_keys(self::MACS)]]];
     }
 

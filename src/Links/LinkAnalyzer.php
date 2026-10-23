@@ -114,6 +114,8 @@ class LinkAnalyzer
      * @param  array<int, array>  $statistics  port_id => ports_statistics row (discards and non-unicast packets)
      * @param  array<int, array{rx: float, low: ?float, low_warn: ?float, sensor: string}>  $optics  port_id => weakest
      *                                                                                                 optical receive level
+     * @param  array<int, array>  $names  device_id => hostname, sysName, display of other devices a description may name (a check of
+     *                                    some devices only: every device the user may see), over those of $devices
      */
     public function __construct(
         private array $devices,
@@ -126,6 +128,7 @@ class LinkAnalyzer
         private array $activeVlans = [],
         private array $statistics = [],
         private array $optics = [],
+        private array $names = [],
     ) {
         $this->scope = array_fill_keys(array_map('intval', $scope), true);
         foreach ($this->lagParent as $member => $parent) {
@@ -1170,7 +1173,7 @@ class LinkAnalyzer
      */
     private function nameIndex(): array
     {
-        return self::nameIndexOf($this->devices);
+        return self::nameIndexOf($this->names + $this->devices);
     }
 
     /**

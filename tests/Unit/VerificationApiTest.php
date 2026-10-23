@@ -221,12 +221,21 @@ class VerificationApiTest extends TestCase
         $this->assertSame('the designated root bridges', $root['chosen_from']);
         $this->assertSame([], $fixes['not_fixable']);
 
-        // of some devices: the fixes of those devices and of the findings about them; the link check still runs over the whole
-        // network (a description is wrong when it names a monitored device, wherever that is)
+        // of some devices: the fixes of those devices and of the findings about them; the link check of those devices only (it knows
+        // every name: LibrenmsSources), the spanning tree check of their domains
         $net->calls = [];
         $this->assertSame(['port_descriptions'], array_column(Verification::withSources($net)->fixes([Net::ACC1])['fixes'], 'kind'));
-        $this->assertSame([['linkFindings', null]], array_values(array_filter($net->calls, fn (array $call) => $call[0] === 'linkFindings')));
+        $this->assertSame([['linkFindings', [Net::ACC1]]], array_values(array_filter($net->calls, fn (array $call) => $call[0] === 'linkFindings')));
         $this->assertSame(['stp_root_priority'], array_column(Verification::withSources($net)->fixes([Net::CORE1])['fixes'], 'kind'));
+
+        // only the kinds asked for are computed: a description fix needs no spanning tree check, a root fix no link check
+        $net->calls = [];
+        $this->assertSame(['port_descriptions'], array_column(Verification::withSources($net)->fixes([Net::ACC1, Net::CORE1], ['kinds' => ['port_descriptions']])['fixes'], 'kind'));
+        $this->assertSame(['linkFindings'], array_values(array_intersect(array_column($net->calls, 0), ['linkFindings', 'stpAnalysis', 'stpDomain', 'bridges'])));
+        $net->calls = [];
+        $this->assertSame(['stp_root_priority'], array_column(Verification::withSources($net)->fixes([Net::ACC1, Net::CORE1], ['kinds' => ['stp_root_priority']])['fixes'], 'kind'));
+        $this->assertSame([], array_values(array_intersect(array_column($net->calls, 0), ['linkFindings'])));
+        $this->assertSame([], Verification::withSources($net)->fixes([], ['kinds' => ['other']])['fixes'], 'no kind it knows: nothing');
     }
 
     public function testNoDevicesIsAnEmptyScopeNeverTheWholeNetwork(): void

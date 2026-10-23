@@ -756,8 +756,10 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
   `SECONDARY_PRIORITY`, `mode` `pvst`, `mst` or `stp`, `instances`, `mac`, the priority they have `now`), what they were
   `chosen_from` (the designated root bridges, else the configured core devices) and the `roots_now`. `not_fixable`:
   the findings of those checks without a clear fix, with why (no designated root bridge or core device in their part
-  of the network). Of these devices: the fixes of them and of the findings about them (the link check still runs over
-  every device the user sees: a description names another device anywhere); of every device when none are given.
+  of the network). Of these devices: the fixes of them and of the findings about them (the link check of them and
+  their LLDP/CDP neighbors, which knows the name of every device the user sees, as a description may name any; the
+  spanning tree check of their L2 domains); of every device when none are given. Option `kinds`
+  (`PORT_DESCRIPTIONS`, `STP_ROOT_PRIORITY`): only those are computed.
 * **`scope()`** and **`freshness()`**: a state's scope, and the devices' freshness, without a state. `cover($state)`:
   what a later state must cover too.
 * **Scope.** `forUser($user)` sees what that LibreNMS user may see, as the plugin's pages show it to them: a device
@@ -770,7 +772,8 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
   network (4,922 devices, 10 PVST+ VLANs, one L2 domain), a state of five access switches (whose spanning tree domain
   is the whole network) takes 15 s and 370 MB, and is 2.2 MB of JSON (0.26 MB gzipped: most of it the domain's 4,924
   findings and the freshness of its 4,922 devices); comparing two takes 0.06 s; the fixes of the whole network take
-  16 s and 380 MB (4,965 fixes, 5 MB of JSON). The Ansible plugin takes each state in a process of its own.
+  15 to 16 s and 380 MB (4,965 fixes, 5 MB of JSON), the description fixes of one switch 0.3 s and 12 MB, the root fixes
+  of a domain (there the whole network) 12 s and 330 MB. The Ansible plugin takes each state in a process of its own.
 
 ## Requirements
 

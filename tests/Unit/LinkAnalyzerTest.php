@@ -325,6 +325,22 @@ class LinkAnalyzerTest extends TestCase
         $this->assertSame(['ports' => [32 => 'core2 Te1/0/3']], $codes['description_missing'][0]['fix']);
     }
 
+    public function testACheckOfSomeDevicesKnowsTheNamesOfEveryDevice(): void
+    {
+        // the check of acc1 alone, with its neighbors core1 and core2: its uplink's description names acc2, which is no neighbor
+        $all = LinkFixture::devices();
+        $devices = array_intersect_key($all, [1 => true, 2 => true, 3 => true]);
+        $links = array_values(array_filter(LinkFixture::links(), fn (array $link) => $link['local_device_id'] === 3 || $link['remote_device_id'] === 3));
+        $check = fn (array $names) => $this->codes((new LinkAnalyzer($devices, [3], $links, LinkFixture::ports([31 => ['ifAlias' => 'uplink to acc2']]),
+            LinkFixture::portVlans([]), LinkFixture::lagParent(), new PluginSettings(), [], [], [], $names))->analyze());
+
+        $this->assertArrayNotHasKey('description_wrong', $check([]), 'without the other names, "acc2" names nothing');
+        $wrong = $check(array_map(fn (array $device) => array_intersect_key($device, array_flip(['hostname', 'sysName', 'display'])), $all))['description_wrong'] ?? [];
+        $this->assertCount(1, $wrong, 'with them, as the check of the whole network finds it');
+        $this->assertSame(['ports' => [31 => 'core1 Te1/0/3']], $wrong[0]['fix']);
+        $this->assertSame([3], $wrong[0]['devices']);
+    }
+
     public function testADescriptionKeepsItsCharactersAndLength(): void
     {
         $this->assertSame('core1 Te1/0/3', LinkAnalyzer::cleanDescription('core1 Te1/0/3'));
