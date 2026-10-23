@@ -735,8 +735,9 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
   `devices`, `subjects` and `quiet` (the checks kept out of the eventlog), of the enabled background checks, about any
   device of the scope; `devices`: each one's role, whether it is up, since when it is down, and when its last discovery
   and its last poll **started** (`discovered_at`, `polled_at`: LibreNMS writes when one ended and how long it took), and
-  whether a rediscovery is pending; `checks`: the enabled checks, those that failed and the kinds of facts that could
-  not be read; `names`, `taken_at`, `version` and `role_hidden`. Compact: identities, texts and the few details the
+  whether a rediscovery is pending; `checks`: the `enabled` checks, those that `failed` (each with its error in one
+  line, never SQL: the details are in LibreNMS' log), the kinds of facts that could not be read (`facts_failed`) and
+  why (`facts_errors`); `names`, `taken_at`, `version` and `role_hidden`. Compact: identities, texts and the few details the
   comparison needs, never raw rows. Options: `include` and `domain` (pass `cover()` of an earlier state, so that the
   later one covers all it did), `dependents` (default true).
 * **`compare(array $before, array $after)`** (pure: it reads only the two states): `events` in the words of the
@@ -744,8 +745,9 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
   `level`, `text` and `devices`; a spanning tree event has its `vlans`, a root bridge event `root_before` and
   `root_after`); `findings` `new`, `worse`, `changed`, `milder` (each with what it `was`, by the findings history's
   successor rule) and `resolved`; `devices` `down` and `up`; `skipped`: the kinds of facts and the checks not
-  compared, because either state could not read them (a caller must not take the rest for all of it). Only what both
-  states cover is compared.
+  compared, because either state could not read them (a caller must not take the rest for all of it), with the
+  `errors` of each in the state it failed in (`before`, `after`; a check without one ran in one of the states only).
+  Only what both states cover is compared.
 * **`fixes(array $deviceIds = [])`**: the findings with a clear configuration, as data, never configuration text: each
   fix has an `id`, its `kind`, `title`, the `devices` it changes and the findings it `resolves`. A port descriptions fix
   has `ports` (`device_id`, `port_id`, `ifName`, `ifDescr`, the `current` description and the `description` the link

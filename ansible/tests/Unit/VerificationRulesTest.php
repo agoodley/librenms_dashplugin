@@ -201,6 +201,26 @@ class VerificationRulesTest extends TestCase
         $this->assertSame(['outcome' => null, 'note' => null], VerificationOutcome::of([1 => $batch('done', null)]), 'not verified at all (applied before phase 4)');
     }
 
+    public function testWhatAComparisonCouldNotReadIsNamedWithItsErrorAndTheWaysOut(): void
+    {
+        $this->assertNull(VerificationRules::skippedWhy(['facts' => [], 'checks' => [], 'errors' => ['facts' => [], 'checks' => []]]));
+        $failed = VerificationRules::skippedWhy(['facts' => [], 'checks' => ['routing'], 'errors' => ['checks' => ['routing' => ['after' => 'RuntimeException: cannot read the OSPF neighbours']]]]);
+        $this->assertSame("the topology plugin's routing check failed in the state after it (RuntimeException: cannot read the OSPF neighbours); nothing else that was "
+            . "compared changed. To go on: fix it (the details are in logs/librenms.log), switch the routing check off in the topology plugin's settings (Background "
+            . 'checks) or set When a batch cannot be verified to only record it', $failed['why']);
+        $this->assertSame("the topology plugin's routing check failed in the state before or after it", $failed['event']);
+        // a check switched on between the two states; the fix's own check failed (switching it off would not verify the fix)
+        $both = VerificationRules::skippedWhy(['facts' => [], 'checks' => ['links', 'stp'], 'errors' => ['checks' => ['stp' => ['before' => 'Error: x']]]], 'stp');
+        $this->assertStringContainsString("the topology plugin's links check ran in one of the two states only: it was switched on or off in its settings (Background checks) "
+            . "between them; the topology plugin's spanning tree check, which found the fix's findings, failed in the state before it (Error: x)", $both['why']);
+        $this->assertStringEndsWith("To go on: fix it (the details are in logs/librenms.log), switch the links check back as it was in the topology plugin's settings or set "
+            . 'When a batch cannot be verified to only record it', $both['why']);
+        $this->assertStringNotContainsString('spanning tree check off', $both['why']);
+        // what the API names is data: one line
+        $hostile = VerificationRules::skippedWhy(['facts' => ["x\ny"], 'checks' => [], 'errors' => ['facts' => ["x\ny" => ['after' => "a\nb"]]]]);
+        $this->assertStringNotContainsString("\n", $hostile['why']);
+    }
+
     public function testTheOutcomeOfAChangeAppliedWithoutVerificationSaysWhy(): void
     {
         $this->assertSame('not verified (switched off)', VerificationText::listed('not_verified', VerificationOutcome::SWITCHED_OFF));

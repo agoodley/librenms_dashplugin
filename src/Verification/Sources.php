@@ -46,12 +46,13 @@ interface Sources
 
     /**
      * The history's facts (FactCollector) of the devices $ids, and the root bridges the switches $rootIds see, naming
-     * the devices of $nameIds (null: every device the scope sees); the kinds that could not be read.
+     * the devices of $nameIds (null: every device the scope sees); the kinds that could not be read, and why.
      *
      * @param  int[]  $ids
      * @param  int[]  $rootIds
      * @param  int[]|null  $nameIds
-     * @return array{facts: array<string, array>, failed: string[]}
+     * @return array{facts: array<string, array>, failed: string[], errors?: array<string, string>} errors: kind => the error in one line
+     *     (Support\ErrorText)
      */
     public function facts(array $ids, array $rootIds, ?array $nameIds): array;
 

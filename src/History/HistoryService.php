@@ -12,6 +12,7 @@ use Agoodley\LibrenmsTopology\Routing\RoutingAnalyzer;
 use Agoodley\LibrenmsTopology\Routing\RoutingService;
 use Agoodley\LibrenmsTopology\Stp\LoopEvidence;
 use Agoodley\LibrenmsTopology\Stp\StpAnalyzer;
+use Agoodley\LibrenmsTopology\Support\ErrorText;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use Agoodley\LibrenmsTopology\Topology\TopologyService;
@@ -390,11 +391,13 @@ class HistoryService
      * @param  int[]  $rootIds
      * @param  int[]  $nameIds  the devices whose names the facts may use (those the user may see)
      * @param  string[]  $failed  set to the kinds that could not be read
+     * @param  array<string, string>  $errors  set to why each of them could not be (kind => the error in one line: Support\ErrorText)
      * @return array<string, array> hash => fact (FactCollector)
      */
-    public function currentFacts(TopologyRepository $topology, array $ids, array $rootIds, array $nameIds, ?array &$failed = null): array
+    public function currentFacts(TopologyRepository $topology, array $ids, array $rootIds, array $nameIds, ?array &$failed = null, ?array &$errors = null): array
     {
         $failed = [];
+        $errors = [];
         $facts = [];
         $leftOut = [];
         $readers = array_filter($this->sources($topology, $ids, $leftOut, $nameIds), fn ($kind) => $kind !== FactCollector::STP_ROOT && $this->factAllowed($kind),
@@ -402,9 +405,10 @@ class HistoryService
         if ($this->factAllowed(FactCollector::STP_ROOT)) {
             $readers[FactCollector::STP_ROOT] = $this->sources($topology, $rootIds, $leftOut, $nameIds)[FactCollector::STP_ROOT];
         }
-        foreach (Jobs::read($readers, function (string $kind, \Throwable $e) use (&$failed): void {
+        foreach (Jobs::read($readers, function (string $kind, \Throwable $e) use (&$failed, &$errors): void {
             Log::error("topology plugin: the facts of $kind could not be read: " . $e->getMessage());
             $failed[] = $kind;
+            $errors[$kind] = ErrorText::line($e);
         }) as $current) {
             $facts += $current;
         }

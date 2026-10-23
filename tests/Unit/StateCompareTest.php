@@ -117,17 +117,22 @@ class StateCompareTest extends TestCase
         $spof = ['s' => self::finding('spof_device', 'warning', [2, 3], [2])];
         $route = ['r' => ['analysis' => 'routing', 'code' => 'ospf_down', 'label' => 'x', 'severity' => 'warning', 'title' => 'OSPF of acc1', 'devices' => [3],
             'subjects' => [3], 'vlans' => [], 'quiet' => false]];
-        $checks = fn (array $failed = [], array $factsFailed = [], array $enabled = ['redundancy', 'routing']) => ['checks' => ['enabled' => $enabled, 'failed' => $failed,
-            'facts_failed' => $factsFailed]];
+        $checks = fn (array $failed = [], array $factsErrors = [], array $enabled = ['redundancy', 'routing']) => ['checks' => ['enabled' => $enabled, 'failed' => $failed,
+            'facts_failed' => array_keys($factsErrors), 'facts_errors' => $factsErrors]];
         $before = $checks() + self::state(self::T, $link, $spof + $route);
 
         // the links could not be read after the batch, and the redundancy check failed: no "link gone", no finding "resolved"
-        $after = $checks(['redundancy' => 'the redundancy check failed (see logs/librenms.log)'], [FactCollector::LINK]) + self::state(self::T + 600, [], $route);
+        $after = $checks(['redundancy' => 'TypeError: an argument is null'], [FactCollector::LINK => 'database error 42S02/1146: no such table']) + self::state(self::T + 600, [], $route);
         $compared = StateCompare::compare($before, $after);
         $this->assertSame([], $compared['events']);
         $this->assertSame([], $compared['findings']['resolved']);
         $this->assertSame(1, $compared['findings']['same'], 'the routing finding, which both read');
-        $this->assertSame(['facts' => [FactCollector::LINK], 'checks' => ['redundancy']], $compared['skipped']);
+        $this->assertSame(['facts' => [FactCollector::LINK], 'checks' => ['redundancy'], 'errors' => ['facts' => [FactCollector::LINK => ['after' => 'database error 42S02/1146: no such table']],
+            'checks' => ['redundancy' => ['after' => 'TypeError: an argument is null']]]], $compared['skipped'], 'with the error of each, in the state it failed in');
+
+        // the same check failed in both states
+        $compared = StateCompare::compare($checks(['redundancy' => 'TypeError: before']) + self::state(self::T, $link, $route), $after);
+        $this->assertSame(['before' => 'TypeError: before', 'after' => 'TypeError: an argument is null'], $compared['skipped']['errors']['checks']['redundancy']);
 
         // a check enabled in one state only (an admin switched it on between them): its findings are not new
         $after = $checks([], [], ['redundancy', 'routing', 'links']) + self::state(self::T + 600, $link, $spof + $route + ['l' => ['analysis' => 'links',
@@ -135,9 +140,11 @@ class StateCompareTest extends TestCase
             'quiet' => false]]);
         $compared = StateCompare::compare($before, $after);
         $this->assertSame([], $compared['findings']['new']);
-        $this->assertSame(['facts' => [], 'checks' => ['links']], $compared['skipped']);
+        $this->assertSame(['facts' => [], 'checks' => ['links'], 'errors' => ['facts' => [], 'checks' => []]], $compared['skipped'],
+            'a check without an error: it ran in one of the states only');
 
         // both read everything: nothing skipped
-        $this->assertSame(['facts' => [], 'checks' => []], StateCompare::compare($before, $checks() + self::state(self::T + 600, $link, $spof + $route))['skipped']);
+        $this->assertSame(['facts' => [], 'checks' => [], 'errors' => ['facts' => [], 'checks' => []]],
+            StateCompare::compare($before, $checks() + self::state(self::T + 600, $link, $spof + $route))['skipped']);
     }
 }

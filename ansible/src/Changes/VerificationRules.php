@@ -296,28 +296,133 @@ final class VerificationRules
     }
 
     /**
-     * What a comparison could not compare, in words ("the links of the network and the redundancy check"), null when it
-     * compared everything (the verification API's skipped: the kinds of facts and the checks either state could not read).
+     * Why a comparison that found nothing unexpected is no verification of the batch, for the change page and the
+     * timeline: what either state could not read, each with the topology plugin's error (one line, never SQL) and the
+     * state it failed in; a check that ran in one of the states only; the check that found a fix's findings that did
+     * not run; then the ways out (fix it, switch the check off in the topology plugin's settings, or only record such a
+     * batch). The same for the eventlog without the errors (they may name devices). Null when nothing keeps the
+     * comparison from being a verification.
      *
-     * @param  array{facts?: string[], checks?: string[]}  $skipped
+     * @param  array{facts?: string[], checks?: string[], errors?: array{facts?: array<string, array{before?: string, after?: string}>,
+     *     checks?: array<string, array{before?: string, after?: string}>}}  $skipped  the verification API's skipped
+     * @param  ?string  $unchecked  the check that found a fix's findings, when it did not run in both states (evaluate())
+     * @return array{why: string, event: string}|null
      */
-    public static function skippedText(array $skipped): ?string
+    public static function skippedWhy(array $skipped, ?string $unchecked = null): ?array
     {
-        $words = ['link' => 'the links', 'lag' => 'the port-channels', 'stp_blocked' => 'the blocked ports', 'stp_root' => 'the root bridges', 'ospf' => 'the OSPF adjacencies',
-            'bgp' => 'the BGP sessions'];
-        $parts = [];
-        foreach (array_slice(array_values(array_filter((array) ($skipped['facts'] ?? []), 'is_string')), 0, 10) as $kind) {
-            $parts[] = $words[$kind] ?? 'the ' . UntrustedText::line(str_replace('_', ' ', $kind), 40);
+        $errors = (array) ($skipped['errors'] ?? []);
+        $why = [];
+        $event = [];
+        $broken = false;
+        $off = [];
+        $back = [];
+        foreach (self::skippedFacts($skipped) as $kind) {
+            $why[] = 'the topology plugin could not read ' . self::factWords($kind) . self::failedIn((array) (((array) ($errors['facts'] ?? []))[$kind] ?? []));
+            $event[] = ['the topology plugin could not read ' . self::factWords($kind), 'it could not read ' . self::factWords($kind)];
+            $broken = true;
         }
-        foreach (array_slice(array_values(array_filter((array) ($skipped['checks'] ?? []), 'is_string')), 0, 10) as $check) {
-            $parts[] = 'the ' . UntrustedText::line($check === 'stp' ? 'spanning tree' : $check, 40) . ' check';
+        $checks = self::skippedChecks($skipped);
+        if ($unchecked !== null && ! in_array($unchecked, $checks, true)) {
+            $checks[] = $unchecked;
         }
-        if (! $parts) {
+        foreach ($checks as $check) {
+            $name = 'the topology plugin\'s ' . self::checkWords($check) . ' check' . ($check === $unchecked ? ', which found the fix\'s findings,' : '');
+            $failed = (array) (((array) ($errors['checks'] ?? []))[$check] ?? []);
+            if ($failed) {
+                $why[] = $name . ' failed' . self::failedIn($failed);
+                $event[] = self::checkEvent($check, 'failed');
+                $broken = true;
+                if ($check !== $unchecked) {
+                    $off[] = self::checkWords($check);
+                }
+            } elseif (in_array($check, self::skippedChecks($skipped), true)) {
+                $why[] = $name . ' ran in one of the two states only: it was switched on or off in its settings (Background checks) between them';
+                $event[] = self::checkEvent($check, 'ran in one of the two states only');
+                $back[] = self::checkWords($check);
+            } else {
+                $why[] = $name . ' is switched off in its settings (Background checks)';
+                $event[] = self::checkEvent($check, 'is switched off');
+            }
+        }
+        if (! $why) {
             return null;
         }
+        $ways = [];
+        if ($broken) {
+            $ways[] = 'fix it (the details are in logs/librenms.log)';
+        }
+        if ($off) {
+            $ways[] = 'switch the ' . self::join($off) . ' check' . (count($off) > 1 ? 's' : '') . ' off in the topology plugin\'s settings (Background checks)';
+        }
+        if ($back) {
+            $ways[] = 'switch the ' . self::join($back) . ' check' . (count($back) > 1 ? 's' : '') . ' back as it was in the topology plugin\'s settings';
+        }
+        $ways[] = 'set When a batch cannot be verified to only record it';
+
+        return ['why' => implode('; ', $why) . '; nothing else that was compared changed. To go on: ' . self::join($ways, 'or'),
+            'event' => implode('; ', [$event[0][0], ...array_column(array_slice($event, 1), 1)]) . ' in the state before or after it'];
+    }
+
+    /**
+     * A check in the eventlog's words: as the first clause, and as one after it.
+     *
+     * @return array{0: string, 1: string}
+     */
+    private static function checkEvent(string $check, string $what): array
+    {
+        return ['the topology plugin\'s ' . self::checkWords($check) . " check $what", 'its ' . self::checkWords($check) . " check $what"];
+    }
+
+    /**
+     * " in the state after it (its error)", for each state a check or a kind of facts failed in.
+     *
+     * @param  array{before?: string, after?: string}  $failed
+     */
+    private static function failedIn(array $failed): string
+    {
+        $parts = [];
+        foreach (['before', 'after'] as $phase) {
+            if (isset($failed[$phase]) && is_string($failed[$phase])) {
+                $parts[] = "in the state $phase it (" . UntrustedText::line($failed[$phase], 200) . ')';
+            }
+        }
+
+        return $parts ? ' ' . implode(' and ', $parts) : ' in the state before or after it';
+    }
+
+    /** @return string[] */
+    private static function skippedFacts(array $skipped): array
+    {
+        return array_slice(array_values(array_filter((array) ($skipped['facts'] ?? []), 'is_string')), 0, 10);
+    }
+
+    /** @return string[] */
+    private static function skippedChecks(array $skipped): array
+    {
+        return array_slice(array_values(array_filter((array) ($skipped['checks'] ?? []), 'is_string')), 0, 10);
+    }
+
+    private static function factWords(string $kind): string
+    {
+        return ['link' => 'the links', 'lag' => 'the port-channels', 'stp_blocked' => 'the blocked ports', 'stp_root' => 'the root bridges', 'ospf' => 'the OSPF adjacencies',
+            'bgp' => 'the BGP sessions'][$kind] ?? 'the ' . UntrustedText::line(str_replace('_', ' ', $kind), 40);
+    }
+
+    private static function checkWords(string $check): string
+    {
+        return $check === 'stp' ? 'spanning tree' : UntrustedText::line($check, 40);
+    }
+
+    /**
+     * "a", "a and b", "a, b and c" (or "or").
+     *
+     * @param  string[]  $parts
+     */
+    private static function join(array $parts, string $and = 'and'): string
+    {
         $last = array_pop($parts);
 
-        return ($parts ? implode(', ', $parts) . ' and ' : '') . $last;
+        return ($parts ? implode(', ', $parts) . " $and " : '') . $last;
     }
 
     /**

@@ -1394,11 +1394,18 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   is as fresh as LibreNMS' last discovery and poll: with *Fresh data: wait* and LibreNMS' default discovery every 6
   hours, a batch can rarely be verified within the wait; a batch with a large scope (a big L2 domain) waits for a
   discovery of every covered device and a poll of every switch of the domain.
+* **A topology check that fails leaves batches that cannot be verified.** When one of the topology plugin's checks
+  (spanning tree, links, redundancy, routing) fails in the state before or after a batch (an error, a table it cannot
+  read), or a kind of facts cannot be read, it is not compared, and a batch whose comparison found nothing else cannot
+  be verified: it fails safe, and with *When a batch cannot be verified: pause* every such batch waits for an admin.
+  The change page and the timeline name the check, its error (one line, never SQL: the details are in
+  `logs/librenms.log`) and the state it failed in, and the ways out: fix it, switch that check off in the topology
+  plugin's settings (*Background checks*), or set *When a batch cannot be verified* to *only record it*. Meanwhile the
+  plugin takes a new state after the batch every 5 minutes, and goes on by itself once the check works again.
 * **Findings are compared by the findings history's identity** (the check, the VLAN, the devices and ports) and its
   rule for a finding that takes another's place (the same check about the same devices): a finding whose devices or
   ports changed reads as a new one and the old one as resolved; one the topology plugin words differently but about
-  the same thing is the same finding. A finding of a check that failed in either state is not compared (the change
-  page says which check failed).
+  the same thing is the same finding. A finding of a check that failed in either state is not compared (see above).
 * **Fixes on a large network:** listing them runs the topology plugin's link and spanning tree checks of the whole
   network the admin sees (on its large test network, 4,922 devices: 16 s and 380 MB, which the request raises PHP's
   memory limit for); a change made from fixes computes them again at its preview and at its creation.

@@ -436,13 +436,23 @@ class ChangeVerificationTest extends TestCase
         $this->sync($id, $this->t0 + 960);
         $this->fresh($this->t0 + 1000);
         // the topology plugin could not read the links in one of the states, and its redundancy check failed: nothing else changed
-        $this->verifier->comparison = ['skipped' => ['facts' => ['link'], 'checks' => ['redundancy']]];
+        $this->verifier->comparison = ['skipped' => ['facts' => ['link'], 'checks' => ['redundancy'], 'errors' => [
+            'facts' => ['link' => ['after' => "database error 42S02/1146: Table 'librenms.links' doesn't exist"]],
+            'checks' => ['redundancy' => ['before' => 'TypeError: an argument is null', 'after' => 'TypeError: an argument is null']]]]];
         $this->sync($id, $this->t0 + 1080);
         $change = $this->changes->find($id);
         $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown'], [$change['status'], $change['waiting']], 'not verified: what was not compared may have changed');
         $this->assertSame(['unknown', 'incomplete'], [$this->verify($id, 1)['result'], $this->verify($id, 1)['after']['status']]);
-        $this->assertStringContainsString('Batch 1 cannot be verified: the topology plugin could not read the links and the redundancy check in the state before or after it',
-            $this->messages($id));
+        $why = "the topology plugin could not read the links in the state after it (database error 42S02/1146: Table 'librenms.links' doesn't exist); the topology "
+            . "plugin's redundancy check failed in the state before it (TypeError: an argument is null) and in the state after it (TypeError: an argument is null); "
+            . 'nothing else that was compared changed. To go on: fix it (the details are in logs/librenms.log), switch the redundancy check off in the topology '
+            . "plugin's settings (Background checks) or set When a batch cannot be verified to only record it";
+        $this->assertStringContainsString("Batch 1 cannot be verified: $why. The change waits for", $this->messages($id),
+            'the timeline names what failed, its error, and the ways out');
+        $this->assertSame($why, $this->verify($id, 1)['error'], 'so does the change page');
+        $events = implode("\n", array_column($this->events->of(510), 'message'));
+        $this->assertStringContainsString('the topology plugin could not read the links; its redundancy check failed in the state before or after it', $events);
+        $this->assertStringNotContainsString('TypeError', $events, 'the eventlog without the errors');
         $this->assertSame([[510]], $this->launched());
 
         // a new state after it every 5 minutes: once the topology plugin reads everything, the batch is verified and the change goes on
@@ -698,8 +708,8 @@ class ChangeVerificationTest extends TestCase
         $this->sync($id, $this->t0 + 1080);
         $change = $this->changes->find($id);
         $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown', 'unknown'], [$change['status'], $change['waiting'], $this->verify($id, 1)['result']]);
-        $this->assertStringContainsString("Batch 1 cannot be verified: the topology plugin's links check, which found the fix's findings, did not run in the state before or "
-            . 'after it (its settings: Background checks); nothing else that was compared changed.', $this->messages($id));
+        $this->assertStringContainsString("Batch 1 cannot be verified: the topology plugin's links check, which found the fix's findings, is switched off in its settings "
+            . '(Background checks); nothing else that was compared changed. To go on: set When a batch cannot be verified to only record it.', $this->messages($id));
     }
 
     public function testAFixIsVerifiedAgainstWhatItWasMadeFor(): void

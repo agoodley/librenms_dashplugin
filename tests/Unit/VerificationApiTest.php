@@ -4,6 +4,7 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
 use Agoodley\LibrenmsTopology\Api\PlanningUnavailable;
 use Agoodley\LibrenmsTopology\Api\Verification;
+use Agoodley\LibrenmsTopology\History\FactCollector;
 use Agoodley\LibrenmsTopology\History\FindingHistory;
 use Agoodley\LibrenmsTopology\Tests\Unit\VerificationFixture as Net;
 use PHPUnit\Framework\TestCase;
@@ -52,7 +53,7 @@ class VerificationApiTest extends TestCase
         $spof = $state['findings'][FindingHistory::hash('redundancy', $net->findings['redundancy'][0])];
         $this->assertSame(['analysis' => 'redundancy', 'code' => 'spof_device', 'label' => 'Single point of failure (device)', 'severity' => 'warning',
             'title' => 'Single point of failure: dist1', 'devices' => [3, 5], 'subjects' => [3], 'vlans' => [], 'quiet' => false], $spof);
-        $this->assertSame(['enabled' => ['stp', 'links', 'redundancy', 'routing'], 'failed' => [], 'facts_failed' => []], $state['checks']);
+        $this->assertSame(['enabled' => ['stp', 'links', 'redundancy', 'routing'], 'failed' => [], 'facts_failed' => [], 'facts_errors' => []], $state['checks']);
         $this->assertSame([1 => 'core1', 2 => 'core2', 3 => 'dist1', 4 => 'acc1', 5 => 'acc2', 7 => 'far1'], self::sorted($state['names']));
     }
 
@@ -181,14 +182,18 @@ class VerificationApiTest extends TestCase
         $net->findings['redundancy'] = [Net::finding('spof_link', 'warning', 'Single link: acc1 Gi1/0/49 ↔ dist1 Te1/0/1', [Net::ACC1, Net::DIST1])];
         $net->findings['links'] = [Net::finding('description_missing', 'info', 'Inter-switch ports without description: acc1', [Net::ACC1]),
             Net::finding('description_wrong', 'warning', 'Port descriptions name the wrong neighbor: acc1', [Net::ACC1])];
-        $net->failedChecks = ['routing' => 'the routing check failed (see logs/librenms.log)'];
+        $net->failedChecks = ['routing' => 'RuntimeException: cannot read the OSPF neighbours: database error 42S02/1146: Table \'librenms.ospf_nbrs\' doesn\'t exist'];
+        $net->failedFacts = [FactCollector::STP_BLOCKED => 'TypeError: an argument is null'];
         $net->hidden = ['OSPF neighbors'];
 
         $state = Verification::withSources($net)->state([Net::ACC1]);
 
         $this->assertSame(['Inter-switch ports without description: acc1' => true, 'Port descriptions name the wrong neighbor: acc1' => false,
             'Single link: acc1 Gi1/0/49 ↔ dist1 Te1/0/1' => true], array_column($state['findings'], 'quiet', 'title'));
-        $this->assertSame(['routing' => 'the routing check failed (see logs/librenms.log)'], $state['checks']['failed']);
+        $this->assertSame(['routing' => 'RuntimeException: cannot read the OSPF neighbours: database error 42S02/1146: Table \'librenms.ospf_nbrs\' doesn\'t exist'],
+            $state['checks']['failed'], 'a check that failed, with its error');
+        $this->assertSame([[FactCollector::STP_BLOCKED], [FactCollector::STP_BLOCKED => 'TypeError: an argument is null']],
+            [$state['checks']['facts_failed'], $state['checks']['facts_errors']], 'facts that could not be read, with why');
         $this->assertSame(['OSPF neighbors'], $state['role_hidden']);
     }
 

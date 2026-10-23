@@ -273,7 +273,8 @@
                         as {{ ($batches[(int) $change['current_batch']]['username'] ?? '') ?: 'the admin who started the batch' }} sees the network.</div>
                 @else
                     Batch {{ (int) $change['current_batch'] }} cannot be verified: {{ $verifyWait['error'] ?? 'unknown' }}.
-                    <div style="font-weight: normal; margin-top: 4px">@if(($verifyWait['before']['status'] ?? null) === 'taken')The plugin checks again every minute and goes on by
+                    <div style="font-weight: normal; margin-top: 4px">@if(($verifyWait['after']['status'] ?? null) === 'incomplete')The plugin takes a new state after it every 5 minutes
+                        and goes on by itself once the topology plugin reads all of it. @elseif(($verifyWait['before']['status'] ?? null) === 'taken')The plugin checks again every minute and goes on by
                         itself once the batch can be verified. @endif Or {{ ApprovalRules::accepter($settings->approval) }} accepts going on without its verification (recorded); or stop the change.</div>
                 @endif
             </div>

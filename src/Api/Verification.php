@@ -166,17 +166,19 @@ final class Verification
      *     facts: array<string, array{kind: string, key: string, a: ?int, b: ?int, text: string, data: array}>,
      *     roots: list<array{root: string, root_device: ?int, vlans: int[], devices: int[]}>,
      *     findings: array<string, array{analysis: string, code: string, label: string, severity: string, title: string, devices: int[], subjects: int[],
-     *     vlans: int[], quiet: bool}>, names: array<int, string>, checks: array{enabled: string[], failed: array<string, string>, facts_failed: string[]},
-     *     role_hidden: string[]}
+     *     vlans: int[], quiet: bool}>, names: array<int, string>, checks: array{enabled: string[], failed: array<string, string>, facts_failed: string[],
+     *     facts_errors: array<string, string>}, role_hidden: string[]}
      *     devices: discovered_at / polled_at are when the device's last discovery and poll started; facts: by identity, the root bridges in roots
-     *     (grouped by root bridge and VLANs); findings: by identity, quiet for the checks the topology plugin keeps out of the eventlog
+     *     (grouped by root bridge and VLANs); findings: by identity, quiet for the checks the topology plugin keeps out of the eventlog; checks:
+     *     the enabled background checks, those that failed (check => its error in one line, never SQL: the details are in LibreNMS' log), the
+     *     kinds of facts that could not be read and why (facts_errors: kind => its error)
      */
     public function state(array $deviceIds, array $options = []): array
     {
         $scope = $this->expand(self::ids($deviceIds), $options);
         $covered = [...$scope['subjects'], ...$scope['dependents'], ...$scope['neighbors'], ...$scope['included']];
         $switches = [...$covered, ...$scope['domain']];
-        $read = $covered ? $this->sources->facts($covered, $switches, null) : ['facts' => [], 'failed' => []];
+        $read = $covered ? $this->sources->facts($covered, $switches, null) : ['facts' => [], 'failed' => [], 'errors' => []];
         $found = $covered ? $this->sources->findings($switches, $switches) : ['findings' => [], 'failed' => [], 'enabled' => []];
 
         // the facts, a root bridge fact grouped with those of the other switches that see the same root in the same VLANs
@@ -258,7 +260,8 @@ final class Verification
             'roots' => array_values($roots),
             'findings' => $findings,
             'names' => $names,
-            'checks' => ['enabled' => array_values($found['enabled']), 'failed' => $found['failed'], 'facts_failed' => array_values($read['failed'])],
+            'checks' => ['enabled' => array_values($found['enabled']), 'failed' => array_map('strval', (array) $found['failed']), 'facts_failed' => array_values($read['failed']),
+                'facts_errors' => array_map('strval', array_intersect_key((array) ($read['errors'] ?? []), array_flip(array_map('strval', $read['failed']))))],
             'role_hidden' => $this->sources->roleHidden(),
         ];
     }
@@ -282,9 +285,11 @@ final class Verification
      *
      * @return array{version: string, from: int, to: int, events: list<array{type: string, category: string, level: string, text: string, devices: int[]}>,
      *     findings: array{new: list<array>, worse: list<array>, changed: list<array>, milder: list<array>, resolved: list<array>, same: int},
-     *     devices: array{down: int[], up: int[]}, names: array<int, string>, skipped: array{facts: string[], checks: string[]}}
+     *     devices: array{down: int[], up: int[]}, names: array<int, string>, skipped: array{facts: string[], checks: string[],
+     *     errors: array{facts: array<string, array{before?: string, after?: string}>, checks: array<string, array{before?: string, after?: string}>}}}
      *     events: in the Changes page's words (ChangeReport::TYPES); worse, changed, milder: the finding now with "was"; skipped: the kinds of
-     *     facts and the checks not compared, as either state could not read them (a caller must not take the rest for all of it)
+     *     facts and the checks not compared, as either state could not read them (a caller must not take the rest for all of it), with the
+     *     error of each in the state it failed in (a check without one was enabled in one of the states only)
      *
      * @throws \InvalidArgumentException when a state is not one of this API's major version
      */

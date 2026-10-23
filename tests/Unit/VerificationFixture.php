@@ -57,6 +57,9 @@ final class VerificationFixture implements Sources
     /** @var array<string, string> analysis => why it failed */
     public array $failedChecks = [];
 
+    /** @var array<string, string> kind of facts (FactCollector::LINK, STP_ROOT, STP_BLOCKED) => why it could not be read */
+    public array $failedFacts = [];
+
     /** @var array<int, array> device => status and freshness */
     public array $states = [];
 
@@ -163,8 +166,14 @@ final class VerificationFixture implements Sources
             }
         }
 
-        return ['facts' => $collector->links($links) + $collector->stpRoots($stp)
-            + $collector->blockedPorts(array_filter($this->blocked, fn (array $row) => in_array($row['device_id'], $ids, true))), 'failed' => []];
+        $kinds = [FactCollector::LINK => fn () => $collector->links($links), FactCollector::STP_ROOT => fn () => $collector->stpRoots($stp),
+            FactCollector::STP_BLOCKED => fn () => $collector->blockedPorts(array_filter($this->blocked, fn (array $row) => in_array($row['device_id'], $ids, true)))];
+        $facts = [];
+        foreach (array_diff_key($kinds, $this->failedFacts) as $read) {
+            $facts += $read();
+        }
+
+        return ['facts' => $facts, 'failed' => array_keys($this->failedFacts), 'errors' => $this->failedFacts];
     }
 
     public function findings(array $ids, array $stpIds): array

@@ -11,6 +11,7 @@ use Agoodley\LibrenmsTopology\History\HistoryService;
 use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
 use Agoodley\LibrenmsTopology\Routing\RoutingService;
 use Agoodley\LibrenmsTopology\Stp\StpIndex;
+use Agoodley\LibrenmsTopology\Support\ErrorText;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Agoodley\LibrenmsTopology\Support\PluginSettings;
 use Agoodley\LibrenmsTopology\Support\RoleData;
@@ -96,9 +97,9 @@ final class LibrenmsSources implements Sources
     public function facts(array $ids, array $rootIds, ?array $nameIds): array
     {
         $facts = (new HistoryService($this->history(), $this->repo, $this->settings))->currentFacts($this->repo, $this->visible($ids), $this->visible($rootIds),
-            $nameIds === null ? $this->repo->deviceIds() : $this->visible($nameIds), $failed);
+            $nameIds === null ? $this->repo->deviceIds() : $this->visible($nameIds), $failed, $errors);
 
-        return ['facts' => $facts, 'failed' => $failed];
+        return ['facts' => $facts, 'failed' => $failed, 'errors' => $errors];
     }
 
     public function findings(array $ids, array $stpIds): array
@@ -121,7 +122,7 @@ final class LibrenmsSources implements Sources
                 };
             } catch (\Throwable $e) {
                 Log::error("topology plugin: the verification's $analysis check failed: " . $e->getMessage());
-                $result['failed'][$analysis] = 'the ' . $analysis . ' check failed (see logs/librenms.log)';
+                $result['failed'][$analysis] = ErrorText::line($e);
             }
             if ($analysis === 'redundancy') {
                 $this->redundancy = null;

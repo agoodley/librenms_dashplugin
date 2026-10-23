@@ -2531,19 +2531,13 @@ final class ChangeLifecycle
             $this->changes->saveState($id, $number, 'after', $state, ['evaluation' => $evaluation, 'names' => array_slice((array) ($comparison['names'] ?? []), 0, 500, true),
                 'from' => (int) ($comparison['from'] ?? 0), 'to' => (int) ($comparison['to'] ?? 0)]);
             // what either state could not read is not compared: nothing unexpected in the rest is no verification of the batch (nor of a
-            // fix whose check did not run)
-            $skipped = VerificationRules::skippedText((array) ($comparison['skipped'] ?? []));
-            $whys = $skipped !== null ? ["the topology plugin could not read $skipped in the state before or after it (see logs/librenms.log)"] : [];
-            if (($evaluation['unchecked'] ?? null) !== null) {
-                $whys[] = 'the topology plugin\'s ' . ($evaluation['unchecked'] === 'stp' ? 'spanning tree' : (string) $evaluation['unchecked']) . ' check, which found the fix\'s '
-                    . 'findings, did not run in the state before or after it (its settings: Background checks)';
-            }
-            $incomplete = $evaluation['result'] === 'verified' && $whys;
+            // fix whose check did not run); the page and the timeline name what failed, its error, and the ways out
+            $skipped = VerificationRules::skippedWhy((array) ($comparison['skipped'] ?? []), isset($evaluation['unchecked']) ? (string) $evaluation['unchecked'] : null);
+            $incomplete = $evaluation['result'] === 'verified' && $skipped !== null;
             $this->setVerify($id, $number, ['after' => ['status' => $incomplete ? 'incomplete' : 'done', 'taken_at' => (int) ($state['taken_at'] ?? $now), 'waiting' => null,
                 'checked_at' => $now] + $after]);
             if ($incomplete) {
-                $why = implode('; ', $whys) . '; nothing else that was compared changed';
-                $this->verifyResult($change, $number, 'unknown', ['evaluation' => $evaluation, 'error' => $why, 'event_error' => $why], $now);
+                $this->verifyResult($change, $number, 'unknown', ['evaluation' => $evaluation, 'error' => $skipped['why'], 'event_error' => $skipped['event']], $now);
 
                 return;
             }
@@ -2572,7 +2566,7 @@ final class ChangeLifecycle
         }
         $this->setVerify((int) $change['id'], $number, ['result' => $result, 'decision' => null, 'at' => $now, 'counts' => $counts, 'by_what' => $byWhat,
             'top' => is_array($evaluation) ? array_map(fn (array $entry) => $entry['text'], array_slice((array) $evaluation['unexpected'], 0, 5)) : [],
-            'error' => isset($found['error']) ? UntrustedText::line($found['error'], 600) : null,
+            'error' => isset($found['error']) ? UntrustedText::line($found['error'], 1500) : null,
             'event_error' => isset($found['event_error']) ? UntrustedText::line($found['event_error'], 300) : null]);
     }
 

@@ -87,22 +87,35 @@ final class StateCompare
 
     /**
      * What the two states cannot be compared on: the kinds of facts either could not read, and the checks that failed in
-     * either or were not enabled in both.
+     * either or were not enabled in both; with the error of each in the state it failed in (a check in checks without
+     * one ran in one of the states only: it was switched on or off between them).
      *
-     * @return array{facts: string[], checks: string[]}
+     * @return array{facts: string[], checks: string[], errors: array{facts: array<string, array{before?: string, after?: string}>,
+     *     checks: array<string, array{before?: string, after?: string}>}}
      */
     private static function skipped(array $before, array $after): array
     {
-        $checks = [(array) ($before['checks'] ?? []), (array) ($after['checks'] ?? [])];
-        $facts = array_values(array_unique(array_map('strval', [...(array) ($checks[0]['facts_failed'] ?? []), ...(array) ($checks[1]['facts_failed'] ?? [])])));
-        $enabled = [array_map('strval', (array) ($checks[0]['enabled'] ?? [])), array_map('strval', (array) ($checks[1]['enabled'] ?? []))];
-        $failed = array_map('strval', [...array_keys((array) ($checks[0]['failed'] ?? [])), ...array_keys((array) ($checks[1]['failed'] ?? []))]);
+        $checks = ['before' => (array) ($before['checks'] ?? []), 'after' => (array) ($after['checks'] ?? [])];
+        $facts = array_values(array_unique(array_map('strval', [...(array) ($checks['before']['facts_failed'] ?? []), ...(array) ($checks['after']['facts_failed'] ?? [])])));
+        $enabled = [array_map('strval', (array) ($checks['before']['enabled'] ?? [])), array_map('strval', (array) ($checks['after']['enabled'] ?? []))];
+        $failed = array_map('strval', [...array_keys((array) ($checks['before']['failed'] ?? [])), ...array_keys((array) ($checks['after']['failed'] ?? []))]);
         $notBoth = array_merge(array_diff($enabled[0], $enabled[1]), array_diff($enabled[1], $enabled[0]));
         $checksSkipped = array_values(array_unique([...$failed, ...$notBoth]));
         sort($facts);
         sort($checksSkipped);
+        $errors = ['facts' => [], 'checks' => []];
+        foreach ($checks as $phase => $of) {
+            foreach ((array) ($of['facts_failed'] ?? []) as $kind) {
+                $errors['facts'][(string) $kind][$phase] = (string) (((array) ($of['facts_errors'] ?? []))[(string) $kind] ?? 'could not be read');
+            }
+            foreach ((array) ($of['failed'] ?? []) as $check => $error) {
+                $errors['checks'][(string) $check][$phase] = (string) $error;
+            }
+        }
+        ksort($errors['facts']);
+        ksort($errors['checks']);
 
-        return ['facts' => $facts, 'checks' => $checksSkipped];
+        return ['facts' => $facts, 'checks' => $checksSkipped, 'errors' => $errors];
     }
 
     /**
