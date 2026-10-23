@@ -63,6 +63,12 @@ final class ChangeLifecycle
      */
     public const SECRETS_ANNOUNCE = 30;
 
+    /**
+     * Seconds between two checks of a batch whose blast radius could not be computed (the page's poll and the sync command
+     * check it again: once it can be computed, the batch starts as any).
+     */
+    public const BLAST_RECHECK = 60;
+
     /** A target's record of what the inventory endpoint served the runner (InventoryGuard), cleared when its dry run or batch begins. */
     private const UNSERVED = ['served_hash' => null, 'served_at' => null, 'served_note' => null];
 
@@ -393,8 +399,9 @@ final class ChangeLifecycle
 
     /**
      * Continue a paused change: the next batch after the first one or a pause, the prepared batch with the secret
-     * answers, or the batch whose blast radius cannot be computed, without one (recorded). A batch whose blast radius
-     * grew is not continued: an approver accepts the new one (acceptBlast()). Null when it continued, else why not.
+     * answers, or the batch whose blast radius could not be computed: computed first, it starts as any once it can be,
+     * and goes without one (recorded) only while it still cannot. A batch whose blast radius grew is not continued: an
+     * admin accepts the new one (acceptBlast()). Null when it continued, else why not.
      *
      * @param  array{user_id: int, username: string}  $user
      * @param  array<string, string>  $secrets
@@ -450,10 +457,18 @@ final class ChangeLifecycle
             return null;
         }
         if ($change['waiting'] === 'blast_unknown') {
-            // the admin's explicit decision, recorded on the batch: while its blast radius cannot be computed, it goes on with its
-            // window covering its devices and the devices approved (or accepted) as cut off
             $row = $this->changes->batches($id)[$batch] ?? [];
-            $why = UntrustedText::line((string) ($row['blast']['error'] ?? 'it could not be computed'), 300);
+            // computed first: when it can be (the cause was fixed), the batch starts as any, checked against its blast radius
+            $why = $this->blastProbe($resumed, $batch, $user);
+            if ($why === null) {
+                $this->timeline($resumed, 'blast', "Batch $batch: its blast radius can be computed again; continued by " . UntrustedText::line($user['username'], 60) . '.',
+                    $user['username'], $now);
+                $this->startBatch($resumed, $batch, $user, $secrets, $now);
+
+                return null;
+            }
+            // the admin's explicit decision, recorded on the batch: while its blast radius still cannot be computed, it goes on with
+            // its window covering its devices and the devices approved (or accepted) as cut off
             $this->changes->updateBatch($id, $batch, ['blast_override' => ['by' => mb_substr($user['username'], 0, 255), 'user_id' => (int) $user['user_id'],
                 'at' => Clock::store($now), 'why' => $why]]);
             $text = ChangeText::blastOverride($resumed, $batch, $user['username'], $why, BlastRadius::listText($this->heldLost($resumed, $batch), $this->blastNames($resumed, $batch)),
@@ -857,6 +872,11 @@ final class ChangeLifecycle
                 $this->changes->updateBatch((int) $change['id'], $number, ['note' => 'until ' . Clock::text($deadline) . ', then the change ends']);
                 $this->timeline($change, 'apply', ChangeText::waiting($change, $number, 'secrets', $deadline), null, $now);
             }
+
+            return;
+        }
+        if ($change['waiting'] === 'blast_unknown') {
+            $this->blastRecheck($change, $now);
 
             return;
         }
@@ -1777,7 +1797,7 @@ final class ChangeLifecycle
         } catch (LockLost $e) {
             throw $e;
         } catch (TopologyError|\InvalidArgumentException $e) {
-            $why = UntrustedText::line($e instanceof TopologyError ? $e->getMessage() : 'the topology plugin\'s answer is not one: ' . $e->getMessage(), 300);
+            $why = self::blastError($e);
             $record = ['state' => 'unknown', 'error' => $why, 'at' => Clock::store($now), 'lost' => $held, 'window' => $held];
             $override = $batch['blast_override'] ?? null;
             if (is_array($override)) {
@@ -1814,6 +1834,66 @@ final class ChangeLifecycle
         }
 
         return $blast['lost'];
+    }
+
+    /**
+     * Why a blast radius cannot be computed, in words.
+     */
+    private static function blastError(TopologyError|\InvalidArgumentException $e): string
+    {
+        return UntrustedText::line($e instanceof TopologyError ? $e->getMessage() : 'the topology plugin\'s answer is not one: ' . $e->getMessage(), 300);
+    }
+
+    /**
+     * Can the blast radius of batch $number be computed now, as $user sees the network? Null when it can, else why not.
+     *
+     * @param  array{user_id: int, username: string}  $user
+     */
+    private function blastProbe(array $change, int $number, array $user): ?string
+    {
+        $this->beat();
+        try {
+            if ($this->topology === null) {
+                throw new TopologyError('the topology plugin is not available to this plugin');
+            }
+            BlastRadius::fromApi($this->topology->blastRadius($this->batchDevices($change, $number), (int) $user['user_id']));
+        } catch (LockLost $e) {
+            throw $e;
+        } catch (TopologyError|\InvalidArgumentException $e) {
+            return self::blastError($e);
+        }
+
+        return null;
+    }
+
+    /**
+     * A change waiting because the blast radius of its batch could not be computed, checked again every BLAST_RECHECK
+     * seconds as the admin who started the batch: once it can be computed (the topology plugin enabled again), the batch
+     * starts as any, checked against its blast radius; until then the batch keeps when it was checked last and why not.
+     */
+    private function blastRecheck(array $change, int $now): void
+    {
+        $id = (int) $change['id'];
+        $number = (int) $change['current_batch'];
+        $batch = $this->changes->batches($id)[$number] ?? null;
+        $record = is_array($batch['blast'] ?? null) ? $batch['blast'] : [];
+        $last = self::at($record['at'] ?? null);
+        if ($batch === null || ($last !== null && $now - $last < self::BLAST_RECHECK)) {
+            return;
+        }
+        $starter = $this->starter($change, $number);
+        $why = $this->blastProbe($change, $number, $starter);
+        if ($why !== null) {
+            $this->changes->updateBatch($id, $number, ['blast' => ['at' => Clock::store($now), 'error' => $why] + $record]);
+
+            return;
+        }
+        $resumed = $this->update($change, ['status' => ChangeStatus::APPLYING, 'waiting' => null, 'resume_at' => null]);
+        if ($resumed === null) {
+            return;
+        }
+        $this->timeline($resumed, 'blast', "Batch $number: its blast radius can be computed again: the batch starts.", null, $now);
+        $this->startBatch($resumed, $number, $starter, null, $now);
     }
 
     /**

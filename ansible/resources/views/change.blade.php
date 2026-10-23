@@ -201,10 +201,12 @@
             @php $names = $blastNames($waitBlast); $held = (array) ($waitBlast['lost'] ?? []); @endphp
             <div class="ans-warning-loud" id="ans-blast-unknown"><i class="fa fa-question-circle"></i>
                 Batch {{ (int) $change['current_batch'] }} does not start: its blast radius cannot be computed now ({{ $waitBlast['error'] ?? 'no answer' }}).
-                <div style="font-weight: normal; margin-top: 4px">An admin with the run permission may continue it without one: its maintenance window then covers its devices and the
-                    devices {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, is_array($waitBatch['blast_accepted'] ?? null))[1] }} as cut off
-                    ({{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', $held), $names, 10, 'none') }}); the decision is recorded in the timeline and the eventlog.
-                    Or stop the change.</div>
+                <div style="font-weight: normal; margin-top: 4px">Fix that{{ str_contains((string) ($waitBlast['error'] ?? ''), 'disabled') ? ' (enable the topology plugin again in Plugin Admin)' : '' }},
+                    then <em>Continue</em>, or let the plugin check again on its own: it does every minute (last {{ $local($waitBlast['at'] ?? null) }}), and starts the batch
+                    once its blast radius can be computed. <em>Continue</em> computes it first; only if it still cannot be computed does the batch go without one,
+                    its maintenance window then covering its devices and the devices {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, is_array($waitBatch['blast_accepted'] ?? null))[1] }} as cut off
+                    ({{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', $held), $names, 10, 'none') }}), the decision recorded in the timeline
+                    and the eventlog. Or stop the change.</div>
             </div>
         @endif
         @if($laterBusy)
@@ -265,7 +267,7 @@
                     @if($actions['continue'])
                         <button type="button" class="btn btn-sm {{ $change['waiting'] === 'blast_unknown' ? 'btn-warning' : 'btn-success' }}" data-action="continue" id="ans-action-continue"><i class="fa fa-forward"></i> {{ match ($change['waiting']) {
                             'secrets' => 'Launch batch ' . $change['current_batch'],
-                            'blast_unknown' => 'Continue batch ' . $change['current_batch'] . ' without its blast radius',
+                            'blast_unknown' => 'Continue batch ' . $change['current_batch'],
                             default => 'Continue with batch ' . ((int) $change['current_batch'] + 1),
                         } }}</button>
                     @endif

@@ -957,9 +957,10 @@
                 reject: 'Reject this change? It ends it: nothing is applied.',
                 apply: 'Apply this change to ' + devices + ' in ' + batches + '? Batch 1 starts now' + (now.prepare ? ', after its ' + now.prepare : '') + '.',
                 'continue': now.waiting === 'secrets' ? 'Launch batch ' + now.currentBatch + ' with the secret answers given here?'
-                    : (now.waiting === 'blast_unknown' ? 'Continue batch ' + now.currentBatch + ' without its blast radius? It cannot be computed now: nothing checks '
-                        + 'what the batch cuts off. Its maintenance window covers its devices and the devices approved as cut off. Your decision is recorded in the '
-                        + 'timeline and in the eventlog.'
+                    : (now.waiting === 'blast_unknown' ? 'Continue batch ' + now.currentBatch + '? Its blast radius is computed first: if it can be, the batch '
+                        + 'starts as any, checked against it. If it still cannot be computed, the batch goes without one: nothing checks what it cuts off, its '
+                        + 'maintenance window covers its devices and the devices it was held to cut off, and your decision is recorded in the timeline and in '
+                        + 'the eventlog.'
                         : 'Continue with batch ' + (now.currentBatch + 1) + '? Check the devices of the batches so far first.'),
                 accept: 'Accept the new blast radius of batch ' + now.currentBatch + '? It would now also cut off the devices named above. '
                     + 'The batch then starts again, its blast radius checked once more, and its maintenance window covers them. Your acceptance is recorded in the '

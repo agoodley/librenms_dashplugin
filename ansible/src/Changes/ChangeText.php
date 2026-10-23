@@ -201,7 +201,8 @@ final class ChangeText
     {
         return self::name($change) . ", batch $batch: its blast radius cannot be computed now (" . UntrustedText::line($why, 300) . '). '
             . ($refused ? 'The batch is refused (setting When the blast radius cannot be computed: refuse the batch).'
-                : 'The batch does not start until an admin continues it without a blast radius.');
+                : 'The batch does not start until its blast radius can be computed again (checked every minute), or an admin continues it, without one '
+                    . 'if it still cannot be computed.');
     }
 
     /**

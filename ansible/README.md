@@ -745,10 +745,13 @@ it cuts off with those approved, or accepted since:
   and the window opened for the batch closes.
 * **It shrank:** the batch goes on, and the timeline says what it no longer cuts off.
 * **It cannot be computed** (the topology plugin disabled meanwhile, an error, a LibreNMS role that may not view the
-  links): **the batch does not start either**, and the change page says why. An admin with the run permission may
-  *Continue* it without a blast radius, recorded in the timeline and in the eventlog: its window then covers its
-  devices and the devices approved (or accepted) as cut off. With *When the blast radius cannot be computed: refuse
-  the batch*, the change ends.
+  links): **the batch does not start either**, and the change page says why. Fix the cause (enable the topology plugin
+  again), then *Continue*, or let the plugin check again on its own: the change page's poll and the sync command
+  compute it again every minute, and once it can be computed the batch starts as any, checked against its blast
+  radius. *Continue* (an admin with the run permission) computes it first, too; only if it still cannot be computed
+  does the batch go without one, recorded in the timeline and in the eventlog, its window then covering its devices
+  and the devices approved (or accepted) as cut off. With *When the blast radius cannot be computed: refuse the
+  batch*, the change ends.
 
 Unmanaged neighbors are counted, not compared: a phone more or less does not stop a batch. A change planned by the
 settings has no approved blast radius, and goes as in phase 2. Nothing is computed while a batch runs (see

@@ -400,7 +400,8 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertCount(2, $this->launched());
         $this->assertCount(2, $this->windows->windows);
         $this->assertStringContainsString('Batch 3: its blast radius cannot be computed now (the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)). '
-            . 'The batch does not start until an admin continues it without a blast radius.', $this->messages($id));
+            . 'The batch does not start until its blast radius can be computed again (checked every minute), or an admin continues it, without one if it still '
+            . 'cannot be computed.', $this->messages($id));
         $this->assertStringContainsString('Only a change whose batch waits because its blast radius grew', (string) $lifecycle->acceptBlast($id, self::BOB, true, '', $this->t0 + 300));
         $lifecycle->advance($id, $this->t0 + 400);
         $this->assertSame(ChangeStatus::PAUSED, $this->changes->find($id)['status'], 'it waits for an admin');
@@ -423,6 +424,81 @@ class ChangeBlastRadiusTest extends TestCase
         $this->endBatch($id, 3, $this->t0 + 600);
         $this->assertSame('same', $this->changes->batches[$id][4]['blast']['state']);
         $this->assertNull($this->changes->batches[$id][4]['blast_override'], 'the decision was for batch 3 only');
+    }
+
+    public function testAContinueOnceTheBlastRadiusCanBeComputedAgainRecordsNoDecision(): void
+    {
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->error = 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)';
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $this->assertSame('blast_unknown', $this->changes->find($id)['waiting']);
+        $warnings = count(array_filter($this->events->entries, fn ($e) => $e['severity'] === 'warning'));
+
+        // the admin enables the topology plugin again, then continues before the plugin checked again on its own
+        $this->topology->error = null;
+        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 230));
+        $this->assertSame([[510], [511, 512, 513, 514], [502]], $this->launched(), 'batch 3 starts');
+        $batch = $this->changes->batches[$id][3];
+        $this->assertNull($batch['blast_override'], 'no decision to go without a blast radius is recorded');
+        $this->assertSame('same', $batch['blast']['state'], 'it was checked against its blast radius, as any batch');
+        $this->assertStringContainsString('Batch 3: its blast radius can be computed again; continued by alice.', $this->messages($id));
+        $this->assertStringNotContainsString('without a blast radius (it cannot be computed', $this->messages($id));
+        $this->assertSame($warnings, count(array_filter($this->events->entries, fn ($e) => $e['severity'] === 'warning')), 'no warning in the eventlog');
+        $this->assertSame([502, 512], $this->windows->windows[102]['devices']);
+    }
+
+    public function testABatchWhoseBlastRadiusCanBeComputedAgainStartsOnItsOwn(): void
+    {
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->error = 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)';
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $calls = count($this->topology->calls);
+
+        // checked again at most every minute (the page polls every 2 seconds), as the admin who started the batch
+        $lifecycle->advance($id, $this->t0 + 230);
+        $this->assertCount($calls, $this->topology->calls, 'not checked again within the minute');
+        $lifecycle->advance($id, $this->t0 + 262);
+        $this->assertCount($calls + 1, $this->topology->calls, 'checked again after a minute');
+        $this->assertSame(1, end($this->topology->calls)['user']);
+        $this->assertSame([ChangeStatus::PAUSED, 'blast_unknown'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']], 'still not: it waits');
+        $this->assertSame(Clock::store($this->t0 + 262), $this->changes->batches[$id][3]['blast']['at'], 'when it was checked last');
+        $this->assertCount(2, $this->launched());
+        $messages = $this->changes->messages($id);
+
+        // the topology plugin is enabled again: the next check starts the batch as any
+        $this->topology->error = null;
+        $lifecycle->advance($id, $this->t0 + 300);
+        $this->assertSame($messages, $this->changes->messages($id), 'nothing said while it waited for the minute');
+        $lifecycle->advance($id, $this->t0 + 323);
+        $this->assertSame([[510], [511, 512, 513, 514], [502]], $this->launched());
+        $this->assertSame([ChangeStatus::APPLYING, null], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+        $this->assertNull($this->changes->batches[$id][3]['blast_override']);
+        $this->assertSame('same', $this->changes->batches[$id][3]['blast']['state']);
+        $this->assertStringContainsString('Batch 3: its blast radius can be computed again: the batch starts.', $this->messages($id));
+    }
+
+    public function testABlastRadiusComputedAgainThatGrewWaitsForItsAcceptance(): void
+    {
+        $id = $this->approved();
+        $lifecycle = $this->lifecycle();
+        $lifecycle->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->error = 'an error';
+        $this->endBatch($id, 2, $this->t0 + 200);
+        // back, and lab-sw2 now cuts off lab-sw5 too: the batch waits for an admin to accept that, as any
+        $this->topology->error = null;
+        $this->topology->cuts[502] = [512, 511];
+        $this->assertNull($lifecycle->resume($id, self::ALICE, [], $this->t0 + 230));
+        $this->assertSame([ChangeStatus::PAUSED, 'blast'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+        $this->assertSame([511], $this->changes->batches[$id][3]['blast']['added']);
+        $this->assertNull($this->changes->batches[$id][3]['blast_override']);
+        $this->assertCount(2, $this->launched());
     }
 
     public function testARefusedUnknownBlastRadiusEndsTheChange(): void
