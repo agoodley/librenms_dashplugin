@@ -19,6 +19,8 @@ use Agoodley\LibrenmsTopology\Support\InterfaceName;
  *   configured core device) with priority 4096 and the next one as secondary with 8192, each with its spanning tree
  *   mode (pvst: a priority per VLAN; mst: the CIST, instance 0; stp: one instance). A domain without designated root
  *   bridges or configured core devices has no fix: the core the topology plugin would guess is no clear configuration.
+ *   Nor has a VLAN where another bridge has a priority as low as the intended root's (4096), or as its secondary's
+ *   (8192): the fix would not move the root (a bridge of the same priority may win by its MAC), so it is not offered.
  *
  * Each fix names the findings it resolves by their identity (FindingHistory::hash()).
  */
@@ -94,10 +96,12 @@ final class FixBuilder
      * @param  array<int, string>  $names
      * @param  ?string  $refusal  why no root fix can be made at all (a setting names a device ambiguously): each finding then has it
      * @param  string  $hint  said after "no designated root bridge or core device": the settings' names that name no device (devicesNamed())
+     * @param  array<int, array<int, int>>  $explicit  VLAN key => device_id => the explicit priority of the switches that have one (below the
+     *                                                default, as configured: Sources::explicitPriorities())
      * @return array{fixes: list<array>, not_fixable: list<array{identity: string, code: string, title: string, why: string}>}
      */
     public static function rootPriorities(array $findings, array $domains, array $designated, array $core, array $bridges, array $names, ?string $refusal = null,
-        string $hint = ''): array
+        string $hint = '', array $explicit = []): array
     {
         $groups = [];
         $notFixable = [];
@@ -129,6 +133,23 @@ final class FixBuilder
                 $secondary = $candidates[1] ?? null;
                 if ($secondary !== null && ! isset($bridges[$secondary]['instances'][$key])) {
                     $secondary = null;
+                }
+                // the intended root wins with its priority only when every other bridge of the VLAN has a higher one, its secondary takes over only
+                // when every bridge but those two has a higher one than the secondary's: else the fix would not move the root
+                $rivals = array_diff_key(array_intersect_key($explicit[$key] ?? [], array_flip($members)), array_flip(array_filter([$primary, $secondary], fn ($id) => $id !== null)));
+                $beating = fn (int $priority) => array_filter($rivals, fn (int $rival) => $rival <= $priority);
+                $name = fn (int $id) => $names[$id] ?? "device #$id";
+                if ($beating(self::PRIMARY_PRIORITY)) {
+                    $why = self::rivalsText($beating(self::PRIMARY_PRIORITY), $names) . ' in ' . StpIndex::vlanLabel($key) . ', so ' . $name($primary) . ', the intended root, would '
+                        . 'not win with ' . self::PRIMARY_PRIORITY . ': raise ' . (count($beating(self::PRIMARY_PRIORITY)) === 1 ? 'its priority' : 'their priorities') . ', or lower '
+                        . $name($primary) . '\'s by hand';
+                    continue;
+                }
+                if ($secondary !== null && $beating(self::SECONDARY_PRIORITY)) {
+                    $why = self::rivalsText($beating(self::SECONDARY_PRIORITY), $names) . ' in ' . StpIndex::vlanLabel($key) . ', so ' . $name($secondary) . ', the secondary, would '
+                        . 'not take over with ' . self::SECONDARY_PRIORITY . ': raise ' . (count($beating(self::SECONDARY_PRIORITY)) === 1 ? 'its priority' : 'their priorities')
+                        . ', or set the priorities by hand';
+                    continue;
                 }
                 sort($members);
                 $group = implode('|', [$primary, $secondary ?? '', $from, sha1(implode(',', $members))]);
@@ -207,6 +228,25 @@ final class FixBuilder
         }
 
         return ['devices' => array_keys($devices), 'ambiguous' => $ambiguous, 'unmatched' => array_values(array_unique($unmatched))];
+    }
+
+    /**
+     * Bridges and their priorities, lowest first: "cor-sw4 has priority 4096", "cor-sw4 has priority 0, cor-sw5 4096 and 2 more".
+     *
+     * @param  array<int, int>  $rivals  device_id => priority
+     * @param  array<int, string>  $names
+     */
+    private static function rivalsText(array $rivals, array $names): string
+    {
+        $order = array_keys($rivals);
+        usort($order, fn (int $a, int $b) => $rivals[$a] <=> $rivals[$b] ?: $a <=> $b);
+        $parts = [];
+        foreach (array_slice($order, 0, 3) as $index => $id) {
+            $parts[] = ($names[$id] ?? "device #$id") . ($index === 0 ? ' has priority ' : ' ') . $rivals[$id];
+        }
+        $more = count($order) - count($parts);
+
+        return $more > 0 ? implode(', ', $parts) . " and $more more" : (count($parts) > 1 ? implode(', ', array_slice($parts, 0, -1)) . ' and ' . end($parts) : $parts[0]);
     }
 
     /**

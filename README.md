@@ -284,7 +284,8 @@ by a setting; the CDP neighbor named after ", with" is not matched.
 
 With the [Ansible plugin](ansible/README.md#fixes) enabled, a root bridge that is not a designated one or was elected
 with the default priority has a *Fix with Ansible* link for admins: the intended root (the first designated root bridge
-of its part of the network, else its first core device) to priority 4096, the next one to 8192.
+of its part of the network, else its first core device) to priority 4096, the next one to 8192, where no other switch
+has a priority as low.
 
 VLAN view with the STP overlay – pt-dist2 is the VLAN 120 root bridge, and pt-acc1 and pt-acc2 block their uplinks to
 pt-dist1 (`[ALT]`, dashed orange); pt-acc3 does not carry the VLAN and is faded:
@@ -758,7 +759,8 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
   `chosen_from` (the designated root bridges, else the configured core devices, as the settings name them by device id
   or LibreNMS hostname: never by a sysName or a display name, which a device reports itself) and the `roots_now`.
   `not_fixable`: the findings of those checks without a clear fix, with why (no designated root bridge or core device
-  in their part of the network, or a setting's name that is the id or hostname of several devices). Of these devices: the fixes of them and of the findings about them (the link check of them and
+  in their part of the network, a setting's name that is the id or hostname of several devices, or another switch of a
+  VLAN with a priority as low as the intended root's, or as its secondary's: the fix would not move the root). Of these devices: the fixes of them and of the findings about them (the link check of them and
   their LLDP/CDP neighbors, which knows the name of every device the user sees, as a description may name any; the
   spanning tree check of their L2 domains); of every device when none are given. Option `kinds`
   (`PORT_DESCRIPTIONS`, `STP_ROOT_PRIORITY`): only those are computed.

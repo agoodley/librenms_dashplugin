@@ -379,10 +379,16 @@ final class Verification
                 }
             }
         }
-        $mentioned = array_merge(array_merge([], ...array_column($links, 'devices')), array_merge([], ...array_column($roots, 'devices')), $designated, $core);
+        // the explicit priorities in the findings' VLANs: a root fix whose bridges would not win there is none
+        $explicit = $roots ? $this->sources->explicitPriorities(array_values(array_unique(array_merge([], ...array_map(fn (array $finding) => self::vlansOf($finding) ?: [0],
+            $roots))))) : [];
+        $explicit = array_filter(array_map(fn (array $byDevice) => array_intersect_key($byDevice, array_flip($this->sources->visible(array_keys($byDevice)))), $explicit));
+        $mentioned = array_merge(array_merge([], ...array_column($links, 'devices')), array_merge([], ...array_column($roots, 'devices')), $designated, $core,
+            array_merge([], ...array_map('array_keys', $explicit)));
         $names = $this->sources->names(array_values(array_unique(array_map('intval', $mentioned))));
         if ($roots) {
-            $built = FixBuilder::rootPriorities($roots, $stp['domains'], $designated, $core, $this->sources->bridges(array_map('array_values', $keys)), $names, $refusal, $hint);
+            $built = FixBuilder::rootPriorities($roots, $stp['domains'], $designated, $core, $this->sources->bridges(array_map('array_values', $keys)), $names, $refusal, $hint,
+                $explicit);
         }
         $fixes = [...FixBuilder::descriptions($links, $ports ? $this->sources->portNames($ports) : [], $names), ...$built['fixes']];
         if ($wanted !== null) {

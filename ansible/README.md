@@ -1070,7 +1070,11 @@ network much faster than the whole list):
   one as its secondary with 8192. A fix knows these devices by the settings' device ids or LibreNMS hostnames only,
   never by a sysName or a display name (a device reports its sysName itself): name them so. Without designated root
   bridges or configured core devices named so, or with a name that is the id or hostname of several devices, there is
-  no root fix: the page lists the finding with why, and where to set them.
+  no root fix: the page lists the finding with why, and where to set them. Nor is there one in a VLAN where another
+  switch has a priority as low as 4096 (or, besides the intended root, as 8192): with the same priority, the lower
+  MAC address wins, so the fix would not move the root. The page lists the finding with that switch and its priority
+  as configured (*cor-sw4 has priority 4096 in VLAN 10, so cor-sw1, the intended root, would not win with 4096: raise
+  its priority, or lower cor-sw1's by hand*).
 
 Each fix shows what it changes and the findings it resolves. The topology plugin's *Link & VLAN diagnostics* and
 *Spanning tree diagnostics* link each such finding to it (*Fix with Ansible*, for admins, while this plugin is

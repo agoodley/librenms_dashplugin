@@ -173,6 +173,28 @@ final class LibrenmsSources implements Sources
         return $result;
     }
 
+    public function explicitPriorities(array $keys): array
+    {
+        $all = $this->stpKeys()['keys'];
+        $keys = array_values(array_unique(array_map('intval', $keys)));
+        $result = [];
+        foreach ($this->repo->lowPriorityInstances(array_keys($all)) as $row) {
+            $instance = StpIndex::normalizeInstance($row);
+            $deviceId = $instance['device_id'];
+            if (! isset($all[$deviceId]) || ! $this->repo->canSee($deviceId)) {
+                continue;
+            }
+            $priority = intdiv(max(0, $instance['priority']), 4096) * 4096;
+            // a single-instance bridge controls every VLAN with its one instance
+            foreach ($all[$deviceId] === [0] ? $keys : array_intersect([$instance['vlan']], $keys) as $key) {
+                $result[$key][$deviceId] = min($priority, $result[$key][$deviceId] ?? PHP_INT_MAX);
+            }
+        }
+        ksort($result);
+
+        return $result;
+    }
+
     public function deviceStates(array $ids): array
     {
         return $this->verification()->deviceStates($ids);

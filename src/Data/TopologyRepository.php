@@ -665,6 +665,29 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
+     * stp rows of the devices' instances whose bridge priority is below the default (32768): the explicit priorities a
+     * root priority fix competes with (few rows: the stp table has one per switch and VLAN, mostly at the default).
+     *
+     * @param  int[]  $ids
+     * @return list<array>
+     */
+    public function lowPriorityInstances(array $ids): array
+    {
+        if (! $ids || ! $this->allowsTable('stp')) {
+            return [];
+        }
+        $rows = [];
+        foreach (array_chunk(array_values(array_unique(array_map('intval', $ids))), 5000) as $chunk) {
+            foreach (DB::table('stp')->whereIntegerInRaw('device_id', $chunk)->where('priority', '<', 32768)
+                ->select(['device_id', 'vlan', 'priority', 'bridgeAddress', 'protocolSpecification'])->get() as $row) {
+                $rows[] = (array) $row;
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
      * stp rows of some instances of the devices.
      *
      * @param  array<int, int|int[]>  $keys  device_id => VLAN key(s) (0 = default instance)

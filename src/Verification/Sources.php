@@ -95,6 +95,16 @@ interface Sources
     public function bridges(array $keys): array;
 
     /**
+     * The explicit bridge priorities of the switches the scope may see, in these VLAN keys: those below the default
+     * (32768), as configured (the extended system id taken off: a multiple of 4096). A single-instance bridge (802.1D,
+     * RSTP, MST's CIST) has its one priority in each key.
+     *
+     * @param  int[]  $keys  VLAN keys
+     * @return array<int, array<int, int>> VLAN key => device_id => priority
+     */
+    public function explicitPriorities(array $keys): array;
+
+    /**
      * Status and freshness of the devices (VerificationRepository::deviceStates()).
      *
      * @param  int[]  $ids

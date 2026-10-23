@@ -176,4 +176,42 @@ class FixBuilderTest extends TestCase
         $this->assertSame([0], $built['fixes'][0]['vlans'], 'VLAN 10\'s domain has no designated root');
         $this->assertSame([], $built['not_fixable']);
     }
+
+    public function testARootFixIsOfferedOnlyWhenItsBridgesWouldWin(): void
+    {
+        $findings = [self::finding('h0', 'root_not_preferred', [3], ['root' => 3, 'root_mac' => '00ab03000000'], [0]),
+            self::finding('h10', 'root_not_preferred', [3], ['root' => 3, 'root_mac' => '00ab03000000'], [10])];
+        $fix = fn (array $explicit) => FixBuilder::rootPriorities($findings, self::DOMAINS, [2, 1], [], self::bridges(), self::NAMES, null, '', $explicit);
+
+        // dist1, the root now, has priority 4096 in VLAN 10: core2 with 4096 would not win there (the lower MAC would), VLAN 1 is fixed
+        $built = $fix([10 => [3 => 4096], 0 => [3 => 16384]]);
+        $this->assertSame([[0]], array_column($built['fixes'], 'vlans'));
+        $this->assertSame([['h10', 'dist1 has priority 4096 in VLAN 10, so core2, the intended root, would not win with 4096: raise its priority, or lower core2\'s by hand']],
+            array_map(fn (array $entry) => [$entry['identity'], $entry['why']], $built['not_fixable']));
+        // a finding of both VLANs: fixed in the one its bridges win
+        $merged = FixBuilder::rootPriorities([self::finding('h', 'root_not_preferred', [3], ['root' => 3, 'root_mac' => '00ab03000000'], [0, 10])], self::DOMAINS, [2, 1], [],
+            self::bridges(), self::NAMES, null, '', [10 => [3 => 4096]]);
+        $this->assertSame([[[0]], []], [array_column($merged['fixes'], 'vlans'), $merged['not_fixable']]);
+        $both = $fix([10 => [3 => 4096], 0 => [3 => 0, 4 => 4096]]);
+        $this->assertSame([], $both['fixes']);
+        $this->assertSame(['dist1 has priority 0 and acc1 4096 in VLAN 1 / CST, so core2, the intended root, would not win with 4096: raise their priorities, or lower core2\'s by hand',
+            'dist1 has priority 4096 in VLAN 10, so core2, the intended root, would not win with 4096: raise its priority, or lower core2\'s by hand'],
+            array_column($both['not_fixable'], 'why'));
+
+        // acc1 has 8192: core1, the secondary, would not take over with it
+        $this->assertSame(['acc1 has priority 8192 in VLAN 1 / CST, so core1, the secondary, would not take over with 8192: raise its priority, or set the priorities by hand',
+            'acc1 has priority 8192 in VLAN 10, so core1, the secondary, would not take over with 8192: raise its priority, or set the priorities by hand'],
+            array_column($fix([0 => [4 => 8192], 10 => [4 => 8192]])['not_fixable'], 'why'));
+        // what the fix sets does not compete: the intended root's and the secondary's own priorities now; nor does a bridge of another domain
+        $this->assertCount(1, $fix([0 => [2 => 0, 1 => 4096, 6 => 0], 10 => [2 => 0, 1 => 4096, 6 => 0]])['fixes']);
+        // higher than the secondary's: no rival
+        $this->assertSame([[0, 10]], array_column($fix([0 => [3 => 12288, 4 => 16384], 10 => [3 => 12288]])['fixes'], 'vlans'));
+
+        // without a secondary, only the intended root's priority counts
+        $bridges = self::bridges();
+        unset($bridges[1]['instances'][0], $bridges[1]['instances'][10]);
+        $alone = FixBuilder::rootPriorities($findings, self::DOMAINS, [2, 1], [], $bridges, self::NAMES, null, '', [0 => [4 => 8192], 10 => [4 => 8192]]);
+        $this->assertSame([[0, 10]], array_column($alone['fixes'], 'vlans'));
+        $this->assertNull($alone['fixes'][0]['secondary']);
+    }
 }

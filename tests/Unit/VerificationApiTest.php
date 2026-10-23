@@ -251,6 +251,28 @@ class VerificationApiTest extends TestCase
         $this->assertSame([], Verification::withSources($net)->fixes([], ['kinds' => ['other']])['fixes'], 'no kind it knows: nothing');
     }
 
+    public function testARootFixWhoseBridgesWouldNotWinIsNotOfferedWithWhy(): void
+    {
+        $net = new Net();
+        $net->settings['stp_preferred_roots'] = [Net::CORE2, Net::CORE1];
+        $net->findings['stp'] = [Net::finding('root_not_preferred', 'warning', 'Root bridge dist1 is not one of the designated root bridges', [Net::DIST1], 0,
+            ['fix' => ['root' => Net::DIST1, 'root_mac' => Net::MACS[Net::DIST1]]])];
+        // dist1, the root now, set to 4096 (with the extended system id of VLAN 1: 4097); secret, which the user may not see, to 0
+        $net->bridges[Net::DIST1]['instances'][0]['priority'] = 4097;
+        $net->bridges[Net::SECRET]['instances'][0]['priority'] = 0;
+        $api = Verification::withSources($net);
+
+        $fixes = $api->fixes();
+
+        $this->assertSame([], array_values(array_filter($fixes['fixes'], fn (array $fix) => $fix['kind'] === 'stp_root_priority')));
+        $this->assertSame(['dist1 has priority 4096 in VLAN 1 / CST, so core2, the intended root, would not win with 4096: raise its priority, or lower core2\'s by hand'],
+            array_column($fixes['not_fixable'], 'why'), 'named, with its priority as configured; secret, which the user may not see, is no part of it');
+        $this->assertStringNotContainsString('secret', json_encode($fixes));
+
+        $net->bridges[Net::DIST1]['instances'][0]['priority'] = 32769;
+        $this->assertSame(['Root bridge of VLAN 1 / CST: core2, secondary core1'], array_column($api->fixes()['fixes'], 'title'), 'at the default again: the fix');
+    }
+
     public function testNoDevicesIsAnEmptyScopeNeverTheWholeNetwork(): void
     {
         $net = new Net();

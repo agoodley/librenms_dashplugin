@@ -203,6 +203,25 @@ final class VerificationFixture implements Sources
         return array_intersect_key($this->bridges, $keys);
     }
 
+    public function explicitPriorities(array $keys): array
+    {
+        $result = [];
+        foreach ($this->bridges as $deviceId => $bridge) {
+            if (! in_array($deviceId, $this->visible, true) && $deviceId !== self::SECRET) {
+                continue;
+            }
+            foreach ($bridge['instances'] as $key => $instance) {
+                foreach ($bridge['keys'] === [0] ? $keys : array_intersect([$key], $keys) as $asked) {
+                    if ($instance['priority'] < 32768) {
+                        $result[$asked][$deviceId] = intdiv($instance['priority'], 4096) * 4096; // secret's too, as a buggy source would
+                    }
+                }
+            }
+        }
+
+        return $result;
+    }
+
     public function deviceStates(array $ids): array
     {
         return array_intersect_key($this->states, array_flip($ids));
