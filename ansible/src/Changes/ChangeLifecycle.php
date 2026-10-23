@@ -108,6 +108,9 @@ final class ChangeLifecycle
     /** What the change waits for while a batch's unexpected changes, or a batch that cannot be verified, wait for an admin. */
     public const VERIFY_WAITS = ['verification', 'verify_unknown'];
 
+    /** What a state's record says once a step of it succeeded: no failure to try again (beforeFailed(), verifyStep()). */
+    private const NO_FAILURE = ['failed_since' => null, 'failed' => null, 'failed_at' => null, 'retry_until' => null];
+
     /** The steps of a state before a batch taken again for a launch held for its secret answers (beforeRetaking()). */
     private const RETAKING = ['retake', 'refresh', 'waiting', 'ready'];
 
@@ -1275,10 +1278,11 @@ final class ChangeLifecycle
                 return;
             }
         }
-        if (! $stated) {
+        if (! $stated && ! $this->takeBefore($change, $number, $user, $now)) {
             // the last step before the launch: nothing holds the batch after it (but its secret answers: the page that holds them
-            // launches it within seconds; later than STATE_VALID, it is taken again first)
-            $this->takeBefore($change, $number, $user, $now);
+            // launches it within seconds; later than STATE_VALID, it is taken again first); a state that could not be taken is
+            // tried again at the next step, the batch prepared meanwhile
+            return;
         }
         if (! empty($change['has_secrets']) && $secrets === null) {
             // its window is open and its backups taken: it waits at most the expected time of a batch, then the change ends;
@@ -2470,8 +2474,9 @@ final class ChangeLifecycle
      * older than the wait, and the data of a launch held since its state was ready or taken ("retake": its blast radius
      * grew or could not be computed, its secret answers came late): it counts when LibreNMS discovered and polled the
      * scope within the wait, else it is asked for again first, within the wait (Fresh data: wait: the data as it is).
-     * Taken as the admin who starts the batch: one who may no longer start it, or a scope that cannot be computed, leave
-     * the batch to go on without its state (it cannot be verified).
+     * Taken as the admin who starts the batch: one who may no longer start it leaves the batch to go on without its state
+     * (it cannot be verified; nor is it launched by them); a scope or a freshness that the topology plugin cannot answer is
+     * asked again at each step until the wait is over (beforeFailed()).
      */
     private function beforeStep(array $change, int $number, int $now): bool
     {
@@ -2484,21 +2489,26 @@ final class ChangeLifecycle
         $user = $this->starter($change, $number);
         $wait = $this->settings->verifyWaitSeconds;
         $scope = null;
+        // taken as the admin who starts the batch sees the network: one who may no longer start it sees less, or nothing
+        $refused = $this->stateRefusal($user, 'starts');
+        if ($refused !== null) {
+            return $this->beforeUnknown($change, $number, $refused, $now);
+        }
         try {
-            // taken as the admin who starts the batch sees the network: one who may no longer start it sees less, or nothing
-            $this->stateTaker($user, 'starts');
             $expired = $status === 'waiting' && ! empty($before['prefetched']) && $now >= (int) ($before['deadline'] ?? 0);
             if (! in_array($status, ['refresh', 'waiting'], true) || $expired) {
                 // the data of a held launch, or asked for with the previous batch's verification more than the wait ago
                 if ($this->settings->verifyFresh !== 'ask') {
-                    $this->setVerify($id, $number, ['before' => ['status' => 'ready', 'how' => 'wait', 'stale' => false, 'recent' => false, 'waiting' => null] + $before]);
+                    $this->setVerify($id, $number, ['before' => ['status' => 'ready', 'how' => 'wait', 'stale' => false, 'recent' => false, 'waiting' => null]
+                        + self::NO_FAILURE + $before]);
 
                     return true;
                 }
                 $scope = $this->beforeScope($change, $number, $user);
                 $fresh = $this->freshOf($scope, $user, $now - $wait, $now - $wait);
                 if ($fresh['fresh']) {
-                    $this->setVerify($id, $number, ['before' => ['status' => 'ready', 'stale' => false, 'recent' => true, 'waiting' => null, 'checked_at' => $now] + $before]);
+                    $this->setVerify($id, $number, ['before' => ['status' => 'ready', 'stale' => false, 'recent' => true, 'waiting' => null, 'checked_at' => $now]
+                        + self::NO_FAILURE + $before]);
 
                     return true;
                 }
@@ -2523,23 +2533,58 @@ final class ChangeLifecycle
             $since = (int) ($before['asked_at'] ?? $now);
             $fresh = $this->freshOf($scope, $user, $since, $since);
             if (! $fresh['fresh'] && $now < (int) ($before['deadline'] ?? 0)) {
-                $this->setVerify($id, $number, ['before' => ['waiting' => Freshness::waitingText($fresh['waiting'], $scope['names']), 'checked_at' => $now] + $before]);
+                $this->setVerify($id, $number, ['before' => ['waiting' => Freshness::waitingText($fresh['waiting'], $scope['names']), 'checked_at' => $now]
+                    + self::NO_FAILURE + $before]);
 
                 return false;
             }
             $this->setVerify($id, $number, ['before' => ['status' => 'ready', 'stale' => ! $fresh['fresh'], 'recent' => false, 'checked_at' => $now,
-                'waiting' => $fresh['fresh'] ? null : Freshness::waitingText($fresh['waiting'], $scope['names'])] + $before]);
+                'waiting' => $fresh['fresh'] ? null : Freshness::waitingText($fresh['waiting'], $scope['names'])] + self::NO_FAILURE + $before]);
 
             return true;
         } catch (LockLost $e) {
             throw $e;
         } catch (TopologyError|\LengthException|\RuntimeException $e) {
-            $why = UntrustedText::line($e->getMessage(), 300);
-            $this->setVerify($id, $number, ['before' => ['status' => 'unknown', 'error' => "the state before it could not be taken ($why)", 'at' => $now] + $before]);
-            $this->timeline($change, 'verify', "Batch $number will not be verified: the state before it could not be taken ($why).", null, $now);
-
-            return true;
+            return $this->beforeFailed($change, $number, UntrustedText::line($e->getMessage(), 300), $now);
         }
+    }
+
+    /**
+     * The state before batch $number, or what it needs (its scope, the freshness of its data), could not be taken: the
+     * sync command tries again at each of its steps (every minute) until the wait (Wait for fresh data) since the first
+     * failure is over; the batch waits meanwhile (prepared, when it failed right before its launch). Then it goes on
+     * without its state, and cannot be verified. True when it goes on.
+     */
+    private function beforeFailed(array $change, int $number, string $why, int $now): bool
+    {
+        $id = (int) $change['id'];
+        $before = $this->beforeOf($id, $number);
+        $first = (int) ($before['failed_since'] ?? $now);
+        $until = $first + $this->settings->verifyWaitSeconds;
+        if ($now < $until) {
+            if (! isset($before['failed_since'])) {
+                $this->timeline($change, 'verify', "Batch $number: the state before it could not be taken ($why); the plugin tries again every minute until "
+                    . Clock::text($until) . ', then the batch goes on without it.', null, $now);
+            }
+            $this->setVerify($id, $number, ['before' => ['failed_since' => $first, 'failed' => $why, 'failed_at' => $now, 'retry_until' => $until] + $before]);
+
+            return false;
+        }
+
+        return $this->beforeUnknown($change, $number, $why . (isset($before['failed_since']) ? ', tried since ' . Clock::text($first) : ''), $now);
+    }
+
+    /**
+     * Batch $number goes on without its state before it: it cannot be verified after it. True (it goes on).
+     */
+    private function beforeUnknown(array $change, int $number, string $why, int $now): bool
+    {
+        $before = $this->beforeOf((int) $change['id'], $number);
+        $this->setVerify((int) $change['id'], $number, ['before' => ['status' => 'unknown', 'error' => "the state before it could not be taken ($why)", 'at' => $now]
+            + self::NO_FAILURE + $before]);
+        $this->timeline($change, 'verify', "Batch $number will not be verified: the state before it could not be taken ($why).", null, $now);
+
+        return true;
     }
 
     /**
@@ -2579,18 +2624,21 @@ final class ChangeLifecycle
 
     /**
      * The state before batch $number, as the last step before its launch (the sync command only), as the admin who starts
-     * it sees the network, from the data beforeStep() waited for. A state that cannot be taken leaves the batch to go on:
-     * it cannot be verified after it.
+     * it sees the network, from the data beforeStep() waited for. True when the batch launches: with its state, or without
+     * one (it cannot be verified after it); false while a state that could not be taken is tried again (beforeFailed()).
      *
      * @param  array{user_id: int, username: string}  $user
      */
-    private function takeBefore(array $change, int $number, array $user, int $now): void
+    private function takeBefore(array $change, int $number, array $user, int $now): bool
     {
         $id = (int) $change['id'];
         $before = $this->beforeOf($id, $number);
         $devices = $this->batchDevices($change, $number);
+        $refused = $this->stateRefusal($user, 'starts');
+        if ($refused !== null) {
+            return $this->beforeUnknown($change, $number, $refused, $now);
+        }
         try {
-            $this->stateTaker($user, 'starts');
             $this->beat();
             $state = $this->verifier->state($devices, (int) $user['user_id']);
             // the batch's own devices, as that admin sees them: one the state does not cover could not be verified
@@ -2608,14 +2656,14 @@ final class ChangeLifecycle
                 : ($stale ? "its data is older than $older: LibreNMS did not discover or poll " . ($before['waiting'] ?? 'its scope') . " again within $minutes"
                     : (! empty($before['recent']) ? "from data LibreNMS discovered and polled within the last $minutes" : 'from fresh data'));
             $this->setVerify($id, $number, ['before' => ['status' => 'taken', 'taken_at' => (int) ($state['taken_at'] ?? $now), 'at' => $now, 'stale' => $stale, 'note' => $note,
-                'size' => VerificationText::stateSize($state), 'waiting' => null, 'error' => null] + $before]);
+                'size' => VerificationText::stateSize($state), 'waiting' => null, 'error' => null] + self::NO_FAILURE + $before]);
             $this->timeline($change, 'verify', "State before batch $number taken right before its launch (" . VerificationText::stateSize($state) . "), $note.", null, $now);
+
+            return true;
         } catch (LockLost $e) {
             throw $e;
         } catch (TopologyError|\LengthException|\RuntimeException $e) {
-            $why = UntrustedText::line($e->getMessage(), 300);
-            $this->setVerify($id, $number, ['before' => ['status' => 'unknown', 'error' => "the state before it could not be taken ($why)", 'at' => $now] + $before]);
-            $this->timeline($change, 'verify', "Batch $number will not be verified: the state before it could not be taken ($why).", null, $now);
+            return $this->beforeFailed($change, $number, UntrustedText::line($e->getMessage(), 300), $now);
         }
     }
 
@@ -2717,9 +2765,15 @@ final class ChangeLifecycle
         }
         $user = $this->starter($change, $number);
         $scope = $this->changes->scopeOf($id, $number, 'before') ?? ['covered' => [], 'domain' => [], 'names' => []];
+        // the state after it is taken as the state before it was, as the admin who started the batch sees the network
+        $refused = $this->stateRefusal($user, 'started');
+        if ($refused !== null) {
+            $why = "the state after it could not be taken ($refused)";
+            $this->verifyResult($change, $number, 'unknown', ['error' => $why, 'event_error' => $why], $now);
+
+            return;
+        }
         try {
-            // the state after it is taken as the state before it was, as the admin who started the batch sees the network
-            $this->stateTaker($user, 'started');
             if ($after['status'] === 'settling') {
                 // fresh data for what the state before covered, and for the next batch's devices (its state before is taken from it)
                 $next = $number < (int) $change['batch_count'] ? $this->prefetchNext($change, $number + 1, $now) : [];
@@ -2748,7 +2802,7 @@ final class ChangeLifecycle
             if (! $fresh['fresh']) {
                 $waiting = Freshness::waitingText($fresh['waiting'], $scope['names']);
                 if ($now < (int) ($after['deadline'] ?? 0)) {
-                    $this->setVerify($id, $number, ['after' => ['waiting' => $waiting, 'checked_at' => $now] + $after]);
+                    $this->setVerify($id, $number, ['after' => ['waiting' => $waiting, 'checked_at' => $now] + self::NO_FAILURE + $after]);
 
                     return;
                 }
@@ -2783,7 +2837,7 @@ final class ChangeLifecycle
                 (array) ($comparison['names'] ?? []) + $scope['names'], (int) ($evaluation['counts']['unexpected'] ?? 0));
             $incomplete = $skipped !== null && ($evaluation['result'] === 'verified' || $lost);
             $this->setVerify($id, $number, ['after' => ['status' => $incomplete ? 'incomplete' : 'done', 'taken_at' => (int) ($state['taken_at'] ?? $now), 'waiting' => null,
-                'checked_at' => $now] + $after]);
+                'checked_at' => $now] + self::NO_FAILURE + $after]);
             if ($incomplete) {
                 $this->verifyResult($change, $number, 'unknown', ['evaluation' => $evaluation, 'error' => $skipped['why'], 'event_error' => $skipped['event']], $now);
 
@@ -2794,6 +2848,19 @@ final class ChangeLifecycle
             throw $e;
         } catch (TopologyError|\LengthException|\RuntimeException|\InvalidArgumentException $e) {
             $why = 'the state after it could not be taken (' . UntrustedText::line($e->getMessage(), 300) . ')';
+            // tried again at each step of the sync command (every minute) until its wait for fresh data is over, for every batch and
+            // setting: a failure that passes (the state's process killed, the database busy) leaves it to be verified as any; a check
+            // again of a batch that cannot be verified (every minute: deadline open) says it at once
+            $after = (array) ($this->changes->batches($id)[$number]['verify']['after'] ?? $after);
+            $deadline = (int) ($after['deadline'] ?? ($due + $this->settings->verifyWaitSeconds));
+            if ($deadline !== PHP_INT_MAX && $now < $deadline) {
+                if (($after['failed'] ?? null) === null) {
+                    $this->timeline($change, 'verify', "Batch $number: $why; the plugin tries again every minute until " . Clock::text($deadline) . '.', null, $now);
+                }
+                $this->setVerify($id, $number, ['after' => ['failed' => $why, 'failed_at' => $now, 'retry_until' => $deadline] + $after]);
+
+                return;
+            }
             $this->verifyResult($change, $number, 'unknown', ['error' => $why, 'event_error' => $why], $now);
         }
     }
@@ -2916,19 +2983,16 @@ final class ChangeLifecycle
     /**
      * A state is taken as the admin who starts (or started) the batch sees the network: one who may no longer start it (gone,
      * disabled, no longer an admin, without the run permission) would see less, or nothing, and the comparison would hold
-     * nothing: no state is taken as them.
+     * nothing: no state is taken as them. Why not, null when one is.
      *
      * @param  array{user_id: int, username: string}  $user
-     *
-     * @throws TopologyError
      */
-    private function stateTaker(array $user, string $starts): void
+    private function stateRefusal(array $user, string $starts): ?string
     {
         $problem = $this->runner->userProblem((int) $user['user_id'], 'run');
-        if ($problem !== null) {
-            throw new TopologyError('it is taken as ' . UntrustedText::line($user['username'], 60) . ", who $starts the batch, and " . UntrustedText::line($user['username'], 60)
-                . ' ' . $problem);
-        }
+
+        return $problem === null ? null : 'it is taken as ' . UntrustedText::line($user['username'], 60) . ", who $starts the batch, and "
+            . UntrustedText::line($user['username'], 60) . ' ' . $problem;
     }
 
     /**

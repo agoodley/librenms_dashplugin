@@ -589,9 +589,17 @@ class ChangeVerificationTest extends TestCase
         $this->sync($id, $this->t0 + 60);
         $this->fresh($this->t0 + 90);
         $this->sync($id, $this->t0 + 120);
+        $this->assertSame([], $this->launched(), 'tried again until the wait is over (it may be enabled again)');
+        $this->assertStringContainsString('Batch 1: the state before it could not be taken (it does not cover lab-sw4 of the batch: alice, who starts the batch, does not see it '
+            . 'in LibreNMS (disabled, or not visible to them)); the plugin tries again every minute until 2026-10-22 10:32 UTC, then the batch goes on without it.',
+            $this->messages($id));
+        $this->sync($id, $this->t0 + 1000);
+        $this->assertSame([], $this->launched());
+        $this->sync($id, $this->t0 + 1921);
+        $this->assertSame([[510]], $this->launched(), 'the wait over: the batch goes on without it');
         $this->assertSame('unknown', $this->verify($id, 1)['before']['status']);
         $this->assertStringContainsString('Batch 1 will not be verified: the state before it could not be taken (it does not cover lab-sw4 of the batch: alice, who starts the '
-            . 'batch, does not see it in LibreNMS (disabled, or not visible to them))', $this->messages($id));
+            . 'batch, does not see it in LibreNMS (disabled, or not visible to them), tried since 2026-10-22 10:02 UTC)', $this->messages($id));
     }
 
     // ------------------------------------------------------------------ who starts a batch
@@ -834,9 +842,82 @@ class ChangeVerificationTest extends TestCase
         $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
         $this->verifier->failures['scope'] = new TopologyError('the topology plugin could not compute the scope (see logs/librenms.log)');
         $this->sync($id, $this->t0 + 60);
+        $this->assertSame([], $this->launched(), 'tried again every minute until the wait is over');
+        $this->assertSame('the topology plugin could not compute the scope (see logs/librenms.log)', $this->verify($id, 1)['before']['failed']);
+        $this->sync($id, $this->t0 + 1859);
+        $this->assertSame([], $this->launched());
+        $this->sync($id, $this->t0 + 1861);
         $this->assertSame([[510]], $this->launched());
         $this->assertSame('unknown', $this->verify($id, 1)['before']['status']);
         $this->assertStringContainsString('Batch 1 will not be verified: the state before it could not be taken (the topology plugin could not compute the scope', $this->messages($id));
+    }
+
+    public function testAStateBeforeThatFailedOnceIsTakenWhenItWorksAgain(): void
+    {
+        $id = $this->approved();
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->sync($id, $this->t0 + 60);
+        $this->fresh($this->t0 + 90);
+        // the state's process killed right before the launch
+        $this->verifier->failures['state'] = new TopologyError('the topology plugin could not take the state of the batch: its process ended without an answer (code 9, see logs/librenms.log)');
+        $this->sync($id, $this->t0 + 120);
+        $this->assertSame([], $this->launched(), 'not launched without its state: tried again first');
+        $this->assertSame('preparing', $this->changes->batches[$id][1]['status'], 'prepared, its window open');
+        $this->assertStringContainsString('Batch 1: the state before it could not be taken (the topology plugin could not take the state of the batch: its process ended without an '
+            . 'answer (code 9, see logs/librenms.log)); the plugin tries again every minute until 2026-10-22 10:32 UTC, then the batch goes on without it.', $this->messages($id));
+        unset($this->verifier->failures['state']);
+        $this->sync($id, $this->t0 + 180);
+        $this->assertSame([[510]], $this->launched());
+        $before = $this->verify($id, 1)['before'];
+        $this->assertSame(['taken', null, null], [$before['status'], $before['failed'], $before['failed_since']], 'taken, the failure over');
+    }
+
+    public function testAStateAfterThatFailedIsTriedAgainUntilTheWaitForEveryBatchAndSetting(): void
+    {
+        // the last batch (nothing left to hold), and the stop setting: one failure is no verdict
+        $this->settings = ['verifyUnexpected' => 'stop', 'verifyUnknown' => 'stop'];
+        $id = $this->approved([], BatchPlan::make([510], [], 1, 5, 1, false, 0));
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->sync($id, $this->t0 + 60);
+        $this->fresh($this->t0 + 90);
+        $this->sync($id, $this->t0 + 120);
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->fresh($this->t0 + 1000);
+        $this->verifier->failures['state'] = new TopologyError('the topology plugin could not take the state of the batch: its process ended without an answer (code 9, see logs/librenms.log)');
+        $this->sync($id, $this->t0 + 1080);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::APPLYING, null], [$change['status'], $this->verify($id, 1)['result'] ?? null], 'not ended: tried again');
+        $this->assertStringContainsString('Batch 1: the state after it could not be taken (the topology plugin could not take the state of the batch: its process ended without an '
+            . 'answer (code 9, see logs/librenms.log)); the plugin tries again every minute until 2026-10-22 10:45 UTC.', $this->messages($id));
+        $this->assertArrayHasKey(510, $this->changes->reserved(), 'its devices still reserved');
+        unset($this->verifier->failures['state']);
+        $this->sync($id, $this->t0 + 1140);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::APPLIED, 'verified'], [$change['status'], $change['verification']]);
+        $this->assertNull($this->verify($id, 1)['after']['failed']);
+
+        // a failure that lasts past the wait: the batch cannot be verified, then the settings decide (stop; the last batch: the change ends)
+        $this->setUp();
+        $this->settings = ['verifyUnknown' => 'stop'];
+        $id = $this->approved();
+        $this->assertNull($this->web($this->t0 + 50)->apply($id, self::ALICE, [], $this->t0 + 50));
+        $this->sync($id, $this->t0 + 60);
+        $this->fresh($this->t0 + 90);
+        $this->sync($id, $this->t0 + 120);
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->fresh($this->t0 + 1000);
+        $this->verifier->failures['state'] = new TopologyError('the topology plugin could not take the state of the batch (see logs/librenms.log)');
+        foreach ([1080, 1500, 2600] as $offset) {
+            $this->sync($id, $this->t0 + $offset);
+            $this->assertSame(ChangeStatus::APPLYING, $this->changes->find($id)['status'], "still tried at +$offset");
+        }
+        $this->sync($id, $this->t0 + 2701);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::FAILED, 'unknown'], [$change['status'], $this->verify($id, 1)['result']]);
+        $this->assertStringContainsString('batch 1 cannot be verified: the state after it could not be taken (the topology plugin could not take the state of the batch', $change['error']);
+        $this->assertSame([[510]], $this->launched());
     }
 
     // ------------------------------------------------------------------ the state before a batch: the last step before its launch

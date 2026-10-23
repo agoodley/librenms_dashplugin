@@ -439,7 +439,7 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | Fresh data | ask LibreNMS for a discovery | before a batch and after it, LibreNMS is asked to discover its scope again (as its *Rediscover* button does, or a discovery job each with LibreNMS' scheduler); or *wait for LibreNMS' own discovery and polling* |
 | Wait for fresh data | 30 min | after a batch and its settle time, the longest the plugin waits for a discovery and a poll of its scope that started after it: then the batch cannot be verified; before the first batch, the longest it waits for the refresh it asked: then the state is taken anyway, older than the Apply (1–1440) |
 | When a batch makes unexpected changes | pause until an admin accepts them | an uplink lost, a cable moved, a root bridge moved, a port that started blocking, an OSPF adjacency or BGP session lost, a device down, a new or worse finding: the next batch waits for an admin to accept them (as a new blast radius is accepted); or *stop the change*, or *only record them*. The last batch never pauses |
-| When a batch cannot be verified | pause until an admin accepts it | no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be taken: the next batch waits for an admin to accept going on without the verification (checked again every minute meanwhile); or *stop the change*, or *only record it* |
+| When a batch cannot be verified | pause until an admin accepts it | no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be taken within the wait (tried again every minute): the next batch waits for an admin to accept going on without the verification (checked again every minute meanwhile); or *stop the change*, or *only record it* |
 | Count findings from | warning | the lowest severity of a new or worse finding of the topology plugin that counts as unexpected (*critical*, *warning*, *info*); lower ones are listed, never pause |
 | Template for port description fixes | none | the id of the template the Fixes page uses for port descriptions; it must have the survey variable `port_descriptions` of type *Text* (checked with the runner when it is saved, and at each new change) |
 | Template for root priority fixes | none | the same for the spanning tree root priority, with the survey variable `stp_priorities` |
@@ -1022,15 +1022,17 @@ the batch changed** on the change page, with an optional comment, as a new blast
 permission, never the requester with a second admin, while the settings ask for an approval; the run permission while
 they ask for none); the acceptance is for what the page showed, and refused when the verification changed since it
 was loaded. **Stop the change**: it ends as failed. **Only record them**: the change goes on. A batch that **cannot
-be verified** (no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be taken, a LibreNMS
-role that may not view the links, a part of the network the topology plugin could not read in either state, a device
-of its scope that LibreNMS no longer has as the admin who started the batch sees it (disabled, deleted, no longer
-visible to them), that admin no longer one who may start it (no state is taken as them: they would see less, or
-nothing), or for a fix the check that found its findings not run) follows **When a batch cannot be verified** the same
-way. While it
-pauses, the plugin checks every minute whether the data became fresh (when the state before the batch was taken), or
-takes a new state after it every 5 minutes (when one could not be read in full), and verifies the batch then.
-*Continue* starts neither.
+be verified** (no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be
+taken within the wait, a LibreNMS role that may not view the links, a part of the network the topology plugin could not
+read in either state, a device of its scope that LibreNMS no longer has as the admin who started the batch sees it
+(disabled, deleted, no longer visible to them), that admin no longer one who may start it (no state is taken as them:
+they would see less, or nothing), or for a fix the check that found its findings not run) follows **When a batch
+cannot be verified** the same way. **A state that could not be taken** (its process killed, the database busy, the
+topology plugin's error) is tried again every minute until the wait for fresh data is over, for every batch and
+setting, before the batch counts as one that cannot be verified: the batch before its launch waits meanwhile, with its
+window open; the timeline says so once. While it pauses, the plugin checks every minute whether the data became fresh
+(when the state before the batch was taken), or takes a new state after it every 5 minutes (when one could not be read
+in full), and verifies the batch then. *Continue* starts neither.
 
 **The last batch never pauses**: nothing is left to hold. The change ends with its outcome, and what its verification
 found is a warning in the timeline and in the eventlog. Its devices stay reserved for the change until that

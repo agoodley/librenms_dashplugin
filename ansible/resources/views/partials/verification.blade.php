@@ -29,6 +29,8 @@
                     @if(($before['status'] ?? null) === 'taken' && ($before['size'] ?? null))<div class="ans-help">{{ $before['size'] }}; {{ $before['note'] ?? '' }}</div>@endif
                     @if(($before['status'] ?? null) === 'waiting')<div class="ans-help">until {{ $at($before['deadline'] ?? null) }}@if($before['waiting'] ?? null): {{ $before['waiting'] }}@endif</div>@endif
                     @if(($before['status'] ?? null) === 'unknown')<div class="ans-help text-warning">{{ $before['error'] ?? '' }}</div>@endif
+                    @if(($before['failed'] ?? null) && ($before['status'] ?? null) !== 'unknown')<div class="ans-help text-warning ans-verify-retry">could not be taken ({{ $before['failed'] }});
+                        tried again every minute until {{ $at($before['retry_until'] ?? null) }}</div>@endif
                 </td>
                 <td class="ans-wrap ans-verify-after" data-label="After" data-state="{{ $after['status'] ?? '' }}">
                     {{ $afterLabels[$after['status'] ?? ''] ?? '-' }}@if(in_array($after['status'] ?? null, ['done', 'incomplete'], true)) {{ $at($after['taken_at'] ?? null) }}@endif
@@ -37,6 +39,8 @@
                         <div class="ans-help">data newer than {{ $at($after['due'] ?? null) }}{{ ($after['deadline'] ?? 0) < PHP_INT_MAX ? ', waits until ' . $at($after['deadline'] ?? null) : '' }}{{ ($after['waiting'] ?? null) ? ': ' . $after['waiting'] : '' }}</div>
                     @endif
                     @if($after['note'] ?? null)<div class="ans-help text-warning">{{ $after['note'] }}</div>@endif
+                    @if(($after['failed'] ?? null) && $result === null)<div class="ans-help text-warning ans-verify-retry">{{ $after['failed'] }}: tried again every minute until
+                        {{ $at($after['retry_until'] ?? null) }}</div>@endif
                 </td>
                 <td class="ans-wrap ans-verify-result" data-label="Result">
                     @if($result !== null)<span class="label label-{{ $resultCss[$result] ?? 'default' }}">{{ $resultLabels[$result] ?? $result }}</span>@endif
