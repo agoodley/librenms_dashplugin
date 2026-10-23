@@ -241,19 +241,15 @@ final class ChangeService
     }
 
     /**
-     * The blast radius a request to create a change says its preview showed, for create(): null when it says nothing (no
-     * check), "" when it says the preview had none (the new change page sends "", which LibreNMS turns into null), else
-     * the preview's blastSignature().
-     *
-     * @param  bool  $given  the request names one
+     * The blast radius a request to create a change says its preview showed, for create(): the preview's blastSignature(),
+     * or "" when it had none: the request says so with "" (the new change page's, which LibreNMS turns into null) or by
+     * naming none, so a request that leaves it out is compared as one whose preview had no blast radius, never let past
+     * the check.
      *
      * @throws \InvalidArgumentException when what it names is not one a preview gives
      */
-    public static function expectedBlast(bool $given, mixed $value): ?string
+    public static function expectedBlast(mixed $value): string
     {
-        if (! $given) {
-            return null;
-        }
         $value ??= '';
         if (! self::isBlastSignature($value)) {
             throw new \InvalidArgumentException('The blast radius of the preview is not one: preview again.');

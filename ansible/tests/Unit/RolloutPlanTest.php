@@ -363,16 +363,17 @@ class RolloutPlanTest extends TestCase
             $this->assertFalse(ChangeService::isBlastSignature($value), 'not one: ' . json_encode($value));
         }
 
-        // what a request to create a change says its preview showed: nothing (no check), none (the page sends "", LibreNMS turns it into
-        // null), or a signature; anything else is refused, never taken as nothing
-        $this->assertNull(ChangeService::expectedBlast(false, null));
-        $this->assertNull(ChangeService::expectedBlast(false, 'zz'), 'not given: whatever is there');
-        $this->assertSame('', ChangeService::expectedBlast(true, null), 'the empty string the page sends, as LibreNMS hands it on');
-        $this->assertSame('', ChangeService::expectedBlast(true, ''));
-        $this->assertSame($signature, ChangeService::expectedBlast(true, $signature));
+        // what a request to create a change says its preview showed: none (the page sends "", LibreNMS turns it into null; a request that
+        // names none says the same), or a signature; anything else is refused, never taken as none
+        $this->assertSame('', ChangeService::expectedBlast(null), 'the empty string the page sends, as LibreNMS hands it on, or none named: compared as none');
+        $this->assertSame('', ChangeService::expectedBlast(''));
+        $this->assertSame($signature, ChangeService::expectedBlast($signature));
+        $this->assertSame('What the batches cut off is no longer what the preview showed (the topology changed): preview again.',
+            ChangeService::previewDiffers(self::make()['plan'], null, ChangeService::expectedBlast(null)), 'none named, planned by the topology plugin now: refused');
+        $this->assertNull(ChangeService::previewDiffers(BatchPlan::make(self::ALL, [], 1, 5, 1, true, 0), null, ChangeService::expectedBlast(null)), 'planned by the settings');
         foreach (['zz', strtoupper($signature), 12, [$signature]] as $value) {
             try {
-                ChangeService::expectedBlast(true, $value);
+                ChangeService::expectedBlast($value);
                 $this->fail('refused: ' . json_encode($value));
             } catch (\InvalidArgumentException $e) {
                 $this->assertSame('The blast radius of the preview is not one: preview again.', $e->getMessage());

@@ -226,10 +226,10 @@ class ChangeController extends Controller
         }
         [$templateId, $devices, $answers, $canary, $reference, $unplanned] = self::input($request);
         $token = is_string($request->input('request_token')) ? $request->input('request_token') : '';
-        // the blast radius the preview showed ("": none, the settings planned it): one given that is not one is refused, never
-        // taken as not given (that would skip the check that the topology did not change since the preview)
+        // the blast radius the preview showed ("", or none named: the preview had none, the settings planned it), compared with what
+        // the batches cut off now; one named that is not one is refused, never taken as none
         try {
-            $blast = ChangeService::expectedBlast($request->has('blast_signature'), $request->input('blast_signature'));
+            $blast = ChangeService::expectedBlast($request->input('blast_signature'));
         } catch (\InvalidArgumentException $e) {
             return response()->json(['errors' => [$e->getMessage()]], 422);
         }
