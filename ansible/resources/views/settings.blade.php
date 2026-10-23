@@ -62,8 +62,9 @@
             . 'not start, and the change waits for an admin to accept the new one (recorded): one with the approve permission (not the requester with a second admin), or '
             . 'with the run permission while Approval is off; or the change ends'],
         ['blast_unknown', 'When the blast radius cannot be computed', 'the topology plugin disabled, an error, or a device of the batch it can no longer tell about (down '
-            . 'in LibreNMS, its LLDP/CDP neighbors gone): the batch does not start, and the change waits for an admin with the run permission to continue it without one '
-            . '(recorded; its window then covers the devices approved as cut off), or ends'],
+            . 'in LibreNMS, its LLDP/CDP neighbors gone): the batch does not start; it is checked again every minute and starts on its own once its blast radius can be '
+            . 'computed. Meanwhile an admin with the run permission may continue it: Continue computes it first, and only while it still cannot be computed does the batch '
+            . 'go without one (recorded; its window then covers the devices approved as cut off). Or the change ends'],
     ];
 @endphp
 

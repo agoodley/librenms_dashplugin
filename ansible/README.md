@@ -196,8 +196,10 @@ The runs of phase 1 stay in the audit log as they were.
 3. Changes made before keep their plan: their blast radius is unknown, and they go on as in phase 2.
 4. A batch whose blast radius grew waits for an admin to accept the new one: with an approval asked for, an admin with
    the approve permission (not the requester with a second admin); with *Approval* off, an admin with the run
-   permission. One whose blast radius cannot be computed waits for an admin with the run permission. Or set *When the
-   blast radius grew* and *When the blast radius cannot be computed* to *refuse the batch*.
+   permission. One whose blast radius cannot be computed is checked again every minute and starts on its own once it
+   can be computed; meanwhile an admin with the run permission may continue it (*Continue* computes it first, and only
+   while it still cannot be computed does the batch go without one). Or set *When the blast radius grew* and *When the
+   blast radius cannot be computed* to *refuse the batch*.
 
 **Removing:**
 
@@ -379,7 +381,7 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | *Rollout plan and blast radius* | | the part says whether the topology plugin can plan now, and why not |
 | Plan with the topology plugin | on | a new change plans its batches with the topology plugin's rollout planner when it can (installed, enabled in LibreNMS, planning API 1.x), and approves what each batch cuts off; off, or without it, the settings above plan them and the blast radius is unknown |
 | When the blast radius grew | pause until an admin accepts it | a batch that would cut off devices that were not approved, or now takes down every core device of its part (approved with one left standing), waits for an admin to accept the new blast radius: one with the approve permission (not the requester with a second admin), or, while *Approval* is off, one with the run permission; or *refuse the batch*: the change ends |
-| When the blast radius cannot be computed | pause for an admin | a batch whose blast radius cannot be computed (the topology plugin disabled, an error, a device of the batch it can no longer tell about) waits for an admin with the run permission to continue it without one; or *refuse the batch* |
+| When the blast radius cannot be computed | pause for an admin | a batch whose blast radius cannot be computed (the topology plugin disabled, an error, a device of the batch it can no longer tell about) does not start: it is checked again every minute and starts on its own once it can be computed; meanwhile an admin with the run permission may continue it (*Continue* computes it first, and only while it still cannot be computed does the batch go without one); or *refuse the batch* |
 | *Run permission*, *Approve permission* | | who may prepare and apply changes, and who may approve them ([Permissions](#permissions)) |
 
 A setting that cannot be used is refused with the reason, and nothing is saved: a platform mapping line that cannot
