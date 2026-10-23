@@ -172,7 +172,7 @@ class RolloutPlanTest extends TestCase
         $left = self::make([504, 509]);
         $this->assertNull($left['plan']);
         $this->assertSame('The topology plugin cannot plan any of these devices (lab-dead (down now), lab-other (no LLDP/CDP neighbors: no topology data)): '
-            . 'put them in a final batch planned by hand, or choose others.', $left['error']);
+            . 'put them in final batches planned by hand (the choice below the preview), or choose others.', $left['error']);
 
         // by hand: a plan of the settings, the canary first
         $hand = self::make([504, 509], unplanned: RolloutPlan::HAND);

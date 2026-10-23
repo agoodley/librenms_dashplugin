@@ -448,7 +448,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   (secret ones are asked later), give a **reference** (a ticket number), then **Preview**: the template, the targets
   with their batches, the refused devices, the answers and the limit. With the topology plugin the batches are its
   rollout plan, each with where it is and what it cuts off while it runs (a link to its simulation on the L2 map), and
-  the devices it cannot plan, to leave out or to put in a final batch planned by hand. **Create the change** checks
+  the devices it cannot plan, to leave out or to put in final batches planned by hand (offered also when it can plan
+  none of them). **Create the change** checks
   everything again; nothing runs yet.
 * **Change:** **Run the dry run** (with the secret answers, when the template has some): Ansible runs the playbook with
   `--check --diff`; the page shows, per device, the dry run's result and the diffs of what would change. A dry run the

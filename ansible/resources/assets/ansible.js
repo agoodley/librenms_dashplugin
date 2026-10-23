@@ -447,7 +447,7 @@
         var previewBox = byId('ans-preview');
         var reference = byId('ans-reference');
         var MAX_ROWS = 500;
-        // the devices the topology plugin cannot plan: left out of the change, or in a final batch planned by hand
+        // the devices the topology plugin cannot plan: left out of the change, or in final batches planned by hand
         var unplanned = 'leave';
 
         // the chosen devices in the list's order (the batches follow it)
@@ -659,7 +659,10 @@
         // plan (with the choice to leave them out or plan them by hand), or why it did not plan them (the blast radius is unknown)
         function plannerPanel(plan) {
             var planner = plan.planner;
-            if (!planner || !plan.batches || !plan.batches.length) {
+            var batches = plan.batches || [];
+            var leftOut = (planner && planner.left_out) || [];
+            // without batches only the devices the planner cannot plan are shown, with the choice that makes a plan of them
+            if (!planner || (!batches.length && !(planner.used && leftOut.length))) {
                 return null;
             }
             var box = el('div', 'panel panel-default');
@@ -677,7 +680,7 @@
                 el('span', 'text-muted', '(the topology plugin: farthest from the core first, the core last, never two devices that back each other up in one batch; '
                     + 'what each batch cuts off is approved with the change and checked again before it starts)')]));
             var rows = el('tbody');
-            plan.batches.forEach(function (batch) {
+            batches.forEach(function (batch) {
                 var blast = batch.blast || {};
                 var down = el('td', 'ans-wrap');
                 if (blast.hand) {
@@ -716,22 +719,26 @@
             table.id = 'ans-preview-blast';
             append(table, [el('thead', null, el('tr', null, [el('th', null, 'Batch'), el('th', null, 'Devices'), el('th', null, 'Where'),
                 el('th', null, 'Down while it runs'), el('th', null, '')])), rows]);
-            append(box, el('div', 'table-responsive', table));
-            var hand = plan.batches.some(function (batch) {
+            if (batches.length) {
+                append(box, el('div', 'table-responsive', table));
+            }
+            var hand = batches.filter(function (batch) {
                 return batch.blast && batch.blast.hand;
-            });
-            if ((planner.left_out && planner.left_out.length) || hand) {
+            }).length;
+            if (leftOut.length || hand) {
                 var choice = el('div', 'panel-body');
                 choice.id = 'ans-preview-unplanned';
-                if (planner.left_out && planner.left_out.length) {
-                    append(choice, el('p', 'text-warning', [el('strong', null, 'The topology plugin cannot plan ' + planner.left_out.length + ' of the devices'),
-                        ' (nothing tells what depends on them): ' + planner.left_out.map(function (entry) {
+                if (leftOut.length) {
+                    append(choice, el('p', 'text-warning', [el('strong', null, 'The topology plugin cannot plan ' + (batches.length ? leftOut.length + ' of the devices'
+                        : (leftOut.length === 1 ? 'the device' : 'any of the ' + leftOut.length + ' devices'))),
+                        ' (nothing tells what depends on them): ' + leftOut.map(function (entry) {
                             return entry.name + ' (' + entry.text + ')';
                         }).join(', ') + '.']));
                 } else {
-                    append(choice, el('p', 'text-warning', 'The last batch is planned by hand: the topology plugin cannot plan its devices, nothing tells what depends on them.'));
+                    append(choice, el('p', 'text-warning', (hand === 1 ? 'The last batch is' : 'The last ' + hand + ' batches are') + ' planned by hand: the topology plugin '
+                        + 'cannot plan their devices, nothing tells what depends on them.'));
                 }
-                [['leave', 'Leave them out of the change'], ['hand', 'Put them in a final batch planned by hand']].forEach(function (option) {
+                [['leave', 'Leave them out of the change'], ['hand', 'Put them in final batches planned by hand']].forEach(function (option) {
                     var radio = el('input');
                     radio.type = 'radio';
                     radio.name = 'ans-unplanned';

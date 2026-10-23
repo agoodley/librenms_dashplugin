@@ -93,7 +93,7 @@ final class RolloutPlan
         }
         if (! $batches) {
             return ['plan' => null, 'left_out' => $leftOut, 'notes' => $notes, 'error' => 'The topology plugin cannot plan any of these devices ('
-                . self::reasonsText($leftOut, $names) . '): put them in a final batch planned by hand, or choose others.'];
+                . self::reasonsText($leftOut, $names) . '): put them in final batches planned by hand (the choice below the preview), or choose others.'];
         }
 
         // each batch's blast radius, as the topology plugin computes it for its devices
