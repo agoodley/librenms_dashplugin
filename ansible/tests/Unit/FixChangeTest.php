@@ -95,6 +95,17 @@ class FixChangeTest extends TestCase
         $this->assertSame(['lab-sw1.netops.lab pvst 1,10 4096'], $lines['lines']);
     }
 
+    public function testAnyChangeOnAFixTemplateTakesTheContractsChecks(): void
+    {
+        $templates = ['port_descriptions' => '41', 'stp_root_priority' => null];
+        $this->assertSame('port_descriptions', FixAnswers::mappedKind($templates, '41'));
+        $this->assertNull(FixAnswers::mappedKind($templates, '42'));
+        $this->assertNull(FixAnswers::mappedKind($templates, ''), 'no template: none');
+        // the lines an ordinary change on it would send: another host's, a port its host does not have
+        $this->assertSame(['line 1: its host is not a target of the change', 'line 2: its interface is not a port of its host in LibreNMS'],
+            FixAnswers::check('port_descriptions', "lab-sw9.netops.lab Fa0/1 x\nlab-sw2.netops.lab Fa0/99 y", [502 => 'lab-sw2.netops.lab'], [502 => ['Fa0/1']]));
+    }
+
     public function testTheDefaultReferenceNamesNoDevice(): void
     {
         $this->assertSame('Fix: port descriptions, 2 devices', FixAnswers::reference('port_descriptions', 2));

@@ -195,6 +195,19 @@ final class ChangeService
             if ($reference === '') {
                 $reference = FixAnswers::reference($draft['kind'], count($draft['devices']));
             }
+        } elseif ($plan->template !== null && $plan->targets) {
+            // a template the settings map to a kind of fix takes only lines that pass the contract's checks for the change's targets, also
+            // in a change not made from fixes
+            $kind = FixAnswers::mappedKind(array_combine(FixAnswers::KINDS, array_map(fn (string $kind) => $this->settings->fixTemplate($kind), FixAnswers::KINDS)),
+                (string) $plan->template->id);
+            if ($kind !== null && array_key_exists(FixAnswers::VARIABLES[$kind], $plan->values)) {
+                $interfaces = $kind === FixAnswers::PORT_DESCRIPTIONS ? $this->inventory->interfaces(array_keys($plan->targets)) : null;
+                foreach (FixAnswers::check($kind, (string) $plan->values[FixAnswers::VARIABLES[$kind]], array_map(fn (array $target) => (string) $target['name'], $plan->targets),
+                    $interfaces) as $error) {
+                    $plan->errors[] = 'The answer of ' . FixAnswers::VARIABLES[$kind] . ' (this is the template of ' . strtolower(FixAnswers::LABELS[$kind]) . ' fixes): '
+                        . $error . '.';
+                }
+            }
         }
         if ($ordered ?? []) {
             // the targets Oxidized cannot back up, known now rather than when their batch is refused

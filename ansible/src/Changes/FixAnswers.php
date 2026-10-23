@@ -229,6 +229,23 @@ final class FixAnswers
     }
 
     /**
+     * The kind of fix whose template (in the settings) a template is, null when it is none: any change on it takes only lines
+     * that pass the contract's checks, also one not made from fixes.
+     *
+     * @param  array<string, ?string>  $templates  kind => template id, as the settings map them
+     */
+    public static function mappedKind(array $templates, string $templateId): ?string
+    {
+        foreach (self::KINDS as $kind) {
+            if ($templateId !== '' && ($templates[$kind] ?? null) !== null && (string) $templates[$kind] === $templateId) {
+                return $kind;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * The default reference of a change made from fixes: its kind and how many devices it changes, never their names ("Fix:
      * port descriptions, 2 devices"): the reference names the change in the eventlog of every target, and of the devices a
      * window cuts off, which name no other device.
