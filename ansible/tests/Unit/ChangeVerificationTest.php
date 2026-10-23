@@ -245,6 +245,8 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame(1, count($this->refresh->requests), 'nothing asked during the settle time');
         $this->sync($id, $this->t0 + 960);
         $this->assertSame([510, 502, 503, 501, 512], $this->refresh->requests[1], 'what the state before batch 1 covered, and batch 2 with its neighbors');
+        $this->assertStringContainsString('Batch 1: LibreNMS was asked to discover lab-sw4, lab-sw2, lab-sw3, lab-sw1, lab-sw6 again for its verification and the state before batch 2 '
+            . '(a discovery job each); the plugin waits for fresh data until 2026-10-22 10:45 UTC.', $this->messages($id), 'every device asked for is named, the next batch\'s too');
         $this->sync($id, $this->t0 + 1020);
         $this->assertSame([[510]], $this->launched(), 'data older than the batch\'s end and its settle time is never compared');
         $this->fresh($this->t0 + 700);
@@ -925,7 +927,8 @@ class ChangeVerificationTest extends TestCase
         $this->endBatch($id, 1, $this->t0 + 300);
         $this->sync($id, $this->t0 + 960);
         $this->assertSame([], $this->refresh->requests);
-        $this->assertStringContainsString('the plugin waits for LibreNMS\' own discovery and polling of lab-sw4, lab-sw2, lab-sw3 for its verification', $this->messages($id));
+        $this->assertStringContainsString('the plugin waits for LibreNMS\' own discovery and polling of lab-sw4, lab-sw2, lab-sw3, lab-sw1, lab-sw6 for its verification and the state before '
+            . 'batch 2, until', $this->messages($id));
     }
 
     public function testAStateThatCannotBeTakenLeavesTheBatchToGoOnNotVerified(): void

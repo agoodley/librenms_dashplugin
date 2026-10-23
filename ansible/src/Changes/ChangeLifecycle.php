@@ -2789,13 +2789,16 @@ final class ChangeLifecycle
         try {
             if ($after['status'] === 'settling') {
                 // fresh data for what the state before covered, and for the next batch's devices (its state before is taken from it)
-                $next = $number < (int) $change['batch_count'] ? $this->prefetchNext($change, $number + 1, $now) : [];
-                $asked = $this->askRefresh(array_values(array_unique([...$scope['covered'], ...$next])));
+                $next = $number < (int) $change['batch_count'] ? $this->prefetchNext($change, $number + 1, $now) : ['covered' => [], 'names' => []];
+                $devices = array_values(array_unique([...$scope['covered'], ...$next['covered']]));
+                $asked = $this->askRefresh($devices);
                 $deadline = $due + $this->settings->verifyWaitSeconds;
                 $this->setVerify($id, $number, ['after' => ['status' => 'waiting', 'due' => $due, 'asked_at' => $now, 'how' => $asked['how'], 'deadline' => $deadline]
                     + ($asked['error'] !== null ? ['note' => $asked['error']] : [])]);
-                $this->timeline($change, 'verify', "Batch $number: " . VerificationText::asked($asked['how'], self::named($scope['covered'], $scope['names']), $deadline, 'its verification')
-                    . ($asked['error'] !== null ? ' (' . $asked['error'] . ')' : '') . '.', null, $now);
+                // every device asked for, the next batch's too
+                $this->timeline($change, 'verify', "Batch $number: " . VerificationText::asked($asked['how'], self::named($devices, $scope['names'] + $next['names']), $deadline,
+                    'its verification' . ($next['covered'] ? ' and the state before batch ' . ($number + 1) : '')) . ($asked['error'] !== null ? ' (' . $asked['error'] . ')' : '') . '.',
+                    null, $now);
 
                 return;
             }
@@ -3021,29 +3024,30 @@ final class ChangeLifecycle
 
     /**
      * The scope of the next batch's state before it, taken with this batch's verification so that its refresh is asked
-     * together: its devices to discover again ([] when its state before is already under way).
+     * together: its devices to discover again, with their names (none when its state before is already under way).
      *
-     * @return int[]
+     * @return array{covered: int[], names: array<int, string>}
      */
     private function prefetchNext(array $change, int $next, int $now): array
     {
         $id = (int) $change['id'];
         $verify = (array) ($this->changes->batches($id)[$next]['verify'] ?? []);
         if (isset($verify['before']['status'])) {
-            return [];
+            return ['covered' => [], 'names' => []];
         }
         try {
             $this->beat();
             $scope = $this->verifier->scope($this->batchDevices($change, $next), (int) $this->starter($change, $next)['user_id']);
         } catch (TopologyError) {
-            return []; // asked again when the batch starts
+            return ['covered' => [], 'names' => []]; // asked again when the batch starts
         }
         $covered = self::coveredOf($scope);
-        $this->changes->saveScope($id, $next, 'before', $covered, array_map('intval', (array) ($scope['domain'] ?? [])), self::namesOf($scope));
+        $names = self::namesOf($scope);
+        $this->changes->saveScope($id, $next, 'before', $covered, array_map('intval', (array) ($scope['domain'] ?? [])), $names);
         $this->setVerify($id, $next, ['before' => ['status' => 'waiting', 'since' => $now, 'asked_at' => $now, 'deadline' => $now + $this->settings->verifyWaitSeconds,
             'how' => $this->settings->verifyFresh === 'ask' ? 'with' : 'wait', 'prefetched' => true, 'covered' => count($covered), 'domain' => count((array) ($scope['domain'] ?? []))]]);
 
-        return $covered;
+        return ['covered' => $covered, 'names' => $names];
     }
 
     /**
