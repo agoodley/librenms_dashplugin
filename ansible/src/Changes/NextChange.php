@@ -95,8 +95,14 @@ final class NextChange
         $recorded = array_intersect_key(Connections::recordedIn($change), array_flip($devices));
         $moved = Connections::differences($recorded, array_intersect_key($connections, $recorded), array_map(fn (array $target) => self::name($target), $targets));
 
+        // devices the topology plugin could not plan went in batches planned by hand: the new change plans them so again,
+        // rather than leave them out
+        $topology = BatchPlan::topologyPart($change['plan'] ?? null);
+        $hand = $topology !== null && in_array(true, array_column($topology->batches, 'hand'), true);
+
         return ['from' => $id, 'kind' => $kind, 'devices' => $devices, 'canary' => array_values(array_intersect($first, $devices)), 'left_out' => $leftOut,
-            'vars' => $vars, 'reference' => (string) ($change['reference'] ?? ''), 'text' => $text, 'moved' => $moved];
+            'vars' => $vars, 'reference' => (string) ($change['reference'] ?? ''), 'text' => $text, 'moved' => $moved,
+            'unplanned' => $hand ? RolloutPlan::HAND : RolloutPlan::LEAVE];
     }
 
     /**

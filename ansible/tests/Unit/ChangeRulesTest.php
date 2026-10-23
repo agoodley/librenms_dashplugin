@@ -13,6 +13,7 @@ use Agoodley\LibrenmsAnsible\Changes\DryRunCheck;
 use Agoodley\LibrenmsAnsible\Changes\Fingerprint;
 use Agoodley\LibrenmsAnsible\Changes\MaintenanceTimes;
 use Agoodley\LibrenmsAnsible\Changes\NextChange;
+use Agoodley\LibrenmsAnsible\Changes\RolloutPlan;
 use Agoodley\LibrenmsAnsible\Changes\TemplateSnapshot;
 use Agoodley\LibrenmsAnsible\Runner\RunnerEnvironment;
 use Agoodley\LibrenmsAnsible\Runner\RunnerInventory;
@@ -161,6 +162,22 @@ class ChangeRulesTest extends TestCase
         $this->assertSame(['sw3: ansible_host 10.0.0.3 → 10.0.3.99'], NextChange::prefill($change, $targets, NextChange::REMAINING, [], $now)['moved'],
             'only the devices it takes (not sw1, applied), as their dry run recorded them');
         $this->assertSame([], NextChange::prefill($change, $targets, NextChange::REMAINING, [])['moved'], 'nothing known now: nothing said');
+        $this->assertSame(RolloutPlan::LEAVE, $prefill['unplanned'], 'a plan of the settings planned nothing by hand');
+    }
+
+    public function testANewChangeFromOneWithABatchPlannedByHandPlansItByHandAgain(): void
+    {
+        // the topology plugin could not plan lab-other: the earlier change had it in a final batch planned by hand
+        $made = RolloutPlan::make([502, 509], [], 1, 5, 1, false, 0, RolloutPlanTest::planner([502, 509]), RolloutPlan::HAND,
+            fn (array $batch) => RolloutPlanTest::blast($batch));
+        $this->assertSame([[502], [509]], $made['plan']->batches);
+        $change = ['id' => 32, 'reference' => '', 'plan' => $made['plan']->toArray(), 'variables' => []];
+        $targets = [502 => ['batch' => 1, 'position' => 0, 'dry_result' => 'changed', 'result' => 'failed', 'display' => 'lab-sw2', 'hostname' => '', 'inventory_name' => ''],
+            509 => ['batch' => 2, 'position' => 1, 'dry_result' => 'changed', 'result' => null, 'display' => 'lab-other', 'hostname' => '', 'inventory_name' => '']];
+
+        $prefill = NextChange::prefill($change, $targets, NextChange::REMAINING, []);
+        $this->assertSame([502, 509], $prefill['devices']);
+        $this->assertSame(RolloutPlan::HAND, $prefill['unplanned'], 'not left out of the new change without a word');
     }
 
     // ------------------------------------------------------------------ how the runner reaches the devices

@@ -201,7 +201,7 @@
                 'template' => $template->id,
                 'requestToken' => $requestToken,
                 'device' => $device,
-                'prefill' => $prefill !== null ? ['devices' => $prefill['devices'], 'canary' => $prefill['canary']] : null,
+                'prefill' => $prefill !== null ? ['devices' => $prefill['devices'], 'canary' => $prefill['canary'], 'unplanned' => $prefill['unplanned'] ?? 'leave'] : null,
                 'maxTargets' => $maxTargets,
                 'deviceUrl' => url('device'),
                 // the topology plugin plans the batches (the first batch comes from its first one)

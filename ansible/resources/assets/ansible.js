@@ -447,8 +447,9 @@
         var previewBox = byId('ans-preview');
         var reference = byId('ans-reference');
         var MAX_ROWS = 500;
-        // the devices the topology plugin cannot plan: left out of the change, or in final batches planned by hand
-        var unplanned = 'leave';
+        // the devices the topology plugin cannot plan: left out of the change, or in final batches planned by hand (as the earlier
+        // change planned them, for a new change from one)
+        var unplanned = config.prefill && config.prefill.unplanned === 'hand' ? 'hand' : 'leave';
 
         // the chosen devices in the list's order (the batches follow it)
         function selectedIds() {
