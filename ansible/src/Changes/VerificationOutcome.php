@@ -33,6 +33,7 @@ final class VerificationOutcome
         $ran = 0;
         $why = [];
         $accepted = [];
+        $older = [];
         $any = false;
         foreach ($batches as $number => $batch) {
             if (! in_array($batch['status'] ?? null, ['done', 'failed', 'stopped'], true)) {
@@ -45,7 +46,10 @@ final class VerificationOutcome
             if (($batch['status'] ?? null) !== 'done') {
                 $why[] = "batch $number " . ($batch['status'] === 'failed' ? 'failed' : 'was stopped');
             } elseif ($result === 'verified') {
-                continue;
+                // verified from a state before it on older data (its wait for fresh data over): the outcome says so
+                if (($was = VerificationText::older($verify)) !== null) {
+                    $older[] = "batch $number on data older than $was before it";
+                }
             } elseif ($result === 'unexpected' && is_array($verify['accepted'] ?? null)) {
                 $accepted[] = $number;
             } elseif ($result === 'unexpected') {
@@ -62,10 +66,12 @@ final class VerificationOutcome
         if ($why) {
             return ['outcome' => self::NOT_VERIFIED, 'note' => implode('; ', array_slice($why, 0, 5)) . (count($why) > 5 ? '; ...' : '')];
         }
+        $older = $older ? implode('; ', array_slice($older, 0, 3)) . (count($older) > 3 ? '; ...' : '') : null;
         if ($accepted) {
-            return ['outcome' => self::ACCEPTED, 'note' => 'what ' . (count($accepted) === 1 ? 'batch ' . $accepted[0] : 'batches ' . implode(', ', $accepted)) . ' changed was accepted'];
+            return ['outcome' => self::ACCEPTED, 'note' => 'what ' . (count($accepted) === 1 ? 'batch ' . $accepted[0] : 'batches ' . implode(', ', $accepted)) . ' changed was accepted'
+                . ($older !== null ? "; $older" : '')];
         }
 
-        return ['outcome' => self::VERIFIED, 'note' => null];
+        return ['outcome' => self::VERIFIED, 'note' => $older];
     }
 }

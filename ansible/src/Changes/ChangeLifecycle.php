@@ -2655,8 +2655,9 @@ final class ChangeLifecycle
             $note = ($before['how'] ?? null) === 'wait' || ($before['status'] ?? null) === 'take' ? 'from LibreNMS\' data as it is (setting Fresh data: wait)'
                 : ($stale ? "its data is older than $older: LibreNMS did not discover or poll " . ($before['waiting'] ?? 'its scope') . " again within $minutes"
                     : (! empty($before['recent']) ? "from data LibreNMS discovered and polled within the last $minutes" : 'from fresh data'));
+            // older data said where the batch's verification is said too: its result, and the change's outcome
             $this->setVerify($id, $number, ['before' => ['status' => 'taken', 'taken_at' => (int) ($state['taken_at'] ?? $now), 'at' => $now, 'stale' => $stale, 'note' => $note,
-                'size' => VerificationText::stateSize($state), 'waiting' => null, 'error' => null] + self::NO_FAILURE + $before]);
+                'older' => $stale ? $older : null, 'size' => VerificationText::stateSize($state), 'waiting' => null, 'error' => null] + self::NO_FAILURE + $before]);
             $this->timeline($change, 'verify', "State before batch $number taken right before its launch (" . VerificationText::stateSize($state) . "), $note.", null, $now);
 
             return true;
@@ -2905,7 +2906,7 @@ final class ChangeLifecycle
             $this->setVerify($id, $number, ['decision' => in_array($decision, ['last', 'record'], true) ? 'go' : $decision, 'said' => $decision]);
             $evaluation = $result === 'unexpected' ? ($this->changes->resultOf($id, $number)['evaluation'] ?? null) : null;
             if ($result === 'verified') {
-                $this->timeline($change, 'verify', VerificationText::verified($number, (array) ($verify['counts'] ?? [])) . '.', null, $now);
+                $this->timeline($change, 'verify', VerificationText::verified($number, (array) ($verify['counts'] ?? []), VerificationText::older($verify)) . '.', null, $now);
                 $this->eventAll($change, VerificationText::verifiedEvent($change, $number), 'info', $this->batchUser($change, $number));
             } elseif ($result === 'unexpected') {
                 $this->timeline($change, 'verify', VerificationText::unexpected($number, (array) ($evaluation['unexpected'] ?? []), (int) ($verify['counts']['unexpected'] ?? 0),

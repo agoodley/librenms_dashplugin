@@ -1043,9 +1043,11 @@ verification is done, or its wait for fresh data is over.
 A change ends **verified** (every batch verified), **verified with accepted changes** (an admin accepted what a batch
 changed) or **not verified** (a batch that could not be verified, even when an admin went on without its
 verification, unexpected changes only recorded or found by the last batch; or, from its *Apply* on, a change applied
-without verification, with why). The Changes list and the change page show it; the timeline names
-what changed, the eventlog of each target counts it (it names no other device). The change page shows each batch's
-verification: its state before it, the wait for fresh data after it, and what the comparison found, sorted as above.
+without verification, with why). A batch verified from a state before it that was taken on older data (its wait for
+fresh data over) says so in its result and in the outcome: *verified (batch 1 on data older than the Apply before
+it)*. The Changes list and the change page show it; the timeline names what changed, the eventlog of each target counts
+it (it names no other device). The change page shows each batch's verification: its state before it, the wait for
+fresh data after it, and what the comparison found, sorted as above.
 
 ### What is kept
 

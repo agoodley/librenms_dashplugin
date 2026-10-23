@@ -816,6 +816,25 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame([[510]], $this->launched(), 'past the wait the state is taken anyway');
         $this->assertTrue($this->verify($id, 1)['before']['stale']);
         $this->assertStringContainsString('its data is older than the Apply: LibreNMS did not discover or poll lab-sw4 (a discovery and a poll)', $this->messages($id));
+
+        // verified on it: the batch's result and the change's outcome say so, not only the timeline of the state
+        $this->endBatch($id, 1, $this->t0 + 2000);
+        $this->sync($id, $this->t0 + 2700);
+        $this->fresh($this->t0 + 2750);
+        $this->sync($id, $this->t0 + 2800);
+        $this->assertSame('verified', $this->verify($id, 1)['result']);
+        $this->assertSame('the Apply', VerificationText::older($this->verify($id, 1)));
+        $this->assertStringContainsString('Batch 1 verified, on data older than the Apply before it: nothing unexpected changed (1 fact and 0 findings compared on fresh data after it)',
+            $this->messages($id));
+        $this->assertNull(VerificationText::older($this->verify($id, 2)), 'batch 2\'s state before it was fresh');
+        $this->endBatch($id, 2, $this->t0 + 3000);
+        $this->sync($id, $this->t0 + 3700);
+        $this->fresh($this->t0 + 3750);
+        $this->sync($id, $this->t0 + 3800);
+        $change = $this->changes->find($id);
+        $this->assertSame([ChangeStatus::APPLIED, 'verified', 'batch 1 on data older than the Apply before it'], [$change['status'], $change['verification'],
+            $change['verification_note']]);
+        $this->assertStringContainsString('Verification: verified (batch 1 on data older than the Apply before it)', $this->messages($id));
     }
 
     public function testWithFreshDataWaitTheStateBeforeIsTakenFromTheDataAsItIs(): void

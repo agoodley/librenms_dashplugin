@@ -198,6 +198,14 @@ class VerificationRulesTest extends TestCase
         $this->assertSame('not_verified', VerificationOutcome::of([1 => $batch('done', ['result' => 'unknown', 'accepted' => ['by' => 'bob']])])['outcome'],
             'going on without a verification does not make it one');
         $this->assertSame(['outcome' => null, 'note' => null], VerificationOutcome::of([1 => $batch('cancelled', null)]), 'nothing ran');
+        // a batch verified from a state before it on older data (its wait for fresh data over): said with the outcome
+        $older = ['result' => 'verified', 'before' => ['stale' => true, 'older' => 'the Apply']];
+        $this->assertSame(['outcome' => 'verified', 'note' => 'batch 1 on data older than the Apply before it'], VerificationOutcome::of([1 => $batch('done', $older),
+            2 => $batch('done', ['result' => 'verified'])]));
+        $this->assertSame(['outcome' => 'accepted', 'note' => 'what batch 2 changed was accepted; batch 1 on data older than the Apply before it'], VerificationOutcome::of([
+            1 => $batch('done', $older), 2 => $batch('done', ['result' => 'unexpected', 'accepted' => ['by' => 'bob']])]));
+        $this->assertSame(['outcome' => 'verified', 'note' => null], VerificationOutcome::of([1 => $batch('done', ['result' => 'verified', 'before' => ['stale' => false,
+            'older' => 'the Apply']])]), 'fresh: nothing to say');
         $this->assertSame(['outcome' => null, 'note' => null], VerificationOutcome::of([1 => $batch('done', null)]), 'not verified at all (applied before phase 4)');
     }
 

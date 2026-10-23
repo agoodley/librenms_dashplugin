@@ -45,6 +45,8 @@
                 <td class="ans-wrap ans-verify-result" data-label="Result">
                     @if($result !== null)<span class="label label-{{ $resultCss[$result] ?? 'default' }}">{{ $resultLabels[$result] ?? $result }}</span>@endif
                     @if($result === 'unknown')<div class="ans-help">{{ $verify['error'] ?? '' }}</div>@endif
+                    @if($result !== null && $result !== 'unknown' && \Agoodley\LibrenmsAnsible\Changes\VerificationText::older($verify) !== null)<div class="ans-help text-warning ans-verify-older">on data
+                        older than {{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::older($verify) }} before it (its wait for fresh data was over)</div>@endif
                     @if(is_array($verify['accepted'] ?? null))<div class="ans-help text-warning ans-verify-accepted">accepted by {{ $verify['accepted']['by'] ?? '?' }}
                         {{ Clock::local($verify['accepted']['at'] ?? null) }}@if(($verify['accepted']['comment'] ?? '') !== ''): "{{ $verify['accepted']['comment'] }}"@endif</div>@endif
                     @if(($verify['said'] ?? null) === 'record' && $result !== 'verified')<div class="ans-help">recorded (the settings: only record)</div>@endif

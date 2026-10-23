@@ -151,13 +151,31 @@ final class VerificationText
      *
      * @param  array<string, int>  $counts  VerificationRules::evaluate()'s
      */
-    public static function verified(int $batch, array $counts): string
+    /**
+     * @param  ?string  $older  what the data of its state before it was older than ("the Apply"), when it was (older())
+     */
+    public static function verified(int $batch, array $counts, ?string $older = null): string
     {
         $expected = (int) ($counts['expected'] ?? 0);
 
-        return "Batch $batch verified: nothing unexpected changed (" . Format::count((int) ($counts['facts'] ?? 0), 'fact') . ' and ' . Format::count((int) ($counts['findings'] ?? 0), 'finding')
-            . ' compared on fresh data' . ($expected ? '; ' . Format::count($expected, 'change') . ' the fix was made for' : '')
+        return "Batch $batch verified" . ($older !== null ? ", on data older than $older before it" : '') . ': nothing unexpected changed ('
+            . Format::count((int) ($counts['facts'] ?? 0), 'fact') . ' and ' . Format::count((int) ($counts['findings'] ?? 0), 'finding')
+            . ' compared on fresh data' . ($older !== null ? ' after it' : '') . ($expected ? '; ' . Format::count($expected, 'change') . ' the fix was made for' : '')
             . (($counts['listed'] ?? 0) ? '; ' . Format::count((int) $counts['listed'], 'other change') . ' listed on the change page' : '') . ')';
+    }
+
+    /**
+     * What the data of a batch's state before it was older than (its wait for fresh data over: "the Apply", "the request
+     * for it at ..."), null when it was fresh or LibreNMS' data as it is (Fresh data: wait).
+     *
+     * @param  array<string, mixed>  $verify  the batch's verification
+     */
+    public static function older(array $verify): ?string
+    {
+        $before = (array) ($verify['before'] ?? []);
+        $older = $before['older'] ?? null;
+
+        return ! empty($before['stale']) && is_string($older) && $older !== '' ? UntrustedText::line($older, 120) : null;
     }
 
     public static function verifiedEvent(array $change, int $batch): string
