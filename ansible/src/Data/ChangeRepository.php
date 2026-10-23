@@ -54,7 +54,7 @@ final class ChangeRepository implements ChangeStore
     {
         try {
             // a table whose columns are checked below is not looked up twice: its columns tell that it exists too
-            foreach (array_diff(self::TABLES, ['ansible_change_targets', 'ansible_change_batches', 'ansible_change_windows']) as $table) {
+            foreach (array_diff(self::TABLES, ['ansible_changes', 'ansible_change_targets', 'ansible_change_batches', 'ansible_change_windows']) as $table) {
                 if (! SchemaCheck::hasTable($table)) {
                     return false;
                 }
