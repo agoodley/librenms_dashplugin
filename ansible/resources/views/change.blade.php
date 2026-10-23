@@ -326,7 +326,11 @@
         <div class="col-md-7">
             <div class="panel panel-default">
                 <div class="panel-heading"><strong>Batches</strong> <span class="text-muted">({{ \Agoodley\LibrenmsAnsible\Support\Format::count(count($targets), 'device') }}; stops at {{ $plan['stop_at'] ?? 1 }} failed {{ ($plan['stop_at'] ?? 1) == 1 ? 'device' : 'devices' }} in a batch{{ ! empty($plan['wait_after_first']) && count($batches) > 1 ? '; waits for an admin after the first batch' : '' }}{{ ! empty($plan['pause_minutes']) ? '; ' . $plan['pause_minutes'] . ' min between batches' : '' }})</span>
-                    @if($topology)
+                    @if($topology && $topology->allByHand())
+                        <div class="ans-help" id="ans-batches-planner">Planned by hand: the topology plugin could plan none of these devices when the change was made, so nothing
+                            tells what depends on them. Each batch is checked again before it starts and right before its launch: one that would cut off a device by then waits for
+                            an admin to accept it.</div>
+                    @elseif($topology)
                         <div class="ans-help" id="ans-batches-planner">Planned by the topology plugin: farthest from the core first, the core last, never two devices that back each other up in one batch.
                             What each batch cuts off was computed when the change was made, and is part of what is dry-run and approved; it is computed again before the batch starts and
                             right before its launch, and a batch that would cut off more waits for an admin to accept it.
@@ -344,10 +348,10 @@
                                 }
                             }
                         @endphp
-                        <div class="ans-help" id="ans-blast-unknown-note"><i class="fa fa-question-circle"></i> Blast radius unknown: these batches were planned by the plugin's settings, not by the topology plugin{{ $unknownWhy !== null ? ', as ' . $unknownWhy : '' }}.</div>
+                        <div class="ans-help" id="ans-blast-unknown-note"><i class="fa fa-question-circle"></i> Blast radius unknown: these batches were planned by the plugin's settings, not by the topology plugin{{ $unknownWhy !== null ? '. When the change was made: ' . $unknownWhy : '' }}.</div>
                     @endif
                 </div>
-                @if($topology && $topology->coreWarnings())
+                @if($topology && ! $topology->allByHand() && $topology->coreWarnings())
                     {{-- what the admin should check of the core, in the warning's colour (as the preview says it) --}}
                     <div class="panel-body" id="ans-core-warnings" style="padding-bottom: 0">
                         @foreach($topology->coreWarnings() as $warning)

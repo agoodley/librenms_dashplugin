@@ -248,14 +248,17 @@ final class BatchPlan
 
     /**
      * The plan in words: "3 batches: 1, then 5, then 2 devices; stops at 1 failed device in a batch; waits for an admin
-     * after the first batch"; a plan of the topology plugin's says so, and how many of its batches are planned by hand.
+     * after the first batch"; a plan of the topology plugin's says so, and how many of its batches are planned by hand
+     * (all of them: the topology plugin planned none).
      */
     public function describe(): string
     {
         $sizes = array_map('count', $this->batches);
         // "1, then 5, then 2 devices", "1, then 1 device": the word goes with the last number
         $text = count($sizes) . (count($sizes) === 1 ? ' batch' : ' batches') . ': ' . implode(', then ', $sizes) . ' ' . (end($sizes) === 1 ? 'device' : 'devices');
-        if ($this->topology !== null) {
+        if ($this->topology !== null && $this->topology->allByHand()) {
+            $text .= ', ' . (count($sizes) === 1 ? '' : 'all ') . 'planned by hand (the topology plugin can plan none of the devices)';
+        } elseif ($this->topology !== null) {
             $hand = count(array_filter($this->topology->batches, fn (array $batch) => $batch['hand']));
             $text .= ', planned by the topology plugin' . ($hand ? ' (' . ($hand === 1 ? 'the last batch' : "the last $hand batches") . ' by hand)' : '');
         }

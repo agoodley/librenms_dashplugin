@@ -80,6 +80,14 @@ final class TopologyPlan
     }
 
     /**
+     * Are all of its batches planned by hand (the topology plugin could plan none of the change's devices)?
+     */
+    public function allByHand(): bool
+    {
+        return $this->batches !== [] && ! array_filter($this->batches, fn (array $batch) => ! $batch['hand']);
+    }
+
+    /**
      * Does the plan start with the core (the planner put the first batch in the core's tier)?
      */
     public function startsWithCore(): bool

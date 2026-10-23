@@ -750,9 +750,12 @@
                         ' (nothing tells what depends on them): ' + leftOut.map(function (entry) {
                             return entry.name + ' (' + entry.text + ')';
                         }).join(', ') + '.']));
+                } else if (hand === batches.length) {
+                    append(choice, el('p', 'text-warning', (hand === 1 ? 'Its batch is planned by hand: the topology plugin cannot plan its devices'
+                        : 'All of its batches are planned by hand: the topology plugin can plan none of their devices') + ', nothing tells what depends on them.'));
                 } else {
-                    append(choice, el('p', 'text-warning', (hand === 1 ? 'The last batch is' : 'The last ' + hand + ' batches are') + ' planned by hand: the topology plugin '
-                        + 'cannot plan their devices, nothing tells what depends on them.'));
+                    append(choice, el('p', 'text-warning', (hand === 1 ? 'The last batch is planned by hand: the topology plugin cannot plan its devices'
+                        : 'The last ' + hand + ' batches are planned by hand: the topology plugin cannot plan their devices') + ', nothing tells what depends on them.'));
                 }
                 [['leave', 'Leave them out of the change'], ['hand', 'Put them in final batches planned by hand']].forEach(function (option) {
                     var radio = el('input');

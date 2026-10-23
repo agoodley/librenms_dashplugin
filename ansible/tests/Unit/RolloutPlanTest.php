@@ -180,10 +180,17 @@ class RolloutPlanTest extends TestCase
         $this->assertSame('The topology plugin cannot plan any of these devices (lab-dead (down now), lab-other (no LLDP/CDP neighbors: no topology data)): '
             . 'put them in final batches planned by hand (the choice below the preview), or choose others.', $left['error']);
 
-        // by hand: a plan of the settings, the canary first
+        // by hand: a plan of the settings, the canary first; all of its batches planned by hand, the topology plugin planning none
         $hand = self::make([504, 509], unplanned: RolloutPlan::HAND);
         $this->assertSame([[504], [509]], $hand['plan']->batches);
         $this->assertSame([true, true], array_column($hand['plan']->topology->batches, 'hand'));
+        $this->assertTrue($hand['plan']->topology->allByHand());
+        $this->assertSame('2 batches: 1, then 1 device, all planned by hand (the topology plugin can plan none of the devices); stops at 1 failed device in a batch; '
+            . 'waits for an admin to continue after the first batch', $hand['plan']->describe());
+        $this->assertSame('1 batch: 1 device, planned by hand (the topology plugin can plan none of the devices); stops at 1 failed device in a batch',
+            self::make([509], unplanned: RolloutPlan::HAND)['plan']->describe(), 'one batch');
+        $this->assertFalse(self::make(self::ALL)['plan']->topology->allByHand());
+        $this->assertFalse(self::make([...self::ALL, 509], unplanned: RolloutPlan::HAND)['plan']->topology->allByHand(), 'the last batch by hand only');
     }
 
     public function testAPlannersAnswerThatDoesNotPlanTheTargetsIsRefused(): void
