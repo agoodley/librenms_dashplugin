@@ -14,6 +14,8 @@ export SEMAPHORE_VERSION
 . "$ROCKY/lib/semaphore.sh"
 # shellcheck source=../lib/librenms.sh
 . "$ROCKY/lib/librenms.sh"
+# shellcheck source=../lib/common.sh
+. "$ROCKY/lib/common.sh"
 
 # check WHAT GOT WANT: one check
 check() {
@@ -48,6 +50,23 @@ check "json_object/json_field: a password with quotes, backslash, \$, & and non-
 check "json_object/json_field: an empty value" "$(json_field "$json" empty)" ''
 check "json_object/json_field: @json: values and list items" "$(json_field "$json" list.1)" 2
 check "json_field: a missing field" "$(json_field "$json" nothing.here)" ''
+
+# valid_timezone: only a plain zone name that exists under /usr/share/zoneinfo (it ends up in php.ini)
+timezone() {  # timezone WANT NAME
+    local got=refused
+    if valid_timezone "$2"; then got=ok; fi
+    check "time zone $(printf '%q' "$2")" "$got" "$1"
+}
+if [[ -f /usr/share/zoneinfo/Europe/Berlin ]]; then
+    for tz in UTC Europe/Berlin Etc/GMT+5 America/Port-au-Prince America/Argentina/Buenos_Aires; do timezone ok "$tz"; done
+else
+    echo "SKIP  time zones that exist (this machine has no /usr/share/zoneinfo)"
+fi
+for tz in ../../../etc/passwd /etc/passwd Europe/../Europe/Berlin ./UTC Europe//Berlin posix/Europe/Berlin right/UTC \
+    'Europe/Berlin
+date.timezone = UTC' 'UTC ' '' Europe/Nowhere; do
+    timezone refused "$tz"
+done
 
 printf '%d failures\n' "$FAILS"
 exit "$FAILS"

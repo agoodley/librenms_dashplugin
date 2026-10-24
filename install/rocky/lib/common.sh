@@ -286,6 +286,13 @@ cred_set() {
     log "credentials file: $1 set (value not logged)"
 }
 
+# valid_timezone NAME: whether NAME is a time zone (Europe/Berlin, UTC, Etc/GMT+5, America/Port-au-Prince): letters,
+# digits and _ + - in parts separated by single slashes (so no "..", no leading slash), naming a file of
+# /usr/share/zoneinfo outside its posix/ and right/ copies. NAME ends up in php.ini: nothing else may pass.
+valid_timezone() {
+    [[ $1 =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ && $1 != posix/* && $1 != right/* && -f /usr/share/zoneinfo/$1 ]]
+}
+
 # gen_secret [LENGTH]: a random password of letters and digits.
 gen_secret() {
     local len=${1:-24} out=''

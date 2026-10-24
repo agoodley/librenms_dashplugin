@@ -237,10 +237,11 @@ the last lines of the command's output, what to do, and the log.
   added to LibreNMS, then a change through the Ansible plugin's pages with the template "Fix port descriptions": preview,
   dry run (proven), approval, apply, and Oxidized's backups before and after the batch, the one after with the new
   description.
-* `unit.sh`: checks of the installer's own functions that need no server (CI runs it with shellcheck): that both forms
-  in which Semaphore UI 2.19.17's binaries print their version (`v2.19.17-f8cefe6-1792391878` of the container image,
-  `2.19.17-f8cefe6-1792391818` of the release RPM) count as 2.19.17, and that another version (2.19.18, 2.19.170)
-  does not.
+* `unit.sh`: checks of the installer's own functions that need no server (CI runs it with shellcheck): both forms in
+  which Semaphore UI 2.19.17's binaries print their version (`v2.19.17-f8cefe6-1792391878` of the container image,
+  `2.19.17-f8cefe6-1792391818` of the release RPM) count as 2.19.17, another version (2.19.18, 2.19.170) does not;
+  passwords and tokens survive the JSON helpers that keep them off command lines; only plain time zone names pass
+  (`--timezone` ends up in php.ini).
 * `stubs/`: `getenforce`, `firewall-cmd`, `semanage`, `setsebool`, ... that record their calls: with them first on
   `PATH`, a container (where SELinux is disabled and firewalld does not run) goes through the installer's SELinux and
   firewalld steps.

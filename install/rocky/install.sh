@@ -233,7 +233,7 @@ check_options() {
     if [[ -n $SERVER_NAME && ! $SERVER_NAME =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$ ]]; then
         bad_option "--server-name: '$SERVER_NAME' is not a host name"
     fi
-    if [[ -n $TIMEZONE && ! -f /usr/share/zoneinfo/$TIMEZONE ]]; then bad_option "--timezone: '$TIMEZONE' is not a time zone (see timedatectl list-timezones)"; fi
+    if [[ -n $TIMEZONE ]] && ! valid_timezone "$TIMEZONE"; then bad_option "--timezone: '$TIMEZONE' is not a time zone (see timedatectl list-timezones)"; fi
     [[ $PHP_STREAM =~ ^(remi-)?8\.[2-9]$ ]] || bad_option "--php-stream: '$PHP_STREAM' is not a PHP 8.2+ stream (e.g. remi-8.5, remi-8.4, or 8.3 for Rocky's own)"
     if [[ -n $LIBRENMS_URL && ! $LIBRENMS_URL =~ ^https?://[^/?#[:space:]]+(/[^?#[:space:]]*)?$ ]]; then
         bad_option "--librenms-url: '$LIBRENMS_URL' is not an http(s) URL"
@@ -340,10 +340,10 @@ preflight() {
     # each admin gets an e-mail of their own (Semaphore UI's e-mails are unique)
     if [[ -n $ADMIN_EMAIL ]]; then ADMIN_EMAIL_GIVEN=1; else ADMIN_EMAIL="$ADMIN_USER@$SERVER_NAME"; fi
     [[ -n $TIMEZONE ]] || TIMEZONE=$(timedatectl show -p Timezone --value 2>/dev/null || true)
-    if [[ -z $TIMEZONE || ! -f /usr/share/zoneinfo/$TIMEZONE ]]; then
+    if ! valid_timezone "$TIMEZONE"; then
         TIMEZONE=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p' || true)
     fi
-    [[ -n $TIMEZONE && -f /usr/share/zoneinfo/$TIMEZONE ]] || TIMEZONE=UTC
+    valid_timezone "$TIMEZONE" || TIMEZONE=UTC
 }
 WARN_ARCH=0
 ADMIN_EMAIL_GIVEN=0
