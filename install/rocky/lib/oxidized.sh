@@ -15,11 +15,12 @@ LNMS_OXIDIZED_USER=oxidized
 part_oxidized() {
     part_header oxidized "Oxidized $OXIDIZED_VERSION with oxidized-web $OXIDIZED_WEB_VERSION, fed by LibreNMS"
     librenms_require
-    OX_URL="http://127.0.0.1:$OXIDIZED_PORT"
+    OX_URL=$(local_service_url "$OXIDIZED_LISTEN" "$OXIDIZED_PORT")
     if [[ -f $LNMS_DIR/artisan && -f $LNMS_DIR/.env ]] && [[ $(state_get librenms_db || true) == yes || $LNMS_MODE == existing ]]; then
         local current; current=$(lnms config:get --dump oxidized.url 2>>"$LOG_FILE" | tail -n 1 || true)
         current=${current//\"/}; current=${current//\\\//\/}
-        if [[ -n $current && $current != null && ${current%/} != "$OX_URL" ]]; then
+        local previous; previous=$(ox_previous_url)
+        if [[ -n $current && $current != null && ${current%/} != "$OX_URL" && ${current%/} != "$previous" ]]; then
             info "LibreNMS already uses the Oxidized at $current: the Ansible plugin's backups go there, and this part changes nothing"
             summary_add "Oxidized: LibreNMS uses $current already (left as it is)"
             return 0
@@ -28,6 +29,7 @@ part_oxidized() {
     ox_ruby
     ox_gems
     ox_user
+    ox_known_hosts
     if [[ $CHECK == 1 && ! -f $OX_CONF ]]; then
         would "add the LibreNMS user $LNMS_OXIDIZED_USER (global-read) with an API token for Oxidized"
         would "write $OX_CONF (devices from LibreNMS, git output, REST API on $OXIDIZED_LISTEN:$OXIDIZED_PORT), add the service oxidized"
@@ -40,10 +42,36 @@ part_oxidized() {
     ox_config
     ox_service
     ox_librenms_settings
+    state_set oxidized_url "$OX_URL"
     selinux_boolean_on httpd_can_network_connect "LibreNMS' PHP reaches Oxidized, as LibreNMS' Oxidized documentation says"
     if [[ $OXIDIZED_LISTEN != 127.* && $OXIDIZED_LISTEN != ::1 ]]; then firewall_open "$OXIDIZED_PORT/tcp"; fi
     ox_verify
     summary_add "Oxidized $OXIDIZED_VERSION on http://$OXIDIZED_LISTEN:$OXIDIZED_PORT: $OX_STATUS"
+}
+
+# A managed installation may move its listener. Preserve unrelated, administrator-selected Oxidized endpoints.
+ox_previous_url() {
+    local previous; previous=$(state_get oxidized_url || true)
+    if [[ -n $previous ]]; then printf '%s' "$previous"; return; fi
+    # Migration from installers that always saved 127.0.0.1, regardless of their configured listener.
+    if [[ -f $OX_CONF && -n $(state_get oxidized_config || true) ]]; then
+        local port; port=$(sed -n 's/^    port: \([0-9][0-9]*\)$/\1/p' "$OX_CONF" | tail -n 1)
+        [[ -z $port ]] || printf 'http://127.0.0.1:%s' "$port"
+    fi
+    return 0
+}
+
+# Keys must be verified by the administrator (for example against the device console), never trusted on first use.
+ox_known_hosts() {
+    local dest=$OX_HOME/.ssh/known_hosts
+    if [[ -n ${OXIDIZED_KNOWN_HOSTS:-} ]]; then
+        if [[ ! -d $OX_HOME/.ssh || $(stat -c '%U:%G %a' "$OX_HOME/.ssh") != 'oxidized:oxidized 700' ]]; then
+            act "ensure Oxidized's SSH directory" as oxidized install -d -m 700 "$OX_HOME/.ssh"
+        fi
+        put_file "$OXIDIZED_KNOWN_HOSTS" "$dest" oxidized:oxidized 600 "install verified SSH host keys for Oxidized" || true
+    elif [[ ! -s $dest ]]; then
+        warn "Oxidized rejects unknown SSH host keys: supply --oxidized-known-hosts FILE with verified device keys before expecting backups ($dest)"
+    fi
 }
 
 ox_ruby() {
@@ -171,7 +199,7 @@ print('\n'.join([
     '  default: ssh',
     '  debug: false',
     '  ssh:',
-    '    secure: false',
+    '    secure: true',
     '  utf8_encoded: true',
     'output:',
     '  default: git',
@@ -200,13 +228,13 @@ print('\n'.join([
 ]))
 PY
 )
-    install -d -o oxidized -g oxidized -m 700 "$OX_HOME/.config" "$OX_DIR"
+    if [[ $CHECK == 0 ]]; then as oxidized install -d -m 700 "$OX_HOME/.config" "$OX_DIR"; fi
     local last current
     last=$(state_get oxidized_config || true)
     current=$( [[ -f $OX_CONF ]] && sha256sum "$OX_CONF" | cut -d' ' -f1 || true)
     if [[ -n $current && $current != "$last" ]]; then
         if [[ $(sha256sum <<<"$text" | cut -d' ' -f1) != "$current" ]]; then
-            warn "$OX_CONF was changed by hand: left as it is (check its username, password, source url and token, and extensions.oxidized-web)"
+            warn "$OX_CONF was changed by hand: left as it is (check input.ssh.secure is true, its username, password, source url and token, and extensions.oxidized-web)"
         fi
         return 0
     fi

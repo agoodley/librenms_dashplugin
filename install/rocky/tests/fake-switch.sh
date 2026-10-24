@@ -10,13 +10,13 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VENV=/opt/fakesw
 SITE=$VENV/lib/python3.12/site-packages
 
-if [[ ! -f $VENV/.patched ]]; then
+if [[ ! -f $VENV/.patched-security-v2 ]]; then
     command -v patch >/dev/null || dnf -y -q install patch
     rm -rf "$VENV"
     python3.12 -m venv "$VENV"
     "$VENV/bin/pip" install --disable-pip-version-check --quiet --no-deps -r "$HERE/fake-switches-requirements.txt"
     patch --quiet -p1 -d "$SITE" <"$HERE/fake-switches.patch"
-    touch "$VENV/.patched"
+    touch "$VENV/.patched-security-v2"
 fi
 listening() { local out; out=$(ss -Htln "sport = :22"); [[ $out == *"$IP:22 "* ]]; }
 if listening; then
@@ -26,7 +26,20 @@ fi
 setsid nohup "$VENV/bin/fake-switches" --model cisco_generic --hostname "$NAME" --username netops --password netops-pw \
     --listen-host "$IP" --listen-port 22 >"/var/log/fake-switch-$NAME.log" 2>&1 </dev/null &
 for _ in $(seq 1 30); do
-    if listening; then echo "fake switch $NAME listens on $IP:22"; exit 0; fi
+    if listening; then
+        echo "fake switch $NAME listens on $IP:22"
+        # The fixture's public key comes from its local package, not an unauthenticated network scan.
+        install -d -o oxidized -g oxidized -m 700 /home/oxidized/.ssh
+        "$VENV/bin/python" - "$NAME" "$IP" <<'PY' >>/home/oxidized/.ssh/known_hosts
+import sys
+from fake_switches.transports.ssh_service import getRSAKeys
+print(','.join(sys.argv[1:]) + ' ' + getRSAKeys()[0])
+PY
+        chown oxidized:oxidized /home/oxidized/.ssh/known_hosts
+        chmod 600 /home/oxidized/.ssh/known_hosts
+        bash "$HERE/security-integration.sh" "$IP"
+        exit 0
+    fi
     sleep 1
 done
 echo "the fake switch did not start: /var/log/fake-switch-$NAME.log" >&2

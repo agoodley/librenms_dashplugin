@@ -17,6 +17,7 @@
 # (in the plugin's settings, as an admin would): a switch without SNMP never has the fresh LibreNMS data it waits for.
 set -uo pipefail
 NAME=$1 IP=$2 IFACE=${3:-FastEthernet0/1}
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # the port as LibreNMS names it (its ifName): the fix template's answer names it so, and the playbook finds it in the
 # running configuration by that abbreviation
 IFNAME=$(sed -E 's/^([A-Za-z]{2})[A-Za-z-]*/\1/' <<<"$IFACE")
@@ -109,12 +110,17 @@ wait_status() {  # STATUS... : poll the change until its status is one of them (
     done
     return 1
 }
+startup_before=$(/opt/ansible/bin/python "$HERE/read-switch-config.py" "$IP" startup) || stop "cannot read fixture startup configuration"
 out=$(api POST "plugin/ansible/changes/$change/dry-run" '{"secrets":{}}')
 if wait_status awaiting_approval ready; then pass "dry run proven: the change awaits approval"; else stop "dry run: status $(field "$state" status) (${out:0:300}) $(field "$state" label)"; fi
+startup_after=$(/opt/ansible/bin/python "$HERE/read-switch-config.py" "$IP" startup) || stop "cannot read fixture startup configuration after dry run"
+[[ $startup_before == "$startup_after" ]] && pass "dry run leaves startup configuration unchanged" || stop "dry run changed startup configuration"
 out=$(api POST "plugin/ansible/changes/$change/approve" '{"comment":"e2e of the installer"}')
 if wait_status ready; then pass "approved"; else stop "approve: status $(field "$state" status) (${out:0:300})"; fi
 out=$(api POST "plugin/ansible/changes/$change/apply" '{"secrets":{}}')
 if wait_status applied; then pass "applied"; else stop "apply: status $(field "$state" status) $(field "$state" label) (${out:0:300})"; fi
+startup_after=$(/opt/ansible/bin/python "$HERE/read-switch-config.py" "$IP" startup) || stop "cannot read fixture startup configuration after apply"
+grep -q "description $DESC" <<<"$startup_after" && pass "the approved description is saved to startup configuration" || fail "the applied description was not saved"
 
 # --- what the plugin recorded, and the switch's configuration in Oxidized. The backup after the batch is followed by
 # the change page's poll and the plugin's sync command: wait for it.

@@ -21,7 +21,7 @@ SEM_BIN=''
 SEM_TOKEN=''                        # the installer's own admin token of this run (one hour; removed at the end)
 SEM_API=''
 
-semaphore_api_url() { printf 'http://127.0.0.1:%s' "$SEMAPHORE_PORT"; }
+semaphore_api_url() { local_service_url "$SEMAPHORE_LISTEN" "$SEMAPHORE_PORT"; }
 
 part_semaphore() {
     part_header semaphore "Semaphore UI $SEMAPHORE_VERSION, its project for LibreNMS, and the Ansible plugin's connection to it"
@@ -158,11 +158,12 @@ sem_database() {
         return 0
     fi
     would "create the database semaphore and its user (MariaDB)" && return 0
+    local literal; literal=$(sql_literal "$password")
     mysql_root "CREATE DATABASE IF NOT EXISTS semaphore CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-CREATE USER IF NOT EXISTS 'semaphore'@'localhost' IDENTIFIED BY '$password';
-CREATE USER IF NOT EXISTS 'semaphore'@'127.0.0.1' IDENTIFIED BY '$password';
-ALTER USER 'semaphore'@'localhost' IDENTIFIED BY '$password';
-ALTER USER 'semaphore'@'127.0.0.1' IDENTIFIED BY '$password';
+CREATE USER IF NOT EXISTS 'semaphore'@'localhost' IDENTIFIED BY $literal;
+CREATE USER IF NOT EXISTS 'semaphore'@'127.0.0.1' IDENTIFIED BY $literal;
+ALTER USER 'semaphore'@'localhost' IDENTIFIED BY $literal;
+ALTER USER 'semaphore'@'127.0.0.1' IDENTIFIED BY $literal;
 GRANT ALL PRIVILEGES ON semaphore.* TO 'semaphore'@'localhost';
 GRANT ALL PRIVILEGES ON semaphore.* TO 'semaphore'@'127.0.0.1';
 FLUSH PRIVILEGES;"
@@ -183,8 +184,10 @@ print(d)' "$SEM_CONF" "$1"
 # sem_config: /etc/semaphore/config.json (root:semaphore 640). Its encryption keys are made once and never change
 # (the key store is encrypted with access_key_encryption).
 sem_config() {
-    local text
-    text=$(I_PASSWORD=$SEM_DB_PASSWORD I_LISTEN=$SEMAPHORE_LISTEN I_PORT=$SEMAPHORE_PORT I_TMP=$SEM_HOME/tmp python3 -I - "$SEM_CONF" <<'PY'
+    # Semaphore 2.19.17 concatenates interface + :port for net/http; IPv6 literals must include brackets.
+    local text bind=$SEMAPHORE_LISTEN
+    [[ $bind == *:* ]] && bind="[$bind]"
+    text=$(I_PASSWORD=$SEM_DB_PASSWORD I_LISTEN=$bind I_PORT=$SEMAPHORE_PORT I_TMP=$SEM_HOME/tmp python3 -I - "$SEM_CONF" <<'PY'
 import base64, json, os, sys
 path = sys.argv[1]
 try:
@@ -208,13 +211,14 @@ PY
     if [[ $CHECK == 1 ]]; then
         # new encryption keys every time: only whether the file is there or its settings change counts
         if [[ ! -f $SEM_CONF ]]; then would "write $SEM_CONF (MariaDB, $SEMAPHORE_LISTEN:$SEMAPHORE_PORT)"
-        elif [[ $(sem_config_value interface) != "$SEMAPHORE_LISTEN" || $(sem_config_value port) != ":$SEMAPHORE_PORT" ]]; then
+        elif [[ $(sem_config_value interface) != "$bind" || $(sem_config_value port) != ":$SEMAPHORE_PORT" ]]; then
             would "change $SEM_CONF to listen on $SEMAPHORE_LISTEN:$SEMAPHORE_PORT"
         fi
         return 0
     fi
     install -d -o root -g semaphore -m 750 /etc/semaphore
-    install -d -o semaphore -g semaphore -m 750 "$SEM_HOME" "$SEM_HOME/tmp"
+    install -d -o semaphore -g semaphore -m 750 "$SEM_HOME"
+    as semaphore install -d -m 750 "$SEM_HOME/tmp"
     if put_text "$text
 " "$SEM_CONF" root:semaphore 640 "write $SEM_CONF (MariaDB, $SEMAPHORE_LISTEN:$SEMAPHORE_PORT)"; then
         state_set semaphore_restart 1
@@ -263,8 +267,8 @@ sem_playbook_repo() {
         elif [[ -z $current || $current == "$last" ]]; then
             changed+=("$path")
             if [[ $CHECK == 0 ]]; then
-                install -d -o semaphore -g semaphore "$(dirname "$work/repo/$path")"
-                install -o semaphore -g semaphore -m "$( [[ $path == *.py ]] && echo 755 || echo 644 )" "${files[$path]}" "$work/repo/$path"
+                as semaphore install -d "$(dirname "$work/repo/$path")"
+                as semaphore install -m "$( [[ $path == *.py ]] && echo 755 || echo 644 )" "${files[$path]}" "$work/repo/$path"
             fi
         else
             kept+=("$path")
@@ -530,7 +534,7 @@ SEM_RUNNER_TOKEN=''
 # page's Test connection, whose answer the run reports.
 ansible_connect() {
     local request
-    request=$(I_URL="http://127.0.0.1:$SEMAPHORE_PORT" I_TOKEN=$SEM_RUNNER_TOKEN I_PROJECT=$SEM_PROJECT_ID I_INV=$SEM_INVENTORY_ID \
+    request=$(I_URL="$SEM_API" I_TOKEN=$SEM_RUNNER_TOKEN I_PROJECT=$SEM_PROJECT_ID I_INV=$SEM_INVENTORY_ID \
         I_USER=$LNMS_INVENTORY_ID I_PORTS=$SEM_TEMPLATE_PORTS I_STP=$SEM_TEMPLATE_STP I_ADMIN=$ADMIN_USER python3 -I -c 'import json,os
 e=os.environ
 print(json.dumps({"by": "the installer (install/rocky/install.sh)", "admin": e["I_ADMIN"],

@@ -68,5 +68,6 @@ date.timezone = UTC' 'UTC ' '' Europe/Nowhere; do
     timezone refused "$tz"
 done
 
+python3 -m unittest discover -s "$ROCKY/tests" -p 'test_*.py' -v || FAILS=$((FAILS + 1))
 printf '%d failures\n' "$FAILS"
 exit "$FAILS"

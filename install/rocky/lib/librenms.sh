@@ -309,7 +309,8 @@ lnms_python() {
         local args=(-r "$LNMS_DIR/requirements.txt")
         if [[ -n $PIP_WHEELS ]]; then args=(--no-index --find-links "$PIP_WHEELS" "${args[@]}"); fi
         FAIL_HINT="check that this server reaches PyPI, or give local wheels (--pip-wheels)" \
-            act "install the rest of LibreNMS' Python modules with pip (requirements.txt)" pip3 install --disable-pip-version-check "${args[@]}"
+            act "install the rest of LibreNMS' Python modules as librenms (requirements.txt)" \
+                as librenms python3 -m pip install --user --disable-pip-version-check "${args[@]}"
     fi
 }
 
@@ -341,7 +342,7 @@ composer_install() {
             download https://getcomposer.org/download/latest-stable/composer.phar "$tmp" "$(cut -d' ' -f1 "$WORK/composer.sha256")"
     fi
     php "$tmp" --version >>"$LOG_FILE" 2>&1 || die "$tmp is not a working composer.phar" "give composer.phar with --composer-source"
-    install -o "${owner%%:*}" -g "${owner##*:}" -m 755 "$tmp" "$dest"
+    put_file "$tmp" "$dest" "$owner" 755 "install composer.phar" || true
     log "installed $dest"
 }
 
@@ -399,7 +400,17 @@ mysql_root() {
     if ! probe mysql -u root -e 'SELECT 1'; then
         die "MariaDB does not let root in (it asks for a password)" "put root's password in /root/.my.cnf ([client] user=root password=...), then run the installer again"
     fi
-    run_input "$1" mysql -u root
+    # A password read from the service-owned .env is data, never SQL or a mysql client command. Binary mode
+    # disables client commands such as \! in batch input; the explicit SQL mode matches sql_literal below.
+    run_input "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES';
+$1" mysql --binary-mode -u root
+}
+
+# sql_literal TEXT: a literal for mysql_root's NO_BACKSLASH_ESCAPES session. No secret in a process argument.
+sql_literal() {
+    local value=$1
+    value=${value//\'/\'\'}
+    printf "'%s'" "$value"
 }
 
 # db_password_ok USER PASSWORD DATABASE: whether USER logs in to DATABASE with PASSWORD.
@@ -413,9 +424,10 @@ lnms_database() {
     [[ -n $password ]] || password=$(secret_for LIBRENMS_DB_PASSWORD)
     if db_password_ok librenms "$password" librenms; then detail "the librenms database and its user are there"; LNMS_DB_PASSWORD=$password; return 0; fi
     would "create the librenms database and its user (utf8mb4, as LibreNMS documents)" && return 0
+    local literal; literal=$(sql_literal "$password")
     mysql_root "CREATE DATABASE IF NOT EXISTS librenms CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS 'librenms'@'localhost' IDENTIFIED BY '$password';
-ALTER USER 'librenms'@'localhost' IDENTIFIED BY '$password';
+CREATE USER IF NOT EXISTS 'librenms'@'localhost' IDENTIFIED BY $literal;
+ALTER USER 'librenms'@'localhost' IDENTIFIED BY $literal;
 GRANT ALL PRIVILEGES ON librenms.* TO 'librenms'@'localhost';
 FLUSH PRIVILEGES;"
     cred_set LIBRENMS_DB_PASSWORD "$password"
@@ -446,7 +458,7 @@ lnms_env() {
     fi
     # .env holds the database password and APP_KEY: LibreNMS (its PHP-FPM pool, cron jobs, scheduler) reads it as librenms
     local mode; mode=$(stat -c %a "$LNMS_DIR/.env")
-    if [[ $mode != 640 && $mode != 600 ]]; then act "make $LNMS_DIR/.env readable by librenms only (mode $mode -> 640)" chmod 640 "$LNMS_DIR/.env"; fi
+    if [[ $mode != 640 && $mode != 600 ]]; then act "make $LNMS_DIR/.env readable by librenms only (mode $mode -> 640)" as librenms chmod 640 "$LNMS_DIR/.env"; fi
 }
 
 lnms_php_fpm() {
@@ -527,24 +539,22 @@ selinux_fcontext() {
 }
 
 lnms_completion() {
-    if [[ ! -L /usr/bin/lnms && ! -e /usr/bin/lnms ]]; then act "link /usr/bin/lnms" ln -s "$LNMS_DIR/lnms" /usr/bin/lnms; fi
-    if [[ -f $LNMS_DIR/misc/lnms-completion.bash ]]; then
-        put_file "$LNMS_DIR/misc/lnms-completion.bash" /etc/bash_completion.d/lnms-completion.bash root:root 644 "add lnms' bash completion" || true
-    fi
+    # Replace the old symlink too: root's command/completion must not execute service-owned PHP as root.
+    put_file "$FILES_DIR/lnms" /usr/bin/lnms root:root 755 "install the lnms privilege-dropping wrapper" || true
+    put_file "$FILES_DIR/lnms-completion.bash" /etc/bash_completion.d/lnms-completion.bash root:root 644 "add lnms' bash completion" || true
 }
 
 # snmpd on this server, as LibreNMS' documentation sets it up (v2c, a generated community), when its configuration
 # is still the package's.
 lnms_snmpd() {
     local conf=/etc/snmp/snmpd.conf
-    if [[ ! -f $LNMS_DIR/snmpd.conf.example ]]; then would "configure snmpd (LibreNMS' snmpd.conf.example, a generated community)"; return 0; fi
     if [[ $(state_get snmpd || true) != yes ]]; then
         local verify; verify=$(rpm -V net-snmp 2>/dev/null || true)
         if [[ -f $conf ]] && grep -q " $conf\$" <<<"$verify"; then
             warn "$conf was changed on this server: left as it is (LibreNMS' documentation replaces it with snmpd.conf.example)"
         else
             local community text; community=$(secret_for SNMP_COMMUNITY 20)
-            text=$(<"$LNMS_DIR/snmpd.conf.example")
+            text=$(<"$FILES_DIR/snmpd.conf.example")
             # the community goes in by the shell (sed would have it on its command line, visible to every user)
             text=${text//RANDOMSTRINGGOESHERE/$community}
             if put_text "$text
@@ -569,11 +579,10 @@ lnms_snmpd() {
 }
 
 lnms_cron_scheduler() {
-    [[ -d $LNMS_DIR/dist ]] || { would "add LibreNMS' cron jobs and its scheduler timer"; return 0; }
-    put_file "$LNMS_DIR/dist/librenms.cron" /etc/cron.d/librenms root:root 644 "add LibreNMS' cron jobs (/etc/cron.d/librenms)" || true
+    put_file "$FILES_DIR/librenms.cron" /etc/cron.d/librenms root:root 644 "add LibreNMS' cron jobs (/etc/cron.d/librenms)" || true
     local unit changed=0
     for unit in librenms-scheduler.service librenms-scheduler.timer; do
-        put_file "$LNMS_DIR/dist/$unit" "/etc/systemd/system/$unit" root:root 644 "add $unit" && changed=1
+        put_file "$FILES_DIR/$unit" "/etc/systemd/system/$unit" root:root 644 "add $unit" && changed=1
     done
     if [[ $changed == 1 && $CHECK == 0 ]]; then run systemctl daemon-reload; fi
     service_enable_start crond
@@ -613,8 +622,7 @@ lnms_account_log() {
 }
 
 lnms_logrotate() {
-    [[ -f $LNMS_DIR/misc/librenms.logrotate ]] || { would "add LibreNMS' logrotate configuration"; return 0; }
-    put_file "$LNMS_DIR/misc/librenms.logrotate" /etc/logrotate.d/librenms root:root 644 "add LibreNMS' logrotate configuration" || true
+    put_file "$FILES_DIR/librenms.logrotate" /etc/logrotate.d/librenms root:root 644 "add LibreNMS' logrotate configuration" || true
 }
 
 # The database tables (lnms migrate --seed, as the web installer does), and config.php. Laravel would load LibreNMS'
@@ -630,7 +638,7 @@ lnms_migrate() {
         detail "LibreNMS' database tables were created"
     fi
     if [[ ! -f $LNMS_DIR/config.php && -f $LNMS_DIR/config.php.default ]]; then
-        act "add $LNMS_DIR/config.php (from config.php.default, as the web installer does)" install -o librenms -g librenms -m 644 "$LNMS_DIR/config.php.default" "$LNMS_DIR/config.php"
+        act "add $LNMS_DIR/config.php (from config.php.default, as the web installer does)" as librenms install -m 644 "$LNMS_DIR/config.php.default" "$LNMS_DIR/config.php"
     fi
 }
 
@@ -654,7 +662,7 @@ librenms_ref_wanted_check() {
 # for a copy without Git.
 librenms_describe() {
     [[ -d $LNMS_DIR/.git ]] || return 0
-    git -c safe.directory="$LNMS_DIR" -C "$LNMS_DIR" describe --tags --always 2>/dev/null || true
+    as librenms git -C "$LNMS_DIR" describe --tags --always 2>/dev/null || true
 }
 
 # lnms_update_channel: LibreNMS' update channel (daily.sh): release, so that it stays on releases like the one the

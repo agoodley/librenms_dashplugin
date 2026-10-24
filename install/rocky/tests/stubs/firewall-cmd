@@ -1,10 +1,11 @@
 #!/bin/bash
 # shellcheck source-path=SCRIPTDIR
 # Stub: firewalld running with the default zone public; --add-service/--add-port are remembered (runtime and
-# permanent alike), --query-* answers from them.
+# permanent separately), --query-* answers from them.
 # shellcheck source=_stub.sh
 . "$(dirname "$0")/_stub.sh"
 f=$STUB_STATE/firewall
+[[ " $* " != *' --permanent '* ]] || f=$STUB_STATE/firewall-permanent
 touch "$f"
 case " $* " in
     *" --state "*) echo running; exit 0 ;;

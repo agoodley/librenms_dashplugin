@@ -1,0 +1,6 @@
+#!/bin/bash
+# The live LibreNMS tree belongs to librenms. Drop root before loading any of its code, including completion.
+if [[ $EUID == 0 ]]; then
+    exec /usr/sbin/runuser -u librenms -- /usr/bin/env HOME=/opt/librenms USER=librenms LOGNAME=librenms /opt/librenms/lnms "$@"
+fi
+exec /opt/librenms/lnms "$@"

@@ -13,6 +13,8 @@
 # nothing. The port is found in the running configuration by its name or its abbreviation (Fa0/1 is
 # FastEthernet0/1), and each description is diffed against an intended configuration (the running one with the
 # description set), so the dry run (--check --diff) shows a unified diff per port.
+# A successful apply saves the complete running configuration once per targeted host, including any unrelated
+# pending changes. Review that scope before approval. Check mode never saves; hosts without fix lines do nothing.
 - name: Port descriptions
   hosts: all
   gather_facts: false
@@ -83,3 +85,9 @@
       loop: "{{ lnms_set | default([]) }}"
       loop_control:
         label: "{{ item.found[0] }}"
+    - name: Persist the approved running configuration to startup
+      cisco.ios.ios_config:
+        save_when: modified
+      when:
+        - lnms_ports | length > 0
+        - not ansible_check_mode
