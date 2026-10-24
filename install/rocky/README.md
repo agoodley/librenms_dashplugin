@@ -226,10 +226,13 @@ the last lines of the command's output, what to do, and the log.
 
 `install/rocky/tests/` has what the installer was tested with, in containers with systemd as PID 1:
 
-* `Dockerfile`, `entrypoint.sh`: a Rocky Linux test system (`docker build --build-arg BASE=quay.io/rockylinux/rockylinux:10
-  -t inst-rocky10 install/rocky/tests`, `docker run -d --privileged --name inst-r10 -v $PWD:/src:ro inst-rocky10`). The
-  units that would touch the host when the container shares its network (firewalld, NetworkManager, networkd, resolved,
-  udev, sysctl, chrony, tuned, ...) are masked, and the entrypoint makes `/proc/sys` and `/sys` read-only.
+* `Dockerfile`, `entrypoint.sh`: a Rocky Linux test system (`docker build --build-arg
+  BASE=quay.io/rockylinux/rockylinux:10 -t inst-rocky10 install/rocky/tests`, `docker run -d --privileged --name
+  inst-r10 -v $PWD:/src:ro inst-rocky10`). Extra CA certificates (behind a TLS-intercepting proxy) go into
+  `install/rocky/tests/ca/` as `*.crt` or `*.pem`, which git ignores; without them the directory holds only its
+  `.gitignore`. The units that would touch the host when the container shares its network (firewalld, NetworkManager,
+  networkd, resolved, udev, sysctl, chrony, tuned, ...) are masked, and the entrypoint makes `/proc/sys` and `/sys`
+  read-only.
 * `verify.sh`: what a run should have made: LibreNMS on nginx, `./validate.php`, the admin's login and both plugins'
   pages, both plugins enabled, Semaphore UI's project, the Ansible plugin's connection test as its settings page runs it,
   the inventory endpoint, Oxidized and LibreNMS' Oxidized settings.

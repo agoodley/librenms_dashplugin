@@ -48,9 +48,7 @@ jobs:
         run: git checkout -B ci-installer
       - name: A Rocky Linux ${{ matrix.rocky }} test system with systemd
         run: |
-          mkdir -p /tmp/ctx/ca
-          cp install/rocky/tests/Dockerfile install/rocky/tests/entrypoint.sh /tmp/ctx/
-          docker build --build-arg BASE=quay.io/rockylinux/rockylinux:${{ matrix.rocky }} -t inst-rocky /tmp/ctx
+          docker build --build-arg BASE=quay.io/rockylinux/rockylinux:${{ matrix.rocky }} -t inst-rocky install/rocky/tests
           docker run -d --name inst --hostname inst.test --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
             -v "$PWD:/src:ro" inst-rocky
           for i in $(seq 1 60); do

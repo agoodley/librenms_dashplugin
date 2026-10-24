@@ -3,9 +3,11 @@
 ARG BASE=quay.io/rockylinux/rockylinux:9
 FROM ${BASE}
 ENV container=docker
-# Optional extra CA certificates (a TLS-intercepting proxy): put them in ca/ (an empty directory is fine).
-COPY ca/ /etc/pki/ca-trust/source/anchors/
-RUN update-ca-trust \
+# Optional extra CA certificates (a TLS-intercepting proxy): *.crt or *.pem files in ca/ (git ignores them there).
+COPY ca/ /tmp/extra-ca/
+RUN find /tmp/extra-ca -maxdepth 1 -type f \( -name '*.crt' -o -name '*.pem' \) -exec cp {} /etc/pki/ca-trust/source/anchors/ \; \
+ && rm -rf /tmp/extra-ca \
+ && update-ca-trust \
  && dnf -y install systemd systemd-sysv procps-ng iproute hostname which findutils tar gzip less cronie util-linux \
  && dnf clean all
 # A test container may share the host's network (docker run --network host): nothing in it may touch the host's
