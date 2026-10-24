@@ -198,11 +198,26 @@ put_file() {
         return 1
     fi
     would "$desc" && return 0
-    local tmp; tmp=$(mktemp "$(dirname "$dst")/.$(basename "$dst").XXXXXX")
-    cat "$src" >"$tmp"
-    chown "$owner" "$tmp"
-    chmod "$mode" "$tmp"
-    mv -f "$tmp" "$dst"
+    if [[ ${owner%%:*} != root ]]; then
+        # The destination's parent may belong to a compromised service account. Open, chmod and rename there
+        # only after dropping privileges; stdin lets it receive a root-readable source without exposing secrets.
+        as "${owner%%:*}" bash -euo pipefail -c '
+            dst=$1; mode=$2; group=$3
+            tmp=$(mktemp "$(dirname "$dst")/.$(basename "$dst").XXXXXX")
+            trap '\''rm -f "$tmp"'\'' EXIT
+            cat >"$tmp"
+            chgrp "$group" "$tmp"
+            chmod "$mode" "$tmp"
+            mv -fT -- "$tmp" "$dst"
+        ' bash "$dst" "$mode" "${owner##*:}" <"$src" || die "cannot write $dst as ${owner%%:*}" "check the destination's ownership and parent directories"
+        log "wrote $dst ($owner $mode) as ${owner%%:*}"
+        return 0
+    fi
+    local tmp; tmp=$(mktemp "$(dirname "$dst")/.$(basename "$dst").XXXXXX") || die "cannot stage $dst"
+    if ! { cat "$src" >"$tmp" && chown "$owner" "$tmp" && chmod "$mode" "$tmp" && mv -fT -- "$tmp" "$dst"; }; then
+        rm -f "$tmp"
+        die "cannot write $dst" "check the destination's ownership and parent directories"
+    fi
     log "wrote $dst ($owner $mode)"
     return 0
 }
@@ -421,21 +436,30 @@ firewall_open() {
         detail "firewalld does not run: no firewall rules to add for $*"
         return 0
     fi
-    local zone item args=()
+    local zone item state query args=() scope=()
     zone=$(firewall-cmd --get-default-zone)
-    for item in "$@"; do
-        if [[ $item == */* ]]; then
-            firewall-cmd --zone "$zone" --query-port "$item" >/dev/null 2>&1 || args+=(--add-port "$item")
-        else
-            firewall-cmd --zone "$zone" --query-service "$item" >/dev/null 2>&1 || args+=(--add-service "$item")
+    for state in runtime permanent; do
+        args=(); scope=()
+        [[ $state == permanent ]] && scope=(--permanent)
+        for item in "$@"; do
+            query=service
+            [[ $item == */* ]] && query=port
+            firewall-cmd "${scope[@]}" --zone "$zone" "--query-$query" "$item" >/dev/null 2>&1 || args+=("--add-$query" "$item")
+        done
+        if [[ ${#args[@]} == 0 ]]; then
+            detail "firewalld zone $zone allows $* already ($state)"
+            continue
         fi
+        act "allow ${args[*]} in firewalld (zone $zone, $state)" firewall-cmd "${scope[@]}" --zone "$zone" "${args[@]}"
     done
-    if [[ ${#args[@]} == 0 ]]; then
-        detail "firewalld zone $zone allows $* already"
-        return 0
-    fi
-    act "allow ${args[*]} in firewalld (zone $zone, now)" firewall-cmd --zone "$zone" "${args[@]}"
-    act "allow ${args[*]} in firewalld (zone $zone, permanently)" firewall-cmd --permanent --zone "$zone" "${args[@]}"
+}
+
+# local_service_url LISTEN PORT: a connectable URL on this host, including IPv6-only listeners.
+local_service_url() {
+    local addr=$1
+    case $addr in 0.0.0.0) addr=127.0.0.1 ;; ::) addr=::1 ;; esac
+    [[ $addr == *:* ]] && addr="[$addr]"
+    printf 'http://%s:%s' "$addr" "$2"
 }
 
 # download URL DEST [SHA256]: download over HTTPS (proxies from the environment), verified when a checksum is given.

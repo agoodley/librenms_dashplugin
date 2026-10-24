@@ -33,6 +33,22 @@ install/rocky/install.sh --check                      # what it would do; change
 INSTALLER_DEVICE_PASSWORD='the devices password' install/rocky/install.sh --device-user netops --server-name librenms.example.com
 ```
 
+Run the installer from a reviewed, root-owned checkout whose parent directories are not writable by service
+accounts. Do not run the copy under `/opt/librenms-plugins` as root. Privileged cron, scheduler, SNMP, logrotate,
+command-wrapper and completion files now come from the installer's bundled templates, based on LibreNMS 26.10.0,
+instead of the live service-owned `/opt/librenms` tree. Keep those templates reviewed when upgrading LibreNMS.
+
+Oxidized verifies device SSH host keys. Before expecting backups, supply `--oxidized-known-hosts /root/device-known-hosts`
+(or `INSTALLER_OXIDIZED_KNOWN_HOSTS`): an OpenSSH known_hosts file with keys verified against a trusted device console
+or another authenticated source. Include the device's connection hostname/IP (and `[host]:port` for nonstandard
+SSH ports). The file is installed as `/home/oxidized/.ssh/known_hosts`; omitting the option preserves an existing
+file. Unknown or changed keys fail closed. A network `ssh-keyscan` alone does not verify device identity.
+
+On upgrade, unchanged installer-managed Oxidized configurations gain `input.ssh.secure: true`. Manually edited
+configurations are preserved with a warning: explicitly set that option yourself and provision verified keys.
+Repair playbooks now save the entire running configuration to startup after all fixes on that host succeed.
+That includes unrelated pending changes: review that scope before approving an apply. Dry runs never save.
+
 On a server that has a LibreNMS already, name one of its admins: `install/rocky/install.sh --admin-user netadmin`. The
 Ansible plugin's run and approve permissions go to them, and Semaphore UI's admin takes their name and e-mail (with
 `--admin-password` as its password, else a generated one in the credentials file). Without `--admin-user` the
@@ -108,6 +124,7 @@ Every option has an environment variable for unattended runs; passwords are bett
 | `--offline DIR` | `INSTALLER_OFFLINE` | | all of these from one directory ([Offline mode](#offline-mode)) |
 | `--semaphore-listen ADDR`, `--semaphore-port PORT` | `INSTALLER_SEMAPHORE_LISTEN`, `INSTALLER_SEMAPHORE_PORT` | `127.0.0.1`, `3000` | another address than a loopback one also opens the port in firewalld |
 | `--oxidized-listen ADDR`, `--oxidized-port PORT` | `INSTALLER_OXIDIZED_LISTEN`, `INSTALLER_OXIDIZED_PORT` | `127.0.0.1`, `8888` | the same for Oxidized's REST API |
+| `--oxidized-known-hosts FILE` | `INSTALLER_OXIDIZED_KNOWN_HOSTS` | preserve existing file | verified device SSH host keys; unknown or changed keys are rejected |
 
 Options that cannot be used stop the run before it changes anything, with what is wrong (`install.sh: --skip:
 unknown part 'ansibel' (the parts: librenms plugins ansible semaphore oxidized)`). A port that another program holds
@@ -142,7 +159,7 @@ offer), so they also work behind a proxy that only passes HTTPS.
 module stream on Rocky 9; the packages of LibreNMS' documentation and nginx, `python3.12` on Rocky 9, Ruby and
 Oxidized's build packages, `mariadb-server` when the server has none; Semaphore UI's RPM. Outside dnf:
 `/opt/librenms`, `/opt/librenms-plugins`, `/opt/ansible` (pip), the gems in `/usr/local` (`/usr/local/bin/oxidized`),
-LibreNMS' missing Python modules with pip (`/usr/local/lib/python3*`), `/usr/local/bin/semaphore` (from a tarball or
+LibreNMS' missing Python modules with pip as librenms (`/opt/librenms/.local`), `/usr/local/bin/semaphore` (from a tarball or
 binary), `/usr/bin/distro`, `/usr/local/bin/composer` (only when an existing LibreNMS has no Composer).
 
 **Users:** `librenms` (home `/opt/librenms`), `semaphore` (`/var/lib/semaphore`), `oxidized` (`/home/oxidized`). In

@@ -9,7 +9,7 @@ diff -ruN a/fake_switches/cisco/command_processor/config.py b/fake_switches/cisc
 @@ -98,9 +98,57 @@
              else:
                  self.show_unknown_interface_error_message()
- 
+
 +    def do_spanning_tree(self, *args):
 +        # phase 4 test-lab patch: the bridge priority per VLAN (PVST+), as IOS takes it,
 +        # "spanning-tree vlan <list> priority <0-61440, a multiple of 4096>"; show running-config lists it
@@ -44,7 +44,7 @@ diff -ruN a/fake_switches/cisco/command_processor/config.py b/fake_switches/cisc
 +
      def do_exit(self):
          self.is_done = True
- 
+
 +    def do_end(self, *_):
 +        # test-lab patch: "end" leaves configuration mode
 +        self.is_done = True
@@ -65,7 +65,7 @@ diff -ruN a/fake_switches/cisco/command_processor/config.py b/fake_switches/cisc
          self.write_line("              ^")
          self.write_line("% Invalid input detected at '^' marker (not such interface)")
 @@ -111,3 +159,56 @@
- 
+
      def make_aggregated_port(self, interface_name):
          return self.switch_configuration.new("AggregatedPort", interface_name.capitalize())
 +
@@ -127,7 +127,7 @@ diff -ruN a/fake_switches/cisco/command_processor/config_interface.py b/fake_swi
 @@ -230,6 +230,11 @@
      def do_exit(self):
          self.is_done = True
- 
+
 +    def do_end(self, *_):
 +        # test-lab patch: "end" leaves every configuration level
 +        self.is_done = True
@@ -135,12 +135,12 @@ diff -ruN a/fake_switches/cisco/command_processor/config_interface.py b/fake_swi
 +
      def port_channel_exists(self, name):
          return self.switch_configuration.get_port_by_partial_name(name) is not None
- 
+
 diff -ruN a/fake_switches/cisco/command_processor/config_vlan.py b/fake_switches/cisco/command_processor/config_vlan.py
 --- a/fake_switches/cisco/command_processor/config_vlan.py
 +++ b/fake_switches/cisco/command_processor/config_vlan.py
 @@ -28,3 +28,8 @@
- 
+
      def do_exit(self):
          self.is_done = True
 +
@@ -152,7 +152,7 @@ diff -ruN a/fake_switches/cisco/command_processor/config_vrf.py b/fake_switches/
 --- a/fake_switches/cisco/command_processor/config_vrf.py
 +++ b/fake_switches/cisco/command_processor/config_vrf.py
 @@ -25,3 +25,8 @@
- 
+
      def do_exit(self):
          self.is_done = True
 +
@@ -166,7 +166,7 @@ diff -ruN a/fake_switches/cisco/command_processor/default.py b/fake_switches/cis
 @@ -29,6 +29,17 @@
              self.is_done = True
          return processed
- 
+
 +    def do_show(self, *args):
 +        # test-lab patch: cisco.ios checks the privilege level with "show privilege"
 +        if args and "privilege".startswith(args[0]):
@@ -182,7 +182,7 @@ diff -ruN a/fake_switches/cisco/command_processor/default.py b/fake_switches/cis
          self.write("Password: ")
          self.replace_input = ''
 @@ -36,7 +47,7 @@
- 
+
      def continue_enabling(self, line):
          self.replace_input = False
 -        if line == "" or line in self.switch_configuration.privileged_passwords:
@@ -197,29 +197,73 @@ diff -ruN a/fake_switches/cisco/command_processor/enabled.py b/fake_switches/cis
  from fake_switches.command_processing.base_command_processor import BaseCommandProcessor
  from fake_switches.command_processing.switch_tftp_parser import SwitchTftpParser
  from fake_switches.switch_configuration import VlanPort, AggregatedPort
-+from fake_switches.cisco.command_processor.config import stp_priority_lines  # phase 4 test-lab patch
- 
++from fake_switches.cisco.command_processor.config import stp_priority_lines  # test-lab patch
+
  
  class EnabledCommandProcessor(BaseCommandProcessor):
-@@ -38,6 +39,10 @@
+@@ -38,6 +39,15 @@
          self.move_to(self.config_processor)
- 
+
      def do_show(self, *args):
-+        # test-lab patch: cisco.ios checks the privilege level with "show privilege"
++        # Test fixture: privilege checks and startup configuration used by ios_config.
 +        if args and "privilege".startswith(args[0]):
 +            self.write_line("Current privilege level is 15")
++            return
++        if args and "startup-config".startswith(args[0]):
++            saved = getattr(self.switch_configuration, 'lab_startup_config', self.running_config())
++            for line in saved:
++                self.write_line(line)
 +            return
          if "running-config".startswith(args[0]):
              if len(args) < 2:
                  self.show_run()
-@@ -206,6 +211,10 @@
+@@ -172,6 +182,9 @@
+             self.show_version()
+
+     def do_copy(self, source_url, destination_url):
++        if source_url == 'running-config' and destination_url == 'startup-config':
++            self.do_write()
++            return
+         dest_protocol, dest_file = destination_url.split(":")
+         self.write("Destination filename [%s]? " % strip_leading_slash(dest_file))
+         self.continue_to(partial(self.continue_validate_copy, source_url))
+@@ -191,14 +204,14 @@
+
+     def do_write(self, *args):
+         self.write_line("Building configuration...")
++        self.switch_configuration.lab_startup_config = self.running_config()
+         self.switch_configuration.commit()
+         self.write_line("OK")
+
+     def do_exit(self):
+         self.is_done = True
+
+-    def show_run(self):
+-
++    def running_config(self):
+         all_data = [
+             "version 12.1",
+             "!",
+@@ -206,6 +219,9 @@
              "!",
              "!",
          ]
-+        # phase 4 test-lab patch: the spanning tree priorities set per VLAN
 +        stp_lines = stp_priority_lines(self.switch_configuration)
 +        if stp_lines:
 +            all_data = all_data + stp_lines + ["!"]
          for vlan in self.switch_configuration.vlans:
              all_data = all_data + build_running_vlan(vlan) + ["!"]
          for interface in self.switch_configuration.get_physical_ports() + self.switch_configuration.get_vlan_ports():
+@@ -216,6 +232,12 @@
+             all_data.append("!")
+
+         all_data += ["end", ""]
++        return all_data
++
++    def show_run(self):
++        all_data = self.running_config()
++        if not hasattr(self.switch_configuration, 'lab_startup_config'):
++            self.switch_configuration.lab_startup_config = list(all_data)
+
+         self.write_line("Building configuration...")
+         self.write_line("")

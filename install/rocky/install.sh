@@ -103,6 +103,8 @@ Semaphore UI and Oxidized
   --semaphore-port PORT    (default: 3000)                                          (INSTALLER_SEMAPHORE_PORT)
   --oxidized-listen ADDR   (default: 127.0.0.1)                                    (INSTALLER_OXIDIZED_LISTEN)
   --oxidized-port PORT     (default: 8888)                                           (INSTALLER_OXIDIZED_PORT)
+  --oxidized-known-hosts FILE  verified device SSH host keys (OpenSSH known_hosts format)
+                                                                                 (INSTALLER_OXIDIZED_KNOWN_HOSTS)
 
 Passwords are better given in the environment than as options (options show in ps and the shell's history).
 Generated passwords and tokens go to /root/librenms-installer-credentials (root only); every command is logged
@@ -146,6 +148,7 @@ SEMAPHORE_LISTEN=${INSTALLER_SEMAPHORE_LISTEN:-127.0.0.1}
 SEMAPHORE_PORT=${INSTALLER_SEMAPHORE_PORT:-3000}
 OXIDIZED_LISTEN=${INSTALLER_OXIDIZED_LISTEN:-127.0.0.1}
 OXIDIZED_PORT=${INSTALLER_OXIDIZED_PORT:-8888}
+OXIDIZED_KNOWN_HOSTS=${INSTALLER_OXIDIZED_KNOWN_HOSTS:-}
 GITHUB_TOKEN_VALUE=${GITHUB_TOKEN:-}
 [[ ${INSTALLER_CHECK:-0} == 1 ]] && CHECK=1
 # secrets stay in this shell, not in the environment of every command the installer runs
@@ -153,7 +156,7 @@ unset INSTALLER_ADMIN_PASSWORD INSTALLER_DEVICE_PASSWORD INSTALLER_DEVICE_ENABLE
 
 VALUE_OPTIONS=(--skip --only --admin-user --admin-password --admin-email --server-name --timezone --php-stream --librenms-url
     --device-user --device-password --device-enable-password --plugin-source --plugin-branch --librenms-source --librenms-ref --semaphore-source
-    --composer-source --pip-wheels --gems --distro-source --offline --semaphore-listen --semaphore-port --oxidized-listen --oxidized-port)
+    --composer-source --pip-wheels --gems --distro-source --offline --semaphore-listen --semaphore-port --oxidized-listen --oxidized-port --oxidized-known-hosts)
 
 parse_options() {
     local opt value
@@ -197,6 +200,7 @@ parse_options() {
             --semaphore-port) SEMAPHORE_PORT=$value ;;
             --oxidized-listen) OXIDIZED_LISTEN=$value ;;
             --oxidized-port) OXIDIZED_PORT=$value ;;
+            --oxidized-known-hosts) OXIDIZED_KNOWN_HOSTS=$value ;;
             *) bad_option "unknown option: $opt" ;;
         esac
         shift 2
@@ -271,7 +275,7 @@ check_options() {
         offline_defaults
     fi
     local f
-    for f in "$SEMAPHORE_SOURCE" "$COMPOSER_SOURCE" "$DISTRO_SOURCE"; do
+    for f in "$SEMAPHORE_SOURCE" "$COMPOSER_SOURCE" "$DISTRO_SOURCE" "$OXIDIZED_KNOWN_HOSTS"; do
         if [[ -n $f && ! -f $f ]]; then bad_option "$f: no such file"; fi
     done
     for f in "$PIP_WHEELS" "$GEMS_DIR"; do
@@ -371,6 +375,7 @@ start_run() {
     chmod 755 "$WORK"
     cp -r "$INSTALLER_DIR/lib" "$INSTALLER_DIR/files" "$WORK/"
     chmod -R a+rX "$WORK"
+    FILES_DIR=$WORK/files
     trap on_exit EXIT
     trap 'on_signal INT' INT
     trap 'on_signal TERM' TERM

@@ -350,6 +350,10 @@ that could change Semaphore. Step by step (the names are suggestions):
     the [fix templates' contract](#the-fix-templates-contract) names, of type *Text*, required: `port_descriptions`,
     `stp_priorities`. `diff_against: intended` in the description playbook shows each port's diff in the dry run; give
     the priority template `-v` to see the commands. Enter their ids in the plugin's settings (*Verification and fixes*).
+    A successful apply saves the complete running configuration to startup once per targeted host when they differ,
+    after all of that host's fixes succeed. This also persists unrelated pending configuration: review and approve
+    that scope before applying. Dry runs and hosts without matching fix lines never save. Existing hand-edited
+    copies of the playbooks must adopt this persistence policy explicitly.
 
 Then, in the plugin's settings: the runner URL, the token and the project id, **Save connection**, and **Test
 connection**: it shows the Semaphore version, the token's role, the project's inventories with their ids (the one that

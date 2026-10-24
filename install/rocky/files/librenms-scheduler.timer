@@ -1,0 +1,10 @@
+# Based on LibreNMS 26.10.0 (dist/librenms-scheduler.timer); kept with the trusted installer.
+[Unit]
+Description=LibreNMS Scheduler
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=1second
+
+[Install]
+WantedBy=timers.target

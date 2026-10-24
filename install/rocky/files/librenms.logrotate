@@ -1,0 +1,12 @@
+# Based on LibreNMS 26.10.0 (misc/librenms.logrotate); kept with the trusted installer.
+# /etc/logrotate.d/librenms
+/opt/librenms/logs/*log {
+    su librenms librenms
+    weekly
+    rotate 6
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 664 librenms librenms
+}

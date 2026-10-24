@@ -9,6 +9,10 @@ installer (`install/rocky/install.sh` of the plugins' repository) made it and ke
 * `fix_port_descriptions.yml`, `fix_stp_root_priority.yml`: the example fix playbooks (`ansible/contrib/playbooks/`,
   Cisco IOS) of the templates "Fix port descriptions" and "Fix spanning tree root priority". Review and adapt them.
 
+Both fix playbooks save the complete running configuration to startup after successful fixes on each targeted
+host, when the two configurations differ. This includes unrelated pending changes; review that scope before
+approving an apply. Check mode never saves, and a host without matching fix lines changes nothing.
+
 Only reviewed playbooks belong here: whoever holds the plugin's runner token can run any playbook of this repository
 on the inventory's devices (the plugin's README, Safety). Add your own playbooks with a commit, and a template for
 each in Semaphore UI (the plugin's README, Semaphore UI setup, step 9). A file you change is yours: the installer then

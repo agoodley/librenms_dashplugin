@@ -20,7 +20,10 @@ part_plugins() {
         summary_add "both plugins: would be installed"
         return 0
     fi
-    if [[ ! -d $PLUGINS_DIR ]]; then act "make $PLUGINS_DIR (owned by librenms)" install -d -o librenms -g librenms -m 755 "$PLUGINS_DIR"; fi
+    [[ ! -L $PLUGINS_DIR ]] || die "$PLUGINS_DIR is a symlink" "replace it with a root-owned directory before installing plugins"
+    if [[ ! -d $PLUGINS_DIR || $(stat -c '%U:%G %a' "$PLUGINS_DIR") != 'root:root 755' ]]; then
+        act "secure $PLUGINS_DIR (root-owned parent; the checkout belongs to librenms)" install -d -o root -g root -m 755 "$PLUGINS_DIR"
+    fi
     plugins_clone
     plugins_composer_repos
     plugins_add
@@ -30,8 +33,10 @@ part_plugins() {
     summary_add "topology + Ansible plugins from ${PLUGIN_SOURCE##*/} ($PLUGIN_BRANCH_USED${PLUGIN_COMMIT:+, $PLUGIN_COMMIT})$( [[ $PLUGIN_UPDATED == 1 ]] && echo ', installed/updated' ), enabled"
 }
 
-# clone_git ARGS...: git in the clone, as root, for what only reads (the clone belongs to librenms).
-clone_git() { git -c safe.directory="$PLUGIN_CLONE" -C "$PLUGIN_CLONE" "$@"; }
+# Even read-only Git operations can run hooks/helpers configured in a checkout. Never run them as root in a
+# service-owned repository. Local sources may have another owner; that trust exception stays unprivileged too.
+clone_git() { as librenms git -C "$PLUGIN_CLONE" "$@"; }
+source_git() { as librenms git -c safe.directory="$PLUGIN_SOURCE" -C "$PLUGIN_SOURCE" "$@"; }
 
 # git_auth CMD...: CMD with the GitHub token (GITHUB_TOKEN) as an HTTP header for github.com, given to git in its
 # environment (GIT_CONFIG_*), never on its command line or in the clone's configuration.
@@ -47,7 +52,7 @@ git_auth() {
 # plugin_source_kind: url, git (a local Git checkout) or dir (a plain directory).
 plugin_source_kind() {
     if [[ $PLUGIN_SOURCE == *://* || $PLUGIN_SOURCE == *@*:* ]]; then echo url
-    elif git -C "$PLUGIN_SOURCE" rev-parse --git-dir >/dev/null 2>&1 || [[ -e $PLUGIN_SOURCE/.git ]]; then echo git
+    elif [[ -e $PLUGIN_SOURCE/.git ]] || source_git rev-parse --git-dir >/dev/null 2>&1; then echo git
     else echo dir; fi
 }
 
@@ -56,7 +61,7 @@ plugins_clone() {
     local branch=$PLUGIN_BRANCH
     if [[ -z $branch ]]; then
         if [[ $kind == git ]]; then
-            branch=$(git -c safe.directory='*' -C "$PLUGIN_SOURCE" symbolic-ref --short HEAD 2>/dev/null || echo main)
+            branch=$(source_git symbolic-ref --short HEAD 2>/dev/null || echo main)
         else
             branch=main
         fi
@@ -69,6 +74,7 @@ plugins_clone() {
         would "clone $PLUGIN_SOURCE ($branch) into $PLUGIN_CLONE" && return 0
         local partial=$PLUGINS_DIR/.librenms_dashplugin.partial
         rm -rf "$partial"
+        install -d -o librenms -g librenms -m 755 "$partial"
         FAIL_HINT="check that this server reaches $PLUGIN_SOURCE (a private repository needs GITHUB_TOKEN), or give a local copy (--plugin-source DIR)" \
             run git_auth as librenms git -c safe.directory="$src" -c safe.directory="$src/.git" clone --branch "$branch" "$src" "$partial"
         # a copy of a plain directory (an earlier --plugin-source DIR) makes way for the clone
@@ -86,7 +92,7 @@ plugins_clone() {
         before=$(clone_git rev-parse HEAD)
         if [[ $CHECK == 1 ]]; then
             local remote
-            remote=$(git_auth git -c safe.directory="$src" -c safe.directory="$src/.git" ls-remote "$src" "refs/heads/$branch" 2>>"$LOG_FILE" | cut -f1 || true)
+            remote=$(git_auth as librenms git -c safe.directory="$src" -c safe.directory="$src/.git" ls-remote "$src" "refs/heads/$branch" 2>>"$LOG_FILE" | cut -f1 || true)
             if [[ -z $remote ]]; then
                 info "$src has no branch $branch (a run stops there)"
             elif [[ $remote != "$before" ]]; then
@@ -129,10 +135,9 @@ plugins_copy() {
     elif ! would "copy $PLUGIN_SOURCE into $PLUGIN_CLONE"; then
         local partial=$PLUGINS_DIR/.librenms_dashplugin.partial
         rm -rf "$partial"
-        mkdir -p "$partial"
+        install -d -o librenms -g librenms -m 755 "$partial"
         run in_dir "$PLUGIN_SOURCE" tar -cf "$WORK/plugins.tar" --exclude=./.git .
-        run tar -xf "$WORK/plugins.tar" -C "$partial"
-        chown -R librenms:librenms "$partial"
+        run as librenms tar -xf "$WORK/plugins.tar" -C "$partial"
         rm -rf "$PLUGIN_CLONE.old"
         [[ -d $PLUGIN_CLONE ]] && mv "$PLUGIN_CLONE" "$PLUGIN_CLONE.old"
         run mv "$partial" "$PLUGIN_CLONE"
