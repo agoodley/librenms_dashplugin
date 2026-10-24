@@ -216,10 +216,11 @@ the last lines of the command's output, what to do, and the log.
 4. **Semaphore UI** listens on the server only: `ssh -L 3000:127.0.0.1:3000 root@<server>`, then `http://localhost:3000`
    (the admin's login).
 5. **The first change:** *Overview > Plugins > Ansible > Changes > New change* (or *Fixes*). Review the example fix
-   playbooks first (Cisco IOS); add your own to the playbook repository (`git clone /var/lib/semaphore/playbooks.git`)
-   with a template each, as the Ansible plugin's README describes. Its defaults ask for an approval (the admin holds the
-   approve permission: grant it to others in the plugin's settings), refuse a batch without a fresh Oxidized backup, and
-   verify each batch with the topology plugin (which waits for LibreNMS' discovery and polling of the devices).
+   playbooks first (Cisco IOS); add your own to the playbook repository (as the semaphore user, who owns it: `sudo -u
+   semaphore git clone /var/lib/semaphore/playbooks.git /tmp/playbooks`, then commit and push as semaphore) with a
+   template each, as the Ansible plugin's README describes. Its defaults ask for an approval (the admin holds the
+   approve permission: grant it to others in the plugin's settings), refuse a batch without a fresh Oxidized backup,
+   and verify each batch with the topology plugin (which waits for LibreNMS' discovery and polling of the devices).
 
 ## Testing it
 

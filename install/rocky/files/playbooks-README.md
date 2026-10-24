@@ -14,4 +14,6 @@ on the inventory's devices (the plugin's README, Safety). Add your own playbooks
 each in Semaphore UI (the plugin's README, Semaphore UI setup, step 9). A file you change is yours: the installer then
 leaves it as it is and says so.
 
-Clone it on the server with: `git clone /var/lib/semaphore/playbooks.git` (as the semaphore user, or root).
+Clone it on the server as the semaphore user, who owns it (git refuses a repository of another user, root too:
+"dubious ownership"): `sudo -u semaphore git clone /var/lib/semaphore/playbooks.git /tmp/playbooks`; commit and push
+there as the semaphore user too (`sudo -u semaphore git -C /tmp/playbooks push`).
