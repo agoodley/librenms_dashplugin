@@ -125,7 +125,8 @@ sem_user() {
 # sem_database: Semaphore UI's own database and user in MariaDB (installed and started when the server has none).
 sem_database() {
     if ! rpm -q mariadb-server >/dev/null 2>&1; then
-        dnf_install "MariaDB (for Semaphore UI's database)" mariadb-server
+        # (--check: a LibreNMS this run installs brings MariaDB)
+        [[ $CHECK == 1 && $LNMS_MODE == new && ${WANT[librenms]} == 1 ]] || dnf_install "MariaDB (for Semaphore UI's database)" mariadb-server
     fi
     port_check 3306 MariaDB "free it (another database server?)" mariadbd mysqld
     service_enable_start mariadb
