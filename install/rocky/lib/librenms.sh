@@ -213,6 +213,8 @@ lnms_packages() {
         php-curl php-gd php-gmp php-json php-mbstring php-process php-snmp php-xml php-zip php-mysqlnd policycoreutils-python-utils
         python3 python3-devel python3-PyMySQL python3-redis python3-pip python3-systemd rrdtool unzip nginx)
     if [[ $OS_MAJOR == 9 ]]; then pkgs+=(python3-memcached); else pkgs+=(python3-setuptools); fi
+    # a MariaDB the installer installs listens on this server only (mariadb_conf); one the server had keeps its settings
+    if ! rpm -q mariadb-server >/dev/null 2>&1; then state_set mariadb_ours yes; fi
     dnf_install "LibreNMS' packages (PHP $PHP_STREAM, PHP-FPM, nginx, MariaDB, net-snmp, fping, rrdtool, Python)" "${pkgs[@]}"
 }
 
@@ -334,16 +336,44 @@ date.timezone = $TIMEZONE
 }
 
 lnms_mariadb() {
-    if put_text "# LibreNMS (install/rocky/install.sh): the settings LibreNMS' documentation asks for
-[mariadb]
-innodb_file_per_table=1
-lower_case_table_names=0
-" /etc/my.cnf.d/90-librenms.cnf root:root 644 "set MariaDB's LibreNMS settings in /etc/my.cnf.d/90-librenms.cnf"; then
-        state_set mariadb_restart 1
-    fi
+    mariadb_conf
     port_check 3306 MariaDB "free it (another database server?)" mariadbd mysqld
     restart_if_pending mariadb_restart mariadb
     service_enable_start mariadb
+}
+
+# mariadb_conf: /etc/my.cnf.d/90-librenms.cnf: the settings LibreNMS' documentation asks for (for a LibreNMS the
+# installer installs) and, for a MariaDB the installer installed (the state says so), bind-address=127.0.0.1:
+# LibreNMS and Semaphore UI reach it on this server. A MariaDB the server had keeps listening as it did.
+mariadb_conf() {
+    local ours; ours=$(state_get mariadb_ours || true)
+    if [[ $CHECK == 1 ]] && ! rpm -q mariadb-server >/dev/null 2>&1; then ours=yes; fi
+    local text desc
+    if [[ $LNMS_MODE != existing ]]; then
+        text="# LibreNMS (install/rocky/install.sh): the settings LibreNMS' documentation asks for
+[mariadb]
+innodb_file_per_table=1
+lower_case_table_names=0
+"
+        desc="LibreNMS' settings"
+        if [[ $ours == yes ]]; then
+            text+="# MariaDB came with the installer: it listens on this server only (LibreNMS and Semaphore UI are here)
+bind-address=127.0.0.1
+"
+            desc+=" and 127.0.0.1 as its only address"
+        fi
+    elif [[ $ours == yes ]]; then
+        text="# install/rocky/install.sh: MariaDB came with the installer (for Semaphore UI): it listens on this server only
+[mariadb]
+bind-address=127.0.0.1
+"
+        desc="127.0.0.1 as its only address"
+    else
+        return 0
+    fi
+    if put_text "$text" /etc/my.cnf.d/90-librenms.cnf root:root 644 "set MariaDB's $desc in /etc/my.cnf.d/90-librenms.cnf"; then
+        state_set mariadb_restart 1
+    fi
 }
 
 # mysql_root SQL: run SQL as MariaDB's root (unix socket, or /root/.my.cnf); the SQL is not logged (passwords).

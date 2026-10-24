@@ -152,20 +152,23 @@ with an API token each. In Semaphore UI: the admin and the Task Runner user `lib
 **Services:** `mariadb`, `php-fpm`, `nginx`, `snmpd`, `crond`, `librenms-scheduler.timer` (for a LibreNMS it installs),
 `semaphore`, `oxidized`, all enabled.
 
-**Ports:** 80 (nginx: LibreNMS) and 161/udp (snmpd, community in the credentials file) on every address; 3306
-(MariaDB), 3000 (Semaphore UI) and 8888 (Oxidized) on 127.0.0.1 only, unless `--semaphore-listen` or
-`--oxidized-listen` say otherwise.
+**Ports:** 80 (nginx: LibreNMS) and 161/udp (snmpd, community in the credentials file) on every address; 3000
+(Semaphore UI) and 8888 (Oxidized) on 127.0.0.1 only, unless `--semaphore-listen` or `--oxidized-listen` say
+otherwise; 3306 (MariaDB) on 127.0.0.1 only when the installer installed MariaDB (`bind-address` in
+`/etc/my.cnf.d/90-librenms.cnf`), while a MariaDB the server had keeps listening where it did (Rocky's MariaDB listens
+on every address).
 
 **Files:** `/opt/librenms/.env` made readable by `librenms` only (mode 640: it holds the database password and
-`APP_KEY`), `/etc/php.d/90-librenms.ini` (PHP's time zone), `/etc/my.cnf.d/90-librenms.cnf` (MariaDB's settings),
-`/etc/php-fpm.d/librenms.conf`, `/etc/nginx/conf.d/librenms.conf`, `/etc/nginx/nginx.conf` without its default server
-(as LibreNMS' documentation says; the original is kept as `/etc/nginx/nginx.conf.librenms-installer`),
-`/etc/snmp/snmpd.conf` (while it is the package's), `/etc/cron.d/librenms`, `/etc/logrotate.d/librenms`,
+`APP_KEY`), `/etc/php.d/90-librenms.ini` (PHP's time zone), `/etc/my.cnf.d/90-librenms.cnf` (MariaDB's settings for
+LibreNMS, and `bind-address=127.0.0.1` for a MariaDB the installer installed), `/etc/php-fpm.d/librenms.conf`,
+`/etc/nginx/conf.d/librenms.conf`, `/etc/nginx/nginx.conf` without its default server (as LibreNMS' documentation
+says; the original is kept as `/etc/nginx/nginx.conf.librenms-installer`), `/etc/snmp/snmpd.conf` (while it is the
+package's), `/etc/cron.d/librenms`, `/etc/logrotate.d/librenms`,
 `/etc/systemd/system/librenms-scheduler.{service,timer}`, `semaphore.service` and `oxidized.service`,
 `/etc/semaphore/config.json`, `~oxidized/.config/oxidized/config`, `/usr/bin/lnms`, the bash completion of lnms; the
 librenms user's global Composer configuration (`/opt/librenms/.config/composer/config.json`: the two path
-repositories); the installer's own `/var/lib/librenms-installer/` (what earlier runs did), `/var/log/librenms-installer/`
-and `/root/librenms-installer-credentials`.
+repositories); the installer's own `/var/lib/librenms-installer/` (what earlier runs did),
+`/var/log/librenms-installer/` and `/root/librenms-installer-credentials`.
 
 **SELinux** (when it is enforcing or permissive), as LibreNMS' documentation sets it: the file contexts of
 `/opt/librenms` (`html`, `rrd`, `storage`, `logs`, `cache`, `librenms-service.py`) with `restorecon`, `.env`'s context,

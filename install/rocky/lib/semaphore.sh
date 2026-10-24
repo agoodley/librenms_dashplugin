@@ -139,9 +139,15 @@ sem_user() {
 sem_database() {
     if ! rpm -q mariadb-server >/dev/null 2>&1; then
         # (--check: a LibreNMS this run installs brings MariaDB)
-        [[ $CHECK == 1 && $LNMS_MODE == new && ${WANT[librenms]} == 1 ]] || dnf_install "MariaDB (for Semaphore UI's database)" mariadb-server
+        if [[ ! ( $CHECK == 1 && $LNMS_MODE == new && ${WANT[librenms]} == 1 ) ]]; then
+            state_set mariadb_ours yes
+            dnf_install "MariaDB (for Semaphore UI's database)" mariadb-server
+        fi
     fi
+    # a MariaDB the installer installed listens on this server only (the LibreNMS part writes it for a LibreNMS it installs)
+    if [[ $(state_get mariadb_ours || true) == yes ]]; then mariadb_conf; fi
     port_check 3306 MariaDB "free it (another database server?)" mariadbd mysqld
+    restart_if_pending mariadb_restart mariadb
     service_enable_start mariadb
     [[ $CHECK == 1 ]] && ! command -v mysql >/dev/null && { would "create the database semaphore and its user"; return 0; }
     local password; password=$(sem_config_value mysql.pass)
