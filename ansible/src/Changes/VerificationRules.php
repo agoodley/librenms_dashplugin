@@ -303,9 +303,10 @@ final class VerificationRules
      * read, each with the topology plugin's error (one line, never SQL) and the state it failed in; a check that ran in one
      * of the states only; the check that found a fix's findings that did not run; the devices the state before covered
      * that the state after no longer does (LibreNMS no longer has them as the admin who started the batch sees the
-     * network); then the ways out (fix it, switch the check off in the topology plugin's settings, enable the devices
-     * again, or only record such a batch). The same for the eventlog without the errors and the names (they may name
-     * devices). Null when nothing keeps the comparison from being a verification.
+     * network); then the ways out that work for the batch, which is then verified when it is checked again (fix it, switch
+     * the check off in the topology plugin's settings, enable the devices again); an admin who may accept it going on
+     * without its verification is said by the decision (VerificationText::unknown()). The same for the eventlog without
+     * the errors and the names (they may name devices). Null when nothing keeps the comparison from being a verification.
      *
      * @param  array{facts?: string[], checks?: string[], errors?: array{facts?: array<string, array{before?: string, after?: string}>,
      *     checks?: array<string, array{before?: string, after?: string}>}, devices?: int[]}  $skipped  the verification API's skipped
@@ -374,10 +375,9 @@ final class VerificationRules
         if ($lost) {
             $ways[] = 'enable ' . (count($lost) === 1 ? 'the device' : 'the devices') . ' in LibreNMS again (or let that admin see ' . (count($lost) === 1 ? 'it' : 'them') . ')';
         }
-        $ways[] = 'set When a batch cannot be verified to only record it';
 
         return ['why' => implode('; ', $why) . ($unexpected > 0 ? '; ' . Format::count($unexpected, 'unexpected change') . ' in what was compared (listed with the batch)'
-            : '; nothing else that was compared changed') . '. To go on: ' . self::join($ways, 'or'), 'event' => $eventText];
+            : '; nothing else that was compared changed') . ($ways ? '. To have it verified: ' . self::join($ways, 'or') : ''), 'event' => $eventText];
     }
 
     /**

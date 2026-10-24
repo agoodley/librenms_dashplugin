@@ -81,9 +81,12 @@
             . '5 minutes and the poller polls it within the next 5: a batch starts 5 to 10 minutes after its request): at least 10'],
         ['verify_unexpected', 'When a batch makes unexpected changes', 'a link gone, a cable moved, a root bridge moved, a port that started blocking, an OSPF adjacency or BGP '
             . 'session lost, a device down, a new or worse finding: pause until an admin accepts them (as a new blast radius is accepted), stop the change, or only record '
-            . 'them. The last batch never pauses: the change ends, not verified'],
+            . 'them. The last batch never pauses: the change ends, not verified. A change of it applies to the batches verified after it: one paused already waits for '
+            . 'an admin to accept what it changed'],
         ['verify_unknown', 'When a batch cannot be verified', 'no fresh data within the wait, the topology plugin disabled since the Apply, a state that cannot be taken: pause until an admin '
-            . 'accepts going on without the verification (checked again every minute meanwhile), stop the change, or only record it'],
+            . 'accepts going on without the verification (checked again every minute meanwhile), stop the change, or only record it. A change of it applies to the batches '
+            . 'checked after it: one paused already goes on by itself once its cause is fixed (it is then verified), or when an admin who may accept it goes on without '
+            . 'its verification'],
         ['verify_minimum', 'Count findings from', 'the lowest severity of the topology plugin\'s findings that counts as an unexpected change when new or worse; lower ones are '
             . 'listed, never pause'],
     ];

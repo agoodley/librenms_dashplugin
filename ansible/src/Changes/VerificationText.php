@@ -112,10 +112,16 @@ final class VerificationText
     }
 
     /**
-     * A batch that cannot be verified, and what the change does about it, for the timeline.
+     * A batch that cannot be verified, and what the change does about it, for the timeline: paused, the ways it goes on (it
+     * is verified when it is checked again, $recheck: "every minute"; or an admin accepts going on without it).
      */
-    public static function unknown(int $batch, string $why, string $decision, string $accepter): string
+    public static function unknown(int $batch, string $why, string $decision, string $accepter, ?string $recheck = null): string
     {
+        if ($decision === 'pause' && $recheck !== null) {
+            return "Batch $batch cannot be verified: $why. The change waits until batch $batch is verified (it is checked again $recheck; the change then goes on by "
+                . "itself) or $accepter accepts going on without its verification: batch " . ($batch + 1) . ' does not start before (setting When a batch cannot be verified: pause)';
+        }
+
         return "Batch $batch cannot be verified: $why. " . self::then($batch, $decision, $accepter, 'going on without its verification', 'When a batch cannot be verified');
     }
 

@@ -444,8 +444,8 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | Verify changes | on | each batch is verified with the topology plugin: the state of the network around it taken before it and again after it on fresh data, compared ([Verification](#verification)); off, a change applied then runs as in phase 3, *not verified (switched off)*. Decided at *Apply*: a change applied without the topology plugin's verification API runs the same way, not verified with why |
 | Fresh data | ask LibreNMS for a discovery | before a batch and after it, LibreNMS is asked to discover its scope again (as its *Rediscover* button does, or a discovery job each with LibreNMS' scheduler); or *wait for LibreNMS' own discovery and polling* |
 | Wait for fresh data | 30 min | after a batch and its settle time, the longest the plugin waits for a discovery and a poll of its scope that started after it: then the batch cannot be verified; before the first batch, the longest it waits for the refresh it asked: then the state is taken anyway, older than the Apply. It must exceed LibreNMS' polling and discovery intervals (with *ask*, the discovery cron's 5 minutes and the poller's 5): 10–1440 |
-| When a batch makes unexpected changes | pause until an admin accepts them | an uplink lost, a cable moved, a root bridge moved, a port that started blocking, an OSPF adjacency or BGP session lost, a device down, a new or worse finding: the next batch waits for an admin to accept them (as a new blast radius is accepted); or *stop the change*, or *only record them*. The last batch never pauses |
-| When a batch cannot be verified | pause until an admin accepts it | no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be taken within the wait (tried again every minute): the next batch waits for an admin to accept going on without the verification (checked again every minute meanwhile); or *stop the change*, or *only record it* |
+| When a batch makes unexpected changes | pause until an admin accepts them | an uplink lost, a cable moved, a root bridge moved, a port that started blocking, an OSPF adjacency or BGP session lost, a device down, a new or worse finding: the next batch waits for an admin to accept them (as a new blast radius is accepted); or *stop the change*, or *only record them*. The last batch never pauses. A change of the setting applies to the batches verified after it: one paused already waits for an admin to accept what it changed |
+| When a batch cannot be verified | pause until an admin accepts it | no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be taken within the wait (tried again every minute): the next batch waits for an admin to accept going on without the verification (checked again every minute meanwhile); or *stop the change*, or *only record it*. A change of the setting applies to the batches checked after it: one paused already goes on by itself once its cause is fixed (it is then verified), or when an admin who may accept it goes on without its verification |
 | Count findings from | warning | the lowest severity of a new or worse finding of the topology plugin that counts as unexpected (*critical*, *warning*, *info*); lower ones are listed, never pause |
 | Template for port description fixes | none | the id of the template the Fixes page uses for port descriptions; it must have the survey variable `port_descriptions` of type *Text* (checked with the runner when it is saved, and at each new change) |
 | Template for root priority fixes | none | the same for the spanning tree root priority, with the survey variable `stp_priorities` |
@@ -1048,7 +1048,9 @@ topology plugin's error) is tried again every minute until the wait for fresh da
 setting, before the batch counts as one that cannot be verified: the batch before its launch waits meanwhile, with its
 window open; the timeline says so once. While it pauses, the plugin checks every minute whether the data became fresh
 (when the state before the batch was taken), or takes a new state after it every 5 minutes (when one could not be read
-in full), and verifies the batch then. *Continue* starts neither.
+in full), and verifies the batch then. *Continue* starts neither, nor does a change of the settings: they apply to the
+batches verified after it, and a batch paused already goes on once it is verified, or once an admin who may accept it
+goes on without its verification.
 
 **The last batch never pauses**: nothing is left to hold. The change ends with its outcome, and what its verification
 found is a warning in the timeline and in the eventlog. Its devices stay reserved for the change until that
@@ -1468,9 +1470,10 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   read), or a kind of facts cannot be read, it is not compared, and a batch whose comparison found nothing else cannot
   be verified: it fails safe, and with *When a batch cannot be verified: pause* every such batch waits for an admin.
   The change page and the timeline name the check, its error (one line, never SQL: the details are in
-  `logs/librenms.log`) and the state it failed in, and the ways out: fix it, switch that check off in the topology
-  plugin's settings (*Background checks*), or set *When a batch cannot be verified* to *only record it*. Meanwhile the
-  plugin takes a new state after the batch every 5 minutes, and goes on by itself once the check works again.
+  `logs/librenms.log`) and the state it failed in, and the ways out: fix it, or switch that check off in the topology
+  plugin's settings (*Background checks*): the plugin takes a new state after the batch every 5 minutes, and goes on by
+  itself once the check works again; or an admin who may accept it goes on without its verification. (*When a batch
+  cannot be verified: only record it* applies to the batches checked after it is set, not to one paused already.)
 * **Findings are compared by the findings history's identity** (the check, the VLAN, the devices and ports) and its
   rule for a finding that takes another's place (the same check about the same devices): a finding whose devices or
   ports changed reads as a new one and the old one as resolved; one the topology plugin words differently but about

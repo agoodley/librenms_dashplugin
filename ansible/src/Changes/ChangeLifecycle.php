@@ -2828,8 +2828,8 @@ final class ChangeLifecycle
                 $this->setVerify($id, $number, ['after' => ['status' => 'missing', 'checked_at' => $now, 'missing' => $fresh['unknown']] + $after]);
                 $this->verifyResult($change, $number, 'unknown', ['error' => 'LibreNMS no longer has ' . VerificationRules::devicesText($fresh['unknown'], $scope['names'])
                     . ' of its scope as ' . UntrustedText::line($user['username'], 60) . ', who started the batch, sees the network (disabled or deleted, or no longer '
-                    . 'visible to them): what the batch changed there cannot be compared. To go on: enable ' . (count($fresh['unknown']) === 1 ? 'it' : 'them')
-                    . ' in LibreNMS again, or set When a batch cannot be verified to only record it',
+                    . 'visible to them): what the batch changed there cannot be compared. To have it verified: enable ' . (count($fresh['unknown']) === 1 ? 'it' : 'them')
+                    . ' in LibreNMS again',
                     'event_error' => 'LibreNMS no longer has ' . Format::count(count($fresh['unknown']), 'device') . ' of its scope as the admin who started the batch sees the network'], $now);
 
                 return;
@@ -2949,7 +2949,7 @@ final class ChangeLifecycle
                 $this->eventAll($change, VerificationText::unexpectedEvent($change, $number, (array) ($verify['by_what'] ?? []), $decision), 'warning', $this->batchUser($change, $number));
             } else {
                 $this->timeline($change, 'verify', VerificationText::unknown($number, (string) ($verify['error'] ?? 'unknown'), $decision,
-                    ApprovalRules::accepter($this->settings->approval)) . '.', null, $now);
+                    ApprovalRules::accepter($this->settings->approval), self::recheckOf($verify)) . '.', null, $now);
                 $this->eventAll($change, VerificationText::unknownEvent($change, $number, (string) (($verify['event_error'] ?? '') ?: 'unknown')), 'warning',
                     $this->batchUser($change, $number));
             }
@@ -2975,9 +2975,27 @@ final class ChangeLifecycle
     }
 
     /**
+     * How often a batch that cannot be verified is checked again while the change pauses on it (verifyRecheck()): every 5
+     * minutes when its comparison was incomplete (a new state after it is taken), every minute otherwise; never without a
+     * state before it (nothing to compare it with: only an acceptance lets the change go on).
+     *
+     * @param  array<string, mixed>  $verify  the batch's verification
+     */
+    public static function recheckOf(array $verify): ?string
+    {
+        if ((((array) ($verify['before'] ?? []))['status'] ?? null) !== 'taken') {
+            return null;
+        }
+
+        return ((((array) ($verify['after'] ?? []))['status'] ?? null) === 'incomplete') ? 'every ' . intdiv(self::INCOMPLETE_RECHECK, 60) . ' minutes' : 'every minute';
+    }
+
+    /**
      * A change paused because batch $number cannot be verified, checked again every minute (the sync command): once its
      * data is fresh (and the state before it exists), it is verified as any; verified, the change goes on by itself; with
-     * unexpected changes, the settings decide again.
+     * unexpected changes, the settings decide again. A decision the settings made stays: changing When a batch cannot be
+     * verified applies to the batches checked after it (not to one paused already, which an admin who may accept it lets
+     * go on).
      */
     private function verifyRecheck(array $change, int $now): void
     {

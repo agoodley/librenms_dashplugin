@@ -271,15 +271,19 @@ class VerificationRulesTest extends TestCase
         $this->assertNull(VerificationRules::skippedWhy(['facts' => [], 'checks' => [], 'errors' => ['facts' => [], 'checks' => []]]));
         $failed = VerificationRules::skippedWhy(['facts' => [], 'checks' => ['routing'], 'errors' => ['checks' => ['routing' => ['after' => 'RuntimeException: cannot read the OSPF neighbours']]]]);
         $this->assertSame("the topology plugin's routing check failed in the state after it (RuntimeException: cannot read the OSPF neighbours); nothing else that was "
-            . "compared changed. To go on: fix it (the details are in logs/librenms.log), switch the routing check off in the topology plugin's settings (Background "
-            . 'checks) or set When a batch cannot be verified to only record it', $failed['why']);
+            . "compared changed. To have it verified: fix it (the details are in logs/librenms.log) or switch the routing check off in the topology plugin's settings "
+            . '(Background checks)', $failed['why']);
+        $this->assertStringNotContainsString('When a batch cannot be verified', $failed['why'], 'no setting is a way out of a batch paused already');
         $this->assertSame("the topology plugin's routing check failed in the state before or after it", $failed['event']);
         // a check switched on between the two states; the fix's own check failed (switching it off would not verify the fix)
         $both = VerificationRules::skippedWhy(['facts' => [], 'checks' => ['links', 'stp'], 'errors' => ['checks' => ['stp' => ['before' => 'Error: x']]]], 'stp');
         $this->assertStringContainsString("the topology plugin's links check ran in one of the two states only: it was switched on or off in its settings (Background checks) "
             . "between them; the topology plugin's spanning tree check, which found the fix's findings, failed in the state before it (Error: x)", $both['why']);
-        $this->assertStringEndsWith("To go on: fix it (the details are in logs/librenms.log), switch the links check back as it was in the topology plugin's settings or set "
-            . 'When a batch cannot be verified to only record it', $both['why']);
+        $this->assertStringEndsWith("To have it verified: fix it (the details are in logs/librenms.log) or switch the links check back as it was in the topology plugin's "
+            . 'settings', $both['why']);
+        // nothing that would verify the batch: no way to name (an acceptance is the decision's)
+        $this->assertStringEndsWith('is switched off in its settings (Background checks); nothing else that was compared changed',
+            VerificationRules::skippedWhy(['facts' => [], 'checks' => []], 'links')['why']);
         $this->assertStringNotContainsString('spanning tree check off', $both['why']);
         // what the API names is data: one line
         $hostile = VerificationRules::skippedWhy(['facts' => ["x\ny"], 'checks' => [], 'errors' => ['facts' => ["x\ny" => ['after' => "a\nb"]]]]);

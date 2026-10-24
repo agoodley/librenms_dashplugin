@@ -482,10 +482,11 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame(['unknown', 'incomplete'], [$this->verify($id, 1)['result'], $this->verify($id, 1)['after']['status']]);
         $why = "the topology plugin could not read the links in the state after it (database error 42S02/1146: Table 'librenms.links' doesn't exist); the topology "
             . "plugin's redundancy check failed in the state before it (TypeError: an argument is null) and in the state after it (TypeError: an argument is null); "
-            . 'nothing else that was compared changed. To go on: fix it (the details are in logs/librenms.log), switch the redundancy check off in the topology '
-            . "plugin's settings (Background checks) or set When a batch cannot be verified to only record it";
-        $this->assertStringContainsString("Batch 1 cannot be verified: $why. The change waits for", $this->messages($id),
-            'the timeline names what failed, its error, and the ways out');
+            . 'nothing else that was compared changed. To have it verified: fix it (the details are in logs/librenms.log) or switch the redundancy check off in the '
+            . "topology plugin's settings (Background checks)";
+        $this->assertStringContainsString("Batch 1 cannot be verified: $why. The change waits until batch 1 is verified (it is checked again every 5 minutes; the change "
+            . 'then goes on by itself) or an admin with the approve permission (not the requester) accepts going on without its verification: batch 2 does not start before '
+            . '(setting When a batch cannot be verified: pause).', $this->messages($id), 'the timeline names what failed, its error, and the ways out that work');
         $this->assertSame($why, $this->verify($id, 1)['error'], 'so does the change page');
         $events = implode("\n", array_column($this->events->of(510), 'message'));
         $this->assertStringContainsString('the topology plugin could not read the links; its redundancy check failed in the state before or after it', $events);
@@ -558,8 +559,9 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown', 'unknown'], [$change['status'], $change['waiting'], $this->verify($id, 1)['result']],
             'cannot be verified, not "unexpected": the comparison is not over its whole scope');
         $this->assertMatchesRegularExpression('/Batch 1 cannot be verified: the state after it no longer covers lab-sw3: LibreNMS no longer has it as the admin who started the batch '
-            . 'sees the network \(disabled or deleted, or no longer visible to that admin\); \d+ unexpected changes? in what was compared \(listed with the batch\)\. To go on: enable '
-            . 'the device in LibreNMS again \(or let that admin see it\) or set When a batch cannot be verified to only record it\./', $this->messages($id));
+            . 'sees the network \(disabled or deleted, or no longer visible to that admin\); \d+ unexpected changes? in what was compared \(listed with the batch\)\. To have it '
+            . 'verified: enable the device in LibreNMS again \(or let that admin see it\)\. The change waits until batch 1 is verified \(it is checked again every 5 minutes;/',
+            $this->messages($id));
         $this->assertSame([[510]], $this->launched());
 
         // a state after it that covers it all again (checked every 5 minutes): what changed is then what the batch made, and the change, which
@@ -1237,6 +1239,37 @@ class ChangeVerificationTest extends TestCase
         $this->assertSame([[510]], $this->launched());
     }
 
+    public function testAChangeOfTheSettingReleasesNoBatchPausedAlready(): void
+    {
+        $id = $this->applied();
+        $this->endBatch($id, 1, $this->t0 + 300);
+        $this->sync($id, $this->t0 + 960);
+        $this->fresh($this->t0 + 1000);
+        $this->verifier->comparison = ['skipped' => ['facts' => [], 'checks' => ['routing'], 'errors' => ['checks' => ['routing' => ['after' => 'Error: x']]]]];
+        $this->sync($id, $this->t0 + 1080);
+        $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+        $this->assertStringNotContainsString('only record', $this->messages($id), 'the setting is no way out it names');
+        // how often it is checked again, as the change page says it: an incomplete comparison every 5 minutes, fresh data every minute, nothing to compare never
+        $this->assertSame('every 5 minutes', ChangeLifecycle::recheckOf($this->verify($id, 1)));
+        $this->assertSame('every minute', ChangeLifecycle::recheckOf(['before' => ['status' => 'taken'], 'after' => ['status' => 'stale']]));
+        $this->assertNull(ChangeLifecycle::recheckOf(['before' => ['status' => 'unknown'], 'after' => ['status' => 'settling']]));
+
+        // an admin sets When a batch cannot be verified to only record it: it applies to the batches checked after it, not to this one (any admin who
+        // may change the settings, the requester with a second admin among them, would otherwise let their batch go on without an approver)
+        $this->settings = ['verifyUnknown' => 'record'];
+        foreach ([1400, 1700, 2000] as $offset) {
+            $this->sync($id, $this->t0 + $offset);
+        }
+        $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown', 'pause'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting'],
+            $this->verify($id, 1)['decision']], 'checked again, still paused');
+        $this->assertSame([[510]], $this->launched());
+
+        // its cause fixed: verified when it is checked again, the change goes on by itself
+        $this->verifier->comparison = [];
+        $this->sync($id, $this->t0 + 2400);
+        $this->assertSame(['verified', ChangeStatus::APPLYING], [$this->verify($id, 1)['result'], $this->changes->find($id)['status']]);
+    }
+
     // ------------------------------------------------------------------ a fix
 
     public function testAFixWhoseCheckDidNotRunIsNotVerified(): void
@@ -1253,8 +1286,9 @@ class ChangeVerificationTest extends TestCase
         $this->sync($id, $this->t0 + 1080);
         $change = $this->changes->find($id);
         $this->assertSame([ChangeStatus::PAUSED, 'verify_unknown', 'unknown'], [$change['status'], $change['waiting'], $this->verify($id, 1)['result']]);
+        // switching the check on would not verify this batch (the state before it has none of its findings): only an acceptance lets it go on
         $this->assertStringContainsString("Batch 1 cannot be verified: the topology plugin's links check, which found the fix's findings, is switched off in its settings "
-            . '(Background checks); nothing else that was compared changed. To go on: set When a batch cannot be verified to only record it.', $this->messages($id));
+            . '(Background checks); nothing else that was compared changed. The change waits until batch 1 is verified', $this->messages($id));
     }
 
     public function testAFixIsVerifiedAgainstWhatItWasMadeFor(): void
