@@ -12,6 +12,13 @@ SEMAPHORE_VERSION=$(sed -n 's/^SEMAPHORE_VERSION=//p' "$ROCKY/install.sh")
 export SEMAPHORE_VERSION
 # shellcheck source=../lib/semaphore.sh
 . "$ROCKY/lib/semaphore.sh"
+# shellcheck source=../lib/librenms.sh
+. "$ROCKY/lib/librenms.sh"
+
+# check WHAT GOT WANT: one check
+check() {
+    if [[ $2 == "$3" ]]; then printf 'PASS  %s\n' "$1"; else printf 'FAIL  %s: %s, should be %s\n' "$1" "$2" "$3"; FAILS=$((FAILS + 1)); fi
+}
 
 # semaphore_version WANT TEXT: sem_version_ok accepts (ok) or refuses (refused) TEXT, what `semaphore version` prints.
 semaphore_version() {
@@ -32,6 +39,15 @@ semaphore_version refused '2.19.18-0d3e5a1-1793000000'      # another version
 semaphore_version refused 'v2.19.170'                       # not a prefix: 2.19.170 is not 2.19.17
 semaphore_version refused 'v2.19.1-f8cefe6-1792391878'
 semaphore_version refused ''                                # no answer (the binary did not run)
+
+# json_object and json_field: values (passwords, tokens) go to python on stdin; they come back as they were
+# shellcheck disable=SC2016 # the $ and the backticks are part of the test password
+tricky='p&ss "w\o$rd" `x` ä'
+json=$(json_object login netops password "$tricky" empty '' list '@json:["a", 2]')
+check "json_object/json_field: a password with quotes, backslash, \$, & and non-ASCII" "$(json_field "$json" password)" "$tricky"
+check "json_object/json_field: an empty value" "$(json_field "$json" empty)" ''
+check "json_object/json_field: @json: values and list items" "$(json_field "$json" list.1)" 2
+check "json_field: a missing field" "$(json_field "$json" nothing.here)" ''
 
 printf '%d failures\n' "$FAILS"
 exit "$FAILS"

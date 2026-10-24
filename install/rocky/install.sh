@@ -10,6 +10,8 @@
 
 set -Eeuo pipefail
 shopt -s inherit_errexit
+# bash 5.2 (Rocky 10) gives & in ${var//pattern/replacement} a meaning: values (passwords, names) are put in as they are
+shopt -u patsub_replacement 2>/dev/null || true
 umask 022
 export LC_ALL=C.UTF-8
 

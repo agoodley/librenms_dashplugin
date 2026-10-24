@@ -74,29 +74,31 @@ helper() {
         local error; error=$(json_field "$HELPER_OUT" error 2>/dev/null || true)
         die "LibreNMS refused: ${error:-librenms_helper.php $command failed (exit code $rc)}" "${HELPER_HINT:-read the log, and logs/librenms.log in $LNMS_DIR}"
     fi
-    if ! python3 -I -c 'import json,sys; json.loads(sys.argv[1])' "$HELPER_OUT" 2>/dev/null; then
+    if ! python3 -I -c 'import json,sys; json.load(sys.stdin)' <<<"$HELPER_OUT" 2>/dev/null; then
         log "librenms_helper.php $command answered: ${HELPER_OUT:0:2000}"
         die "LibreNMS answered librenms_helper.php $command with something else than JSON (the log has it)" "read the log, and logs/librenms.log in $LNMS_DIR"
     fi
 }
 
-# json_field JSON PATH: a field of a JSON document (PATH: a.b.c), as text ('' for null, JSON for objects).
+# json_field JSON PATH: a field of a JSON document (PATH: a.b.c), as text ('' for null, JSON for objects). The document
+# (it may hold a token or a password) goes to python on stdin: a command line is visible to every user (ps).
 json_field() {
     python3 -I -c 'import json,sys
-d=json.loads(sys.argv[1])
-for k in sys.argv[2].split("."):
+d=json.load(sys.stdin)
+for k in sys.argv[1].split("."):
     d = d.get(k) if isinstance(d, dict) else (d[int(k)] if isinstance(d, list) and k.isdigit() and int(k) < len(d) else None)
-print("" if d is None else (json.dumps(d) if isinstance(d, (dict, list)) else ("true" if d is True else "false" if d is False else d)))' "$1" "$2"
+print("" if d is None else (json.dumps(d) if isinstance(d, (dict, list)) else ("true" if d is True else "false" if d is False else d)))' "$2" <<<"$1"
 }
 
-# json_object KEY VALUE...: a JSON object of strings (VALUE "@json:..." is put in as JSON).
+# json_object KEY VALUE...: a JSON object of strings (VALUE "@json:..." is put in as JSON). The values (passwords,
+# tokens) go to python on stdin, NUL-separated by printf (a shell builtin: no command line), never as its arguments.
 json_object() {
-    python3 -I -c 'import json,sys
-a=sys.argv[1:]; o={}
-for i in range(0, len(a), 2):
+    printf '%s\0' "$@" | python3 -I -c 'import json,sys
+a=[x.decode("utf-8", "surrogateescape") for x in sys.stdin.buffer.read().split(b"\0")[:-1]]; o={}
+for i in range(0, len(a) - 1, 2):
     v=a[i+1]
     o[a[i]] = json.loads(v[6:]) if v.startswith("@json:") else v
-print(json.dumps(o))' "$@"
+print(json.dumps(o))'
 }
 
 # ---------------------------------------------------------------------------------------------------- the part
@@ -493,8 +495,11 @@ lnms_snmpd() {
         if [[ -f $conf ]] && grep -q " $conf\$" <<<"$verify"; then
             warn "$conf was changed on this server: left as it is (LibreNMS' documentation replaces it with snmpd.conf.example)"
         else
-            local community; community=$(secret_for SNMP_COMMUNITY 20)
-            if put_text "$(sed "s/RANDOMSTRINGGOESHERE/$community/" "$LNMS_DIR/snmpd.conf.example")
+            local community text; community=$(secret_for SNMP_COMMUNITY 20)
+            text=$(<"$LNMS_DIR/snmpd.conf.example")
+            # the community goes in by the shell (sed would have it on its command line, visible to every user)
+            text=${text//RANDOMSTRINGGOESHERE/$community}
+            if put_text "$text
 " "$conf" root:root 600 "configure snmpd (LibreNMS' snmpd.conf.example, community in $CRED_FILE)"; then
                 state_set snmpd_restart 1
             fi
@@ -532,12 +537,13 @@ lnms_logrotate() {
     put_file "$LNMS_DIR/misc/librenms.logrotate" /etc/logrotate.d/librenms root:root 644 "add LibreNMS' logrotate configuration" || true
 }
 
-# The database tables, as the web installer makes them (migrate --seed with the schema dump), and config.php.
+# The database tables (lnms migrate --seed, as the web installer does), and config.php. Laravel would load LibreNMS'
+# schema dump (database/schema/mysql-schema.sql) with the mysql client, the database password on its command line
+# (visible to every user): a schema path that does not exist makes it run the migrations themselves (a few seconds).
 lnms_migrate() {
     [[ -f $LNMS_DIR/artisan ]] || { would "create LibreNMS' database tables (migrate --seed)"; return 0; }
     if [[ $(state_get librenms_db || true) != yes ]]; then
-        local args=(migrate --seed --force --no-interaction)
-        [[ -f $LNMS_DIR/database/schema/mysql-schema.sql ]] && args+=(--schema-path=database/schema/mysql-schema.sql)
+        local args=(migrate --seed --force --no-interaction "--schema-path=$WORK/no-schema-dump.sql")
         act "create LibreNMS' database tables (lnms migrate --seed)" lnms "${args[@]}"
         state_set librenms_db yes
     else

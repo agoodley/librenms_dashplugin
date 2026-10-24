@@ -2,7 +2,6 @@
 
     python3 -I semaphore_api.py setup < request.json      the project for LibreNMS, as the Ansible plugin's README
                                                            sets it up (see install.sh's part semaphore)
-    python3 -I semaphore_api.py password < request.json   set a user's password (the admin's: never on a command line)
     python3 -I semaphore_api.py token-delete < request.json
 
 The request is a JSON object on stdin (the API token and the secrets never go on a command line); the answer is a
@@ -234,19 +233,6 @@ def setup(req):
             'runner_user_id': runner_id, 'login_key_empty': login_empty, 'become_key_empty': become_empty, 'changes': changes}
 
 
-def password(req):
-    api = Api(req['url'], req['token'])
-    user = by_name(api.call('GET', '/users'), req['username'], 'username')
-    if user is None:
-        raise ApiError('Semaphore UI has no user %s' % req['username'])
-    body = {'password': req['password']}
-    if req.get('current_password'):
-        # a user who changes their own password gives the current one too
-        body['current_password'] = req['current_password']
-    api.call('POST', '/users/%d/password' % user['id'], body)
-    return {'user_id': user['id']}
-
-
 def token_delete(req):
     api = Api(req['url'], req['token'])
     api.call('DELETE', '/user/tokens/' + req['token'], ok=(200, 204, 404))
@@ -257,7 +243,7 @@ def main():
     command = sys.argv[1] if len(sys.argv) > 1 else ''
     try:
         req = json.load(sys.stdin)
-        handler = {'setup': setup, 'password': password, 'token-delete': token_delete}.get(command)
+        handler = {'setup': setup, 'token-delete': token_delete}.get(command)
         if handler is None:
             raise ApiError('unknown command %r' % command)
         print(json.dumps(handler(req)))

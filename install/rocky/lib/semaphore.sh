@@ -31,6 +31,7 @@ part_semaphore() {
     sem_user
     sem_database
     sem_config
+    sem_admin
     sem_service
     sem_playbook_repo
     if [[ $CHECK == 1 ]]; then
@@ -46,7 +47,6 @@ part_semaphore() {
         fi
         return 0
     fi
-    sem_admin
     sem_admin_token
     lnms_inventory_user
     librenms_url "$LNMS_INVENTORY_TOKEN"
@@ -278,30 +278,62 @@ sem_playbook_repo() {
     info "the playbook repository has: ${changed[*]}"
 }
 
-# sem_admin: the admin (--admin-user). It is made with a throwaway password (on the command line, which every user
-# can read in ps for that moment), which the API then replaces with the real one. The throwaway stays in the
-# credentials file until then, so a run stopped in between finishes it the next time.
+# sem_admin: Semaphore UI's admin (--admin-user, with the LibreNMS admin's password). Semaphore UI's command line
+# tool takes a password only as an argument, which every user can read (ps), so the admin is made with a throwaway
+# password while the server does not run (before it starts, or stopped for it), and the real password goes into
+# Semaphore UI's database as a bcrypt hash (PHP's password_hash, password on stdin) before the server runs again:
+# the throwaway never works. The state remembers the admin until its password is set, so a run stopped in between
+# finishes it.
 sem_admin() {
-    local throwaway; throwaway=$(cred_get SEMAPHORE_ADMIN_THROWAWAY || true)
-    if "$SEM_BIN" users get --login "$ADMIN_USER" --config "$SEM_CONF" >/dev/null 2>&1; then
-        if [[ -z $throwaway ]]; then detail "the Semaphore UI admin $ADMIN_USER exists"; return 0; fi
-        info "the Semaphore UI admin $ADMIN_USER still has the installer's throwaway password: setting the real one"
+    if [[ $CHECK == 1 ]]; then
+        if [[ -n $SEM_BIN && -f $SEM_CONF ]] && sem_user_exists "$ADMIN_USER"; then
+            detail "the Semaphore UI admin $ADMIN_USER exists"
+        else
+            would "add the Semaphore UI admin $ADMIN_USER"
+        fi
+        return 0
+    fi
+    local pending; pending=$(state_get semaphore_admin_password || true)
+    # an admin of an earlier version of the installer that still has its throwaway password
+    if [[ -n $(cred_get SEMAPHORE_ADMIN_THROWAWAY || true) ]]; then pending=pending; fi
+    if sem_user_exists "$ADMIN_USER"; then
+        if [[ $pending != pending ]]; then detail "the Semaphore UI admin $ADMIN_USER exists"; return 0; fi
+        info "the Semaphore UI admin $ADMIN_USER has no password of its own yet (a run stopped there): setting it"
+        sem_stop_for_admin
     else
-        throwaway=$(gen_secret 32)
-        cred_set SEMAPHORE_ADMIN_THROWAWAY "$throwaway"
+        sem_stop_for_admin
+        local throwaway; throwaway=$(gen_secret 32)
         LOG_REDACT+=("$throwaway")
+        state_set semaphore_admin_password pending
         act "add the Semaphore UI admin $ADMIN_USER" "$SEM_BIN" users add --admin --login "$ADMIN_USER" --name "$ADMIN_USER" \
             --email "$ADMIN_EMAIL" --password "$throwaway" --config "$SEM_CONF"
     fi
-    sem_admin_token
-    local password=$ADMIN_PASSWORD
-    [[ -n $password ]] || password=$(cred_get ADMIN_PASSWORD || true)
-    [[ -n $password ]] || password=$(secret_for SEMAPHORE_ADMIN_PASSWORD 20)
-    local out
-    run_secret out "$(json_object url "$SEM_API" token "$SEM_TOKEN" username "$ADMIN_USER" current_password "$throwaway" password "$password")" \
-        python3 -I "$WORK/lib/semaphore_api.py" password
-    CHANGES+=("semaphore: the password of the admin $ADMIN_USER")
+    sem_admin_password
+    state_set semaphore_admin_password set
     cred_unset SEMAPHORE_ADMIN_THROWAWAY
+}
+
+# sem_user_exists LOGIN: whether Semaphore UI has a user LOGIN (its command line tool reads the database).
+sem_user_exists() { "$SEM_BIN" users get --login "$1" --config "$SEM_CONF" >/dev/null 2>&1; }
+
+# sem_stop_for_admin: stop Semaphore UI while its admin has a throwaway password (sem_service starts it again).
+sem_stop_for_admin() {
+    if systemctl is-active --quiet semaphore; then
+        act "stop semaphore while its admin is made (its throwaway password must never work)" systemctl stop semaphore
+    fi
+}
+
+# sem_admin_password: the admin's password as a bcrypt hash in Semaphore UI's database (the password goes to PHP on
+# stdin, the SQL to mysql on stdin, the database password in mysql's environment: none of them on a command line).
+sem_admin_password() {
+    local password=$ADMIN_PASSWORD hash from="the LibreNMS admin's password"
+    [[ -n $password ]] || password=$(cred_get ADMIN_PASSWORD || true)
+    if [[ -z $password ]]; then password=$(secret_for SEMAPHORE_ADMIN_PASSWORD 20); from="SEMAPHORE_ADMIN_PASSWORD in $CRED_FILE"; fi
+    hash=$(printf '%s' "$password" | php -r 'echo password_hash(stream_get_contents(STDIN), PASSWORD_BCRYPT);' 2>>"$LOG_FILE" || true)
+    [[ $hash =~ ^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$ ]] || die "PHP made no bcrypt hash for the Semaphore UI admin's password" "check that php -r 'echo password_hash(\"x\", PASSWORD_BCRYPT);' works"
+    MYSQL_PWD=$SEM_DB_PASSWORD run_input "UPDATE \`user\` SET password = '$hash' WHERE username = '$ADMIN_USER';" mysql -u semaphore -h 127.0.0.1 semaphore
+    CHANGES+=("semaphore: the password of the admin $ADMIN_USER")
+    info "the Semaphore UI admin $ADMIN_USER has its password ($from)"
 }
 
 sem_admin_token() {
@@ -412,7 +444,7 @@ PY
     local change
     while IFS= read -r change; do
         [[ -n $change ]] && { info "Semaphore UI: $change"; CHANGES+=("semaphore: $change"); log "semaphore: $change"; }
-    done < <(python3 -I -c 'import json,sys; [print(c) for c in json.loads(sys.argv[1])["changes"]]' "$out")
+    done < <(python3 -I -c 'import json,sys; [print(c) for c in json.load(sys.stdin)["changes"]]' <<<"$out")
     SEM_PROJECT_ID=$(json_field "$out" project_id)
     SEM_INVENTORY_ID=$(json_field "$out" inventory_id)
     SEM_TEMPLATE_PORTS=$(json_field "$out" templates.port_descriptions)
@@ -462,7 +494,7 @@ print(json.dumps({"by": "the installer (install/rocky/install.sh)", "admin": e["
     for line in connection_changes settings_changes granted; do
         local items; items=$(json_field "$out" "$line")
         [[ $items == '[]' || -z $items ]] && continue
-        info "Ansible plugin: $(python3 -I -c 'import json,sys; print("; ".join(json.loads(sys.argv[1])))' "$items")"
+        info "Ansible plugin: $(python3 -I -c 'import json,sys; print("; ".join(json.load(sys.stdin)))' <<<"$items")"
         CHANGES+=("semaphore: Ansible plugin $line")
     done
     local ok; ok=$(json_field "$out" test.ok)
@@ -472,10 +504,10 @@ print(json.dumps({"by": "the installer (install/rocky/install.sh)", "admin": e["
     fi
     local usable
     usable=$(python3 -I -c 'import json,sys
-t=json.loads(sys.argv[1])["test"]
-print("; ".join("%s: %s" % (x["name"], "usable" if x["usable"] else "not usable (" + ", ".join(x["reasons"]) + ")") for x in t.get("templates", [])))' "$out")
+t=json.load(sys.stdin)["test"]
+print("; ".join("%s: %s" % (x["name"], "usable" if x["usable"] else "not usable (" + ", ".join(x["reasons"]) + ")") for x in t.get("templates", [])))' <<<"$out")
     info "Ansible plugin connection test: Semaphore UI $(json_field "$out" test.version), role $(json_field "$out" test.role); templates: $usable"
-    local warnings; warnings=$(python3 -I -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])["test"].get("warnings", [])))' "$out")
+    local warnings; warnings=$(python3 -I -c 'import json,sys; print("\n".join(json.load(sys.stdin)["test"].get("warnings", [])))' <<<"$out")
     while IFS= read -r line; do [[ -n $line ]] && detail "connection test: $line"; done <<<"$warnings"
     if grep -q 'not usable' <<<"$usable"; then warn "a template is not usable by the Ansible plugin: $usable"; fi
 }

@@ -198,7 +198,7 @@ plugins_migrate() {
     helper plugins-status '{}'
     local pending; pending=$(json_field "$HELPER_OUT" pending_migrations)
     if [[ $pending == '[]' ]]; then detail "the plugins' tables are up to date"; return 0; fi
-    act "create or update the plugins' tables (./lnms migrate: $(python3 -I -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$pending") migrations)" \
+    act "create or update the plugins' tables (./lnms migrate: $(python3 -I -c 'import json,sys; print(len(json.load(sys.stdin)))' <<<"$pending") migrations)" \
         lnms migrate --force --no-interaction
 }
 

@@ -39,6 +39,13 @@ never on the screen or in the log) and what to do next. Everything it runs is lo
 (`latest.log` is the last run). A first run takes 5 to 30 minutes (5 in offline mode on a fast server), most of it dnf,
 Composer and the compilation of Oxidized's gems.
 
+Passwords and tokens never go on a command line either, where every user of the server can read them (`ps`):
+commands get them on stdin, in their environment or in files of mode 600. Two places need a way round that.
+Semaphore UI's admin is made with a throwaway password (its command line tool takes a password only as an argument)
+while Semaphore UI does not run, and gets its real password as a bcrypt hash in Semaphore UI's database before it
+starts. LibreNMS' tables come from its migrations, not from its schema dump, which Laravel loads with the database
+password on the mysql client's command line.
+
 ## What it installs
 
 The parts, in the order a run sets them up (`--skip` and `--only` name them):
