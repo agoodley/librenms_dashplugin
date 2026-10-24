@@ -299,22 +299,26 @@ sem_admin() {
         fi
         return 0
     fi
-    sem_admin_replace_earlier
     local pending; pending=$(state_get semaphore_admin_password || true)
     # an admin of an earlier version of the installer that still has its throwaway password
     if [[ -n $(cred_get SEMAPHORE_ADMIN_THROWAWAY || true) ]]; then pending=pending; fi
     if sem_user_exists "$ADMIN_USER"; then
+        sem_admin_replace_earlier
         if [[ $pending != pending ]]; then detail "the Semaphore UI admin $ADMIN_USER exists"; return 0; fi
         info "the Semaphore UI admin $ADMIN_USER has no password of its own yet (a run stopped there): setting it"
         sem_stop_for_admin
     else
-        local email other
+        local email other earlier
         email=$(sem_admin_email)
         other=$("$SEM_BIN" users get --email "$email" --config "$SEM_CONF" 2>/dev/null | sed -n 's/^Login: //p' || true)
-        if [[ -n $other ]]; then
+        earlier=$(state_get semaphore_admin || true)
+        # (the admin an earlier run made goes below: its e-mail is free then)
+        if [[ -n $other && $other != "$earlier" ]]; then
             die "Semaphore UI's user $other has the e-mail $email already, which its admin $ADMIN_USER would get (e-mails are unique there)" \
                 "give $ADMIN_USER another e-mail in LibreNMS (or --admin-email, when LibreNMS has none for them), or change $other's in Semaphore UI"
         fi
+        # only now, when the new admin can be made, the one an earlier run made goes
+        sem_admin_replace_earlier
         sem_stop_for_admin
         local throwaway; throwaway=$(gen_secret 32)
         LOG_REDACT+=("$throwaway")
