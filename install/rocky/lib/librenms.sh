@@ -625,12 +625,33 @@ librenms_admin_ensure() {
 }
 
 # ./validate.php: what it still reports. A server without devices or a fresh install has a few warnings.
+# lnms_poller_as_cron: LibreNMS' poller cron job once now, as cron runs it: its line of /etc/cron.d/librenms, as the
+# librenms user, with cron's environment (PATH=/usr/bin:/bin, no locale). A job that fails under cron shows here, with
+# its output, rather than as validate.php's "No active python wrapper pollers found" five minutes later.
+lnms_poller_as_cron() {
+    local line command out rc=0 fields
+    line=$(grep -E '^[^#]*poller-wrapper\.py' /etc/cron.d/librenms 2>/dev/null | head -n 1 || true)
+    if [[ -z $line ]]; then warn "/etc/cron.d/librenms has no poller-wrapper.py line: LibreNMS would poll nothing"; return 0; fi
+    read -r -a fields <<<"$line"
+    command=${fields[*]:6}
+    log "+ (as cron runs it, as librenms) $command"
+    out=$(cd / && runuser -u librenms -- env -i PATH=/usr/bin:/bin HOME="$LNMS_DIR" SHELL=/bin/sh USER=librenms LOGNAME=librenms \
+        /bin/sh -c "$command" 2>&1 </dev/null) || rc=$?
+    [[ -n $out ]] && printf '%s\n' "$out" >>"$LOG_FILE"
+    # cronic prints nothing when the job succeeds
+    if [[ $rc != 0 || -n $out ]]; then
+        warn "LibreNMS' poller cron job fails when it runs as cron runs it (exit code $rc): $(head -n 2 <<<"$out" | tr '\n' ' ')(the log has its output)"
+    else
+        detail "LibreNMS' poller cron job runs as cron runs it ($command)"
+    fi
+}
+
 lnms_validate() {
     [[ -f $LNMS_DIR/validate.php && $CHECK == 0 ]] || return 0
     # the scheduler's heartbeat (a task it runs every five minutes) and the poller cron job, once now: validate.php
     # otherwise reports a scheduler and pollers that have not run yet
     run in_dir "$LNMS_DIR" as librenms php artisan schedule:test --name="schedule operational check" --no-ansi --no-interaction
-    run in_dir "$LNMS_DIR" as librenms ./poller-wrapper.py 1
+    lnms_poller_as_cron
     local out
     out=$(in_dir "$LNMS_DIR" as librenms ./validate.php 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)
     printf '%s\n' "$out" >>"$LOG_FILE"

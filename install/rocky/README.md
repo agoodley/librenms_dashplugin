@@ -240,6 +240,9 @@ the last lines of the command's output, what to do, and the log.
   added to LibreNMS, then a change through the Ansible plugin's pages with the template "Fix port descriptions": preview,
   dry run (proven), approval, apply, and Oxidized's backups before and after the batch, the one after with the new
   description.
+* `diagnose.sh [--run-poller]`: crond and its journal, LibreNMS' cron file, pollers and log, the services; with
+  `--run-poller` then the poller cron job as cron runs it. CI prints it into the job log when a step fails, and
+  `verify.sh` when LibreNMS' poller check fails (it then waits for cron's next run and checks again).
 * `unit.sh`: checks of the installer's own functions that need no server (CI runs it with shellcheck): both forms in
   which Semaphore UI 2.19.17's binaries print their version (`v2.19.17-f8cefe6-1792391878` of the container image,
   `2.19.17-f8cefe6-1792391818` of the release RPM) count as 2.19.17, another version (2.19.18, 2.19.170) does not;
@@ -291,5 +294,8 @@ packages and repositories if nothing else needs them. With SELinux, `semanage fc
 * Offline mode still needs dnf repositories, and Packagist's metadata for `./lnms plugin:add` (Composer resolves the
   plugins there; their only dependency comes with LibreNMS). A LibreNMS copy older than a day makes `./validate.php`
   warn that the installation is out of date until LibreNMS' daily update has run.
-* `./validate.php` warns about the plugins' extra migrations while they are installed (their READMEs say why), and
-  about a server without devices.
+* `./validate.php` warns "Your database schema has extra migrations (...)": the 17 migrations it lists
+  (2026_10_20_000000_create_topology_history_tables to 2026_11_05_000000_ansible_change_verification) are the plugins'
+  own tables, and LibreNMS warns so for every plugin package with migrations while it is installed (the plugins'
+  READMEs say more). It is expected; never apply validate.php's offer to drop their tables (they hold the topology
+  history and the Ansible plugin's audit log). It also warns about a server without devices.

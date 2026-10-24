@@ -40,7 +40,28 @@ code=$(web -o /dev/null -w '%{http_code}' "$BASE/login")
 check "LibreNMS answers on nginx (GET /login: $code)" test "$code" = 200
 
 # --- validate.php
-out=$(cd /opt/librenms && runuser -u librenms -- ./validate.php 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+validate() { (cd /opt/librenms && runuser -u librenms -- ./validate.php 2>&1 | sed 's/\x1b\[[0-9;]*m//g'); }
+out=$(validate)
+# LibreNMS' poller check wants a poller run within rrd.step (5 minutes). The installer ran the poller once; after
+# that only cron runs it, every 5 minutes. When the check fails: what cron did, then its next run, then the check again
+# (diagnose.sh --run-poller runs the poller itself only when cron did not).
+if grep -q 'python wrapper poller' <<<"$out"; then
+    echo "      validate.php: the python wrapper poller check failed. What cron and LibreNMS say:"
+    if [[ -x $HERE/diagnose.sh ]]; then "$HERE/diagnose.sh" | sed 's/^/      /'; fi
+    since=$(date '+%Y-%m-%d %H:%M:%S')
+    pause=$(( 300 - $(date +%s) % 300 + 45 ))
+    echo "      waiting ${pause} s for the poller cron job's next run ($since UTC + ${pause} s)"
+    sleep "$pause"
+    echo "      crond since then:"
+    journalctl -u crond --since "$since" --no-pager -o short-iso 2>&1 | grep -v '^-- ' | sed 's/^/        /'
+    mysql -t -e 'SELECT poller_name, last_polled, NOW() AS now FROM librenms.pollers' 2>&1 | sed 's/^/        /'
+    out=$(validate)
+    if grep -q 'python wrapper poller' <<<"$out" && [[ -x $HERE/diagnose.sh ]]; then
+        echo "      cron did not run the poller: the poller run by hand (diagnose.sh --run-poller):"
+        "$HERE/diagnose.sh" --run-poller | sed 's/^/      /'
+    fi
+fi
 fails=$(grep -c '\[FAIL\]' <<<"$out")
 warns=$(grep -c '\[WARN\]' <<<"$out")
 grep -E '\[(FAIL|WARN)\]' <<<"$out" | sed 's/^/      /'
