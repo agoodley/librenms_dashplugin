@@ -219,14 +219,18 @@ the last lines of the command's output, what to do, and the log.
   added to LibreNMS, then a change through the Ansible plugin's pages with the template "Fix port descriptions": preview,
   dry run (proven), approval, apply, and Oxidized's backups before and after the batch, the one after with the new
   description.
+* `unit.sh`: checks of the installer's own functions that need no server (CI runs it with shellcheck): that both forms
+  in which Semaphore UI 2.19.17's binaries print their version (`v2.19.17-f8cefe6-1792391878` of the container image,
+  `2.19.17-f8cefe6-1792391818` of the release RPM) count as 2.19.17, and that another version (2.19.18, 2.19.170)
+  does not.
 * `stubs/`: `getenforce`, `firewall-cmd`, `semanage`, `setsebool`, ... that record their calls: with them first on
   `PATH`, a container (where SELinux is disabled and firewalld does not run) goes through the installer's SELinux and
   firewalld steps.
 
-The CI workflow `.github/workflows/installer.yml` runs shellcheck, then the installer on Rocky Linux 9 and 10 containers
-(the online path: LibreNMS, its packages and Semaphore UI from GitHub), `verify.sh`, `e2e.sh`, a second run that must
-change nothing, and the plugins from the repository's URL with the workflow's token; on changes to `install/` and on
-demand.
+The CI workflow `.github/workflows/installer.yml` runs shellcheck and `unit.sh`, then the installer on Rocky Linux 9
+and 10 containers (the online path: LibreNMS, its packages and Semaphore UI from GitHub), `verify.sh`, `e2e.sh`, a
+second run that must change nothing, and the plugins from the repository's URL with the workflow's token; on changes
+to `install/` and on demand.
 
 ## Undoing it
 

@@ -76,11 +76,24 @@ sem_find_binary() {
     return 0
 }
 
+# sem_version_number TEXT: the version number in what `semaphore version` prints. Semaphore UI's binaries print it in
+# two forms: v2.19.17-f8cefe6-1792391878 (the container image's) and 2.19.17-f8cefe6-1792391818 (the release RPM's),
+# an optional "v", the number, then the commit and the build stamp. Empty when TEXT has no X.Y.Z number.
+sem_version_number() {
+    local re='(^|[^0-9.])[vV]?([0-9]+\.[0-9]+\.[0-9]+)([^0-9.]|$)'
+    if [[ $1 =~ $re ]]; then printf '%s' "${BASH_REMATCH[2]}"; fi
+    return 0
+}
+
+# sem_version_ok TEXT: whether TEXT (what `semaphore version` prints) is Semaphore UI $SEMAPHORE_VERSION: the number
+# itself, so 2.19.170 or 2.19.1 is another version.
+sem_version_ok() { [[ $(sem_version_number "$1") == "$SEMAPHORE_VERSION" ]]; }
+
 sem_binary() {
     sem_find_binary
     if [[ -n $SEM_BIN ]]; then
-        local v; v=$("$SEM_BIN" version 2>/dev/null || true)
-        if [[ $v == "v$SEMAPHORE_VERSION"* ]]; then detail "Semaphore UI $v is installed ($SEM_BIN)"; return 0; fi
+        local v; v=$("$SEM_BIN" version 2>/dev/null | head -n 1 || true)
+        if sem_version_ok "$v"; then detail "Semaphore UI $v is installed ($SEM_BIN)"; return 0; fi
         die "Semaphore UI ${v:-of an unknown version} is installed ($SEM_BIN), and the plugin was tested with $SEMAPHORE_VERSION" \
             "remove it (or install $SEMAPHORE_VERSION), then run the installer again; or leave this part out (--skip semaphore)"
     fi
@@ -112,8 +125,8 @@ sem_binary() {
     esac
     [[ $CHECK == 1 ]] && return 0
     sem_find_binary
-    local v; v=$("$SEM_BIN" version 2>/dev/null || true)
-    [[ $v == "v$SEMAPHORE_VERSION"* ]] || die "$src is Semaphore UI ${v:-of an unknown version}, not $SEMAPHORE_VERSION" "give Semaphore UI $SEMAPHORE_VERSION"
+    local v; v=$("$SEM_BIN" version 2>/dev/null | head -n 1 || true)
+    sem_version_ok "$v" || die "$src is Semaphore UI ${v:-of an unknown version}, not $SEMAPHORE_VERSION" "give Semaphore UI $SEMAPHORE_VERSION"
     info "Semaphore UI $v installed ($SEM_BIN)"
 }
 
