@@ -11,7 +11,7 @@
  *   env-get             {"keys": [...]}                         the values of .env (without booting LibreNMS)
  *   env-set             {"set": {...}, "unset": [...]}          .env written with LibreNMS' EnvHelper, when it changes
  *   version             {}                                      LibreNMS' version, PHP's, the auth mechanism
- *   user-get            {"username"}                            whether the user exists, its roles
+ *   user-get            {"username"}                            whether the user exists, its roles and e-mail
  *   user-ensure         {"username", "password", "roles", ...}  a user, created when missing (as lnms user:add does)
  *   token-create        {"username", "name"}                    a new API token of the user (lnms api:token-create)
  *   token-check         {"token", "username"}                   whether a token is still valid, and the user's
@@ -113,7 +113,8 @@ function find_user(string $username): ?User
 function user_row(User $user): array
 {
     return ['user_id' => (int) $user->user_id, 'username' => (string) $user->username, 'auth_type' => (string) $user->auth_type,
-        'enabled' => (bool) $user->enabled, 'roles' => $user->getRoleNames()->values()->all(), 'admin' => $user->hasRole('admin')];
+        'enabled' => (bool) $user->enabled, 'roles' => $user->getRoleNames()->values()->all(), 'admin' => $user->hasRole('admin'),
+        'email' => (string) $user->email];
 }
 
 // LibreNMS' exception handler would print an error on stdout and exit 0: every failure is a refusal here instead

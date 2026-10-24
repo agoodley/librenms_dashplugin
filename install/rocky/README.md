@@ -33,6 +33,11 @@ install/rocky/install.sh --check                      # what it would do; change
 INSTALLER_DEVICE_PASSWORD='the devices password' install/rocky/install.sh --device-user netops --server-name librenms.example.com
 ```
 
+On a server that has a LibreNMS already, name one of its admins: `install/rocky/install.sh --admin-user netadmin`. The
+Ansible plugin's run and approve permissions go to them, and Semaphore UI's admin takes their name and e-mail (with
+`--admin-password` as its password, else a generated one in the credentials file). Without `--admin-user` the
+installer looks for the admin `admin`, and stops before it changes anything when LibreNMS has none of that name.
+
 It asks once before it starts (`--yes` for unattended runs), says what it does part by part and ends with a summary:
 where each part answers, the passwords and tokens it generated (in `/root/librenms-installer-credentials`, root only,
 never on the screen or in the log) and what to do next. Everything it runs is logged in `/var/log/librenms-installer/`
@@ -61,13 +66,13 @@ The parts, in the order a run sets them up (`--skip` and `--only` name them):
 **A LibreNMS the server has already** (one in `/opt/librenms` that the installer did not install) keeps its web
 server, PHP, MariaDB settings, `.env` and `config.php` as they are. The installer checks that its version is one the
 plugins support (26.10 or a later 26.x: they were developed and tested against 26.10) and stops with what to do when
-it is not (update it, `./daily.sh`), checks PHP 8.2+ with curl and mbstring and warns when its scheduler does not run;
-then it adds the plugins and the rest: `./lnms plugin:add` changes LibreNMS' `composer.json` and `composer.lock` (as
-the plugins' READMEs install them), `./lnms route:cache` renews its route cache (when it has one), and the installer
-adds to LibreNMS' database (the plugins' tables, the users `ansible-inventory` and `oxidized` and their API tokens,
-the admin of `--admin-user` when there is none, the plugins' settings and LibreNMS' Oxidized settings) and, under
-SELinux, turns on `httpd_can_network_connect`. Semaphore UI gets a database of its own in the server's MariaDB
-(installed when the server has none).
+it is not (update it, `./daily.sh`), checks PHP 8.2+ with curl and mbstring, that `--admin-user` names one of its
+admins (Quick start), and warns when its scheduler does not run; then it adds the plugins and the rest: `./lnms
+plugin:add` changes LibreNMS' `composer.json` and `composer.lock` (as the plugins' READMEs install them), `./lnms
+route:cache` renews its route cache (when it has one), and the installer adds to LibreNMS' database (the plugins'
+tables, the users `ansible-inventory` and `oxidized` and their API tokens, the plugins' settings and LibreNMS'
+Oxidized settings) and, under SELinux, turns on `httpd_can_network_connect`. Semaphore UI gets a database of its own
+in the server's MariaDB (installed when the server has none).
 
 ## Options
 
@@ -81,9 +86,9 @@ Every option has an environment variable for unattended runs; passwords are bett
 | `--only PART[,PART]` | `INSTALLER_ONLY` | | set up only these parts |
 | `-y`, `--yes` | `INSTALLER_YES=1` | | do not ask before starting |
 | `-v`, `--verbose` | | | show every step (the log has them anyway) |
-| `--admin-user NAME` | `INSTALLER_ADMIN_USER` | `admin` | the LibreNMS admin who gets the Ansible plugin's run and approve permissions (created when missing), and Semaphore UI's admin |
+| `--admin-user NAME` | `INSTALLER_ADMIN_USER` | `admin` | the LibreNMS admin who gets the Ansible plugin's run and approve permissions, and Semaphore UI's admin: created in a LibreNMS the installer installs; in a LibreNMS installed otherwise, one of its admins (the run stops before it changes anything when there is none) |
 | `--admin-password PW` | `INSTALLER_ADMIN_PASSWORD` | generated | their password when they are created (LibreNMS and Semaphore UI alike) |
-| `--admin-email EMAIL` | `INSTALLER_ADMIN_EMAIL` | `root@<server name>` | |
+| `--admin-email EMAIL` | `INSTALLER_ADMIN_EMAIL` | `<admin user>@<server name>` | the e-mail of an admin the installer makes: the LibreNMS admin's, and Semaphore UI's admin's when LibreNMS has none for them (Semaphore UI's admin gets the LibreNMS admin's e-mail; e-mails are unique in Semaphore UI) |
 | `--server-name NAME` | `INSTALLER_SERVER_NAME` | `hostname -f` | nginx' `server_name` for LibreNMS |
 | `--timezone ZONE` | `INSTALLER_TIMEZONE` | the system's | PHP's time zone (`date.timezone`) |
 | `--php-stream STREAM` | `INSTALLER_PHP_STREAM` | `remi-8.5` | PHP's module stream: Remi's 8.5 as LibreNMS documents it, or `remi-8.4`; `8.3` takes Rocky's own PHP (LibreNMS 26.10 then warns that 8.4 is its minimum) |
@@ -140,9 +145,9 @@ LibreNMS' missing Python modules with pip (`/usr/local/lib/python3*`), `/usr/loc
 binary), `/usr/bin/distro`, `/usr/local/bin/composer` (only when an existing LibreNMS has no Composer).
 
 **Users:** `librenms` (home `/opt/librenms`), `semaphore` (`/var/lib/semaphore`), `oxidized` (`/home/oxidized`). In
-LibreNMS: the admin of `--admin-user` (when missing), `ansible-inventory` and `oxidized` (global-read) with an API token
-each. In Semaphore UI: the admin and the Task Runner user `librenms`. In MariaDB: `librenms@localhost` and
-`semaphore@localhost`/`semaphore@127.0.0.1` with their databases.
+LibreNMS: the admin of `--admin-user` (in a LibreNMS it installs), `ansible-inventory` and `oxidized` (global-read)
+with an API token each. In Semaphore UI: the admin and the Task Runner user `librenms`. In MariaDB:
+`librenms@localhost` and `semaphore@localhost`/`semaphore@127.0.0.1` with their databases.
 
 **Services:** `mariadb`, `php-fpm`, `nginx`, `snmpd`, `crond`, `librenms-scheduler.timer` (for a LibreNMS it installs),
 `semaphore`, `oxidized`, all enabled.
@@ -174,10 +179,12 @@ installs; Semaphore UI's and Oxidized's ports when they listen on another addres
 ## Running it again, and runs that stop
 
 A run checks every part and changes only what is not right; when nothing is, it says *Nothing needed a change*. It
-never undoes what an admin set up since: a file it wrote and someone changed (the nginx site, Oxidized's configuration,
-a playbook in the playbook repository) stays as it is, with a warning; a plugin an admin disabled stays disabled; the
-key store entries keep their secrets unless the devices' login of the options changed; settings of the plugins other
-than the connection, the inventory user and the fix templates are left alone.
+never undoes what an admin set up since: a file it wrote and someone changed (the nginx site, Oxidized's
+configuration, a playbook in the playbook repository) stays as it is, with a warning; a plugin an admin disabled stays
+disabled; the key store entries keep their secrets unless the devices' login of the options changed; settings of the
+plugins other than the connection, the inventory user and the fix templates are left alone. A run with another
+`--admin-user` makes that admin Semaphore UI's admin and removes the one an earlier run made (the state remembers
+which).
 
 A run updates the plugins: it fetches the clone's branch from the plugins' source (without `--plugin-source` and
 `--plugin-branch`, the source and branch of the run before) and, when it moved, adds both

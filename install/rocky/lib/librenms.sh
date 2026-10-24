@@ -560,6 +560,22 @@ lnms_admin() {
     librenms_admin_ensure
 }
 
+# librenms_admin_precheck: in a LibreNMS installed otherwise, the admin --admin-user names must be one of its admins:
+# the Ansible plugin's run and approve permissions go to them, and Semaphore UI's admin takes their name and e-mail.
+# Checked before any part runs, so a wrong name changes nothing (an earlier version made Semaphore UI's admin first).
+librenms_admin_precheck() {
+    [[ $LNMS_MODE == existing && ${WANT[semaphore]} == 1 ]] || return 0
+    # a LibreNMS of a version the plugins do not support: the LibreNMS part says so
+    librenms_supported "$LNMS_VERSION" || return 0
+    HELPER_HINT="the installer reads this LibreNMS' users with librenms_helper.php" helper user-get "$(json_object username "$ADMIN_USER")"
+    if [[ $(json_field "$HELPER_OUT" exists) != true ]]; then
+        die "this LibreNMS has no user $ADMIN_USER" \
+            "name one of its admins with --admin-user (the Ansible plugin's run and approve permissions go to them, and Semaphore UI's admin takes their name)"
+    fi
+    [[ $(json_field "$HELPER_OUT" admin) == true ]] || die "the LibreNMS user $ADMIN_USER is not an admin" "name an admin with --admin-user, or make $ADMIN_USER an admin"
+    log "LibreNMS admin $ADMIN_USER: there"
+}
+
 # librenms_admin_ensure: the admin of --admin-user, created when missing (password: --admin-password or generated).
 librenms_admin_ensure() {
     if [[ $CHECK == 1 ]] && [[ $(state_get librenms_db || true) != yes && $LNMS_MODE != existing ]]; then

@@ -58,10 +58,12 @@ Run
 
 The admin
   --admin-user NAME        the LibreNMS admin who gets the Ansible plugin's run and approve permissions, also the
-                           Semaphore UI admin; created when missing (default: admin)       (INSTALLER_ADMIN_USER)
+                           Semaphore UI admin (default: admin); created in a LibreNMS the installer installs, and
+                           one of the admins of a LibreNMS installed otherwise              (INSTALLER_ADMIN_USER)
   --admin-password PW      their password, used when they are created (default: generated)
                                                                                        (INSTALLER_ADMIN_PASSWORD)
-  --admin-email EMAIL      (default: root@<server name>)                              (INSTALLER_ADMIN_EMAIL)
+  --admin-email EMAIL      the e-mail of an admin the installer makes, when LibreNMS has none for them
+                           (default: <admin user>@<server name>)                      (INSTALLER_ADMIN_EMAIL)
 
 LibreNMS
   --server-name NAME       the web server's name (default: hostname -f)              (INSTALLER_SERVER_NAME)
@@ -335,7 +337,8 @@ preflight() {
     [[ -d /run/systemd/system ]] || die "systemd does not run: the services need it" "run the installer on a server booted with systemd"
     command -v python3 >/dev/null || die "python3 is missing (dnf needs it on Rocky Linux)" "dnf install python3"
     [[ -n $SERVER_NAME ]] || SERVER_NAME=$(hostname -f 2>/dev/null || hostname)
-    [[ -n $ADMIN_EMAIL ]] || ADMIN_EMAIL="root@$SERVER_NAME"
+    # each admin gets an e-mail of their own (Semaphore UI's e-mails are unique)
+    if [[ -n $ADMIN_EMAIL ]]; then ADMIN_EMAIL_GIVEN=1; else ADMIN_EMAIL="$ADMIN_USER@$SERVER_NAME"; fi
     [[ -n $TIMEZONE ]] || TIMEZONE=$(timedatectl show -p Timezone --value 2>/dev/null || true)
     if [[ -z $TIMEZONE || ! -f /usr/share/zoneinfo/$TIMEZONE ]]; then
         TIMEZONE=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p' || true)
@@ -343,6 +346,7 @@ preflight() {
     [[ -n $TIMEZONE && -f /usr/share/zoneinfo/$TIMEZONE ]] || TIMEZONE=UTC
 }
 WARN_ARCH=0
+ADMIN_EMAIL_GIVEN=0
 
 # semaphore_arch: the architecture in Semaphore UI's release names.
 semaphore_arch() { case $(uname -m) in aarch64) echo arm64 ;; *) echo amd64 ;; esac; }
@@ -469,6 +473,7 @@ main() {
     printf 'LibreNMS installer for Rocky Linux %s%s (log: %s)\n' "$OS_MAJOR" "$( [[ $CHECK == 1 ]] && echo ', --check: nothing is changed' )" "$LOG_FILE"
     if [[ $WARN_ARCH == 1 ]]; then warn "aarch64 is not tested: every part has aarch64 packages, but expect surprises"; fi
     librenms_detect
+    librenms_admin_precheck
     confirm
     local p
     for p in "${PARTS[@]}"; do

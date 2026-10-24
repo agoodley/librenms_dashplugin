@@ -283,7 +283,7 @@ sem_playbook_repo() {
 # password while the server does not run (before it starts, or stopped for it), and the real password goes into
 # Semaphore UI's database as a bcrypt hash (PHP's password_hash, password on stdin) before the server runs again:
 # the throwaway never works. The state remembers the admin until its password is set, so a run stopped in between
-# finishes it.
+# finishes it, and which admin it made: a run for another --admin-user (after a run that stopped) replaces it.
 sem_admin() {
     if [[ $CHECK == 1 ]]; then
         if [[ -n $SEM_BIN && -f $SEM_CONF ]] && sem_user_exists "$ADMIN_USER"; then
@@ -293,6 +293,7 @@ sem_admin() {
         fi
         return 0
     fi
+    sem_admin_replace_earlier
     local pending; pending=$(state_get semaphore_admin_password || true)
     # an admin of an earlier version of the installer that still has its throwaway password
     if [[ -n $(cred_get SEMAPHORE_ADMIN_THROWAWAY || true) ]]; then pending=pending; fi
@@ -301,16 +302,52 @@ sem_admin() {
         info "the Semaphore UI admin $ADMIN_USER has no password of its own yet (a run stopped there): setting it"
         sem_stop_for_admin
     else
+        local email other
+        email=$(sem_admin_email)
+        other=$("$SEM_BIN" users get --email "$email" --config "$SEM_CONF" 2>/dev/null | sed -n 's/^Login: //p' || true)
+        if [[ -n $other ]]; then
+            die "Semaphore UI's user $other has the e-mail $email already, which its admin $ADMIN_USER would get (e-mails are unique there)" \
+                "give $ADMIN_USER another e-mail in LibreNMS (or --admin-email, when LibreNMS has none for them), or change $other's in Semaphore UI"
+        fi
         sem_stop_for_admin
         local throwaway; throwaway=$(gen_secret 32)
         LOG_REDACT+=("$throwaway")
+        state_set semaphore_admin "$ADMIN_USER"
         state_set semaphore_admin_password pending
-        act "add the Semaphore UI admin $ADMIN_USER" "$SEM_BIN" users add --admin --login "$ADMIN_USER" --name "$ADMIN_USER" \
-            --email "$ADMIN_EMAIL" --password "$throwaway" --config "$SEM_CONF"
+        act "add the Semaphore UI admin $ADMIN_USER ($email)" "$SEM_BIN" users add --admin --login "$ADMIN_USER" --name "$ADMIN_USER" \
+            --email "$email" --password "$throwaway" --config "$SEM_CONF"
     fi
     sem_admin_password
     state_set semaphore_admin_password set
     cred_unset SEMAPHORE_ADMIN_THROWAWAY
+}
+
+# sem_admin_email: the e-mail of Semaphore UI's admin: the LibreNMS admin's, else --admin-email, else
+# <admin user>@<server name>, so that two admins never get the same one.
+sem_admin_email() {
+    local email=''
+    if [[ -f $LNMS_DIR/artisan ]]; then
+        helper user-get "$(json_object username "$ADMIN_USER")"
+        email=$(json_field "$HELPER_OUT" email)
+    fi
+    if [[ ! $email =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]]; then
+        if [[ $ADMIN_EMAIL_GIVEN == 1 ]]; then email=$ADMIN_EMAIL; else email="$ADMIN_USER@$SERVER_NAME"; fi
+    fi
+    printf '%s' "$email"
+}
+
+# sem_admin_replace_earlier: the Semaphore UI admin an earlier run made for another --admin-user (the state says
+# which) makes way for this one: a run that stopped (a LibreNMS without the admin it named), then one with the right
+# admin, leaves one admin of the installer, not two.
+sem_admin_replace_earlier() {
+    local earlier; earlier=$(state_get semaphore_admin || true)
+    [[ -n $earlier && $earlier != "$ADMIN_USER" ]] || return 0
+    if sem_user_exists "$earlier"; then
+        act "remove the Semaphore UI admin $earlier an earlier run made (the admin is $ADMIN_USER now)" \
+            "$SEM_BIN" users delete --login "$earlier" --config "$SEM_CONF"
+    fi
+    state_set semaphore_admin ''
+    state_set semaphore_admin_password ''
 }
 
 # sem_user_exists LOGIN: whether Semaphore UI has a user LOGIN (its command line tool reads the database).
