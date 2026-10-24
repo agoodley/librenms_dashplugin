@@ -594,7 +594,7 @@ lnms_cron_account() {
     if [[ $rc == 0 ]]; then detail "cron may run the librenms user's jobs (PAM's account check for crond: $out)"; return 0; fi
     lnms_account_log
     local what="cron cannot run LibreNMS' jobs ($when): PAM's account check of the librenms user for crond says: $out"
-    local hint="the account needs an entry in /etc/shadow that PAM reads: check getent shadow librenms and pwck -r (pwconv adds missing shadow entries), and journalctl -u crond; then run the installer again"
+    local hint="the account needs an entry in /etc/shadow that PAM reads: check getent shadow librenms and pwck -r (pwconv adds missing shadow entries), and journalctl -u crond. PAM reads /etc/shadow through its helper unix_chkpwd: in a container whose host confines that helper with AppArmor (Ubuntu 24.04), the kernel log shows apparmor=\"DENIED\" for profile unix-chkpwd, and the host's profile needs capability dac_read_search (install/rocky/README.md, Testing it). Then run the installer again"
     if [[ $CHECK == 1 || $LNMS_MODE == existing ]]; then warn "$what ($hint)"; return 0; fi
     die "$what" "$hint"
 }

@@ -57,6 +57,23 @@ jobs:
             sleep 2
           done
           echo "systemd: $state"
+      - name: The runner's AppArmor lets PAM's helper read Rocky's /etc/shadow
+        # Ubuntu 24.04's AppArmor confines unix_chkpwd, in privileged containers too, without dac_read_search. Rocky's
+        # pam_unix reads its /etc/shadow (mode 000) only through that helper, so every PAM account check fails there,
+        # crond's for librenms included (cron then runs none of LibreNMS' jobs). Newer AppArmor profiles grant it.
+        run: |
+          probe() {
+            docker run --rm --privileged --entrypoint /bin/bash -v "$PWD:/src:ro" inst-rocky \
+              -c 'useradd -r pamprobe && python3 -I /src/install/rocky/lib/pam_account.py crond pamprobe' 2>&1
+          }
+          echo "crond's PAM account check of a new user in a Rocky container: $(probe)"
+          if [ -e /etc/apparmor.d/unix-chkpwd ]; then
+            echo 'capability dac_read_search,' | sudo tee -a /etc/apparmor.d/local/unix-chkpwd
+            sudo apparmor_parser -r /etc/apparmor.d/unix-chkpwd
+          fi
+          result=$(probe) || true
+          echo "with dac_read_search for unix_chkpwd: $result"
+          [ "$result" = ok ]
       - name: --check on the fresh system
         run: $RUN --check
       - name: Install everything

@@ -24,6 +24,10 @@ grep -E '^(passwd|shadow|group):' /etc/nsswitch.conf
 echo "authselect: $(authselect current 2>&1 | head -n 1)"
 echo "pwck -r:"; pwck -r 2>&1 | head -n 20
 echo "rpm -V setup shadow-utils pam:"; rpm -V setup shadow-utils pam 2>&1
+# Rocky's pam_unix reads /etc/shadow (mode 000) only through this helper, which a container's host may confine
+ls -l /usr/sbin/unix_chkpwd 2>&1
+echo "the kernel's AppArmor refusals of unix_chkpwd (a container's host):"
+dmesg 2>/dev/null | grep -E 'apparmor="DENIED".*unix-chkpwd' | tail -n 3
 echo "the installer's lines about users:"
 grep -h -E 'useradd|usermod|userdel|groupadd|pwconv|librenms user|the user |account check' /var/log/librenms-installer/install-*.log 2>/dev/null | tail -n 20
 echo "the packages installed last (rpm -qa --last):"; rpm -qa --last 2>/dev/null | head -n 25

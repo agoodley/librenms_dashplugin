@@ -233,7 +233,11 @@ the last lines of the command's output, what to do, and the log.
   `install/rocky/tests/ca/` as `*.crt` or `*.pem`, which git ignores; without them the directory holds only its
   `.gitignore`. The units that would touch the host when the container shares its network (firewalld, NetworkManager,
   networkd, resolved, udev, sysctl, chrony, tuned, ...) are masked, and the entrypoint makes `/proc/sys` and `/sys`
-  read-only.
+  read-only. On a host whose AppArmor confines PAM's helper `unix_chkpwd` (Ubuntu 24.04, as on GitHub's runners), the
+  helper cannot read Rocky's `/etc/shadow` (mode 000) in the container. Rocky's PAM reads it only through that helper,
+  so cron runs none of LibreNMS' jobs there, and the installer stops at its check of that. Add `capability
+  dac_read_search,` (newer AppArmor releases grant it) to `/etc/apparmor.d/local/unix-chkpwd` on the host, then run
+  `apparmor_parser -r /etc/apparmor.d/unix-chkpwd`, as CI does.
 * `verify.sh [--no-cron-wait]`: what a run should have made: cron polling on its own (it waits past the next */5 tick
   for a poll by LibreNMS' poller cron job, newer than the installer's own, and finds no PAM refusal of librenms in
   crond's journal), LibreNMS on nginx, `./validate.php`, the admin's login and both plugins' pages, both plugins
