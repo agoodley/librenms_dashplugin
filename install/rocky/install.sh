@@ -321,6 +321,9 @@ preflight() {
     OS_MAJOR=${version%%.*}
     [[ $id == rocky && ( $OS_MAJOR == 9 || $OS_MAJOR == 10 ) ]] \
         || die "this installer is for Rocky Linux 9 and 10, and this is $id $version" "use a Rocky Linux 9 or 10 server"
+    if [[ $OS_MAJOR == 10 && $PHP_STREAM != remi-* && $PHP_STREAM != 8.3 ]]; then
+        bad_option "--php-stream: Rocky Linux 10's own PHP is 8.3, not $PHP_STREAM (give 8.3, or one of Remi's such as remi-8.5)"
+    fi
     ARCH=$(uname -m)
     case $ARCH in
         x86_64) ;;
