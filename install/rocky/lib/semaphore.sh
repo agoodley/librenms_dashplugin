@@ -34,6 +34,8 @@ part_semaphore() {
     sem_admin
     sem_service
     sem_playbook_repo
+    # the devices' SSH host keys: Ansible checks them (the variable group's ansible_host_key_checking)
+    device_known_hosts
     if [[ $CHECK == 1 ]]; then
         # --check does not log in to Semaphore UI (that would make a token): a run checks the project through its API
         local project; project=$(state_get semaphore_project || true)
@@ -472,7 +474,10 @@ print(json.dumps({
     },
     'repository': {'name': 'LibreNMS playbooks', 'git_url': 'file://' + e['I_REPO'], 'git_branch': 'main'},
     'inventory': {'name': 'LibreNMS', 'path': 'inventory/librenms_inventory.py'},
+    # Semaphore UI runs Ansible with ANSIBLE_HOST_KEY_CHECKING=False; a variable outweighs that environment variable,
+    # so Ansible checks each device's SSH host key against /etc/ssh/ssh_known_hosts (set only when the group has none)
     'environment': {'name': 'LibreNMS', 'env': {'LIBRENMS_URL': e['I_LIBRENMS_URL'], 'ANSIBLE_CHECK_MODE_MARKERS': 'true'},
+                    'extra_vars': {'ansible_host_key_checking': True},
                     'secret_env': {'LIBRENMS_TOKEN': e['I_INVENTORY_TOKEN']}, 'update_secrets': e['I_TOKEN_NEW'] == '1'},
     'templates': [
         {'kind': 'port_descriptions', 'name': 'Fix port descriptions', 'playbook': 'fix_port_descriptions.yml', 'arguments': [],

@@ -61,16 +61,17 @@ ox_previous_url() {
     return 0
 }
 
-# Keys must be verified by the administrator (for example against the device console), never trusted on first use.
+# ox_known_hosts: the devices' verified keys (device_known_hosts: /etc/ssh/ssh_known_hosts, never trusted on first
+# use), and the copy in Oxidized's home an earlier installer made. net-ssh trusts the keys of both files, so a key
+# removed from one would stay trusted through the other: the copy goes while it holds what the system file holds.
 ox_known_hosts() {
-    local dest=$OX_HOME/.ssh/known_hosts
-    if [[ -n ${OXIDIZED_KNOWN_HOSTS:-} ]]; then
-        if [[ ! -d $OX_HOME/.ssh || $(stat -c '%U:%G %a' "$OX_HOME/.ssh") != 'oxidized:oxidized 700' ]]; then
-            act "ensure Oxidized's SSH directory" as oxidized install -d -m 700 "$OX_HOME/.ssh"
-        fi
-        put_file "$OXIDIZED_KNOWN_HOSTS" "$dest" oxidized:oxidized 600 "install verified SSH host keys for Oxidized" || true
-    elif [[ ! -s $dest ]]; then
-        warn "Oxidized rejects unknown SSH host keys: supply --oxidized-known-hosts FILE with verified device keys before expecting backups ($dest)"
+    device_known_hosts
+    local copy=$OX_HOME/.ssh/known_hosts
+    [[ -f $copy ]] || return 0
+    if [[ -f $KNOWN_HOSTS_FILE ]] && as oxidized cmp -s "$copy" "$KNOWN_HOSTS_FILE"; then
+        act "remove $copy, an earlier installer's copy of $KNOWN_HOSTS_FILE (Oxidized reads that one)" as oxidized rm -f "$copy"
+    else
+        warn "$copy holds SSH host keys too: Oxidized trusts them as well as those of $KNOWN_HOSTS_FILE (keep the two in step, or remove $copy)"
     fi
 }
 
@@ -189,6 +190,10 @@ print('\n'.join([
     'next_adds_job: true',
     'vars:',
     '  enable: ' + q(e['I_ENABLE']),
+    '  # net-ssh asks an RSA key for its SHA-1 signature (ssh-rsa) first, which Rocky\'s crypto policy refuses to',
+    '  # verify: SHA-2 first (the others follow, ssh-rsa last for devices that have nothing else)',
+    '  ssh_host_key: ' + q(','.join(['rsa-sha2-512', 'rsa-sha2-256', 'ssh-ed25519', 'ecdsa-sha2-nistp256',
+                                     'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521'])),
     'pid: ' + q(e['I_DIR'] + '/pid'),
     'crash:',
     '  directory: ' + q(e['I_DIR'] + '/crashes'),
@@ -234,7 +239,7 @@ PY
     current=$( [[ -f $OX_CONF ]] && sha256sum "$OX_CONF" | cut -d' ' -f1 || true)
     if [[ -n $current && $current != "$last" ]]; then
         if [[ $(sha256sum <<<"$text" | cut -d' ' -f1) != "$current" ]]; then
-            warn "$OX_CONF was changed by hand: left as it is (check input.ssh.secure is true, its username, password, source url and token, and extensions.oxidized-web)"
+            warn "$OX_CONF was changed by hand: left as it is (check input.ssh.secure is true, vars.ssh_host_key, its username, password, source url and token, and extensions.oxidized-web)"
         fi
         return 0
     fi

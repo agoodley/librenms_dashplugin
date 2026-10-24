@@ -125,6 +125,10 @@ ox_previous_url >"$WORK/saved-url"
 ''')
         content = (self.work / 'oxidized/.config/oxidized/config').read_text()
         self.assertIn('  ssh:\n    secure: true\n', content)
+        # net-ssh would ask an RSA key for ssh-rsa (SHA-1) first, which Rocky's crypto policy refuses to verify
+        order = [line for line in content.splitlines() if line.startswith('  ssh_host_key: ')]
+        self.assertEqual(order, ['  ssh_host_key: "rsa-sha2-512,rsa-sha2-256,ssh-ed25519,ecdsa-sha2-nistp256,'
+                                 'ecdsa-sha2-nistp384,ecdsa-sha2-nistp521"'])
         self.assertIn('password: "fixture"', content)
         self.assertIn('  enable: "enable-fixture"', content)
         self.assertEqual((self.work / 'legacy-url').read_text(), 'http://127.0.0.1:8888')
@@ -192,6 +196,132 @@ mysql_root "SELECT $(sql_literal "$PASSWORD");"
 ''', PASSWORD=password)
         self.assertEqual((self.work / 'mysql-command').read_text().strip(), 'mysql --binary-mode -u root')
         self.assertEqual((self.work / 'sql').read_text(), "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES';\nSELECT " + out + ';')
+
+    KEY = '10.0.0.1,sw1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n'
+
+    def test_known_hosts_files_are_checked(self):
+        cases = {
+            'keys': (self.KEY + '# a comment\n\n[10.0.0.2]:2222 ssh-rsa AAAAB3NzaC1yc2E=\n', True),
+            'marker': ('@revoked * ssh-rsa AAAAB3NzaC1yc2E=\n', True),
+            'comments only': ('# nothing\n\n', False),
+            'no key': ('10.0.0.1 ssh-ed25519\n', False),
+            'not base64': ('10.0.0.1 ssh-ed25519 not-a-key!\n', False),
+        }
+        for name, (text, ok) in cases.items():
+            with self.subTest(name=name):
+                (self.work / 'kh').write_text(text)
+                out = self.bash('if known_hosts_ok "$WORK/kh"; then echo yes; else echo no; fi')
+                self.assertEqual(out.strip(), 'yes' if ok else 'no')
+        (self.work / 'kh').write_text(self.KEY + '# a comment\n')
+        self.assertEqual(self.bash('known_hosts_keys "$WORK/kh"').strip(), '1')
+
+    def test_device_known_hosts_are_the_system_file_and_a_servers_own_stays(self):
+        (self.work / 'keys').write_text(self.KEY)
+        out = self.bash(r"""
+KNOWN_HOSTS_FILE=$WORK/etc-ssh/ssh_known_hosts; DEVICE_KNOWN_HOSTS=$WORK/keys
+put_file() { printf 'PUT %s %s %s\n' "$2" "$3" "$4"; mkdir -p "${2%/*}"; cp "$1" "$2"; }
+act() { shift; "$@"; }
+device_known_hosts; device_known_hosts
+cmp "$DEVICE_KNOWN_HOSTS" "$KNOWN_HOSTS_FILE" && echo SAME
+KNOWN_HOSTS_DONE=0; device_known_hosts 2>&1
+echo '10.9.9.9 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >>"$KNOWN_HOSTS_FILE"
+KNOWN_HOSTS_DONE=0; device_known_hosts 2>&1
+grep -c . "$KNOWN_HOSTS_FILE"
+DEVICE_KNOWN_HOSTS=; KNOWN_HOSTS_FILE=$WORK/none; KNOWN_HOSTS_DONE=0; device_known_hosts 2>&1
+""")
+        lines = out.splitlines()
+        puts = [line for line in lines if line.startswith('PUT ')]
+        # once a run, and in a later run (where put_file finds it up to date); the file the admin changed stays
+        self.assertEqual(len(puts), 2, out)
+        self.assertTrue(puts[0].endswith('etc-ssh/ssh_known_hosts root:root 644'), puts[0])
+        self.assertIn('SAME', lines)
+        self.assertTrue(any("is this server's own: left as it is" in line for line in lines), out)
+        self.assertIn('2', lines)
+        self.assertTrue(any('refuse devices whose SSH host keys they do not know' in line for line in lines), out)
+
+    def test_variable_group_gets_host_key_checking_when_it_has_none(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('semaphore_api', ROCKY / 'lib' / 'semaphore_api.py')
+        api_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(api_mod)
+        want = {'name': 'LibreNMS', 'env': {'LIBRENMS_URL': 'http://localhost', 'ANSIBLE_CHECK_MODE_MARKERS': 'true'},
+                'extra_vars': {'ansible_host_key_checking': True}, 'secret_env': {'LIBRENMS_TOKEN': 'secret'}}
+
+        class Api:
+            def __init__(self, existing):
+                self.existing, self.calls = existing, []
+
+            def call(self, method, path, body=None):
+                self.calls.append((method, path, body))
+                if method == 'GET' and path.endswith('/environment'):
+                    return [dict(self.existing, id=7)] if self.existing else []
+                if method == 'GET':
+                    return dict(self.existing, id=7)
+                return {'id': 7}
+
+        secrets = [{'id': 1, 'type': 'env', 'name': 'LIBRENMS_TOKEN'}]
+        env = json.dumps(want['env'])
+        cases = [
+            ('a new group', None, {'ansible_host_key_checking': True}),
+            ('a group without it', {'name': 'LibreNMS', 'env': env, 'json': '{"other": 1}', 'secrets': secrets},
+             {'other': 1, 'ansible_host_key_checking': True}),
+            ("an admin's own value", {'name': 'LibreNMS', 'env': env, 'json': '{"ansible_host_key_checking": false}',
+                                      'secrets': secrets}, None),
+        ]
+        for name, existing, sent in cases:
+            with self.subTest(name=name):
+                api_mod.changes.clear()
+                api = Api(existing)
+                self.assertEqual(api_mod.ensure_environment(api, 1, want), 7)
+                writes = [body for method, _, body in api.calls if method in ('POST', 'PUT')]
+                if sent is None:
+                    self.assertEqual(writes, [])
+                else:
+                    self.assertEqual(len(writes), 1)
+                    self.assertEqual(json.loads(writes[0]['json']), sent)
+                    self.assertTrue(any('ansible_host_key_checking: true' in c for c in api_mod.changes), api_mod.changes)
+
+    def test_wheels_librenms_cannot_read_come_from_a_copy(self):
+        for readable in [False, True]:
+            with self.subTest(readable=readable):
+                for leftover in ('wheels', 'wheels-root'):
+                    subprocess.run(['rm', '-rf', str(self.work / leftover)], check=True)
+                out = self.bash(r"""
+PIP_WHEELS=$WORK/wheels-root; mkdir -p "$PIP_WHEELS"; : >"$PIP_WHEELS/fixture.whl"
+probe() { return 1; }
+act() { shift; printf '%s\n' "$*"; }
+readable_by() { [[ $TEST_READABLE == 1 ]]; }
+id() { command id -gn; }  # the copy's group: librenms' (this test's user's here)
+lnms_python
+""", TEST_READABLE=str(int(readable)))
+                where = self.work / ('wheels-root' if readable else 'wheels')
+                self.assertIn('--find-links %s ' % where, out)
+                self.assertTrue((where / 'fixture.whl').exists())
+                self.assertEqual((self.work / 'wheels').exists(), not readable)
+                if not readable:  # the group's, no one else's
+                    self.assertEqual(oct((where / 'fixture.whl').stat().st_mode & 0o077), oct(0o040))
+
+    def test_local_checkout_librenms_cannot_read_is_cloned_from_a_copy(self):
+        out = self.bash(r"""
+src=$WORK/root-checkout
+git init -q -b main "$src"
+git -C "$src" -c user.name=fixture -c user.email=fixture@example.invalid commit -q --allow-empty -m fixture
+PLUGINS_DIR=$WORK/plugins; PLUGIN_CLONE=$PLUGINS_DIR/librenms_dashplugin; mkdir -p "$PLUGINS_DIR"
+PLUGIN_SOURCE=$src; PLUGIN_BRANCH=; GITHUB_TOKEN_VALUE=
+as() { shift; "$@"; }
+install() { mkdir -p "${*: -1}"; }
+readable_by() { [[ $2 != "$src" ]]; }  # librenms may not read the checkout (one in /root, say)
+id() { command id -gn; }
+plugins_clone
+echo "origin $(git -C "$PLUGIN_CLONE" config --get remote.origin.url) branch $PLUGIN_BRANCH_USED"
+git -C "$src" -c user.name=fixture -c user.email=fixture@example.invalid commit -q --allow-empty -m second
+plugins_clone
+echo "head $(git -C "$PLUGIN_CLONE" rev-parse HEAD) source $(git -C "$src" rev-parse HEAD)"
+""")
+        self.assertIn('origin %s branch main' % (self.work / 'root-checkout'), out)
+        head = [line for line in out.splitlines() if line.startswith('head ')][0].split()
+        self.assertEqual(head[1], head[3], out)
+        self.assertNotIn('take the plugins from', out)
 
 
 if __name__ == '__main__':

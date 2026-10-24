@@ -36,7 +36,12 @@ part_plugins() {
 # Even read-only Git operations can run hooks/helpers configured in a checkout. Never run them as root in a
 # service-owned repository. Local sources may have another owner; that trust exception stays unprivileged too.
 clone_git() { as librenms git -C "$PLUGIN_CLONE" "$@"; }
-source_git() { as librenms git -c safe.directory="$PLUGIN_SOURCE" -C "$PLUGIN_SOURCE" "$@"; }
+# source_git: git in the plugins' local checkout, or in the copy of it that librenms may read (PLUGIN_FETCH)
+source_git() {
+    local dir=${PLUGIN_FETCH:-$PLUGIN_SOURCE}
+    as librenms git -c safe.directory="$dir" -c safe.directory="$dir/.git" -C "$dir" "$@"
+}
+PLUGIN_FETCH=''
 
 # git_auth CMD...: CMD with the GitHub token (GITHUB_TOKEN) as an HTTP header for github.com, given to git in its
 # environment (GIT_CONFIG_*), never on its command line or in the clone's configuration.
@@ -58,6 +63,14 @@ plugin_source_kind() {
 
 plugins_clone() {
     local kind; kind=$(plugin_source_kind)
+    # src is where the plugins come from (the clone's origin), fetch what git reads: for a local checkout that
+    # librenms may not read (one in /root, say), a copy of it in the run's directory
+    local src=$PLUGIN_SOURCE fetch=$PLUGIN_SOURCE
+    if [[ $kind == git ]]; then
+        src=$(cd "$PLUGIN_SOURCE" && pwd)
+        fetch=$(readable_copy librenms "$src" plugin-source)
+        PLUGIN_FETCH=$fetch
+    fi
     local branch=$PLUGIN_BRANCH
     if [[ -z $branch ]]; then
         if [[ $kind == git ]]; then
@@ -68,15 +81,14 @@ plugins_clone() {
     fi
     PLUGIN_BRANCH_USED=$branch
     if [[ $kind == dir ]]; then plugins_copy; return 0; fi
-    local src=$PLUGIN_SOURCE
-    [[ $kind == git ]] && src=$(cd "$PLUGIN_SOURCE" && pwd)
     if [[ ! -d $PLUGIN_CLONE/.git ]]; then
         would "clone $PLUGIN_SOURCE ($branch) into $PLUGIN_CLONE" && return 0
         local partial=$PLUGINS_DIR/.librenms_dashplugin.partial
         rm -rf "$partial"
         install -d -o librenms -g librenms -m 755 "$partial"
         FAIL_HINT="check that this server reaches $PLUGIN_SOURCE (a private repository needs GITHUB_TOKEN), or give a local copy (--plugin-source DIR)" \
-            run git_auth as librenms git -c safe.directory="$src" -c safe.directory="$src/.git" clone --branch "$branch" "$src" "$partial"
+            run git_auth as librenms git -c safe.directory="$fetch" -c safe.directory="$fetch/.git" clone --branch "$branch" "$fetch" "$partial"
+        if [[ $fetch != "$src" ]]; then run as librenms git -C "$partial" remote set-url origin "$src"; fi
         # a copy of a plain directory (an earlier --plugin-source DIR) makes way for the clone
         rm -rf "$PLUGIN_CLONE.old"
         if [[ -d $PLUGIN_CLONE ]]; then mv "$PLUGIN_CLONE" "$PLUGIN_CLONE.old"; fi
@@ -92,7 +104,7 @@ plugins_clone() {
         before=$(clone_git rev-parse HEAD)
         if [[ $CHECK == 1 ]]; then
             local remote
-            remote=$(git_auth as librenms git -c safe.directory="$src" -c safe.directory="$src/.git" ls-remote "$src" "refs/heads/$branch" 2>>"$LOG_FILE" | cut -f1 || true)
+            remote=$(git_auth as librenms git -c safe.directory="$fetch" -c safe.directory="$fetch/.git" ls-remote "$fetch" "refs/heads/$branch" 2>>"$LOG_FILE" | cut -f1 || true)
             if [[ -z $remote ]]; then
                 info "$src has no branch $branch (a run stops there)"
             elif [[ $remote != "$before" ]]; then
@@ -101,8 +113,10 @@ plugins_clone() {
                 detail "the plugins are up to date (${before:0:7})"
             fi
         else
+            local from=origin
+            [[ $fetch != "$src" ]] && from=$fetch
             FAIL_HINT="check that this server reaches $src (a private repository needs GITHUB_TOKEN)" \
-                run git_auth as librenms git -c safe.directory="$src" -c safe.directory="$src/.git" -C "$PLUGIN_CLONE" fetch --quiet origin "$branch"
+                run git_auth as librenms git -c safe.directory="$fetch" -c safe.directory="$fetch/.git" -C "$PLUGIN_CLONE" fetch --quiet "$from" "$branch"
             local current; current=$(clone_git symbolic-ref --short HEAD 2>/dev/null || true)
             if [[ $current != "$branch" ]]; then
                 run as librenms git -C "$PLUGIN_CLONE" checkout --quiet -B "$branch" FETCH_HEAD

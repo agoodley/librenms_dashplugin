@@ -28,7 +28,7 @@ def receive(channel, pattern):
 
 
 with paramiko.SSHClient() as client:
-    client.load_host_keys('/home/oxidized/.ssh/known_hosts')
+    client.load_host_keys('/etc/ssh/ssh_known_hosts')
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
     client.connect(host, username='netops', password='netops-pw', look_for_keys=False, allow_agent=False, timeout=10)
     channel = client.invoke_shell()
