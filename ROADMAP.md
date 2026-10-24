@@ -63,7 +63,7 @@ These are useful but are not about topology, or would change devices, so they fi
   root guard on downlinks, AAA / NTP / SNMPv3 baselines). It could also confirm the STP page's guess about edge ports
   without portfast.
 * **Inventory & lifecycle:** approved software versions per model, end-of-life dates, serial numbers, optics
-  inventory (`transceivers`).
+  inventory (`transceivers`); planned in phases [below](#inventory--lifecycle), not started.
 * **NetBox sync:** push LLDP-discovered cables, IP addresses and VLANs to NetBox, or compare NetBox's documented cabling
   with what LLDP sees. It could reuse this plugin's link de-duplication.
 
@@ -113,3 +113,31 @@ from the LibreNMS pages.
 * Keep it to picking targets, launching, following and verifying on top of the runner, not a configuration management
   product.
 * Effort: L overall; each of the four phases was M.
+
+### Inventory & lifecycle
+
+Software versions, end-of-life dates, serial numbers and optics across the network, checked against what is approved.
+Not started: it waits for a real-world test of the plugins built so far.
+
+* **Why a separate plugin:** it is about the devices themselves, not the topology between them.
+* **Data:** LibreNMS already collects it. The plugin adds no polling: it reads each device's model, software version,
+  serial number and features (`devices`), its modules with their serial numbers and revisions (`entPhysical`, LibreNMS'
+  *Inventory* page) and its optics (`transceivers`: type, vendor, model, serial, wavelength, DOM).
+* **What it adds:** policy and lifecycle on top of that data. It follows this plugin's conventions: scoped
+  repositories, the analysis in plain PHP with unit tests, background checks that write to the eventlog.
+
+| Phase | Scope | Effort |
+|---|---|---|
+| 1 | Inventory reports: models and software versions across the network; device and module serial numbers; optics by type, vendor, model and wavelength, third-party optics included. Filtered by device group and location, exported as CSV, with a panel on each device page | S–M |
+| 2 | Software compliance: approved, minimum and blocked versions per model or OS; findings for the devices that do not comply; a scheduled check whose eventlog entries alert rules can match; a history of the upgrades it saw | M |
+| 3 | Lifecycle: end-of-sale, end-of-software-maintenance and end-of-support dates per model or part number; contracts and warranties per serial number; reports such as "past end of support" or "ending within 12 months" per location; optics in ports unused for N days | M |
+| 4 | Changes and upgrades: hardware changes recorded (a module, optic or serial number swapped), as the topology history records links; optionally, upgrade campaigns through the [Ansible plugin](ansible/README.md): the devices that do not comply in one change, planned, dry-run, approved, applied in batches and verified | M–L |
+
+* **Open decisions:**
+  * where end-of-life dates come from: LibreNMS has none, so a CSV/JSON import and manual edits (no outside
+    connection), or a vendor API (Cisco's EoX API needs API credentials; most vendors offer none);
+  * whether contracts and warranties belong here or in an asset system;
+  * whether phase 4's upgrade campaigns are in scope: OS upgrades and reloads would be the riskiest automation of these
+    plugins;
+  * whether the plugin lives in this repository, as the Ansible plugin does, or in its own.
+* Effort: M–L overall.
