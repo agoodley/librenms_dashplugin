@@ -452,6 +452,8 @@
         var unplanned = config.prefill && config.prefill.unplanned === 'hand' ? 'hand' : 'leave';
         // a change made from fixes: its devices are the fix's, and the lines of its fix variable go with the preview and the creation
         var fix = config.fix || null;
+        // fixes the plugin refuses (the page says why): nothing to choose, nothing to preview; back to the Fixes page
+        var locked = !!fix || !!config.fixRefused;
 
         // the chosen devices in the list's order (the batches follow it)
         function selectedIds() {
@@ -527,10 +529,10 @@
                 var link = el('a', null, device.display);
                 link.href = config.deviceUrl + '/' + device.id;
                 append(row, [
-                    el('td', null, checkbox('ans-target-check', !!selected[device.id], !!fix || (!!device.refusal && !selected[device.id]), 'Target ' + device.display, function (on) {
+                    el('td', null, checkbox('ans-target-check', !!selected[device.id], locked || (!!device.refusal && !selected[device.id]), 'Target ' + device.display, function (on) {
                         toggle(device, on);
                     })),
-                    el('td', null, checkbox('ans-canary-check', !!canary[device.id], !!fix || !selected[device.id], device.display + ' in the first batch', function (on) {
+                    el('td', null, checkbox('ans-canary-check', !!canary[device.id], locked || !selected[device.id], device.display + ' in the first batch', function (on) {
                         if (on) {
                             canary[device.id] = true;
                         } else {
@@ -861,7 +863,7 @@
             input.addEventListener('change', render);
         });
         filters.text.addEventListener('input', render);
-        if (fix) {
+        if (locked) {
             byId('ans-select-shown').disabled = true;
             byId('ans-select-none').disabled = true;
         }
@@ -1486,6 +1488,9 @@
             button.id = 'ans-fix-' + kind;
             var chosenText = el('span', 'ans-help');
             chosenText.id = 'ans-fix-devices-' + kind;
+            var capText = el('div', 'panel-body ans-help text-warning');
+            capText.id = 'ans-fix-cap-' + kind;
+            capText.style.display = 'none';
             // the checkboxes shown, by fix
             var boxes = {};
             var refresh = function () {
@@ -1503,17 +1508,25 @@
                     }
                 });
                 var devices = Object.keys(chosen).length;
-                chosenText.textContent = count ? 'they change ' + devices + ' device' + (devices === 1 ? '' : 's') + ' (a change has at most ' + maxTargets + ')' : '';
+                var capped = false;
                 // a fix that would take the change past the most targets cannot be chosen, until one is no longer chosen
                 Object.keys(boxes).forEach(function (id) {
                     var entry = boxes[id];
                     var more = entry.fix.devices.filter(function (device) {
                         return !chosen[device.device_id];
                     }).length;
-                    entry.box.disabled = !entry.box.checked && (!usable(entry.fix) || devices + more > maxTargets);
+                    var over = usable(entry.fix) && devices + more > maxTargets;
+                    capped = capped || (!entry.box.checked && over);
+                    entry.box.disabled = !entry.box.checked && (!usable(entry.fix) || over);
                     entry.box.title = whyNot(entry.fix) || (entry.box.disabled ? 'A change has at most ' + maxTargets + ' targets (Max targets per change): the fixes chosen change '
                         + devices + ' device' + (devices === 1 ? '' : 's') + '. Choose this fix in another change.' : '');
                 });
+                // said next to the button, and above the fixes once a fix cannot be chosen for it
+                var those = devices + ' device' + (devices === 1 ? '' : 's');
+                chosenText.textContent = !count ? '' : 'they change ' + those + (capped ? ', the most a change may have (see above)' : ' (a change has at most ' + maxTargets + ')');
+                capText.textContent = capped ? 'The fixes chosen change ' + those + ', the most a change may have (Max targets per change): a fix of another device cannot be '
+                    + 'chosen until one is no longer chosen.' : '';
+                capText.style.display = capped ? '' : 'none';
             };
             button.addEventListener('click', function () {
                 var ids = [];
@@ -1640,7 +1653,7 @@
                 pager.id = 'ans-fixes-pages-' + kind;
             }
             append(box, [el('div', 'panel-heading', [el('strong', null, LABELS[kind] + ' (' + entries.length + ')'), ' ', templateText]),
-                pager ? el('div', 'panel-body', pager) : null, el('div', 'table-responsive', table), el('div', 'panel-body', [button, ' ', chosenText, ' ', el('span', 'ans-help', canRun
+                pager ? el('div', 'panel-body', pager) : null, capText, el('div', 'table-responsive', table), el('div', 'panel-body', [button, ' ', chosenText, ' ', el('span', 'ans-help', canRun
                     ? 'opens a new change: nothing runs before its dry run' : 'making a change needs the run permission')])]);
             return box;
         }

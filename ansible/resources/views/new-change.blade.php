@@ -227,6 +227,8 @@
                 // a change made from fixes: its devices are the fix's (not to be changed here), its lines go with the preview and the creation
                 'fix' => $fix !== null && ! $fix['errors'] ? ['kind' => $fix['kind'], 'ids' => $fix['ids'], 'scope' => $fix['scope'], 'devices' => $fix['devices'],
                     'lines' => $fix['lines'], 'variable' => $fix['variable']] : null,
+                // fixes the plugin refuses (said above): their page offers no devices to choose and no preview
+                'fixRefused' => $fix !== null && (bool) $fix['errors'],
                 'maxTargets' => $maxTargets,
                 'deviceUrl' => url('device'),
                 // the topology plugin plans the batches (the first batch comes from its first one)
