@@ -143,8 +143,10 @@
         </div>
         @if($verifyOn)
             @php
-                $verifyCss = $outcome !== null ? ['verified' => 'ok', 'accepted' => 'warning', 'not_verified' => 'critical'][$outcome] ?? 'info'
-                    : ($beforeUpgrade || ($verifyCurrent['result'] ?? null) === 'unexpected' ? 'critical' : (($verifyCurrent['result'] ?? null) === 'unknown' || $verifyWhy !== null ? 'warning' : 'info'));
+                // a change that ran as in phase 3 (Verify changes off at its Apply, applied before the upgrade): neutral, not the red of a failure
+                $verifyCss = $outcome !== null ? (\Agoodley\LibrenmsAnsible\Changes\VerificationText::neutral($outcome, $change['verification_note'] ?? null) ? 'info'
+                        : ['verified' => 'ok', 'accepted' => 'warning', 'not_verified' => 'critical'][$outcome] ?? 'info')
+                    : ($beforeUpgrade ? 'info' : (($verifyCurrent['result'] ?? null) === 'unexpected' ? 'critical' : (($verifyCurrent['result'] ?? null) === 'unknown' || $verifyWhy !== null ? 'warning' : 'info')));
                 $verifyNow = $outcome !== null ? ucfirst((string) \Agoodley\LibrenmsAnsible\Changes\VerificationText::label($outcome))
                     : ($final || $beforeUpgrade ? 'Not verified' : ($change['apply_started_at'] === null ? ($verifyWhy !== null ? 'Not if applied now' : 'Each batch') : 'Batch ' . (int) $change['current_batch'] . ': '
                         . (isset($verifyCurrent['result']) ? $resultLabels[$verifyCurrent['result']] ?? $verifyCurrent['result'] : (in_array($verifyCurrent['after']['status'] ?? null, ['waiting', 'settling'], true)

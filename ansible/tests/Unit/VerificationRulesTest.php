@@ -300,6 +300,11 @@ class VerificationRulesTest extends TestCase
             VerificationText::note('the topology plugin is not installed', true));
         $this->assertSame('batch 1 could not be verified', VerificationText::note('batch 1 could not be verified'));
         $this->assertStringStartsWith('switched off in the settings (Verify changes) when it was applied', (string) VerificationText::note(VerificationOutcome::SWITCHED_OFF));
+        // the label's style: a change that ran as in phase 3 (switched off, applied before the upgrade) is no failure; one whose batches could not be verified is
+        $this->assertSame(['default', 'default', 'danger', 'danger', 'warning', 'success', 'default'], [
+            VerificationText::css('not_verified', VerificationOutcome::SWITCHED_OFF), VerificationText::css('not_verified', VerificationOutcome::BEFORE_UPGRADE),
+            VerificationText::css('not_verified', 'batch 1 could not be verified'), VerificationText::css('not_verified', 'the topology plugin is not installed'),
+            VerificationText::css('accepted', 'what batch 1 changed was accepted'), VerificationText::css('verified'), VerificationText::css(null)]);
     }
 
     // ------------------------------------------------------------------ the fix templates' contract

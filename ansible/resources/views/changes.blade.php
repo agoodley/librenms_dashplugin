@@ -95,7 +95,7 @@
                         @endif
                     </td>
                     {{-- the outcome of its verification (phase 4), in a column of its own: not the dry run's "verified" --}}
-                    <td data-label="Verification">@if(($change['verification'] ?? null) !== null)<span class="label label-{{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::css($change['verification']) }} ans-change-verification"
+                    <td data-label="Verification">@if(($change['verification'] ?? null) !== null)<span class="label label-{{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::css($change['verification'], $change['verification_note'] ?? null) }} ans-change-verification"
                             data-verification="{{ $change['verification'] }}" title="the outcome of its verification{{ ($change['verification_note'] ?? null) ? ': ' . \Agoodley\LibrenmsAnsible\Changes\VerificationText::note($change['verification_note']) : '' }}"><i class="fa fa-sitemap" aria-hidden="true"></i> {{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::listed($change['verification'], $change['verification_note'] ?? null) }}</span>@else<span class="text-muted">-</span>@endif</td>
                 </tr>
             @empty

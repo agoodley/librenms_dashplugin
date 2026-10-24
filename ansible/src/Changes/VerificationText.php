@@ -59,9 +59,21 @@ final class VerificationText
         return $note !== null && $atApply ? "$note when it was applied: its batches run without a verification" : $note;
     }
 
-    public static function css(?string $outcome): string
+    /**
+     * The style of an outcome's label: a change not verified because it was applied with Verify changes off or before the
+     * upgrade ran as in phase 3, which nothing went wrong in: neutral, not the red of a batch that could not be verified.
+     */
+    public static function css(?string $outcome, ?string $note = null): string
     {
-        return self::OUTCOMES[$outcome ?? ''][0] ?? 'default';
+        return self::neutral($outcome, $note) ? 'default' : self::OUTCOMES[$outcome ?? ''][0] ?? 'default';
+    }
+
+    /**
+     * Is the outcome one of a change that ran as in phase 3 (Verify changes off at its Apply, applied before the upgrade)?
+     */
+    public static function neutral(?string $outcome, ?string $note): bool
+    {
+        return $outcome === VerificationOutcome::NOT_VERIFIED && in_array($note, [VerificationOutcome::SWITCHED_OFF, VerificationOutcome::BEFORE_UPGRADE], true);
     }
 
     /**
