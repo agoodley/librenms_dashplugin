@@ -3,8 +3,8 @@
 # shellcheck disable=SC2016,SC2015
 # install/rocky/tests/e2e.sh: end to end on a server install.sh set up (a test container), through the Ansible
 # plugin's own pages as its admin would use them:
-#  1. a fake Cisco IOS switch (SSH only) added to LibreNMS as the plugin's e2e seeds add one: os ios, the overwrite
-#     IP, no SNMP;
+#  1. a fake Cisco IOS switch (SSH only) added to LibreNMS with lnms device:add --ping-only (no SNMP), os ios, the
+#     overwrite IP;
 #  2. Oxidized lists it (LibreNMS' API feeds it);
 #  3. a change made with the template "Fix port descriptions" (the example playbook fix_port_descriptions.yml) on the
 #     switch: preview, create, dry run (proven by the plugin), approve, apply; the run changed the device;
@@ -45,17 +45,21 @@ for k in sys.argv[2].split("."): d = d[int(k)] if isinstance(d, list) else d.get
 print(json.dumps(d) if isinstance(d, (dict, list)) else d)' "$1" "$2" 2>/dev/null; }
 php_lnms() { (cd /opt/librenms && runuser -u librenms -- env E2E_NAME="$NAME" E2E_IP="$IP" E2E_IFACE="$IFACE" E2E_IFNAME="$IFNAME" php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php"; $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); '"$1"); }
 
-# --- 1. the switch in LibreNMS, as the plugin's e2e seeds add one
+# --- 1. the switch in LibreNMS, added as LibreNMS adds a device without SNMP (lnms device:add --ping-only), then with the
+# address it answers on (overwrite_ip: its name does not resolve) and the state a poll would give it, and its port; only
+# with the columns this LibreNMS has (26.10 and the master branch differ)
+exists=$(php_lnms 'echo DB::table("devices")->where("hostname", getenv("E2E_NAME"))->exists() ? "yes" : "no";')
+if [[ $exists == no ]]; then
+    out=$(cd /opt/librenms && runuser -u librenms -- ./lnms device:add --ping-only --force --os ios "$NAME" 2>&1) || stop "lnms device:add $NAME failed: $out"
+fi
 id=$(php_lnms '$name = getenv("E2E_NAME"); $ip = getenv("E2E_IP");
 $id = DB::table("devices")->where("hostname", $name)->value("device_id");
-if (! $id) {
-    $id = DB::table("devices")->insertGetId(["hostname" => $name, "sysName" => $name, "display" => $name, "os" => "ios", "overwrite_ip" => $ip,
-        "ip" => inet_pton($ip), "status" => 1, "status_reason" => "", "disabled" => 0, "ignore" => 0, "snmp_disable" => 1, "type" => "network",
-        "hardware" => "Fake IOS switch", "version" => "15.0(2)SE", "community" => "public", "snmpver" => "v2c", "inserted" => now(), "last_polled" => now()]);
-}
+$only = fn (string $table, array $values) => array_filter($values, fn ($column) => Schema::hasColumn($table, $column), ARRAY_FILTER_USE_KEY);
+DB::table("devices")->where("device_id", $id)->update($only("devices", ["overwrite_ip" => $ip, "ip" => inet_pton($ip), "sysName" => $name,
+    "status" => 1, "status_reason" => "", "type" => "network", "hardware" => "Fake IOS switch", "version" => "15.0(2)SE"]));
 if (! DB::table("ports")->where("device_id", $id)->where("ifIndex", 1)->exists()) {
-    DB::table("ports")->insert(["device_id" => $id, "ifIndex" => 1, "ifName" => getenv("E2E_IFNAME"), "ifDescr" => getenv("E2E_IFACE"),
-        "ifType" => "ethernetCsmacd", "ifAdminStatus" => "up", "ifOperStatus" => "up", "disabled" => 0, "deleted" => 0, "ignore" => 0]);
+    DB::table("ports")->insert($only("ports", ["device_id" => $id, "ifIndex" => 1, "ifName" => getenv("E2E_IFNAME"), "ifDescr" => getenv("E2E_IFACE"),
+        "ifType" => "ethernetCsmacd", "ifAdminStatus" => "up", "ifOperStatus" => "up", "disabled" => 0, "deleted" => 0, "ignore" => 0]));
 }
 echo $id;')
 [[ $id =~ ^[0-9]+$ ]] && pass "device $NAME ($IP) in LibreNMS (#$id)" || stop "device $NAME not added: $id"
