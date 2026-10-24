@@ -52,8 +52,9 @@ part_semaphore() {
     librenms_url "$LNMS_INVENTORY_TOKEN"
     sem_project
     sem_runner_token
+    selinux_boolean_on httpd_can_network_connect "LibreNMS' PHP reaches Semaphore UI's API"
     ansible_connect
-    if [[ $SEMAPHORE_LISTEN != 127.0.0.1 && $SEMAPHORE_LISTEN != ::1 ]]; then firewall_open "$SEMAPHORE_PORT/tcp"; fi
+    if [[ $SEMAPHORE_LISTEN != 127.* && $SEMAPHORE_LISTEN != ::1 ]]; then firewall_open "$SEMAPHORE_PORT/tcp"; fi
     local empty=''
     [[ -n $SEM_LOGIN_EMPTY ]] && empty="; the devices' login is empty: fill it in"
     summary_add "Semaphore UI $SEMAPHORE_VERSION on http://$SEMAPHORE_LISTEN:$SEMAPHORE_PORT (admin: $ADMIN_USER), project \"$SEM_PROJECT\" (#${SEM_PROJECT_ID:-?})$empty"
@@ -131,7 +132,7 @@ sem_database() {
     [[ $CHECK == 1 ]] && ! command -v mysql >/dev/null && { would "create the database semaphore and its user"; return 0; }
     local password; password=$(sem_config_value mysql.pass)
     [[ -n $password ]] || password=$(secret_for SEMAPHORE_DB_PASSWORD)
-    if [[ $CHECK == 0 ]] && db_password_ok semaphore "$password" semaphore && MYSQL_PWD=$password probe mysql -u semaphore -h 127.0.0.1 -e 'SELECT 1' semaphore; then
+    if db_password_ok semaphore "$password" semaphore && MYSQL_PWD=$password probe mysql -u semaphore -h 127.0.0.1 -e 'SELECT 1' semaphore; then
         detail "the database semaphore and its user are there"
         SEM_DB_PASSWORD=$password
         return 0

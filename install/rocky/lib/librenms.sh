@@ -355,7 +355,7 @@ lnms_database() {
     lnms_env_get DB_PASSWORD
     password=$ENV_VALUE
     [[ -n $password ]] || password=$(secret_for LIBRENMS_DB_PASSWORD)
-    if [[ $CHECK == 0 ]] && db_password_ok librenms "$password" librenms; then detail "the librenms database and its user are there"; LNMS_DB_PASSWORD=$password; return 0; fi
+    if db_password_ok librenms "$password" librenms; then detail "the librenms database and its user are there"; LNMS_DB_PASSWORD=$password; return 0; fi
     would "create the librenms database and its user (utf8mb4, as LibreNMS documents)" && return 0
     mysql_root "CREATE DATABASE IF NOT EXISTS librenms CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS 'librenms'@'localhost' IDENTIFIED BY '$password';

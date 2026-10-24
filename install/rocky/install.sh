@@ -144,6 +144,10 @@ GITHUB_TOKEN_VALUE=${GITHUB_TOKEN:-}
 # secrets stay in this shell, not in the environment of every command the installer runs
 unset INSTALLER_ADMIN_PASSWORD INSTALLER_DEVICE_PASSWORD INSTALLER_DEVICE_ENABLE_PASSWORD GITHUB_TOKEN
 
+VALUE_OPTIONS=(--skip --only --admin-user --admin-password --admin-email --server-name --timezone --php-stream --librenms-url
+    --device-user --device-password --device-enable-password --plugin-source --plugin-branch --librenms-source --semaphore-source
+    --composer-source --pip-wheels --gems --distro-source --offline --semaphore-listen --semaphore-port --oxidized-listen --oxidized-port)
+
 parse_options() {
     local opt value
     while [[ $# -gt 0 ]]; do
@@ -156,6 +160,7 @@ parse_options() {
             -v|--verbose) VERBOSE=1; shift; continue ;;
         esac
         [[ $opt == -* ]] || bad_option "unexpected argument: $opt"
+        [[ " ${VALUE_OPTIONS[*]} " == *" $opt "* ]] || bad_option "unknown option: $opt"
         [[ $# -ge 2 && -n $2 ]] || bad_option "$opt needs a value"
         value=$2
         case $opt in
@@ -190,23 +195,25 @@ parse_options() {
     done
 }
 
-# parts_list TEXT OPTION: the parts named in a --skip/--only value, checked.
+# parts_list TEXT OPTION: the parts named in a --skip/--only value, checked, in PARTS_LISTED (no subshell: a bad
+# part stops the run here).
+PARTS_LISTED=()
 parts_list() {
-    local text=$1 opt=$2 p out=()
+    local text=$1 opt=$2 p items=()
+    PARTS_LISTED=()
     IFS=', ' read -r -a items <<<"$text"
     for p in "${items[@]}"; do
         [[ -z $p ]] && continue
         [[ " ${PARTS[*]} " == *" $p "* ]] || bad_option "$opt: unknown part '$p' (the parts: ${PARTS[*]})"
-        out+=("$p")
+        PARTS_LISTED+=("$p")
     done
-    printf '%s ' "${out[@]}"
 }
 
 check_options() {
     local p skip=() only=()
     if [[ -n $OPT_SKIP && -n $OPT_ONLY ]]; then bad_option "--skip and --only cannot be used together"; fi
-    read -r -a skip <<<"$(parts_list "$OPT_SKIP" --skip)"
-    read -r -a only <<<"$(parts_list "$OPT_ONLY" --only)"
+    parts_list "$OPT_SKIP" --skip; skip=("${PARTS_LISTED[@]}")
+    parts_list "$OPT_ONLY" --only; only=("${PARTS_LISTED[@]}")
     for p in "${PARTS[@]}"; do
         if [[ ${#only[@]} -gt 0 ]]; then
             [[ " ${only[*]} " == *" $p "* ]] && WANT[$p]=1 || WANT[$p]=0
@@ -395,7 +402,11 @@ print_summary() {
         for line in "${WARNINGS[@]}"; do printf '  - %s\n' "$line"; done
     fi
     if [[ $CHECK == 1 ]]; then
-        if [[ ${#CHANGES[@]} == 0 ]]; then printf '\nIt would change nothing.\n'; else printf '\nIt would make %d changes (listed above).\n' "${#CHANGES[@]}"; fi
+        case ${#CHANGES[@]} in
+            0) printf '\nIt would change nothing.\n' ;;
+            1) printf '\nIt would make 1 change (listed above).\n' ;;
+            *) printf '\nIt would make %d changes (listed above).\n' "${#CHANGES[@]}" ;;
+        esac
     else
         if [[ ${#CHANGES[@]} == 0 ]]; then printf '\nNothing needed a change.\n'; fi
         if [[ -f $CRED_FILE ]]; then printf '\nPasswords and tokens: %s (root only)\n' "$CRED_FILE"; fi

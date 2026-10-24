@@ -17,6 +17,9 @@
 # (in the plugin's settings, as an admin would): a switch without SNMP never has the fresh LibreNMS data it waits for.
 set -uo pipefail
 NAME=$1 IP=$2 IFACE=${3:-FastEthernet0/1}
+# the port as LibreNMS names it (its ifName): the fix template's answer names it so, and the playbook finds it in the
+# running configuration by that abbreviation
+IFNAME=$(sed -E 's/^([A-Za-z]{2})[A-Za-z-]*/\1/' <<<"$IFACE")
 OX_PORT=${OX_PORT:-8888}
 CRED=/root/librenms-installer-credentials
 cred() { sed -n "s/^$1=//p" "$CRED" | head -n 1; }
@@ -40,7 +43,7 @@ field() { python3 -c 'import json,sys
 d=json.loads(sys.argv[1])
 for k in sys.argv[2].split("."): d = d[int(k)] if isinstance(d, list) else d.get(k)
 print(json.dumps(d) if isinstance(d, (dict, list)) else d)' "$1" "$2" 2>/dev/null; }
-php_lnms() { (cd /opt/librenms && runuser -u librenms -- env E2E_NAME="$NAME" E2E_IP="$IP" php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php"; $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); '"$1"); }
+php_lnms() { (cd /opt/librenms && runuser -u librenms -- env E2E_NAME="$NAME" E2E_IP="$IP" E2E_IFACE="$IFACE" E2E_IFNAME="$IFNAME" php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php"; $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); '"$1"); }
 
 # --- 1. the switch in LibreNMS, as the plugin's e2e seeds add one
 id=$(php_lnms '$name = getenv("E2E_NAME"); $ip = getenv("E2E_IP");
@@ -49,6 +52,10 @@ if (! $id) {
     $id = DB::table("devices")->insertGetId(["hostname" => $name, "sysName" => $name, "display" => $name, "os" => "ios", "overwrite_ip" => $ip,
         "ip" => inet_pton($ip), "status" => 1, "status_reason" => "", "disabled" => 0, "ignore" => 0, "snmp_disable" => 1, "type" => "network",
         "hardware" => "Fake IOS switch", "version" => "15.0(2)SE", "community" => "public", "snmpver" => "v2c", "inserted" => now(), "last_polled" => now()]);
+}
+if (! DB::table("ports")->where("device_id", $id)->where("ifIndex", 1)->exists()) {
+    DB::table("ports")->insert(["device_id" => $id, "ifIndex" => 1, "ifName" => getenv("E2E_IFNAME"), "ifDescr" => getenv("E2E_IFACE"),
+        "ifType" => "ethernetCsmacd", "ifAdminStatus" => "up", "ifOperStatus" => "up", "disabled" => 0, "deleted" => 0, "ignore" => 0]);
 }
 echo $id;')
 [[ $id =~ ^[0-9]+$ ]] && pass "device $NAME ($IP) in LibreNMS (#$id)" || stop "device $NAME not added: $id"
@@ -69,7 +76,7 @@ token=$(csrf plugin/settings/ansible)
 web -o /dev/null --data-urlencode "_token=$token" --data-urlencode "verify=0" --data-urlencode "section=ans-verify-form" "$BASE/plugin/ansible/settings/runs"
 template=$(php_lnms 'echo json_decode(DB::table("ansible_config")->where("name", "settings")->value("value"), true)["fix_template_port_descriptions"] ?? "";')
 [[ -n $template ]] && pass "the port description fix template is #$template (the plugin's settings)" || stop "no fix template in the plugin's settings"
-answer="$NAME $IFACE $DESC"
+answer="$NAME $IFNAME $DESC"
 request=$(python3 -c 'import json,sys; print(json.dumps({"template": sys.argv[1], "devices": [int(sys.argv[2])], "canary": [int(sys.argv[2])],
     "vars": {"port_descriptions": sys.argv[3]}, "reference": "E2E-INSTALLER", "unplanned": "hand"}))' "$template" "$id" "$answer")
 preview=$(api POST plugin/ansible/api/changes/preview "$request")
@@ -105,7 +112,15 @@ if wait_status ready; then pass "approved"; else stop "approve: status $(field "
 out=$(api POST "plugin/ansible/changes/$change/apply" '{"secrets":{}}')
 if wait_status applied; then pass "applied"; else stop "apply: status $(field "$state" status) $(field "$state" label) (${out:0:300})"; fi
 
-# --- what the plugin recorded, and the switch's configuration in Oxidized
+# --- what the plugin recorded, and the switch's configuration in Oxidized. The backup after the batch is followed by
+# the change page's poll and the plugin's sync command: wait for it.
+target() { cd /opt/librenms && runuser -u librenms -- env E2E_CHANGE="$change" php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php"; $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+echo json_encode(DB::table("ansible_change_targets")->where("change_id", (int) getenv("E2E_CHANGE"))->first());'; }
+for _ in $(seq 1 60); do
+    api GET "plugin/ansible/api/changes/$change" >/dev/null
+    [[ $(field "$(target)" after_status) == requested ]] || break
+    sleep 5
+done
 results=$(cd /opt/librenms && runuser -u librenms -- env E2E_CHANGE="$change" php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php"; $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 $t = DB::table("ansible_change_targets")->where("change_id", (int) getenv("E2E_CHANGE"))->first();
 echo json_encode($t);')

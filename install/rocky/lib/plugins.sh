@@ -81,7 +81,15 @@ plugins_clone() {
         local before after
         before=$(clone_git rev-parse HEAD)
         if [[ $CHECK == 1 ]]; then
-            info "a run updates $PLUGIN_CLONE from $src ($branch) (--check does not fetch)"
+            local remote
+            remote=$(git_auth git -c safe.directory="$src" -c safe.directory="$src/.git" ls-remote "$src" "refs/heads/$branch" 2>>"$LOG_FILE" | cut -f1 || true)
+            if [[ -z $remote ]]; then
+                info "$src has no branch $branch (a run stops there)"
+            elif [[ $remote != "$before" ]]; then
+                would "update the plugins from $src ($branch): ${before:0:7} -> ${remote:0:7}, then add them again and migrate"
+            else
+                detail "the plugins are up to date (${before:0:7})"
+            fi
         else
             FAIL_HINT="check that this server reaches $src (a private repository needs GITHUB_TOKEN)" \
                 run git_auth as librenms git -c safe.directory="$src" -c safe.directory="$src/.git" -C "$PLUGIN_CLONE" fetch --quiet origin "$branch"
@@ -217,7 +225,7 @@ plugins_routes() {
     local cache
     cache=$(find "$LNMS_DIR/bootstrap/cache" -maxdepth 1 -name 'routes-v*.php' -print -quit 2>/dev/null)
     [[ -n $cache ]] || { detail "LibreNMS does not cache its routes"; return 0; }
-    if grep -q "'topology\.l2'" "$cache" && grep -q "'ansible\.changes'" "$cache"; then
+    if [[ $PLUGIN_UPDATED == 0 ]] && grep -q "'topology\.l2'" "$cache" && grep -q "'ansible\.changes'" "$cache"; then
         detail "LibreNMS' route cache has the plugins' routes"
         return 0
     fi

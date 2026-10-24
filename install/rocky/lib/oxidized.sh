@@ -40,7 +40,8 @@ part_oxidized() {
     ox_config
     ox_service
     ox_librenms_settings
-    if [[ $OXIDIZED_LISTEN != 127.0.0.1 && $OXIDIZED_LISTEN != ::1 ]]; then firewall_open "$OXIDIZED_PORT/tcp"; fi
+    selinux_boolean_on httpd_can_network_connect "LibreNMS' PHP reaches Oxidized, as LibreNMS' Oxidized documentation says"
+    if [[ $OXIDIZED_LISTEN != 127.* && $OXIDIZED_LISTEN != ::1 ]]; then firewall_open "$OXIDIZED_PORT/tcp"; fi
     ox_verify
     summary_add "Oxidized $OXIDIZED_VERSION on http://$OXIDIZED_LISTEN:$OXIDIZED_PORT: $OX_STATUS"
 }
@@ -117,8 +118,26 @@ OX_TOKEN=''
 # ox_config: Oxidized's configuration. The installer writes it while it is the one it wrote last (an admin who
 # changes it takes it over: the run then only warns about what it would set).
 ox_config() {
-    local text
-    text=$(I_USER=$DEVICE_USER I_PASSWORD=$DEVICE_PASSWORD I_ENABLE=$DEVICE_ENABLE_PASSWORD I_URL=$LIBRENMS_RESOLVED I_TOKEN=$OX_TOKEN \
+    local text user=$DEVICE_USER password=$DEVICE_PASSWORD enable=$DEVICE_ENABLE_PASSWORD
+    if [[ -z $user && -f $OX_CONF ]]; then
+        # no login given this time: the one the configuration has stays
+        local current
+        current=$(python3 -I - "$OX_CONF" <<'PY'
+import json, sys
+values = {}
+for line in open(sys.argv[1], encoding='utf-8'):
+    for key, name in (('username: ', 'user'), ('password: ', 'password'), ('  enable: ', 'enable')):
+        if line.startswith(key):
+            try:
+                values[name] = json.loads(line[len(key):])
+            except ValueError:
+                pass
+print(json.dumps(values))
+PY
+) || current='{}'
+        user=$(json_field "$current" user); password=$(json_field "$current" password); enable=$(json_field "$current" enable)
+    fi
+    text=$(I_USER=$user I_PASSWORD=$password I_ENABLE=$enable I_URL=$LIBRENMS_RESOLVED I_TOKEN=$OX_TOKEN \
         I_LISTEN=$OXIDIZED_LISTEN I_PORT=$OXIDIZED_PORT I_DIR=$OX_DIR I_SERVER=$SERVER_NAME python3 -I - <<'PY'
 import json, os
 e = os.environ

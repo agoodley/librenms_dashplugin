@@ -390,6 +390,14 @@ selinux_active() {
     [[ $mode == Enforcing || $mode == Permissive ]]
 }
 
+# selinux_boolean_on NAME WHY: turn an SELinux boolean on (permanently), when SELinux is active and it is off.
+selinux_boolean_on() {
+    selinux_active || return 0
+    local current; current=$(getsebool "$1" 2>/dev/null || true)
+    if [[ $current == *'--> on' ]]; then detail "SELinux: $1 is on"; return 0; fi
+    act "turn on SELinux' $1 ($2)" setsebool -P "$1" on
+}
+
 # firewalld_active: whether firewalld runs.
 firewalld_active() {
     command -v firewall-cmd >/dev/null 2>&1 || return 1
