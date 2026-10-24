@@ -89,6 +89,23 @@ ansible_connect
 ''')
         self.assertEqual(json.loads((self.work / 'request.json').read_text())['connection']['url'], 'http://[::1]:3000')
 
+    def test_semaphore_bind_config_supports_ipv6_and_is_idempotent(self):
+        for addr, expected in [('127.0.0.2', '127.0.0.2'), ('0.0.0.0', '0.0.0.0'), ('::1', '[::1]'), ('::', '[::]')]:
+            with self.subTest(addr=addr):
+                out = self.bash('''
+SEM_CONF=$WORK/semaphore.json; SEM_HOME=$WORK/semaphore
+SEM_DB_PASSWORD=fixture; SEMAPHORE_LISTEN=$ADDR; SEMAPHORE_PORT=3000
+install() { :; }; as() { shift; "$@"; }
+put_text() { printf '%s' "$1" >"$2"; }
+sem_config
+CHECK=1
+sem_config
+''', ADDR=addr)
+                config = json.loads((self.work / 'semaphore.json').read_text())
+                self.assertEqual(config['interface'], expected)
+                self.assertEqual(config['port'], ':3000')
+                self.assertNotIn('would change', out)
+
     def test_oxidized_requires_host_keys_and_preserves_credentials(self):
         self.bash('''
 OX_HOME=$WORK/oxidized; OX_DIR=$OX_HOME/.config/oxidized; OX_CONF=$OX_DIR/config

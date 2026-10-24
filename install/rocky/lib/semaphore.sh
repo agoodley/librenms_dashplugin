@@ -184,8 +184,10 @@ print(d)' "$SEM_CONF" "$1"
 # sem_config: /etc/semaphore/config.json (root:semaphore 640). Its encryption keys are made once and never change
 # (the key store is encrypted with access_key_encryption).
 sem_config() {
-    local text
-    text=$(I_PASSWORD=$SEM_DB_PASSWORD I_LISTEN=$SEMAPHORE_LISTEN I_PORT=$SEMAPHORE_PORT I_TMP=$SEM_HOME/tmp python3 -I - "$SEM_CONF" <<'PY'
+    # Semaphore 2.19.17 concatenates interface + :port for net/http; IPv6 literals must include brackets.
+    local text bind=$SEMAPHORE_LISTEN
+    [[ $bind == *:* ]] && bind="[$bind]"
+    text=$(I_PASSWORD=$SEM_DB_PASSWORD I_LISTEN=$bind I_PORT=$SEMAPHORE_PORT I_TMP=$SEM_HOME/tmp python3 -I - "$SEM_CONF" <<'PY'
 import base64, json, os, sys
 path = sys.argv[1]
 try:
@@ -209,7 +211,7 @@ PY
     if [[ $CHECK == 1 ]]; then
         # new encryption keys every time: only whether the file is there or its settings change counts
         if [[ ! -f $SEM_CONF ]]; then would "write $SEM_CONF (MariaDB, $SEMAPHORE_LISTEN:$SEMAPHORE_PORT)"
-        elif [[ $(sem_config_value interface) != "$SEMAPHORE_LISTEN" || $(sem_config_value port) != ":$SEMAPHORE_PORT" ]]; then
+        elif [[ $(sem_config_value interface) != "$bind" || $(sem_config_value port) != ":$SEMAPHORE_PORT" ]]; then
             would "change $SEM_CONF to listen on $SEMAPHORE_LISTEN:$SEMAPHORE_PORT"
         fi
         return 0
