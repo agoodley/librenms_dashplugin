@@ -61,7 +61,7 @@ jobs:
         run: $RUN --check
       - name: Install everything
         run: $RUN
-      - name: Verify
+      - name: Verify (it waits past the next */5 tick for a poll by cron itself)
         run: docker exec inst /src/install/rocky/tests/verify.sh
       - name: End to end (a fake Cisco IOS switch, a change through the Ansible plugin, Oxidized's backups)
         run: |
@@ -78,7 +78,7 @@ jobs:
         run: |
           docker exec -e GITHUB_TOKEN inst /src/install/rocky/install.sh --yes --only plugins \
             --plugin-source "https://github.com/${{ github.repository }}" --plugin-branch "${{ github.head_ref || github.ref_name }}"
-          docker exec inst /src/install/rocky/tests/verify.sh
+          docker exec inst /src/install/rocky/tests/verify.sh --no-cron-wait
       - name: Diagnostics (crond, LibreNMS' cron file and pollers, its log, the services; then the poller by hand)
         if: failure()
         run: docker exec inst /src/install/rocky/tests/diagnose.sh --run-poller || true

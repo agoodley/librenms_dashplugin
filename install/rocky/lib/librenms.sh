@@ -578,6 +578,38 @@ lnms_cron_scheduler() {
     if [[ $changed == 1 && $CHECK == 0 ]]; then run systemctl daemon-reload; fi
     service_enable_start crond
     service_enable_start librenms-scheduler.timer
+    lnms_cron_account "once its cron jobs are set up"
+}
+
+# lnms_cron_account WHEN: what cron needs to run LibreNMS' jobs at all: PAM's account check of the librenms user for
+# crond, made as crond makes it before each job (lib/pam_account.py). runuser, and so a job run by hand, has no
+# account check: a failing one shows only in crond's journal ("FAILED to authorize user with PAM"), while LibreNMS
+# polls nothing. It stops the run (warns, for a LibreNMS installed otherwise, and with --check), with what PAM said;
+# the log gets the account's state.
+lnms_cron_account() {
+    local when=$1 out rc=0
+    getent passwd librenms >/dev/null || return 0
+    [[ -f /etc/cron.d/librenms ]] || return 0
+    out=$(python3 -I "$WORK/lib/pam_account.py" crond librenms 2>&1) || rc=$?
+    if [[ $rc == 0 ]]; then detail "cron may run the librenms user's jobs (PAM's account check for crond: $out)"; return 0; fi
+    lnms_account_log
+    local what="cron cannot run LibreNMS' jobs ($when): PAM's account check of the librenms user for crond says: $out"
+    local hint="the account needs an entry in /etc/shadow that PAM reads: check getent shadow librenms and pwck -r (pwconv adds missing shadow entries), and journalctl -u crond; then run the installer again"
+    if [[ $CHECK == 1 || $LNMS_MODE == existing ]]; then warn "$what ($hint)"; return 0; fi
+    die "$what" "$hint"
+}
+
+# lnms_account_log: the state of the librenms account into the log (its shadow entry without the password field).
+lnms_account_log() {
+    {
+        echo "the librenms account:"
+        getent passwd librenms
+        getent shadow librenms | awk -F: 'BEGIN { OFS = ":" } { if ($2 !~ /^[!*]*$/) $2 = "<hash>"; print }' || echo "(getent shadow librenms: none)"
+        ls -l /etc/passwd /etc/shadow
+        grep -E '^(passwd|shadow|group):' /etc/nsswitch.conf
+        chage -l librenms 2>&1
+        pwck -r 2>&1 | head -n 20
+    } >>"$LOG_FILE" 2>&1 || true
 }
 
 lnms_logrotate() {

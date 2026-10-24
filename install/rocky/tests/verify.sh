@@ -4,7 +4,10 @@
 # install/rocky/tests/verify.sh: check, on a server install.sh set up, that what it installed works. Run as root on
 # that server (a test container). Each check prints PASS or FAIL; the exit code is the number of failures.
 #
-#   verify.sh [--oxidized-port PORT] [--semaphore-port PORT] [--expect-devices N]
+#   verify.sh [--oxidized-port PORT] [--semaphore-port PORT] [--expect-devices N] [--no-cron-wait]
+#
+# It first proves that cron polls on its own: it waits past the next */5 tick (up to 6.5 minutes) for LibreNMS' poller
+# cron job; --no-cron-wait leaves that out (a second check of the same system).
 #
 # The admin's name and password come from INSTALLER_ADMIN_USER / INSTALLER_ADMIN_PASSWORD, else from the installer's
 # credentials file.
@@ -13,8 +16,10 @@ CRED=/root/librenms-installer-credentials
 OX_PORT=8888
 SEM_PORT=3000
 EXPECT_DEVICES=''
+CRON_WAIT=1
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --no-cron-wait) CRON_WAIT=0; shift ;;
         --oxidized-port) OX_PORT=$2; shift 2 ;;
         --semaphore-port) SEM_PORT=$2; shift 2 ;;
         --expect-devices) EXPECT_DEVICES=$2; shift 2 ;;
@@ -39,29 +44,31 @@ csrf() { web "$BASE/$1" | sed -n 's/.*<meta name="csrf-token" content="\([^"]*\)
 code=$(web -o /dev/null -w '%{http_code}' "$BASE/login")
 check "LibreNMS answers on nginx (GET /login: $code)" test "$code" = 200
 
-# --- validate.php
+# --- cron polls on its own: after the next */5 tick, the pollers table must have a poll newer than the tick (the
+# installer's own poll came before it and does not count), and crond's journal no PAM refusal of librenms
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [[ $CRON_WAIT == 1 ]]; then
+    start=$(date +%s)
+    since=$(date -d "@$start" '+%Y-%m-%d %H:%M:%S')
+    tick=$(( (start / 300 + 1) * 300 ))
+    deadline=$(( tick + 90 ))
+    echo "      waiting for cron's poll after the tick of $(date -d "@$tick" +%H:%M:%S) (at most until $(date -d "@$deadline" +%H:%M:%S))"
+    polled=0 last=0
+    while (( $(date +%s) < deadline )); do
+        last=$(mysql -N -e 'SELECT COALESCE(MAX(UNIX_TIMESTAMP(last_polled)), 0) FROM librenms.pollers' 2>/dev/null || echo 0)
+        if (( last >= tick )); then polled=1; break; fi
+        sleep 10
+    done
+    refused=$(journalctl -u crond --since "$since" --no-pager -o cat 2>/dev/null | grep -c -E '\(librenms\) (FAILED to authorize|PAM ERROR)')
+    if (( polled )); then seen="polled at $(date -d "@$last" +%H:%M:%S)"; else seen="no poll by $(date -d "@$deadline" +%H:%M:%S)"; fi
+    check "cron polls on its own: a poll after the tick of $(date -d "@$tick" +%H:%M) ($seen), crond refused librenms $refused times" \
+        test "$polled" = 1 -a "$refused" = 0
+    if (( ! polled || refused )) && [[ -x $HERE/diagnose.sh ]]; then "$HERE/diagnose.sh" | sed 's/^/      /'; fi
+fi
+
+# --- validate.php
 validate() { (cd /opt/librenms && runuser -u librenms -- ./validate.php 2>&1 | sed 's/\x1b\[[0-9;]*m//g'); }
 out=$(validate)
-# LibreNMS' poller check wants a poller run within rrd.step (5 minutes). The installer ran the poller once; after
-# that only cron runs it, every 5 minutes. When the check fails: what cron did, then its next run, then the check again
-# (diagnose.sh --run-poller runs the poller itself only when cron did not).
-if grep -q 'python wrapper poller' <<<"$out"; then
-    echo "      validate.php: the python wrapper poller check failed. What cron and LibreNMS say:"
-    if [[ -x $HERE/diagnose.sh ]]; then "$HERE/diagnose.sh" | sed 's/^/      /'; fi
-    since=$(date '+%Y-%m-%d %H:%M:%S')
-    pause=$(( 300 - $(date +%s) % 300 + 45 ))
-    echo "      waiting ${pause} s for the poller cron job's next run ($since UTC + ${pause} s)"
-    sleep "$pause"
-    echo "      crond since then:"
-    journalctl -u crond --since "$since" --no-pager -o short-iso 2>&1 | grep -v '^-- ' | sed 's/^/        /'
-    mysql -t -e 'SELECT poller_name, last_polled, NOW() AS now FROM librenms.pollers' 2>&1 | sed 's/^/        /'
-    out=$(validate)
-    if grep -q 'python wrapper poller' <<<"$out" && [[ -x $HERE/diagnose.sh ]]; then
-        echo "      cron did not run the poller: the poller run by hand (diagnose.sh --run-poller):"
-        "$HERE/diagnose.sh" --run-poller | sed 's/^/      /'
-    fi
-fi
 fails=$(grep -c '\[FAIL\]' <<<"$out")
 warns=$(grep -c '\[WARN\]' <<<"$out")
 grep -E '\[(FAIL|WARN)\]' <<<"$out" | sed 's/^/      /'

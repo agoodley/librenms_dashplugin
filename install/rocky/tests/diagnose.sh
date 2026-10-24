@@ -3,16 +3,40 @@
 # not work: crond, its journal and its PAM configuration, LibreNMS' cron file, the pollers table, the tail of LibreNMS'
 # log, the services. CI prints it into the job log when a step fails (its artifacts cannot always be read). With
 # --run-poller it then runs LibreNMS' poller cron job as cron runs it, and the wrapper with debug output: they update
-# the pollers table, so they come after what shows whether cron did. Run as root on the test system.
+# the pollers table, so they come after what shows whether cron did. The librenms account comes first: crond's PAM
+# account check of it ("FAILED to authorize user with PAM" in crond's journal) decides whether cron runs any of its
+# jobs. Run as root on the test system.
 set -uo pipefail
 LNMS=/opt/librenms
 section() { printf '\n===== %s\n' "$*"; }
 pollers() { mysql -t -e 'SELECT poller_name, last_polled, NOW() AS now, devices, time_taken FROM librenms.pollers' 2>&1; }
 
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+section "the librenms account, as crond's PAM account check reads it"
+getent passwd librenms || echo "(getent passwd librenms: none)"
+# the password field only when it is a lock (!, !!, *), never a hash
+getent shadow librenms | awk -F: 'BEGIN { OFS = ":" } { if ($2 !~ /^[!*]*$/) $2 = "<hash>"; print }' || echo "(getent shadow librenms: none)"
+echo "PAM's account check for crond (as crond makes it): $(python3 -I "$HERE/../lib/pam_account.py" crond librenms 2>&1)"
+chage -l librenms 2>&1
+ls -l --time-style=full-iso /etc/passwd /etc/shadow /etc/group /etc/gshadow /etc/passwd- /etc/shadow- 2>&1
+echo "users in /etc/passwd without an /etc/shadow entry: $(comm -23 <(cut -d: -f1 /etc/passwd | sort) <(cut -d: -f1 /etc/shadow | sort) | tr '\n' ' ')"
+grep -E '^(passwd|shadow|group):' /etc/nsswitch.conf
+echo "authselect: $(authselect current 2>&1 | head -n 1)"
+echo "pwck -r:"; pwck -r 2>&1 | head -n 20
+echo "rpm -V setup shadow-utils pam:"; rpm -V setup shadow-utils pam 2>&1
+echo "the installer's lines about users:"
+grep -h -E 'useradd|usermod|userdel|groupadd|pwconv|librenms user|the user |account check' /var/log/librenms-installer/install-*.log 2>/dev/null | tail -n 20
+echo "the packages installed last (rpm -qa --last):"; rpm -qa --last 2>/dev/null | head -n 25
+
 section "systemctl status crond"
 systemctl status crond --no-pager -l 2>&1 | head -n 20
 section "journalctl -u crond (the last 40 lines)"
 journalctl -u crond --no-pager -n 40 -o short-iso 2>&1 | grep -v '^-- '
+section "crond's first and last PAM refusals (when they began)"
+journalctl -u crond --no-pager -o short-iso 2>&1 | grep -E 'PAM|FAILED|unix_chkpwd' | sed -n '1,4p'
+echo "..."
+journalctl -u crond --no-pager -o short-iso 2>&1 | grep -E 'PAM|FAILED|unix_chkpwd' | tail -n 2
+echo "crond's first job of librenms that ran: $(journalctl -u crond --no-pager -o short-iso 2>&1 | grep -m 1 '(librenms) CMD ' || echo none)"
 section "/etc/cron.d/librenms"
 cat /etc/cron.d/librenms 2>&1
 section "/etc/pam.d/crond"

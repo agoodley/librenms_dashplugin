@@ -494,6 +494,8 @@ main() {
         fi
     done
     CURRENT_PART=''
+    # once more at the end: a later part (or a package it installed) must not have taken cron's access to the librenms user
+    if [[ -f $LNMS_DIR/artisan ]]; then CURRENT_PART=librenms; lnms_cron_account "at the end of the run"; CURRENT_PART=''; fi
     print_summary
     next_steps
 }
