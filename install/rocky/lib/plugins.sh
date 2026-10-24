@@ -71,7 +71,11 @@ plugins_clone() {
         rm -rf "$partial"
         FAIL_HINT="check that this server reaches $PLUGIN_SOURCE (a private repository needs GITHUB_TOKEN), or give a local copy (--plugin-source DIR)" \
             run git_auth as librenms git -c safe.directory="$src" -c safe.directory="$src/.git" clone --branch "$branch" "$src" "$partial"
+        # a copy of a plain directory (an earlier --plugin-source DIR) makes way for the clone
+        rm -rf "$PLUGIN_CLONE.old"
+        if [[ -d $PLUGIN_CLONE ]]; then mv "$PLUGIN_CLONE" "$PLUGIN_CLONE.old"; fi
         run mv "$partial" "$PLUGIN_CLONE"
+        rm -rf "$PLUGIN_CLONE.old"
         PLUGIN_UPDATED=1
     else
         local origin; origin=$(clone_git config --get remote.origin.url || true)
@@ -119,23 +123,25 @@ plugins_clone() {
 
 # plugins_copy: a plain directory as the source (an extracted archive): copied when its content differs.
 plugins_copy() {
+    PLUGIN_BRANCH_USED='a copy'
     if [[ -d $PLUGIN_CLONE ]] && diff -rq -x .git "$PLUGIN_SOURCE" "$PLUGIN_CLONE" >/dev/null 2>&1; then
         detail "$PLUGIN_CLONE has the content of $PLUGIN_SOURCE"
-        return 0
+    elif ! would "copy $PLUGIN_SOURCE into $PLUGIN_CLONE"; then
+        local partial=$PLUGINS_DIR/.librenms_dashplugin.partial
+        rm -rf "$partial"
+        mkdir -p "$partial"
+        run in_dir "$PLUGIN_SOURCE" tar -cf "$WORK/plugins.tar" --exclude=./.git .
+        run tar -xf "$WORK/plugins.tar" -C "$partial"
+        chown -R librenms:librenms "$partial"
+        rm -rf "$PLUGIN_CLONE.old"
+        [[ -d $PLUGIN_CLONE ]] && mv "$PLUGIN_CLONE" "$PLUGIN_CLONE.old"
+        run mv "$partial" "$PLUGIN_CLONE"
+        rm -rf "$PLUGIN_CLONE.old"
+        PLUGIN_UPDATED=1
     fi
-    would "copy $PLUGIN_SOURCE into $PLUGIN_CLONE" && return 0
-    local partial=$PLUGINS_DIR/.librenms_dashplugin.partial
-    rm -rf "$partial"
-    mkdir -p "$partial"
-    run in_dir "$PLUGIN_SOURCE" tar -cf "$WORK/plugins.tar" --exclude=./.git .
-    run tar -xf "$WORK/plugins.tar" -C "$partial"
-    chown -R librenms:librenms "$partial"
-    rm -rf "$PLUGIN_CLONE.old"
-    [[ -d $PLUGIN_CLONE ]] && mv "$PLUGIN_CLONE" "$PLUGIN_CLONE.old"
-    run mv "$partial" "$PLUGIN_CLONE"
-    rm -rf "$PLUGIN_CLONE.old"
-    PLUGIN_UPDATED=1
+    # a plain directory has no branch: a later run without --plugin-source copies from it again
     state_set plugin_source "$PLUGIN_SOURCE"
+    state_set plugin_branch ''
 }
 
 # composer_run ARGS...: Composer through LibreNMS' wrapper, as the librenms user.

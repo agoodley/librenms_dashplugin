@@ -85,7 +85,7 @@ Sources (local copies of every download: offline mode)
   --semaphore-source FILE  Semaphore UI 2.19.17 as its .rpm, .tar.gz or binary (default: its GitHub release)
                                                                                     (INSTALLER_SEMAPHORE_SOURCE)
   --composer-source FILE   composer.phar (default: https://getcomposer.org)         (INSTALLER_COMPOSER_SOURCE)
-  --pip-wheels DIR         Python wheels for Ansible (default: PyPI)                     (INSTALLER_PIP_WHEELS)
+  --pip-wheels DIR         Python wheels for Ansible and LibreNMS (default: PyPI)       (INSTALLER_PIP_WHEELS)
   --gems DIR               .gem files for Oxidized (default: RubyGems)                         (INSTALLER_GEMS)
   --distro-source FILE     librenms-agent's distro script (default: GitHub)          (INSTALLER_DISTRO_SOURCE)
   --offline DIR            take each of these from DIR (librenms.tar.gz or librenms/, librenms_dashplugin/,
