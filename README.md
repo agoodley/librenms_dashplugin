@@ -824,7 +824,11 @@ composer config --global repositories.librenms-topology vcs https://github.com/a
 cd /opt/librenms
 ./lnms plugin:add agoodley/librenms-topology-plugin dev-main
 
-# 3. create the plugin's tables (history, baseline, saved views, custom maps)
+# 3. renew LibreNMS' route cache: plugin:add leaves it without the plugin's pages, which then
+#    answer 500 ("Route [topology.l2] not defined")
+./lnms route:cache
+
+# 4. create the plugin's tables (history, baseline, saved views, custom maps)
 ./lnms migrate
 ```
 
@@ -836,12 +840,14 @@ To install from a local checkout instead, use a path repository:
 ```bash
 composer config --global repositories.librenms-topology '{"type": "path", "url": "/opt/librenms-plugins/librenms_dashplugin", "options": {"symlink": true}}'
 ./lnms plugin:add agoodley/librenms-topology-plugin @dev
+./lnms route:cache
 ./lnms migrate
 ```
 
-The plugin is enabled automatically. Its pages are listed under **Overview → Plugins** in four groups (maps,
-diagnostics, tools and history), after **Topology overview** (`/plugin/topology`), which shows them all with a short
-description. It can be disabled or configured in **Overview → Plugins → Plugin Admin → topology → Settings**.
+The plugin is enabled automatically (LibreNMS' own `./lnms plugin:enable` renews the route cache too). Its pages are
+listed under **Overview → Plugins** in four groups (maps, diagnostics, tools and history), after **Topology overview**
+(`/plugin/topology`), which shows them all with a short description. It can be disabled or configured in **Overview →
+Plugins → Plugin Admin → topology → Settings**.
 
 The plugin keeps its data in tables of its own: the topology history and the baseline (`topology_facts`,
 `topology_baseline`, `topology_runs`, `topology_findings`), the saved views (`topology_views`) and the custom maps it
@@ -865,7 +871,8 @@ to silence it: validate.php then lists the `topology_*` tables as extra tables a
 that fix**: it deletes the history, the baseline and the saved views.
 
 **Updating:** LibreNMS' daily update requires the installed plugins again and runs `./lnms migrate`, so the plugin
-follows `dev-main`; to update by hand, run the `plugin:add` line again, then `./lnms migrate`.
+follows `dev-main`; to update by hand, run the `plugin:add` line again, then `./lnms route:cache` (a new version may
+bring new pages) and `./lnms migrate`.
 
 To remove the plugin and its tables:
 
