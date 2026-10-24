@@ -236,10 +236,14 @@ the last lines of the command's output, what to do, and the log.
 * `verify.sh`: what a run should have made: LibreNMS on nginx, `./validate.php`, the admin's login and both plugins'
   pages, both plugins enabled, Semaphore UI's project, the Ansible plugin's connection test as its settings page runs it,
   the inventory endpoint, Oxidized and LibreNMS' Oxidized settings.
-* `e2e.sh NAME IP`: a fake Cisco IOS switch (e.g. [fake-switches](https://pypi.org/project/fake-switches/), SSH only)
-  added to LibreNMS, then a change through the Ansible plugin's pages with the template "Fix port descriptions": preview,
-  dry run (proven), approval, apply, and Oxidized's backups before and after the batch, the one after with the new
-  description.
+* `e2e.sh NAME IP`: a fake Cisco IOS switch added to LibreNMS, then a change through the Ansible plugin's pages with
+  the template "Fix port descriptions": preview, dry run (proven), approval, apply, and Oxidized's backups before and
+  after the batch, the one after with the new description. `fake-switch.sh NAME IP` starts the switch in a test system
+  (SSH only, `netops` / `netops-pw`): [fake-switches](https://pypi.org/project/fake-switches/) 1.5.0 with
+  `fake-switches.patch` (`show privilege`, `terminal`, `end`, the enable password under Python 3, `spanning-tree vlan
+  <list> priority <n>`: what `cisco.ios` and the example playbooks need), on the versions of
+  `fake-switches-requirements.txt` (fake-switches asks for a Twisted that no longer builds on Python 3), as the lab
+  runs it.
 * `diagnose.sh [--run-poller]`: crond and its journal, LibreNMS' cron file, pollers and log, the services; with
   `--run-poller` then the poller cron job as cron runs it. CI prints it into the job log when a step fails, and
   `verify.sh` when LibreNMS' poller check fails (it then waits for cron's next run and checks again).

@@ -65,10 +65,8 @@ jobs:
         run: docker exec inst /src/install/rocky/tests/verify.sh
       - name: End to end (a fake Cisco IOS switch, a change through the Ansible plugin, Oxidized's backups)
         run: |
-          docker exec inst sh -c 'python3.12 -m venv /opt/fakesw && /opt/fakesw/bin/pip install --quiet fake-switches'
-          docker exec -d inst /opt/fakesw/bin/fake-switches --model cisco_generic --hostname inst-sw1 --username netops \
-            --password netops-pw --listen-host 127.0.4.11 --listen-port 22
-          sleep 5
+          # fake-switches 1.5.0 with the lab's patch, on pinned versions that install on Python 3.12
+          docker exec inst /src/install/rocky/tests/fake-switch.sh inst-sw1 127.0.4.11
           docker exec inst /src/install/rocky/tests/e2e.sh inst-sw1 127.0.4.11
       - name: A second run changes nothing
         run: |
