@@ -117,17 +117,23 @@ final class FixBuilder
                 continue;
             }
             $root = (int) $finding['fix']['root'];
-            $why = null;
+            // why a VLAN of the finding gets no fix: each reason once, with every VLAN it holds in ("in VLAN 1 / CST, VLAN 10")
+            $reasons = [];
+            $why = function (string $before, ?string $after, int $key) use (&$reasons): void {
+                $id = $before . "\x1f" . ($after ?? "\x1e");
+                $reasons[$id] ??= ['before' => $before, 'after' => $after, 'keys' => []];
+                $reasons[$id]['keys'][] = $key;
+            };
             foreach (self::keys($finding) as $key) {
                 $members = self::domainOf($domains[$key] ?? [], $root);
                 [$candidates, $from] = ($picked = array_values(array_intersect($designated, $members))) ? [$picked, 'designated'] : [array_values(array_intersect($core, $members)), 'core'];
                 if (! $candidates) {
-                    $why = 'no designated root bridge or core device in its part of the network: ' . self::ROOT_SETTINGS . $hint;
+                    $why('no designated root bridge or core device in its part of the network: ' . self::ROOT_SETTINGS . $hint, null, $key);
                     continue;
                 }
                 $primary = $candidates[0];
                 if (! isset($bridges[$primary]['instances'][$key])) {
-                    $why = ($names[$primary] ?? "device #$primary") . ', its intended root, has no spanning tree instance in ' . StpIndex::vlanLabel($key);
+                    $why(($names[$primary] ?? "device #$primary") . ', its intended root, has no spanning tree instance in ', '', $key);
                     continue;
                 }
                 $secondary = $candidates[1] ?? null;
@@ -140,15 +146,15 @@ final class FixBuilder
                 $beating = fn (int $priority) => array_filter($rivals, fn (int $rival) => $rival <= $priority);
                 $name = fn (int $id) => $names[$id] ?? "device #$id";
                 if ($beating(self::PRIMARY_PRIORITY)) {
-                    $why = self::rivalsText($beating(self::PRIMARY_PRIORITY), $names) . ' in ' . StpIndex::vlanLabel($key) . ', so ' . $name($primary) . ', the intended root, would '
-                        . 'not win with ' . self::PRIMARY_PRIORITY . ': raise ' . (count($beating(self::PRIMARY_PRIORITY)) === 1 ? 'its priority' : 'their priorities') . ', or lower '
-                        . $name($primary) . '\'s by hand';
+                    $why(self::rivalsText($beating(self::PRIMARY_PRIORITY), $names) . ' in ', ', so ' . $name($primary) . ', the intended root, would not win with '
+                        . self::PRIMARY_PRIORITY . ': raise ' . (count($beating(self::PRIMARY_PRIORITY)) === 1 ? 'its priority' : 'their priorities') . ', or lower '
+                        . $name($primary) . '\'s by hand', $key);
                     continue;
                 }
                 if ($secondary !== null && $beating(self::SECONDARY_PRIORITY)) {
-                    $why = self::rivalsText($beating(self::SECONDARY_PRIORITY), $names) . ' in ' . StpIndex::vlanLabel($key) . ', so ' . $name($secondary) . ', the secondary, would '
-                        . 'not take over with ' . self::SECONDARY_PRIORITY . ': raise ' . (count($beating(self::SECONDARY_PRIORITY)) === 1 ? 'its priority' : 'their priorities')
-                        . ', or set the priorities by hand';
+                    $why(self::rivalsText($beating(self::SECONDARY_PRIORITY), $names) . ' in ', ', so ' . $name($secondary) . ', the secondary, would not take over with '
+                        . self::SECONDARY_PRIORITY . ': raise ' . (count($beating(self::SECONDARY_PRIORITY)) === 1 ? 'its priority' : 'their priorities')
+                        . ', or set the priorities by hand', $key);
                     continue;
                 }
                 sort($members);
@@ -159,9 +165,10 @@ final class FixBuilder
                 $groups[$group]['findings'][$finding['identity']] = $finding;
                 $groups[$group]['roots'][$key] = ['device_id' => $root, 'mac' => (string) ($finding['fix']['root_mac'] ?? '')];
             }
-            if ($why !== null && ! array_filter($groups, fn (array $group) => isset($group['findings'][$finding['identity']]))) {
+            if ($reasons && ! array_filter($groups, fn (array $group) => isset($group['findings'][$finding['identity']]))) {
                 $notFixable[] = ['identity' => (string) $finding['identity'], 'code' => (string) $finding['code'], 'title' => FindingHistory::title($finding),
-                    'devices' => array_map('intval', (array) $finding['devices']), 'why' => $why];
+                    'devices' => array_map('intval', (array) $finding['devices']), 'why' => implode('; ', array_map(fn (array $reason) => $reason['after'] === null
+                        ? $reason['before'] : $reason['before'] . FactText::vlanList($reason['keys']) . $reason['after'], $reasons))];
             }
         }
 

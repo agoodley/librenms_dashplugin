@@ -198,6 +198,18 @@ class FixBuilderTest extends TestCase
             'dist1 has priority 4096 in VLAN 10, so core2, the intended root, would not win with 4096: raise its priority, or lower core2\'s by hand'],
             array_column($both['not_fixable'], 'why'));
 
+        // a finding of both VLANs that no VLAN of can be fixed: each reason once, with every VLAN it holds in
+        $one = fn (array $explicit, array $bridges) => FixBuilder::rootPriorities([self::finding('h', 'root_not_preferred', [3], ['root' => 3, 'root_mac' => '00ab03000000'],
+            [0, 10])], self::DOMAINS, [2, 1], [], $bridges, self::NAMES, null, '', $explicit)['not_fixable'];
+        $this->assertSame(['dist1 has priority 4096 in VLAN 1 / CST, VLAN 10, so core2, the intended root, would not win with 4096: raise its priority, or lower core2\'s by hand'],
+            array_column($one([0 => [3 => 4096], 10 => [3 => 4096]], self::bridges()), 'why'), 'the same rival in both VLANs: named once, with both');
+        $this->assertSame(['dist1 has priority 0 in VLAN 1 / CST, so core2, the intended root, would not win with 4096: raise its priority, or lower core2\'s by hand; '
+            . 'acc1 has priority 4096 in VLAN 10, so core2, the intended root, would not win with 4096: raise its priority, or lower core2\'s by hand'],
+            array_column($one([0 => [3 => 0], 10 => [4 => 4096]], self::bridges()), 'why'), 'two rivals: each with its VLAN');
+        $none = self::bridges();
+        unset($none[2]['instances'][0], $none[2]['instances'][10]);
+        $this->assertSame(['core2, its intended root, has no spanning tree instance in VLAN 1 / CST, VLAN 10'], array_column($one([], $none), 'why'));
+
         // acc1 has 8192: core1, the secondary, would not take over with it
         $this->assertSame(['acc1 has priority 8192 in VLAN 1 / CST, so core1, the secondary, would not take over with 8192: raise its priority, or set the priorities by hand',
             'acc1 has priority 8192 in VLAN 10, so core1, the secondary, would not take over with 8192: raise its priority, or set the priorities by hand'],
