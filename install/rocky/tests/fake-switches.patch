@@ -1,0 +1,225 @@
+# tests/fake-switches.patch: what the lab's fake Cisco IOS switch (fake-switches 1.5.0 from PyPI) needs for the Ansible
+# plugin's example playbooks (cisco.ios over network_cli) and the e2e test: "show privilege", "terminal ..." and
+# "end", the enable password under Python 3 (the configured passwords are bytes), and "spanning-tree vlan <list>
+# priority <n>" in the configuration and in show running-config. Apply it in the package's site-packages directory:
+#   patch -p1 -d <venv>/lib/python3.12/site-packages < install/rocky/tests/fake-switches.patch
+diff -ruN a/fake_switches/cisco/command_processor/config.py b/fake_switches/cisco/command_processor/config.py
+--- a/fake_switches/cisco/command_processor/config.py
++++ b/fake_switches/cisco/command_processor/config.py
+@@ -98,9 +98,57 @@
+             else:
+                 self.show_unknown_interface_error_message()
+ 
++    def do_spanning_tree(self, *args):
++        # phase 4 test-lab patch: the bridge priority per VLAN (PVST+), as IOS takes it,
++        # "spanning-tree vlan <list> priority <0-61440, a multiple of 4096>"; show running-config lists it
++        vlans, priority = parse_stp_priority(args, needs_value=True)
++        if vlans is None:
++            self.show_stp_invalid_input()
++        elif priority is None or priority < 0 or priority > 61440 or priority % 4096:
++            self.write_line("% Bridge Priority must be in increments of 4096.")
++            self.write_line("% Allowed values are:")
++            self.write_line("  0     4096  8192  12288 16384 20480 24576 28672")
++            self.write_line("  32768 36864 40960 45056 49152 53248 57344 61440")
++        else:
++            priorities = stp_priorities(self.switch_configuration)
++            for vlan in vlans:
++                priorities[vlan] = priority
++
++    def do_no_spanning_tree(self, *args):
++        # phase 4 test-lab patch: "no spanning-tree vlan <list> priority [<n>]" sets the VLANs back to the default
++        vlans, _ = parse_stp_priority(args, needs_value=False)
++        if vlans is None:
++            self.show_stp_invalid_input()
++        else:
++            priorities = stp_priorities(self.switch_configuration)
++            for vlan in vlans:
++                priorities.pop(vlan, None)
++
++    def show_stp_invalid_input(self):
++        # phase 4 test-lab patch: what IOS answers to a spanning-tree command it cannot read
++        self.write_line("                 ^")
++        self.write_line("% Invalid input detected at '^' marker.")
++        self.write_line("")
++
+     def do_exit(self):
+         self.is_done = True
+ 
++    def do_end(self, *_):
++        # test-lab patch: "end" leaves configuration mode
++        self.is_done = True
++
++    def delegate_to_sub_processor(self, line):
++        # test-lab patch: "end" in a sub-mode leaves configuration mode too
++        sub = self.sub_processor
++        processed = sub.process_command(line)
++        if sub.is_done:
++            self.sub_processor = None
++            if getattr(sub, 'end_requested', False):
++                self.is_done = True
++            else:
++                self.show_prompt()
++        return processed
++
+     def show_unknown_interface_error_message(self):
+         self.write_line("              ^")
+         self.write_line("% Invalid input detected at '^' marker (not such interface)")
+@@ -111,3 +159,56 @@
+ 
+     def make_aggregated_port(self, interface_name):
+         return self.switch_configuration.new("AggregatedPort", interface_name.capitalize())
++
++
++# phase 4 test-lab patch: spanning tree bridge priorities per VLAN (PVST+), kept on the switch's configuration
++def stp_priorities(switch_configuration):
++    """VLAN number => bridge priority set with "spanning-tree vlan <list> priority <n>" (the others have the default)."""
++    priorities = getattr(switch_configuration, "lab_stp_priorities", None)
++    if priorities is None:
++        priorities = {}
++        switch_configuration.lab_stp_priorities = priorities
++    return priorities
++
++
++def parse_stp_priority(args, needs_value):
++    """(VLANs, priority) of the arguments of "spanning-tree vlan <list> priority <n>"; (None, None) when they are not that."""
++    args = list(args)
++    if len(args) < 3 or args[0] != "vlan" or len(args[2]) < 2 or not "priority".startswith(args[2]):
++        return None, None
++    if needs_value and len(args) != 4 or not needs_value and len(args) not in (3, 4):
++        return None, None
++    if not re.match(r"^\d+(-\d+)?(,\d+(-\d+)?)*$", args[1]):
++        return None, None
++    vlans = []
++    for part in args[1].split(","):
++        start, _, stop = part.partition("-")
++        start, stop = int(start), int(stop or start)
++        if start < 1 or stop > 4094 or start > stop:
++            return None, None
++        vlans += range(start, stop + 1)
++    priority = None
++    if len(args) == 4:
++        if not re.match(r"^\d+$", args[3]):
++            return None, None
++        priority = int(args[3])
++    return vlans, priority
++
++
++def stp_priority_lines(switch_configuration):
++    """The "spanning-tree vlan <ranges> priority <n>" lines of show running-config, one per priority, as IOS groups them."""
++    by_priority = {}
++    for vlan, priority in stp_priorities(switch_configuration).items():
++        by_priority.setdefault(priority, []).append(vlan)
++    lines = []
++    for priority in sorted(by_priority):
++        vlans = sorted(by_priority[priority])
++        ranges = []
++        for vlan in vlans:
++            if ranges and ranges[-1][1] == vlan - 1:
++                ranges[-1][1] = vlan
++            else:
++                ranges.append([vlan, vlan])
++        text = ",".join(str(a) if a == b else ("%s,%s" % (a, b) if b == a + 1 else "%s-%s" % (a, b)) for a, b in ranges)
++        lines.append("spanning-tree vlan %s priority %s" % (text, priority))
++    return lines
+diff -ruN a/fake_switches/cisco/command_processor/config_interface.py b/fake_switches/cisco/command_processor/config_interface.py
+--- a/fake_switches/cisco/command_processor/config_interface.py
++++ b/fake_switches/cisco/command_processor/config_interface.py
+@@ -230,6 +230,11 @@
+     def do_exit(self):
+         self.is_done = True
+ 
++    def do_end(self, *_):
++        # test-lab patch: "end" leaves every configuration level
++        self.is_done = True
++        self.end_requested = True
++
+     def port_channel_exists(self, name):
+         return self.switch_configuration.get_port_by_partial_name(name) is not None
+ 
+diff -ruN a/fake_switches/cisco/command_processor/config_vlan.py b/fake_switches/cisco/command_processor/config_vlan.py
+--- a/fake_switches/cisco/command_processor/config_vlan.py
++++ b/fake_switches/cisco/command_processor/config_vlan.py
+@@ -28,3 +28,8 @@
+ 
+     def do_exit(self):
+         self.is_done = True
++
++    def do_end(self, *_):
++        # test-lab patch: "end" leaves every configuration level
++        self.is_done = True
++        self.end_requested = True
+diff -ruN a/fake_switches/cisco/command_processor/config_vrf.py b/fake_switches/cisco/command_processor/config_vrf.py
+--- a/fake_switches/cisco/command_processor/config_vrf.py
++++ b/fake_switches/cisco/command_processor/config_vrf.py
+@@ -25,3 +25,8 @@
+ 
+     def do_exit(self):
+         self.is_done = True
++
++    def do_end(self, *_):
++        # test-lab patch: "end" leaves every configuration level
++        self.is_done = True
++        self.end_requested = True
+diff -ruN a/fake_switches/cisco/command_processor/default.py b/fake_switches/cisco/command_processor/default.py
+--- a/fake_switches/cisco/command_processor/default.py
++++ b/fake_switches/cisco/command_processor/default.py
+@@ -29,6 +29,17 @@
+             self.is_done = True
+         return processed
+ 
++    def do_show(self, *args):
++        # test-lab patch: cisco.ios checks the privilege level with "show privilege"
++        if args and "privilege".startswith(args[0]):
++            self.write_line("Current privilege level is 1")
++        else:
++            self.write_line("% Invalid input detected at '^' marker.")
++            self.write_line("")
++
++    def do_terminal(self, *args):
++        pass
++
+     def do_enable(self):
+         self.write("Password: ")
+         self.replace_input = ''
+@@ -36,7 +47,7 @@
+ 
+     def continue_enabling(self, line):
+         self.replace_input = False
+-        if line == "" or line in self.switch_configuration.privileged_passwords:
++        if line == "" or line in [p.decode() if isinstance(p, bytes) else p for p in self.switch_configuration.privileged_passwords]:  # test-lab patch: py3 bytes
+             self.move_to(self.enabled_processor)
+         else:
+             self.write_line("% Access denied")
+diff -ruN a/fake_switches/cisco/command_processor/enabled.py b/fake_switches/cisco/command_processor/enabled.py
+--- a/fake_switches/cisco/command_processor/enabled.py
++++ b/fake_switches/cisco/command_processor/enabled.py
+@@ -20,6 +20,7 @@
+ from fake_switches.command_processing.base_command_processor import BaseCommandProcessor
+ from fake_switches.command_processing.switch_tftp_parser import SwitchTftpParser
+ from fake_switches.switch_configuration import VlanPort, AggregatedPort
++from fake_switches.cisco.command_processor.config import stp_priority_lines  # phase 4 test-lab patch
+ 
+ 
+ class EnabledCommandProcessor(BaseCommandProcessor):
+@@ -38,6 +39,10 @@
+         self.move_to(self.config_processor)
+ 
+     def do_show(self, *args):
++        # test-lab patch: cisco.ios checks the privilege level with "show privilege"
++        if args and "privilege".startswith(args[0]):
++            self.write_line("Current privilege level is 15")
++            return
+         if "running-config".startswith(args[0]):
+             if len(args) < 2:
+                 self.show_run()
+@@ -206,6 +211,10 @@
+             "!",
+             "!",
+         ]
++        # phase 4 test-lab patch: the spanning tree priorities set per VLAN
++        stp_lines = stp_priority_lines(self.switch_configuration)
++        if stp_lines:
++            all_data = all_data + stp_lines + ["!"]
+         for vlan in self.switch_configuration.vlans:
+             all_data = all_data + build_running_vlan(vlan) + ["!"]
+         for interface in self.switch_configuration.get_physical_ports() + self.switch_configuration.get_vlan_ports():

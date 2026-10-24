@@ -152,9 +152,12 @@ git clone https://github.com/agoodley/librenms_dashplugin /opt/librenms-plugins/
 #    LibreNMS updates)
 composer config --global repositories.librenms-ansible '{"type": "path", "url": "/opt/librenms-plugins/librenms_dashplugin/ansible", "options": {"symlink": true}}'
 
-# 3. install it with LibreNMS' plugin installer, and create its tables and its permissions
+# 3. install it with LibreNMS' plugin installer, renew LibreNMS' route cache (plugin:add leaves it without the
+#    plugin's pages, which then answer 500: "Route [ansible.changes] not defined"), and create its tables and its
+#    permissions
 cd /opt/librenms
 ./lnms plugin:add agoodley/librenms-ansible-plugin @dev
+./lnms route:cache
 ./lnms migrate
 ```
 
@@ -172,11 +175,11 @@ then warns that the schema "has extra migrations (2026_10_24_000000_create_ansib
 while the plugin is installed. Do not delete their rows from the `migrations` table, and never apply validate.php's
 offer to drop the `ansible_*` tables: they hold the audit log.
 
-**Updating:** `git pull` in the clone (the path repository links to it), then `./lnms migrate`; until then the plugin's
-pages say the tables are out of date and nothing is launched. When `contrib/librenms_inventory.py` changed (its
-`VERSION`), copy it into the playbook repository again, as in step 5 of [Semaphore UI setup](#semaphore-ui-setup), and
-commit and push it: the Inventory page says which version the runner's last fetch came from, and warns when it is older
-than the one the plugin ships.
+**Updating:** `git pull` in the clone (the path repository links to it), then `./lnms route:cache` (a new version may
+bring new pages) and `./lnms migrate`; until then the plugin's pages say the tables are out of date and nothing is
+launched. When `contrib/librenms_inventory.py` changed (its `VERSION`), copy it into the playbook repository again, as
+in step 5 of [Semaphore UI setup](#semaphore-ui-setup), and commit and push it: the Inventory page says which version
+the runner's last fetch came from, and warns when it is older than the one the plugin ships.
 
 **From phase 1**, every run belongs to a change, and the defaults of phase 2 stop more than phase 1 did. After
 `./lnms migrate`:

@@ -1,0 +1,17 @@
+# Oxidized for LibreNMS (install/rocky/install.sh), from Oxidized's extra/oxidized.service. Its configuration is
+# ~oxidized/.config/oxidized/config. Oxidized does not start while LibreNMS has no device it can back up: the service
+# then tries again every minute (Oxidized's own unit waits 300 s).
+[Unit]
+Description=Oxidized - Network Device Configuration Backup Tool
+After=network-online.target multi-user.target
+Wants=network-online.target
+
+[Service]
+ExecStart=@OXIDIZED_BIN@
+User=oxidized
+KillSignal=SIGKILL
+Restart=on-failure
+RestartSec=60s
+
+[Install]
+WantedBy=multi-user.target

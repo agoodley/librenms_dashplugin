@@ -798,7 +798,20 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
 
 ## Installation
 
-The plugin is a standard Composer package (LibreNMS "plugin package"). Run everything as the `librenms` user.
+**On a Rocky Linux 9 or 10 server, an installer sets up everything for a real-world test in one run:** LibreNMS (when
+the server has none), this plugin and the [Ansible plugin](ansible/README.md), Ansible with the network collections,
+Semaphore UI with its project for LibreNMS, and Oxidized; with an offline mode for servers that cannot reach GitHub. On
+a LibreNMS it did not install, it adds the plugins and leaves the web server, PHP, MariaDB and the configuration files
+(`.env`, `config.php`) as they are. See [install/rocky/README.md](install/rocky/README.md):
+
+```bash
+git clone https://github.com/agoodley/librenms_dashplugin && cd librenms_dashplugin
+install/rocky/install.sh --check      # what it would do
+install/rocky/install.sh
+```
+
+By hand, on any LibreNMS: the plugin is a standard Composer package (LibreNMS "plugin package"). Run everything as the
+`librenms` user.
 
 ```bash
 sudo su - librenms
@@ -811,7 +824,11 @@ composer config --global repositories.librenms-topology vcs https://github.com/a
 cd /opt/librenms
 ./lnms plugin:add agoodley/librenms-topology-plugin dev-main
 
-# 3. create the plugin's tables (history, baseline, saved views, custom maps)
+# 3. renew LibreNMS' route cache: plugin:add leaves it without the plugin's pages, which then
+#    answer 500 ("Route [topology.l2] not defined")
+./lnms route:cache
+
+# 4. create the plugin's tables (history, baseline, saved views, custom maps)
 ./lnms migrate
 ```
 
@@ -823,12 +840,14 @@ To install from a local checkout instead, use a path repository:
 ```bash
 composer config --global repositories.librenms-topology '{"type": "path", "url": "/opt/librenms-plugins/librenms_dashplugin", "options": {"symlink": true}}'
 ./lnms plugin:add agoodley/librenms-topology-plugin @dev
+./lnms route:cache
 ./lnms migrate
 ```
 
-The plugin is enabled automatically. Its pages are listed under **Overview → Plugins** in four groups (maps,
-diagnostics, tools and history), after **Topology overview** (`/plugin/topology`), which shows them all with a short
-description. It can be disabled or configured in **Overview → Plugins → Plugin Admin → topology → Settings**.
+The plugin is enabled automatically (LibreNMS' own `./lnms plugin:enable` renews the route cache too). Its pages are
+listed under **Overview → Plugins** in four groups (maps, diagnostics, tools and history), after **Topology overview**
+(`/plugin/topology`), which shows them all with a short description. It can be disabled or configured in **Overview →
+Plugins → Plugin Admin → topology → Settings**.
 
 The plugin keeps its data in tables of its own: the topology history and the baseline (`topology_facts`,
 `topology_baseline`, `topology_runs`, `topology_findings`), the saved views (`topology_views`) and the custom maps it
@@ -852,7 +871,8 @@ to silence it: validate.php then lists the `topology_*` tables as extra tables a
 that fix**: it deletes the history, the baseline and the saved views.
 
 **Updating:** LibreNMS' daily update requires the installed plugins again and runs `./lnms migrate`, so the plugin
-follows `dev-main`; to update by hand, run the `plugin:add` line again, then `./lnms migrate`.
+follows `dev-main`; to update by hand, run the `plugin:add` line again, then `./lnms route:cache` (a new version may
+bring new pages) and `./lnms migrate`.
 
 To remove the plugin and its tables:
 

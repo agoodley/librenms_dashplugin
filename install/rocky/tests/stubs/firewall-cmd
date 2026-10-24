@@ -1,0 +1,27 @@
+#!/bin/bash
+# shellcheck source-path=SCRIPTDIR
+# Stub: firewalld running with the default zone public; --add-service/--add-port are remembered (runtime and
+# permanent alike), --query-* answers from them.
+# shellcheck source=_stub.sh
+. "$(dirname "$0")/_stub.sh"
+f=$STUB_STATE/firewall
+touch "$f"
+case " $* " in
+    *" --state "*) echo running; exit 0 ;;
+    *" --get-default-zone "*) echo public; exit 0 ;;
+esac
+rc=0 next=''
+for a in "$@"; do
+    case $next in
+        add) grep -qx "$a" "$f" || echo "$a" >>"$f"; next=''; continue ;;
+        query) grep -qx "$a" "$f" || rc=1; next=''; continue ;;
+    esac
+    case $a in
+        --add-service|--add-port) next=add ;;
+        --query-service|--query-port) next=query ;;
+        --add-service=*|--add-port=*) v=${a#*=}; grep -qx "$v" "$f" || echo "$v" >>"$f" ;;
+        --query-service=*|--query-port=*) grep -qx "${a#*=}" "$f" || rc=1 ;;
+    esac
+done
+[[ $rc == 0 ]] && echo yes || echo no
+exit $rc

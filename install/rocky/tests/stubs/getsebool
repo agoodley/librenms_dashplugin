@@ -1,0 +1,7 @@
+#!/bin/bash
+# shellcheck source-path=SCRIPTDIR
+# Stub: answers from what setsebool set ("NAME --> on|off", off when never set).
+# shellcheck source=_stub.sh
+. "$(dirname "$0")/_stub.sh"
+v=$(sed -n "s/^$1=//p" "$STUB_STATE/booleans" 2>/dev/null | tail -n 1)
+case $v in 1|on|true) echo "$1 --> on" ;; *) echo "$1 --> off" ;; esac

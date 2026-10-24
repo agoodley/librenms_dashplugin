@@ -1,0 +1,18 @@
+#!/bin/bash
+# shellcheck source-path=SCRIPTDIR
+# Stub: semanage fcontext -a|-m -t TYPE SPEC remembers SPEC; fcontext -l lists them as semanage does.
+# shellcheck source=_stub.sh
+. "$(dirname "$0")/_stub.sh"
+f=$STUB_STATE/fcontext
+touch "$f"
+if [[ $1 == fcontext && $2 == -l ]]; then
+    while read -r spec type; do printf '%-60s all files          system_u:object_r:%s:s0\n' "$spec" "$type"; done <"$f"
+    exit 0
+fi
+if [[ $1 == fcontext && ( $2 == -a || $2 == -m ) && $3 == -t ]]; then
+    grep -v "^$5 " "$f" >"$f.new" || true
+    echo "$5 $4" >>"$f.new"
+    mv "$f.new" "$f"
+    exit 0
+fi
+exit 0

@@ -1,0 +1,111 @@
+name: installer
+
+# install/rocky/install.sh: shellcheck, then a real run on Rocky Linux 9 and 10 containers (systemd as PID 1). GitHub's
+# runners reach GitHub, so these runs take the online path: LibreNMS cloned from GitHub with its Composer packages,
+# Semaphore UI's release RPM, PyPI, RubyGems. The plugins come from this commit (a local directory), and once from
+# this repository's URL with the workflow's token (the path of a private repository).
+on:
+  push:
+    paths:
+      - 'install/**'
+      - '.github/workflows/installer.yml'
+  pull_request:
+    paths:
+      - 'install/**'
+      - '.github/workflows/installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -x install/rocky/install.sh install/rocky/tests/*.sh install/rocky/tests/stubs/[a-z]*
+      - name: The installer's Python and PHP helpers
+        run: |
+          python3 -m py_compile install/rocky/lib/*.py
+          php -l install/rocky/lib/librenms_helper.php
+      - name: The installer's own functions (no server needed)
+        run: bash install/rocky/tests/unit.sh
+
+  rocky:
+    needs: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        rocky: ['9', '10']
+    env:
+      RUN: docker exec -e INSTALLER_DEVICE_PASSWORD=netops-pw inst /src/install/rocky/install.sh --yes --device-user netops --plugin-source /src
+    steps:
+      - uses: actions/checkout@v4
+      - name: The commit as a local branch (the installer clones the plugins from it)
+        run: git checkout -B ci-installer
+      - name: A Rocky Linux ${{ matrix.rocky }} test system with systemd
+        run: |
+          docker build --build-arg BASE=quay.io/rockylinux/rockylinux:${{ matrix.rocky }} -t inst-rocky install/rocky/tests
+          docker run -d --name inst --hostname inst.test --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD:/src:ro" inst-rocky
+          for i in $(seq 1 60); do
+            state=$(docker exec inst systemctl is-system-running 2>/dev/null || true)
+            case $state in running|degraded) break ;; esac
+            sleep 2
+          done
+          echo "systemd: $state"
+      - name: The runner's AppArmor lets PAM's helper read Rocky's /etc/shadow
+        # Ubuntu 24.04's AppArmor confines unix_chkpwd, in privileged containers too, without dac_read_search. Rocky's
+        # pam_unix reads its /etc/shadow (mode 000) only through that helper, so every PAM account check fails there,
+        # crond's for librenms included (cron then runs none of LibreNMS' jobs). Newer AppArmor profiles grant it.
+        run: |
+          probe() {
+            docker run --rm --privileged --entrypoint /bin/bash -v "$PWD:/src:ro" inst-rocky \
+              -c 'useradd -r pamprobe && python3 -I /src/install/rocky/lib/pam_account.py crond pamprobe' 2>&1
+          }
+          echo "crond's PAM account check of a new user in a Rocky container: $(probe)"
+          if [ -e /etc/apparmor.d/unix-chkpwd ]; then
+            echo 'capability dac_read_search,' | sudo tee -a /etc/apparmor.d/local/unix-chkpwd
+            sudo apparmor_parser -r /etc/apparmor.d/unix-chkpwd
+          fi
+          result=$(probe) || true
+          echo "with dac_read_search for unix_chkpwd: $result"
+          [ "$result" = ok ]
+      - name: --check on the fresh system
+        run: $RUN --check
+      - name: Install everything
+        run: $RUN
+      - name: Verify (it waits past the next */5 tick for a poll by cron itself)
+        run: docker exec inst /src/install/rocky/tests/verify.sh
+      - name: End to end (a fake Cisco IOS switch, a change through the Ansible plugin, Oxidized's backups)
+        run: |
+          # fake-switches 1.5.0 with the lab's patch, on pinned versions that install on Python 3.12
+          docker exec inst /src/install/rocky/tests/fake-switch.sh inst-sw1 127.0.4.11
+          docker exec inst /src/install/rocky/tests/e2e.sh inst-sw1 127.0.4.11
+      - name: A second run changes nothing
+        run: |
+          $RUN | tee /tmp/second.out
+          grep -q 'Nothing needed a change' /tmp/second.out
+      - name: The plugins from this repository's URL (with the workflow's token, as for a private repository)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker exec -e GITHUB_TOKEN inst /src/install/rocky/install.sh --yes --only plugins \
+            --plugin-source "https://github.com/${{ github.repository }}" --plugin-branch "${{ github.head_ref || github.ref_name }}"
+          docker exec inst /src/install/rocky/tests/verify.sh --no-cron-wait
+      - name: Diagnostics (crond, LibreNMS' cron file and pollers, its log, the services; then the poller by hand)
+        if: failure()
+        run: docker exec inst /src/install/rocky/tests/diagnose.sh --run-poller || true
+      - name: The installer's log
+        if: always()
+        run: |
+          docker cp inst:/var/log/librenms-installer /tmp/installer-logs || true
+          docker exec inst journalctl --no-pager -n 300 -u semaphore -u oxidized -u php-fpm -u nginx > /tmp/installer-logs/journal.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-logs-rocky${{ matrix.rocky }}
+          path: /tmp/installer-logs

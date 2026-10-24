@@ -1,0 +1,6 @@
+#!/bin/bash
+# shellcheck source-path=SCRIPTDIR
+# Stub: records the call, changes nothing.
+# shellcheck source=_stub.sh
+. "$(dirname "$0")/_stub.sh"
+exit 0

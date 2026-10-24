@@ -1,0 +1,8 @@
+#!/bin/bash
+# shellcheck source-path=SCRIPTDIR
+# Stub: remembers NAME=VALUE (setsebool [-P] NAME VALUE, or NAME=VALUE) for getsebool; changes nothing.
+# shellcheck source=_stub.sh
+. "$(dirname "$0")/_stub.sh"
+[[ $1 == -P ]] && shift
+if [[ $1 == *=* ]]; then echo "$1" >>"$STUB_STATE/booleans"; else echo "$1=$2" >>"$STUB_STATE/booleans"; fi
+exit 0

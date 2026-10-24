@@ -1,0 +1,12 @@
+#!/bin/bash
+# shellcheck source-path=SCRIPTDIR
+# Stub: semodule -i FILE.pp remembers the module; -l lists them.
+# shellcheck source=_stub.sh
+. "$(dirname "$0")/_stub.sh"
+f=$STUB_STATE/modules
+touch "$f"
+case $1 in
+    -l) cat "$f" ;;
+    -i) m=$(basename "$2" .pp); grep -qx "$m" "$f" || echo "$m" >>"$f" ;;
+esac
+exit 0
