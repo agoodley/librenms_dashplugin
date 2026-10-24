@@ -307,7 +307,8 @@ lnms_python() {
     [[ $CHECK == 1 ]] && return 0
     if ! probe as librenms python3 "$LNMS_DIR/scripts/dynamic_check_requirements.py"; then
         local args=(-r "$LNMS_DIR/requirements.txt")
-        if [[ -n $PIP_WHEELS ]]; then args=(--no-index --find-links "$PIP_WHEELS" "${args[@]}"); fi
+        # pip runs as librenms, who may not read the wheels (in /root, say): a copy in the run's directory then
+        if [[ -n $PIP_WHEELS ]]; then args=(--no-index --find-links "$(readable_copy librenms "$PIP_WHEELS" wheels)" "${args[@]}"); fi
         FAIL_HINT="check that this server reaches PyPI, or give local wheels (--pip-wheels)" \
             act "install the rest of LibreNMS' Python modules as librenms (requirements.txt)" \
                 as librenms python3 -m pip install --user --disable-pip-version-check "${args[@]}"

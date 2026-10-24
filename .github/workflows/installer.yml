@@ -80,15 +80,23 @@ jobs:
         run: $RUN
       - name: Verify (it waits past the next */5 tick for a poll by cron itself)
         run: docker exec inst /src/install/rocky/tests/verify.sh
-      - name: End to end (a fake Cisco IOS switch, a change through the Ansible plugin, Oxidized's backups)
+      - name: End to end (a fake Cisco IOS switch and its verified host key, a change through the Ansible plugin, Oxidized's backups)
         run: |
-          # fake-switches 1.5.0 with the lab's patch, on pinned versions that install on Python 3.12
+          # fake-switches 1.5.0 with the lab's patch, on pinned versions that install on Python 3.12; it writes its SSH host
+          # key to /root/ci-device-known-hosts, which a run installs for Ansible and Oxidized (--device-known-hosts)
           docker exec inst /src/install/rocky/tests/fake-switch.sh inst-sw1 127.0.4.11
+          $RUN --device-known-hosts /root/ci-device-known-hosts
+          docker exec inst /src/install/rocky/tests/security-integration.sh 127.0.4.11
           docker exec inst /src/install/rocky/tests/e2e.sh inst-sw1 127.0.4.11
       - name: A second run changes nothing
         run: |
           $RUN | tee /tmp/second.out
           grep -q 'Nothing needed a change' /tmp/second.out
+      - name: The plugins from a checkout that root alone may read (in /root, as an admin's own clone)
+        run: |
+          docker exec inst bash -c 'git -c safe.directory="*" clone --quiet /src /root/plugins-checkout'
+          docker exec inst /src/install/rocky/install.sh --yes --only plugins --plugin-source /root/plugins-checkout
+          docker exec inst /src/install/rocky/tests/verify.sh --no-cron-wait
       - name: The plugins from this repository's URL (with the workflow's token, as for a private repository)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

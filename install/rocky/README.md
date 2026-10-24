@@ -12,6 +12,7 @@ configuration files (`.env`, `config.php`) as they are.
 * [Quick start](#quick-start)
 * [What it installs](#what-it-installs)
 * [Options](#options)
+* [Device SSH host keys](#device-ssh-host-keys)
 * [Offline mode](#offline-mode)
 * [What it changes on the server](#what-it-changes-on-the-server)
 * [Running it again, and runs that stop](#running-it-again-and-runs-that-stop)
@@ -31,21 +32,21 @@ git clone https://github.com/agoodley/librenms_dashplugin
 cd librenms_dashplugin
 install/rocky/install.sh --check                      # what it would do; changes nothing
 INSTALLER_DEVICE_PASSWORD='the devices password' install/rocky/install.sh --device-user netops --server-name librenms.example.com
+# then, with the devices' SSH host keys, verified (or in the first run already):
+install/rocky/install.sh --device-known-hosts /root/device-known-hosts
 ```
+
+Ansible and Oxidized refuse a device whose SSH host key they do not know: [Device SSH host keys](#device-ssh-host-keys)
+says how to make that file.
 
 Run the installer from a reviewed, root-owned checkout whose parent directories are not writable by service
 accounts. Do not run the copy under `/opt/librenms-plugins` as root. Privileged cron, scheduler, SNMP, logrotate,
 command-wrapper and completion files now come from the installer's bundled templates, based on LibreNMS 26.10.0,
 instead of the live service-owned `/opt/librenms` tree. Keep those templates reviewed when upgrading LibreNMS.
 
-Oxidized verifies device SSH host keys. Before expecting backups, supply `--oxidized-known-hosts /root/device-known-hosts`
-(or `INSTALLER_OXIDIZED_KNOWN_HOSTS`): an OpenSSH known_hosts file with keys verified against a trusted device console
-or another authenticated source. Include the device's connection hostname/IP (and `[host]:port` for nonstandard
-SSH ports). The file is installed as `/home/oxidized/.ssh/known_hosts`; omitting the option preserves an existing
-file. Unknown or changed keys fail closed. A network `ssh-keyscan` alone does not verify device identity.
-
-On upgrade, unchanged installer-managed Oxidized configurations gain `input.ssh.secure: true`. Manually edited
-configurations are preserved with a warning: explicitly set that option yourself and provision verified keys.
+On upgrade, unchanged installer-managed Oxidized configurations gain `input.ssh.secure: true` and `vars.ssh_host_key`
+([Device SSH host keys](#device-ssh-host-keys)). Manually edited configurations are preserved with a warning: set
+both yourself and provision verified keys.
 Repair playbooks now save the entire running configuration to startup after all fixes on that host succeed.
 That includes unrelated pending changes: review that scope before approving an apply. Dry runs never save.
 
@@ -112,7 +113,7 @@ Every option has an environment variable for unattended runs; passwords are bett
 | `--device-user USER` | `INSTALLER_DEVICE_USER` | none | the devices' SSH login, for Semaphore UI's key store and Oxidized; without it both are set up empty, to fill in later |
 | `--device-password PW` | `INSTALLER_DEVICE_PASSWORD` | | |
 | `--device-enable-password PW` | `INSTALLER_DEVICE_ENABLE_PASSWORD` | the device password | for platforms with an enable mode (IOS, IOS-XE, EOS) |
-| `--plugin-source URL\|DIR` | `INSTALLER_PLUGIN_SOURCE` | the run before's, else `https://github.com/agoodley/librenms_dashplugin` | this repository: a Git URL, a local Git checkout, or a plain directory; a private GitHub repository takes `GITHUB_TOKEN` from the environment (given to git as a header, never stored in the clone) |
+| `--plugin-source URL\|DIR` | `INSTALLER_PLUGIN_SOURCE` | the run before's, else `https://github.com/agoodley/librenms_dashplugin` | this repository: a Git URL, a local Git checkout (it may be one that root alone may read, in `/root` say), or a plain directory; a private GitHub repository takes `GITHUB_TOKEN` from the environment (given to git as a header, never stored in the clone) |
 | `--plugin-branch BRANCH` | `INSTALLER_PLUGIN_BRANCH` | the run before's (with its source), else `main` | for a local Git checkout: its checked-out branch |
 | `--librenms-source SRC` | `INSTALLER_LIBRENMS_SOURCE` | `https://github.com/librenms/librenms.git` | a Git URL, or a directory or `.tar.gz` of a LibreNMS with its `vendor/` installed |
 | `--librenms-ref REF` | `INSTALLER_LIBRENMS_REF` | the newest 26.x release tag | what of the Git URL to install: a tag (`26.10.0`), a branch (`master`: LibreNMS' daily development, on its master update channel) or a commit; the plugins support LibreNMS 26.10 and later 26.x |
@@ -124,11 +125,46 @@ Every option has an environment variable for unattended runs; passwords are bett
 | `--offline DIR` | `INSTALLER_OFFLINE` | | all of these from one directory ([Offline mode](#offline-mode)) |
 | `--semaphore-listen ADDR`, `--semaphore-port PORT` | `INSTALLER_SEMAPHORE_LISTEN`, `INSTALLER_SEMAPHORE_PORT` | `127.0.0.1`, `3000` | another address than a loopback one also opens the port in firewalld |
 | `--oxidized-listen ADDR`, `--oxidized-port PORT` | `INSTALLER_OXIDIZED_LISTEN`, `INSTALLER_OXIDIZED_PORT` | `127.0.0.1`, `8888` | the same for Oxidized's REST API |
-| `--oxidized-known-hosts FILE` | `INSTALLER_OXIDIZED_KNOWN_HOSTS` | preserve existing file | verified device SSH host keys; unknown or changed keys are rejected |
+| `--device-known-hosts FILE` (or `--oxidized-known-hosts`) | `INSTALLER_DEVICE_KNOWN_HOSTS` (or `INSTALLER_OXIDIZED_KNOWN_HOSTS`) | the file there stays | the devices' SSH host keys, verified (OpenSSH known_hosts format), installed as `/etc/ssh/ssh_known_hosts` for Ansible and Oxidized ([Device SSH host keys](#device-ssh-host-keys)) |
 
 Options that cannot be used stop the run before it changes anything, with what is wrong (`install.sh: --skip:
 unknown part 'ansibel' (the parts: librenms plugins ansible semaphore oxidized)`). A port that another program holds
 stops the run before the service is started (the error names the option that moves it).
+
+## Device SSH host keys
+
+Ansible (the runs Semaphore UI makes for the Ansible plugin) and Oxidized check every device's SSH host key, and refuse
+a device whose key they do not know or that changed: whoever answers on a device's address must not get the devices'
+login. Both read `/etc/ssh/ssh_known_hosts`, as every SSH client of the server does, and only root may change it.
+`--device-known-hosts FILE` installs FILE (an OpenSSH known_hosts file) there; a later run without the option leaves the
+file as it is, and so does every run when the file there is the server's own (add the keys to it yourself then).
+Without the keys, no change gets past its dry run and Oxidized takes no backup: the run warns when there are none.
+
+To make the file, take each device's keys under the address LibreNMS has for it, the one Ansible and Oxidized connect
+to (`[address]:port` for another port than 22), with every key type it has:
+
+```bash
+ssh-keyscan 10.0.0.11 10.0.0.12 >> /root/device-known-hosts   # each device's keys, of every type it offers
+ssh-keygen -lf /root/device-known-hosts                         # their fingerprints
+```
+
+and compare each fingerprint with the one the device shows on its console (or another source you trust): ssh-keyscan
+alone does not prove that the answer came from the device. Then run the installer with `--device-known-hosts
+/root/device-known-hosts`, and again when a device is added or gets a new key.
+
+* **Ansible:** Semaphore UI runs it with `ANSIBLE_HOST_KEY_CHECKING=False`. The installer gives the project's variable
+  group "LibreNMS" the extra variable `ansible_host_key_checking: true`, which outweighs that (it adds it when the group
+  has no such variable: set it to `false` there to turn the check off, which hands the devices' login to whoever
+  answers on a device's address).
+* **Oxidized:** `input.ssh.secure: true`, and `vars.ssh_host_key` asks for an RSA key's SHA-2 signatures (rsa-sha2-512,
+  rsa-sha2-256) first. net-ssh would ask for the SHA-1 one (ssh-rsa) first, which Rocky's crypto policy refuses to
+  verify (`EVP_DigestVerifyInit: invalid digest` in Oxidized's log). A device that has nothing but ssh-rsa (an old IOS
+  release) cannot be checked under Rocky's DEFAULT policy: update its software, or allow SHA-1 signatures for the whole
+  server (`update-crypto-policies --set DEFAULT:SHA1`, weaker for every program on it). That list takes a device's key
+  types in a fixed order rather than the order of the keys the file has, so the file must hold every key of a device
+  (ssh-keyscan takes them all); Oxidized's per-device variables can give a device its own `ssh_host_key`.
+* An earlier installer put the keys in `/home/oxidized/.ssh/known_hosts`: a run removes that copy while it holds what
+  `/etc/ssh/ssh_known_hosts` holds, and warns about it otherwise (Oxidized trusts the keys of both).
 
 ## Offline mode
 
@@ -151,6 +187,10 @@ then the run stops and says which copy it needs (without `distro`, snmpd's `exte
 still needs the server's package repositories (Rocky's, EPEL, CRB and Remi's), or local mirrors of them. The
 installer switches Remi's repositories to Remi's own HTTPS mirror list (`httpsmirror`, which its repository files
 offer), so they also work behind a proxy that only passes HTTPS.
+
+DIR, and the paths the options give, may be readable by root alone (in `/root`, say): what the `librenms` user installs
+from them, LibreNMS' Python wheels and a Git checkout of the plugins, is copied for it into the run's own directory,
+which goes with the run.
 
 ## What it changes on the server
 
@@ -183,7 +223,8 @@ LibreNMS, and `bind-address=127.0.0.1` for a MariaDB the installer installed), `
 says; the original is kept as `/etc/nginx/nginx.conf.librenms-installer`), `/etc/snmp/snmpd.conf` (while it is the
 package's), `/etc/cron.d/librenms`, `/etc/logrotate.d/librenms`,
 `/etc/systemd/system/librenms-scheduler.{service,timer}`, `semaphore.service` and `oxidized.service`,
-`/etc/semaphore/config.json`, `~oxidized/.config/oxidized/config`, `/usr/bin/lnms`, the bash completion of lnms; the
+`/etc/semaphore/config.json`, `~oxidized/.config/oxidized/config`, `/etc/ssh/ssh_known_hosts` from
+`--device-known-hosts` (unless the server has one of its own), `/usr/bin/lnms`, the bash completion of lnms; the
 librenms user's global Composer configuration (`/opt/librenms/.config/composer/config.json`: the two path
 repositories); the installer's own `/var/lib/librenms-installer/` (what earlier runs did),
 `/var/log/librenms-installer/` and `/root/librenms-installer-credentials`.
@@ -267,7 +308,14 @@ the last lines of the command's output, what to do, and the log.
   `fake-switches.patch` (`show privilege`, `terminal`, `end`, the enable password under Python 3, `spanning-tree vlan
   <list> priority <n>`: what `cisco.ios` and the example playbooks need), on the versions of
   `fake-switches-requirements.txt` (fake-switches asks for a Twisted that no longer builds on Python 3), as the lab
-  runs it.
+  runs it. It writes the switch's host key to `/root/ci-device-known-hosts` for `--device-known-hosts`; like most IOS
+  releases, the switch offers its RSA key's SHA-1 signature besides the SHA-2 ones. `read-switch-config.py` reads its
+  running or startup configuration (e2e.sh: the dry run leaves startup as it was, the apply saves the description).
+* `security-integration.sh IP`: what a service account must not reach through the installer (Git hooks, writes through
+  its symlinks, SQL in a database password), what it reads through a copy (paths that root alone may read), and the
+  host key checks against the fake switch: Oxidized with its configuration (unknown and changed keys refused, the
+  known one checked by its SHA-2 signature) and Ansible as Semaphore UI runs it (`ANSIBLE_HOST_KEY_CHECKING=False` and
+  the variable group's `ansible_host_key_checking`: known passes, changed and unknown do not).
 * `diagnose.sh [--run-poller]`: crond and its journal, LibreNMS' cron file, pollers and log, the services; with
   `--run-poller` then the poller cron job as cron runs it. CI prints it into the job log when a step fails, and
   `verify.sh` when LibreNMS' poller check fails (it then waits for cron's next run and checks again).
@@ -275,15 +323,18 @@ the last lines of the command's output, what to do, and the log.
   which Semaphore UI 2.19.17's binaries print their version (`v2.19.17-f8cefe6-1792391878` of the container image,
   `2.19.17-f8cefe6-1792391818` of the release RPM) count as 2.19.17, another version (2.19.18, 2.19.170) does not;
   passwords and tokens survive the JSON helpers that keep them off command lines; only plain time zone names pass
-  (`--timezone` ends up in php.ini).
+  (`--timezone` ends up in php.ini); then `test_*.py`, the installer's functions in fixtures (firewalld, listener URLs,
+  Semaphore UI's settings and variable group, Oxidized's configuration, the device keys, the files root installs, Git,
+  pip and SQL as the service accounts see them, copies of what they may not read).
 * `stubs/`: `getenforce`, `firewall-cmd`, `semanage`, `setsebool`, ... that record their calls: with them first on
   `PATH`, a container (where SELinux is disabled and firewalld does not run) goes through the installer's SELinux and
   firewalld steps.
 
 The CI workflow `.github/workflows/installer.yml` runs shellcheck and `unit.sh`, then the installer on Rocky Linux 9
-and 10 containers (the online path: LibreNMS, its packages and Semaphore UI from GitHub), `verify.sh`, `e2e.sh`, a
-second run that must change nothing, and the plugins from the repository's URL with the workflow's token; on changes
-to `install/` and on demand.
+and 10 containers (the online path: LibreNMS, its packages and Semaphore UI from GitHub), `verify.sh`, a run with the
+fake switch's host key (`--device-known-hosts`), `security-integration.sh`, `e2e.sh`, a second run that must change
+nothing, the plugins from a checkout in `/root` and from the repository's URL with the workflow's token; on changes to
+`install/` and on demand.
 
 ## Undoing it
 
@@ -301,6 +352,7 @@ rm -rf /etc/semaphore /opt/ansible /usr/local/bin/semaphore; dnf -y remove semap
 mysql -e "DROP DATABASE semaphore; DROP USER 'semaphore'@'localhost'; DROP USER 'semaphore'@'127.0.0.1';"
 cd /opt/librenms && sudo -u librenms ./lnms config:set oxidized.enabled false   # a LibreNMS that stays
 rm -rf /var/lib/librenms-installer /var/log/librenms-installer /root/librenms-installer-credentials
+rm -f /etc/ssh/ssh_known_hosts                       # if it holds only the devices' keys --device-known-hosts gave
 ```
 
 and, for a LibreNMS it installed, as LibreNMS' own components are removed: `systemctl disable --now nginx php-fpm

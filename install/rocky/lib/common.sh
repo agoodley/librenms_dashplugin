@@ -462,6 +462,69 @@ local_service_url() {
     printf 'http://%s:%s' "$addr" "$2"
 }
 
+# readable_by USER PATH: whether USER may read PATH and everything in it.
+readable_by() {
+    local out
+    out=$(as "$1" find "$2" ! -readable -print -quit 2>&1) || return 1
+    [[ -z $out ]]
+}
+
+# readable_copy USER PATH NAME: PATH when USER may read all of it, else a copy of it in the run's directory
+# ($WORK/NAME) that USER's group may read, and no one else (a checkout's .git/config may hold a token); prints the
+# path to use. Service users install what root was given (wheels, the plugins' checkout), and root's own directories,
+# /root first, are closed to them. The copy goes with the run.
+readable_copy() {
+    local user=$1 path=$2 copy=$WORK/$3
+    if readable_by "$user" "$path"; then printf '%s' "$path"; return 0; fi
+    rm -rf "$copy"
+    cp -a "$path" "$copy" || die "cannot copy $path to $copy (for the $user user, who cannot read $path)"
+    chgrp -R "$(id -gn "$user")" "$copy"
+    chmod -R g+rX,g-w,o-rwx "$copy"
+    log "copied $path to $copy: the $user user cannot read $path"
+    printf '%s' "$copy"
+}
+
+# ---------------------------------------------------------------------------------------------------- device SSH keys
+
+# The devices' SSH host keys. Ansible (Semaphore UI's runs, through paramiko) and Oxidized (net-ssh) refuse a device
+# whose key they do not know or that changed, and both read /etc/ssh/ssh_known_hosts, as every SSH client of this
+# server does; only root may change it. --device-known-hosts FILE installs FILE there while the file there is the one
+# the installer wrote, or there is none: a file of the server's own is left as it is.
+KNOWN_HOSTS_FILE=/etc/ssh/ssh_known_hosts
+KNOWN_HOSTS_DONE=0
+
+# known_hosts_keys FILE: the keys of an OpenSSH known_hosts file (its lines that are not comments).
+known_hosts_keys() { grep -c -v -E '^[[:space:]]*(#|$)' "$1" || true; }
+
+# known_hosts_ok FILE: whether FILE is a known_hosts file with a key at least: every line that is not a comment names
+# its hosts, a key type and a base64 key (after @cert-authority or @revoked, if it starts with one).
+known_hosts_ok() {
+    awk '/^[[:space:]]*(#|$)/ { next }
+        { f = ($1 ~ /^@/) ? 2 : 1; if (NF < f + 2 || $(f + 2) !~ /^[A-Za-z0-9+\/]+=*$/) bad = 1; else keys++ }
+        END { exit (bad || keys == 0) }' "$1"
+}
+
+device_known_hosts() {
+    [[ $KNOWN_HOSTS_DONE == 1 ]] && return 0
+    KNOWN_HOSTS_DONE=1
+    local dest=$KNOWN_HOSTS_FILE
+    if [[ -n $DEVICE_KNOWN_HOSTS ]]; then
+        local last current
+        last=$(state_get device_known_hosts || true)
+        current=$( [[ -f $dest ]] && sha256sum "$dest" | cut -d' ' -f1 || true)
+        if [[ -n $current && $current != "$last" ]] && file_differs "$DEVICE_KNOWN_HOSTS" "$dest"; then
+            warn "$dest is this server's own: left as it is; add the keys of $DEVICE_KNOWN_HOSTS to it (Ansible and Oxidized check the devices against it)"
+            return 0
+        fi
+        if [[ ! -d ${dest%/*} ]]; then act "make ${dest%/*}" install -d -m 755 "${dest%/*}"; fi
+        put_file "$DEVICE_KNOWN_HOSTS" "$dest" root:root 644 \
+            "install the devices' verified SSH host keys as $dest ($(known_hosts_keys "$DEVICE_KNOWN_HOSTS") keys: Ansible and Oxidized check the devices against them)" || true
+        if [[ $CHECK == 0 ]]; then state_set device_known_hosts "$(sha256sum "$dest" | cut -d' ' -f1)"; fi
+    elif [[ ! -s $dest ]]; then
+        warn "Ansible and Oxidized refuse devices whose SSH host keys they do not know, and $dest has none: give the devices' verified keys with --device-known-hosts FILE before the first change or backup (install/rocky/README.md, Device SSH host keys)"
+    fi
+}
+
 # download URL DEST [SHA256]: download over HTTPS (proxies from the environment), verified when a checksum is given.
 download() {
     local url=$1 dest=$2 sum=${3:-}

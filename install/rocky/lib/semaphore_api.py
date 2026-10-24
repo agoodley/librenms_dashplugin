@@ -121,15 +121,20 @@ def ensure_environment(api, p, spec):
     envs = api.call('GET', '/project/%d/environment' % p)
     env = by_name(envs, spec['name'])
     secrets = [{'type': 'env', 'name': n, 'secret': v, 'operation': 'create'} for n, v in spec['secret_env'].items()]
+    extra = spec.get('extra_vars') or {}
     if env is None:
-        env = api.call('POST', '/project/%d/environment' % p, {'name': spec['name'], 'project_id': p, 'json': '{}',
+        env = api.call('POST', '/project/%d/environment' % p, {'name': spec['name'], 'project_id': p, 'json': json.dumps(extra),
                                                                'env': json.dumps(spec['env']), 'secrets': secrets})
-        changes.append('variable group "%s" (%s, the secret %s)' % (spec['name'], ', '.join('%s=%s' % kv for kv in spec['env'].items()),
-                                                                     ', '.join(spec['secret_env'])))
+        changes.append('variable group "%s" (%s, the secret %s)' % (
+            spec['name'], ', '.join(['%s=%s' % kv for kv in spec['env'].items()] + ['%s: %s' % (k, json.dumps(v)) for k, v in extra.items()]),
+            ', '.join(spec['secret_env'])))
         return env['id']
     env = api.call('GET', '/project/%d/environment/%d' % (p, env['id']))
     current = json.loads(env.get('env') or '{}')
     variables = dict(current, **spec['env'])
+    # extra variables (its "json"): added when missing, an admin's own value of one stays
+    current_extra = json.loads(env.get('json') or '{}')
+    missing = {k: v for k, v in extra.items() if k not in current_extra}
     updates = []
     known = {s['name']: s for s in env.get('secrets') or [] if s.get('type') == 'env'}
     for name, value in spec['secret_env'].items():
@@ -137,13 +142,15 @@ def ensure_environment(api, p, spec):
             updates.append({'type': 'env', 'name': name, 'secret': value, 'operation': 'create'})
         elif spec.get('update_secrets'):
             updates.append({'id': known[name]['id'], 'type': 'env', 'name': name, 'secret': value, 'operation': 'update'})
-    if variables != current or updates:
-        body = {'id': env['id'], 'name': env['name'], 'project_id': p, 'json': env.get('json') or '{}', 'env': json.dumps(variables),
+    if variables != current or updates or missing:
+        body = {'id': env['id'], 'name': env['name'], 'project_id': p,
+                'json': json.dumps(dict(current_extra, **missing)) if missing else env.get('json') or '{}', 'env': json.dumps(variables),
                 'secrets': updates}
         if 'password' in env:
             body['password'] = env['password']
         api.call('PUT', '/project/%d/environment/%d' % (p, env['id']), body)
-        what = ['%s=%s' % (k, v) for k, v in spec['env'].items() if current.get(k) != v] + ['the secret ' + u['name'] for u in updates]
+        what = (['%s=%s' % (k, v) for k, v in spec['env'].items() if current.get(k) != v] + ['%s: %s' % (k, json.dumps(v)) for k, v in missing.items()]
+                + ['the secret ' + u['name'] for u in updates])
         changes.append('variable group "%s": %s' % (spec['name'], ', '.join(what)))
     return env['id']
 
