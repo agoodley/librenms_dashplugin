@@ -66,7 +66,7 @@ def expect_rejection(host, options, file, error)
   begin
     Net::SSH.start(host, 'netops', **options, user_known_hosts_file: [file]).close
     raise 'untrusted host was accepted'
-  rescue Net::SSH::HostKeyMismatch => e
+  rescue Net::SSH::HostKeyError => e
     raise unless e.class == error
   end
 end
