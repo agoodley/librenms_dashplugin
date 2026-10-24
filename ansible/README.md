@@ -1009,14 +1009,14 @@ first, within the wait (with *wait*, the data as it is). So a link that was down
 came back while it waited, and that the batch breaks again, is a link gone. The change page shows what each wait
 waits for (*lab-sw4 (a discovery), lab-sw2 (a poll)*).
 
-Only the sync command takes states, each in a process of its own (`artisan ansible:state`, as the topology plugin
-runs each background check: on a large network a state takes some seconds and a few hundred MB, which never stay in
-the sync command's process). So with verification, neither *Apply* nor *Continue* nor an acceptance launches a batch
-in its request: the sync command takes it up within a minute, and launches it right after its state before it, once
-its data is fresh (minutes later: see above). A
-template's secret answers then reach the runner only while the change page that holds them is open (see
-[Limitations](#limitations)): it launches the batch within seconds of its state; answers given later (the page was
-closed, an admin enters them again) wait for the state to be taken again, and that page launches the batch then.
+Only the sync command takes states, each in a process of its own (`artisan ansible:state`, as the topology plugin runs
+each background check: on a large network a state takes some seconds and a few hundred MB, which never stay in the
+sync command's process). So with verification, neither *Apply* nor *Continue* nor an acceptance launches a batch in
+its request: the sync command takes it up within a minute, and launches it right after its state before it, once its
+data is fresh (minutes later: see above). A template's secret answers then reach the runner only while the change page
+that holds them is open (see [Limitations](#limitations)): it launches the batch within seconds of its state; answers
+given later (the page was closed, an admin enters them again) wait for the state to be taken again, and that page
+launches the batch then.
 
 ### What stops a batch
 
@@ -1057,13 +1057,14 @@ verification is done, or its wait for fresh data is over.
 ### The outcome
 
 A change ends **verified** (every batch verified), **verified with accepted changes** (an admin accepted what a batch
-changed) or **not verified** (a batch that could not be verified, even when an admin went on without its
-verification, unexpected changes only recorded or found by the last batch; or, from its *Apply* on, a change applied
-without verification, with why; or a change applied before the upgrade to phase 4: *applied before the upgrade*). A batch verified from a state before it that was taken on older data (its wait for
-fresh data over) says so in its result and in the outcome: *verified (batch 1 on data older than the Apply before
-it)*. The Changes list and the change page show it; the timeline names what changed, the eventlog of each target counts
-it (it names no other device). The change page shows each batch's verification: its state before it, the wait for
-fresh data after it, and what the comparison found, sorted as above.
+changed) or **not verified** (a batch that could not be verified, even when an admin went on without its verification,
+unexpected changes only recorded or found by the last batch; or, from its *Apply* on, a change applied without
+verification, with why; or a change applied before the upgrade to phase 4: *applied before the upgrade*). A batch
+verified from a state before it that was taken on older data (its wait for fresh data over) says so in its result and
+in the outcome: *verified (batch 1 on data older than the Apply before it)*. The Changes list and the change page show
+it; the timeline names what changed, the eventlog of each target counts it (it names no other device). The change page
+shows each batch's verification: its state before it, the wait for fresh data after it, and what the comparison found,
+sorted as above.
 
 ### What is kept
 
