@@ -10,17 +10,25 @@ its **rollout plan** (farthest from the core first, the core last, never two dev
 batch), and what each batch cuts off while it runs, its **blast radius**, is approved with the change and computed
 again before the batch starts: a batch that would cut off more than was approved waits for an approver, and its
 maintenance window also covers the devices it cuts off. What was applied is exactly what was dry-run and approved:
-the same template as the runner has it, the same commit, the same devices and answers, the same batches. Everything
-goes to an audit log and to each device's eventlog. This is phases 1, 2 and 3 of
-[change automation with Ansible](../ROADMAP.md#change-automation-with-ansible).
+the same template as the runner has it, the same commit, the same devices and answers, the same batches. With the
+topology plugin each batch is also **verified**: the state of the network around it (links, port-channels, blocked
+ports, root bridges, OSPF and BGP, and the topology plugin's findings) is taken before it and again after it, once
+LibreNMS' data is fresh, and compared; a batch that lost an uplink, moved a root bridge or made a new single point of
+failure holds the change until an admin accepts what it found. Its **Fixes** page turns the topology plugin's findings
+whose fix is clear (port descriptions, a spanning tree root that is not the intended one) into a change in one click,
+dry-run, approved, applied and verified like any other. Everything goes to an audit log and to each device's eventlog.
+This is phases 1 to 4 of [change automation with Ansible](../ROADMAP.md#change-automation-with-ansible).
 
 * **Changes:** every change with its template, devices, reference, dry run and status, with filters.
 * **New change:** a template, the target devices and the first batch, the survey answers and a reference (a ticket
   number); the preview shows exactly what the change will be, batch by batch, and with the topology plugin what each
   batch cuts off.
-* **Change:** its dry run per device with the diff of what would change, the approvals, the batches with their runs
-  and their blast radius, the backups and the maintenance windows, the live log and a timeline; *Run the dry run*,
-  *Approve*, *Reject*, *Apply*, *Continue*, *Accept the new blast radius*, *Stop* and *Cancel*.
+* **Change:** its dry run per device with the diff of what would change, the approvals, the batches with their runs,
+  their blast radius and their verification, the backups and the maintenance windows, the live log and a timeline;
+  *Run the dry run*, *Approve*, *Reject*, *Apply*, *Continue*, *Accept the new blast radius*, *Accept what batch N
+  changed* (or *Go on without the verification of batch N*), *Stop* and *Cancel*.
+* **Fixes:** the topology plugin's findings whose fix is clear, with what each fix changes; *Fix the selected* opens a
+  new change made from them, its answers computed from the findings.
 * **Runs:** each run of a change (its dry run or a batch) with live status, per-device result and the Ansible log.
 * **Inventory:** what the runner gets from LibreNMS, the devices left out and why, and the setup steps.
 * An **Ansible** panel on each device's overview page, and **Settings** in Plugin Admin.
@@ -46,6 +54,12 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
 | A batch's maintenance window in LibreNMS: its device and the devices it cuts off | The change applied: each batch's blast radius checked, accepted or shrunk |
 |---|---|
 | ![Maintenance window of a batch](docs/images/change-blast-window.png) | ![Applied with blast radius checks](docs/images/change-blast-applied.png) |
+
+| Fixes: the topology plugin's findings whose fix is clear | A change verified batch by batch |
+|---|---|
+| ![Fixes](docs/images/fixes.png) | ![A change verified](docs/images/change-verified.png) |
+
+![A change paused: its first batch's verification found an uplink lost](docs/images/change-verify-paused.png)
 
 | An approval | Backups and maintenance windows of a change |
 |---|---|
@@ -78,6 +92,8 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
 * [Using it](#using-it)
 * [How a change works](#how-a-change-works)
 * [Rollout plan and blast radius](#rollout-plan-and-blast-radius)
+* [Verification](#verification)
+* [Fixes](#fixes)
 * [How runs work](#how-runs-work)
 * [Safety](#safety)
 * [Semaphore UI behaviour the plugin relies on](#semaphore-ui-behaviour-the-plugin-relies-on)
@@ -110,6 +126,11 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
   measured from), installed and enabled in LibreNMS, and what it needs: LibreNMS' LLDP/CDP discovery of the devices
   and their ports, and the core devices in its settings (*Core devices*, else its guess). Without it the settings plan
   the batches, as in phase 2. See [Rollout plan and blast radius](#rollout-plan-and-blast-radius).
+* For the verification of each batch and the Fixes page (optional): the topology plugin's
+  [verification API](../README.md#verification-api-for-other-plugins) 1.x, from the same commit, and its background
+  checks (its *Topology history*); LibreNMS' discovery and polling of the devices (the verification waits for fresh
+  data), and for root priority fixes its *Designated root bridges* or *Core devices*. Without it every batch is *not
+  verified* (see [Verification](#verification)).
 
 ## Installation
 
@@ -142,11 +163,12 @@ runner connection. Its pages are for LibreNMS admins: **Overview → Plugins →
 **Overview → Plugins → Plugin Admin → ansible → Settings**.
 
 The plugin keeps its data in tables of its own: the changes (`ansible_changes`, and `ansible_change_targets`,
-`_batches`, `_approvals`, `_windows`, `_diffs` and `_events`), the runs (`ansible_runs`, `ansible_run_targets`), the
+`_batches`, `_approvals`, `_windows`, `_diffs`, `_events` and `_states`, the states of the network its verification
+compared), the runs (`ansible_runs`, `ansible_run_targets`), the
 runner's inventory fetches (`ansible_inventory_fetches`) and its settings, the runner connection encrypted
 (`ansible_config`). The migrations also create the permissions `ansible.run` and `ansible.approve`. `./validate.php`
 then warns that the schema "has extra migrations (2026_10_24_000000_create_ansible_tables, ...,
-2026_11_04_000000_ansible_change_blast)": those are the plugin's migrations (`database/migrations`), and the warning stays
+2026_11_05_000000_ansible_change_verification)": those are the plugin's migrations (`database/migrations`), and the warning stays
 while the plugin is installed. Do not delete their rows from the `migrations` table, and never apply validate.php's
 offer to drop the `ansible_*` tables: they hold the audit log.
 
@@ -203,6 +225,32 @@ The runs of phase 1 stay in the audit log as they were.
    can be computed; meanwhile the same admins may continue it (*Continue* computes it first, and only while it still
    cannot be computed does the batch go without one). Or set *When the blast radius grew* and *When the blast radius
    cannot be computed* to *refuse the batch*.
+
+**From phase 3**, `./lnms migrate` adds the table of the states and the columns of the verification and of the fixes.
+Then:
+
+1. **Update the topology plugin together with this one**, as from phase 2 (step 1 above): phase 4 verifies with the
+   topology plugin's verification API from the same commit, and a topology plugin from before it is said to be *too
+   old for the verification API* on the settings page and the Fixes page, and on the change page of each batch it
+   cannot verify.
+2. **Verify changes** is on by default. With the topology plugin, the first batch of a change applied from then on
+   starts some minutes after *Apply*, from the sync command (its state before it is taken there, right before its
+   launch), once LibreNMS discovered and polled its devices again (*Fresh data: ask*): with the discovery cron (every
+   5 minutes) and 5-minute polls, expect 5 to 10 minutes (3 to 4 in the lab). Check that LibreNMS' discovery runs (the
+   discovery cron or the dispatcher service; `./validate.php`), else every batch waits *Wait for fresh data* and then
+   cannot be verified; and keep that wait above LibreNMS' polling and discovery intervals (at least 10 minutes).
+   Without the topology plugin (or with one too old for the verification API) a change runs as in phase 3: it is
+   *not verified*, and says why.
+3. A change applied before the upgrade goes on as in phase 3, whatever its state (paused after a batch, waiting for its
+   next batch): whether a change is verified is decided at its *Apply*, and its first batch ran before the upgrade, not
+   verified. None of its batches is verified, waits or pauses for a verification; it ends **not verified (applied
+   before the upgrade)**, and its page says that batch 1 ran before the upgrade. One whose first batch had not started
+   yet at the upgrade (it waited for its blast radius, or for a device busy in another run) is verified from that batch
+   on, as a change applied now.
+4. For the Fixes page: set *Designated root bridges* or *Core devices* in the topology plugin's settings (no root
+   fix without them), copy the [example fix playbooks](contrib/playbooks) into the playbook repository (review and
+   adapt them), make a template for each kind with its survey variable ([Fixes](#fixes)), and enter their ids in the
+   settings (*Verification and fixes*).
 
 **Removing:**
 
@@ -292,6 +340,13 @@ that could change Semaphore. Step by step (the names are suggestions):
     environment-variable survey variables may not set `PATH`, `ANSIBLE_*`, `LIBRENMS_*`, proxies or other variables
     that change how Ansible, Python, SSH or the inventory script run. For a playbook that takes a list (such as several
     interfaces), use a *Text* variable and split its lines in the playbook.
+11. **Fix templates** (for the [Fixes](#fixes) page, optional): copy
+    [`contrib/playbooks/fix_port_descriptions.yml`](contrib/playbooks/fix_port_descriptions.yml) and
+    [`contrib/playbooks/fix_stp_root_priority.yml`](contrib/playbooks/fix_stp_root_priority.yml) (Cisco IOS examples:
+    review and adapt them) into the repository, and make a template of each as in step 9, with the survey variable
+    the [fix templates' contract](#the-fix-templates-contract) names, of type *Text*, required: `port_descriptions`,
+    `stp_priorities`. `diff_against: intended` in the description playbook shows each port's diff in the dry run; give
+    the priority template `-v` to see the commands. Enter their ids in the plugin's settings (*Verification and fixes*).
 
 Then, in the plugin's settings: the runner URL, the token and the project id, **Save connection**, and **Test
 connection**: it shows the Semaphore version, the token's role, the project's inventories with their ids (the one that
@@ -385,13 +440,22 @@ have, and stores whatever is posted to it, so the plugin keeps nothing in LibreN
 | Plan with the topology plugin | on | a new change plans its batches with the topology plugin's rollout planner when it can (installed, enabled in LibreNMS, planning API 1.x), and approves what each batch cuts off; off, or without it, the settings above plan them and the blast radius is unknown |
 | When the blast radius grew | pause until an admin accepts it | a batch that would cut off devices that were not approved, or now takes down every core device of its part (approved with one left standing), waits for an admin to accept the new blast radius: one with the approve permission (not the requester with a second admin), or, while *Approval* is off, one with the run permission; or *refuse the batch*: the change ends |
 | When the blast radius cannot be computed | pause for an admin | a batch whose blast radius cannot be computed (the topology plugin disabled, an error, a device of the batch it can no longer tell about) does not start: it is checked again every minute and starts on its own once it can be computed; meanwhile an admin who may accept a new blast radius (the approve permission, not the requester with a second admin; the run permission while *Approval* is off) may continue it (*Continue* computes it first, and only while it still cannot be computed does the batch go without one); or *refuse the batch* |
+| *Verification and fixes* | | the part says whether the topology plugin can verify now, and why not |
+| Verify changes | on | each batch is verified with the topology plugin: the state of the network around it taken before it and again after it on fresh data, compared ([Verification](#verification)); off, a change applied then runs as in phase 3, *not verified (switched off)*. Decided at *Apply*: a change applied without the topology plugin's verification API runs the same way, not verified with why |
+| Fresh data | ask LibreNMS for a discovery | before a batch and after it, LibreNMS is asked to discover its scope again (as its *Rediscover* button does, or a discovery job each with LibreNMS' scheduler); or *wait for LibreNMS' own discovery and polling* |
+| Wait for fresh data | 30 min | after a batch and its settle time, the longest the plugin waits for a discovery and a poll of its scope that started after it: then the batch cannot be verified; before the first batch, the longest it waits for the refresh it asked: then the state is taken anyway, older than the Apply. It must exceed LibreNMS' polling and discovery intervals (with *ask*, the discovery cron's 5 minutes and the poller's 5): 10–1440 |
+| When a batch makes unexpected changes | pause until an admin accepts them | an uplink lost, a cable moved, a root bridge moved, a port that started blocking, an OSPF adjacency or BGP session lost, a device down, a new or worse finding: the next batch waits for an admin to accept them (as a new blast radius is accepted); or *stop the change*, or *only record them*. The last batch never pauses. A change of the setting applies to the batches verified after it: one paused already waits for an admin to accept what it changed |
+| When a batch cannot be verified | pause until an admin accepts it | no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be taken within the wait (tried again every minute): the next batch waits for an admin to accept going on without the verification (checked again every minute meanwhile); or *stop the change*, or *only record it*. A change of the setting applies to the batches checked after it: one paused already goes on by itself once its cause is fixed (it is then verified), or when an admin who may accept it goes on without its verification |
+| Count findings from | warning | the lowest severity of a new or worse finding of the topology plugin that counts as unexpected (*critical*, *warning*, *info*); lower ones are listed, never pause |
+| Template for port description fixes | none | the id of the template the Fixes page uses for port descriptions; it must have the survey variable `port_descriptions` of type *Text* (checked with the runner when it is saved, and at each new change) |
+| Template for root priority fixes | none | the same for the spanning tree root priority, with the survey variable `stp_priorities` |
 | *Run permission*, *Approve permission* | | who may prepare and apply changes, and who may approve them ([Permissions](#permissions)) |
 
 A setting that cannot be used is refused with the reason, and nothing is saved: a platform mapping line that cannot
 be read, a device group or user that does not exist, a number out of its range. When the stored settings cannot be
 read, the plugin launches nothing and its inventory endpoint answers with an error, rather than fall back to defaults
 that may reach more devices. A change keeps the batch plan it was created with (and whether the topology plugin
-planned it); the approval, backup, window and blast radius settings apply to what it does next.
+planned it); the approval, backup, window, blast radius and verification settings apply to what it does next.
 
 ![The Rollout plan and blast radius part of the settings](docs/images/settings-topology.png)
 
@@ -419,11 +483,13 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 
 ## Permissions
 
-* **Viewing** the changes, the runs, the inventory, the JSON and the device panel is for LibreNMS **admins**. Everyone
-  else gets HTTP 403 on every route of the plugin and sees no menu entry, panel or button.
+* **Viewing** the changes, the runs, the inventory, the JSON and the device panel is for LibreNMS **admins**.
+  Everyone else gets HTTP 403 on every route of the plugin and sees no menu entry, panel or button.
 * **Preparing and applying** changes (a new change, its dry run, *Apply*, *Continue* but for a batch whose blast
-  radius cannot be computed (below), *Stop*, *Cancel*), stopping a run and releasing the devices of a run the runner
-  could not be asked about, or of a stopped run, also needs the plugin's **run permission**, `ansible.run`.
+  radius cannot be computed (below), *Stop*, *Cancel*), the **Fixes** page and its list (they make changes from
+  fixes, and run the topology plugin's checks: one computation per admin at a time), stopping a run and releasing the
+  devices of a run the runner could not be asked about, or of a stopped run, also needs the plugin's **run
+  permission**, `ansible.run`.
   **Approving and rejecting** changes needs its **approve permission**, `ansible.approve`. An admin grants them on the
   settings page. Admins do not get them automatically: an admin without them sees everything, but no buttons, and the
   plugin answers 403 to such requests.
@@ -434,8 +500,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   approves changes there). **Continuing a batch whose blast radius cannot be computed** (which goes on without one
   while it still cannot be computed) is a decision on a blast radius too, and follows the same rule: the approve
   permission, never the requester with a second admin, while the settings ask for an approval; the run permission
-  while they ask for none. An approver without the run permission launches nothing: after their acceptance or
-  *Continue* the batch starts as the admin who started it (who applied the change or continued it to this batch), and
+  while they ask for none. **Accepting what a batch's verification found** (its unexpected changes, or going on
+  without its verification) follows the same rule. An approver without the run permission launches nothing: after
+  their acceptance or *Continue* the batch starts as the admin who started it (who applied the change or continued it to this batch), and
   a template's secret answers are then asked for at its launch, from an admin with the run permission. An approval
   counts only while its approver still is an admin with the approve permission, and a batch is launched only while the
   admin who launches it (who applied the change or continued it) still holds the run permission.
@@ -480,7 +547,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   last, or until one fails. A batch whose blast radius grew since the approval waits for an admin's **Accept the new
   blast radius** (an approver's, while the settings ask for an approval), one whose blast radius cannot be computed for
   an admin's **Continue** without it (see [Rollout
-  plan and blast radius](#rollout-plan-and-blast-radius)). An Apply or a Continue while a device of the batch is busy in another unfinished run (or
+  plan and blast radius](#rollout-plan-and-blast-radius)). With verification, each batch is verified before the next
+  starts: one whose verification found unexpected changes, or that cannot be verified, waits for an admin's **Accept
+  what batch N changed** (or **Go on without the verification of batch N**), an approver's while the settings ask for
+  an approval (see [Verification](#verification)). An Apply or a Continue while a device of the batch is busy in another unfinished run (or
   held after a stop) is refused and changes nothing: the change stays ready, or waiting (checked under the lock of the
   launches, so a run launched meanwhile is seen). A batch the plugin starts on its own (after the previous one, after a
   pause) whose device is busy in a run that began before the apply waits for it, pending, at most the *Expected batch
@@ -505,7 +575,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
 * **Changes:** filter by device, requester, template, status ("Not ended" for the changes still going) and dates; the
   *JSON* button gives the same list, with each change's status and the state of its dry run as the page shows them
   (`dry_run_state`, and `dry_run_label`: *NOT PROVEN* for a dry run not proven to be one, which may have changed its
-  devices).
+  devices), and the outcome of its verification (`verification`, `verification_label`).
+* **Fixes:** the topology plugin's findings whose fix is clear, and *Fix the selected* (see [Fixes](#fixes)).
 * **Runs:** each run of a change, its dry run or a batch (and the runs of phase 1), with the change it belongs to;
   filter by device, user, template, status and dates. A run's page shows its status, each target's result with the
   PLAY RECAP counters, the answers and the log, live; **Stop** and **Release the devices** as in phase 1 (see [Run
@@ -518,8 +589,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   what it found for that device ("would change", or an error when it is not proven to be a dry run), the approval
   asked for and given, the apply, its maintenance window, its backups (each fresh one with the version Oxidized keeps,
   each missing one with why; the change's timeline lists them too), its batch launched and ended, a batch's blast
-  radius that grew or cannot be computed, its acceptance or the decision to go on without one, and how the change
-  ended; a device a batch cuts off gets an entry when the batch's window covers it, with why (the plugin's words name no
+  radius that grew or cannot be computed, its acceptance or the decision to go on without one, each batch's
+  verification (verified, the unexpected changes it found counted, or why it cannot be verified) and its acceptance,
+  how the change ended and the outcome of its verification; a device a batch cuts off gets an entry when the batch's window covers it, with why (the plugin's words name no
   other device: the blast radius entries count the devices); and, as in phase 1, the start and end of each run with its
   result and counters. The severity follows the result. The comment of an approval, a rejection or an acceptance is
   copied into the entries as written, as the change's reference (*CHG-1234*) and the template's name are: anyone who
@@ -702,14 +774,15 @@ change that is not over (and for the windows and backups of ended changes), so a
 except where it waits for an admin.
 
 **Secret answers** are never stored, so they are not part of the fingerprint or the approval, and the plugin cannot
-launch a batch that needs them on its own. They are asked at the dry run, at *Apply* and at each *Continue*, which are
-refused (changing nothing) while a secret answer the template requires is empty. A batch whose backups are fresh within
-that request launches with them at once; the change page keeps them in its memory (not in the browser's storage) and
-launches each later batch with them while it stays open, as soon as the batch is ready (after its window and backups),
-showing the batch as launched from the page rather than its wait. When it was closed, a batch that needs them waits
-(*waits for the secret answers*, said in the timeline once it has waited 30 seconds) for an admin to continue with them,
-with its maintenance window open and its backups taken: for the *Expected batch time* (maintenance setting, at least 15
-minutes), after which the change ends as failed and the window closes.
+launch a batch that needs them on its own. They are asked at the dry run, at *Apply* and at each *Continue*, which
+are refused (changing nothing) while a secret answer the template requires is empty. A batch whose backups are fresh
+within that request launches with them at once; the change page keeps them in its memory (not in the browser's
+storage) and launches each later batch with them while it stays open, as soon as the batch is ready (after its window
+and backups, and with verification its state before it), showing the batch as launched from the page rather than its
+wait. When it was closed, a batch that needs them waits (*waits for the secret answers*, said in the timeline once it
+has waited 30 seconds) for an admin to continue with them, with its maintenance window open and its backups taken:
+for the *Expected batch time* (maintenance setting, at least 15 minutes), after which the change ends as failed and
+the window closes.
 
 ## Rollout plan and blast radius
 
@@ -857,6 +930,234 @@ lab-sw5 and lab-sw6 says why they are under maintenance. Meanwhile lab-sw7 got a
 now cuts off lab-sw8 only, goes on (*its blast radius shrank since the approval: it no longer cuts off lab-sw7*), and
 its window covers lab-sw3 and lab-sw8.
 
+## Verification
+
+With the topology plugin's [verification API](../README.md#verification-api-for-other-plugins) (version 1.x) and
+*Verify changes* on (the default), the plugin verifies each batch: it takes **the state of the network around the
+batch** before it, and again after it once LibreNMS' data of those devices is fresh, compares the two, and holds the
+change when the batch changed something nobody asked for. It never reads the topology plugin's tables or other
+classes.
+
+**Whether a change is verified is decided at its *Apply*.** Without the API then (the topology plugin not installed,
+disabled in *Plugin Admin*, too old for the verification API, an API of another major version), or with *Verify
+changes* off, the change runs as in phase 3: no state is taken, the Apply launches its first batch, no batch waits or
+pauses for a verification, and it ends **not verified**, with why: *the topology plugin is not installed*, *too old
+for the verification API: update both plugins together*, or *switched off* (said on its page and in the Changes list
+only, as in phase 3; the others also in the timeline and the eventlog). A change applied with the API is verified to
+its end, whatever the setting says meanwhile: an API that fails later (the topology plugin disabled since, an error)
+makes batches that **cannot be verified**, which follow *When a batch cannot be verified*. A change applied before the
+upgrade to phase 4 goes on as in phase 3 and ends *not verified (applied before the upgrade)*: its first batch ran
+before the upgrade, not verified (*From phase 3* in [Installation](#installation)).
+
+### What a state covers
+
+A state is taken by the topology plugin **as the admin who starts the batch sees the network**, of:
+
+* the batch's devices;
+* the devices it cuts off (its blast radius: their path to the core depends on the batch);
+* the monitored LLDP/CDP neighbors of both;
+* the spanning tree switches of their L2 domains (a priority set on one switch moves the root of all of them).
+
+Of the first three it records what the topology history records: each link (unmanaged neighbors named as LLDP/CDP
+reports them), port-channel member, blocked port, OSPF adjacency and BGP session. Of the domains, the root bridge
+each switch sees in each VLAN. Of all of them, the findings of the topology plugin's enabled background checks
+(spanning tree, links and VLANs, redundancy, routing) about any device of the scope, with the findings history's
+identities, and how fresh LibreNMS' data of each device is. The state after a batch covers at least the devices the
+one before it covered (the first three), and the spanning tree domains of those as they are then; the comparison is
+made over what both cover: a device that came into view is not a new link. The plugin sends the topology plugin the
+devices of the first three only, at most 5,000: a batch with more (one that cuts off thousands of devices) cannot be
+verified. The topology plugin finds the domains itself, of any size.
+
+### Fresh data
+
+LibreNMS learns links, port-channels and blocked ports at a **discovery**, root bridges at a **poll**. The state after
+a batch is taken only from data newer than the batch: a discovery and a poll of each device of the batch, of what it
+cuts off and of their neighbors, and a poll of each switch of their L2 domains, that **started** after the end of the
+batch and its *Settle time* (LibreNMS writes when a discovery or a poll ended and how long it took, so when it
+started; it does not discover a device that is down). A device that was down before the batch is left out; one that
+went down since is an unexpected change.
+
+* **Fresh data: ask** (default): once the settle time is over, LibreNMS is asked to discover those devices again,
+  and the next batch's too (its state before it is taken from that data): with LibreNMS' discovery scheduled by
+  Laravel (`schedule_type.discovery` = `scheduler`), a discovery job per device, as LibreNMS' dispatcher queues them;
+  otherwise each device is marked for rediscovery, as its *Rediscover* button does, and the discovery cron
+  (`discovery.php -h new`, every 5 minutes) or the dispatcher service takes it within minutes. Always a full
+  discovery: one of a few modules would push the device's next full discovery back by the discovery interval.
+* **wait**: the plugin waits for LibreNMS' own discovery (by default every 6 hours) and polling (every 5 minutes).
+
+A device of which no discovery started within 3 minutes of the request is asked for again, twice at most: a discovery
+already running when LibreNMS was asked takes the request up and ends with older data, and LibreNMS' scheduler drops a
+discovery job for a device that has one queued; the data still counts from the first request.
+
+The plugin waits at most **Wait for fresh data** (30 minutes); without fresh data by then the batch **cannot be
+verified**. How long fresh data takes is LibreNMS' own pace: with *ask*, a device marked for rediscovery is discovered
+by the discovery cron within 5 minutes and polled within the next 5 (a discovery job each is taken up as soon as a
+worker is free), so a batch starts, and its verification ends, **5 to 10 minutes** after its request (3 to 4 in the
+lab); with *wait*, after LibreNMS' next discovery. The wait must exceed those intervals: it is at least 10 minutes.
+
+**The state before a batch is the last step before its launch:** it is taken once the batch's blast radius was
+checked again, its maintenance window opened and its backups taken, so that it is the network the batch then changes.
+Its data is made fresh first, before those checks: *Apply* asks LibreNMS for a discovery of the first batch's scope,
+and the batch goes on once that data is fresh, at most the same wait; then it goes on anyway, and the change page and
+the timeline say that its state is older than the Apply. A later batch's data is the data LibreNMS discovered again
+for the verification of the batch before it (asked for both scopes at once), or asked for again when that is older
+than the wait. With *wait*, the state is taken from LibreNMS' data as it is, and said so. **A launch held after its
+data was ready** (a blast radius that grew or cannot be computed, until an admin accepts it or continues; secret
+answers that come more than 2 minutes after the state) **takes the state again** right before it: from LibreNMS' data
+as it is when LibreNMS discovered and polled the scope within the wait, else LibreNMS is asked for a discovery again
+first, within the wait (with *wait*, the data as it is). So a link that was down when the batch first came to start,
+came back while it waited, and that the batch breaks again, is a link gone. The change page shows what each wait
+waits for (*lab-sw4 (a discovery), lab-sw2 (a poll)*).
+
+Only the sync command takes states, each in a process of its own (`artisan ansible:state`, as the topology plugin runs
+each background check: on a large network a state takes some seconds and a few hundred MB, which never stay in the
+sync command's process). So with verification, neither *Apply* nor *Continue* nor an acceptance launches a batch in
+its request: the sync command takes it up within a minute, and launches it right after its state before it, once its
+data is fresh (minutes later: see above). A template's secret answers then reach the runner only while the change page
+that holds them is open (see [Limitations](#limitations)): it launches the batch within seconds of its state; answers
+given later (the page was closed, an admin enters them again) wait for the state to be taken again, and that page
+launches the batch then.
+
+### What stops a batch
+
+The comparison sorts what changed between the two states, in the words of the topology plugin's Changes page:
+
+* **Unexpected:** a link gone (an uplink lost), a cable moved, a new unmanaged neighbor, a port-channel member gone,
+  a root bridge moved or gone, a port that started blocking, an OSPF adjacency or a BGP session lost, a device down,
+  and a finding of the topology plugin that is **new or worse** (a new single point of failure, say) from **Count
+  findings from** up (warning by default); for a change made from fixes, also a finding the fix was made for that is
+  still there.
+* **What the fix was made for:** the findings it resolved; a root bridge that moved to the intended one, and what
+  moves with it (see [Fixes](#fixes)).
+* **The rest, listed only:** links that came back, findings below *Count findings from*, resolved or milder, the
+  checks the topology plugin keeps out of the eventlog.
+
+Nothing unexpected: the batch is **verified**, and the next one starts as any. Something unexpected: **When a batch
+makes unexpected changes** decides. **Pause** (default): the next batch does not start until an admin **accepts what
+the batch changed** on the change page, with an optional comment, as a new blast radius is accepted (the approve
+permission, never the requester with a second admin, while the settings ask for an approval; the run permission while
+they ask for none); the acceptance is for what the page showed, and refused when the verification changed since it
+was loaded. **Stop the change**: it ends as failed. **Only record them**: the change goes on. A batch that **cannot
+be verified** (no fresh data within the wait, the topology plugin disabled since the *Apply*, a state that cannot be
+taken within the wait, a LibreNMS role that may not view the links, a part of the network the topology plugin could not
+read in either state, a device of its scope that LibreNMS no longer has as the admin who started the batch sees it
+(disabled, deleted, no longer visible to them), that admin no longer one who may start it (no state is taken as them:
+they would see less, or nothing), or for a fix the check that found its findings not run) follows **When a batch
+cannot be verified** the same way. **A state that could not be taken** (its process killed, the database busy, the
+topology plugin's error) is tried again every minute until the wait for fresh data is over, for every batch and
+setting, before the batch counts as one that cannot be verified: the batch before its launch waits meanwhile, with its
+window open; the timeline says so once. While it pauses, the plugin checks every minute whether the data became fresh
+(when the state before the batch was taken), or takes a new state after it every 5 minutes (when one could not be read
+in full), and verifies the batch then. *Continue* starts neither, nor does a change of the settings: they apply to the
+batches verified after it, and a batch paused already goes on once it is verified, or once an admin who may accept it
+goes on without its verification.
+
+**The last batch never pauses**: nothing is left to hold. The change ends with its outcome, and what its verification
+found is a warning in the timeline and in the eventlog. Its devices stay reserved for the change until that
+verification is done, or its wait for fresh data is over.
+
+### The outcome
+
+A change ends **verified** (every batch verified), **verified with accepted changes** (an admin accepted what a batch
+changed) or **not verified** (a batch that could not be verified, even when an admin went on without its verification,
+unexpected changes only recorded or found by the last batch; or, from its *Apply* on, a change applied without
+verification, with why; or a change applied before the upgrade to phase 4: *applied before the upgrade*). A batch
+verified from a state before it that was taken on older data (its wait for fresh data over) says so in its result and
+in the outcome: *verified (batch 1 on data older than the Apply before it)*. The Changes list and the change page show
+it; the timeline names what changed, the eventlog of each target counts it (it names no other device). The change page
+shows each batch's verification: its state before it, the wait for fresh data after it, and what the comparison found,
+sorted as above.
+
+### What is kept
+
+Each state is kept with its change (table `ansible_change_states`), compact and compressed: the identity, text and
+severity of each fact and finding of its scope, the root bridges, how fresh each device's data was, and the names;
+never raw LibreNMS rows. So is each batch's comparison, with its lists of at most 200 entries. A state of more than
+32 MB (as JSON) is not kept: its batch cannot be verified. On the topology plugin's large test network (4,922 devices,
+10 PVST+ VLANs, one L2 domain), the state of a batch of five access switches covers the root bridges and the findings of
+the whole domain: 2.2 MB of JSON, kept as 0.34 MB, so 0.7 MB a batch (its comparison a few KB); it takes 15 s and
+460 MB in its process.
+
+## Fixes
+
+The **Fixes** page (*Ansible → Fixes*) lists the topology plugin's findings whose fix is clear, as the admin sees the
+network, by kind, 25 at a time (*Next*, *Show all*: a fix chosen on one page stays chosen). Its filters are the
+topology plugin's pages': a **device**, a **device group**, a **location**, each one narrowing the list to the fixes of
+those devices and of the findings about them, which the topology plugin then computes for them alone (on a large
+network much faster than the whole list):
+
+* **Port descriptions:** a port whose description names the wrong LLDP/CDP neighbor, or none (between monitored
+  devices). The fix sets the description the topology plugin's link check builds from the neighbor: its name and
+  port, cleaned (letters, digits, spaces and `. _ / : + ( ) # @ , -`; anything else, a backslash too, becomes `_`), at most 80
+  characters.
+* **Spanning tree root priority:** a part of the network whose root bridge is not the intended one, or was elected
+  with the default priority. The intended root is the first of the topology plugin's *Designated root bridges* in
+  that part, else its first *Core device*, set to priority 4096 in every VLAN (PVST+) or in the CIST (MST), the next
+  one as its secondary with 8192. A fix knows these devices by the settings' device ids or LibreNMS hostnames only,
+  never by a sysName or a display name (a device reports its sysName itself): name them so. Without designated root
+  bridges or configured core devices named so, or with a name that is the id or hostname of several devices, there is
+  no root fix: the page lists the finding with why, and where to set them. Nor is there one in a VLAN where another
+  switch has a priority as low as 4096 (or, besides the intended root, as 8192): with the same priority, the lower
+  MAC address wins, so the fix would not move the root. The page lists the finding with that switch and its priority
+  as configured (*cor-sw4 has priority 4096 in VLAN 10, so cor-sw1, the intended root, would not win with 4096: raise
+  its priority, or lower cor-sw1's by hand*).
+
+Each fix shows what it changes and the findings it resolves. The topology plugin's *Link & VLAN diagnostics* and
+*Spanning tree diagnostics* link each such finding to it (*Fix with Ansible*, for admins, while this plugin is
+enabled), filtered to the finding's device, and the page then marks that fix and chooses it. A fix the plugin cannot
+apply cannot be chosen, and says why: a device of it that cannot be a target, by the check of *New change* (*lab-sw2
+cannot be a target: not in the device group Ansible lab, the only one the plugin may change*; no platform mapping,
+busy in another run...), or a port whose name cannot be passed to a playbook. The fixes chosen change at most *Max
+targets per change* devices: once they do, a fix of another device cannot be chosen until one is no longer chosen.
+**Fix the selected** (one or several fixes of one kind) opens **New change** made from them: the template the settings
+map to the kind, the fixes' devices, the survey answer as the fixes' lines (read only), a reference of their kind and
+how many devices they change (*Fix: port descriptions, 2 devices*: the reference names the change in the eventlog of
+every target, which names no other device; the timeline names the fixes), and what the change is meant to do. The
+preview and *Create* compute the lines again from the findings as they are then, only what the chosen fixes need (a
+description fix: the link check of its devices and their neighbors; a root fix: the spanning tree check of its
+domain), and refuse the change when they are not what the page showed (*The fix changed since you loaded the page:
+reload the page to make the change from the fix as it is now.*); fixes it can no longer apply (a device that became
+busy since, say) are named on the page, with why, and it offers no preview. The lines are those of the change's
+targets only: a device the planner leaves out (down, say) takes its fix with it, and the preview says so (a root fix
+whose intended root is left out goes; one whose secondary is, sets the intended root alone). From there it is a change
+like any other: dry-run with its diff, approved, applied in batches, each batch verified; the verification expects the
+batch's findings resolved, and nothing else changed.
+
+**A root priority fix plans its own batches:** the intended root alone first, then its secondary, so that the root of
+each VLAN moves once, to the intended root, and the verification after each batch expects that root. Each batch's
+blast radius is computed and approved as for any change; the preview says why the order is not the planner's (which
+goes from the edge to the core).
+
+### The fix templates' contract
+
+Each kind is applied by the template the settings name for it, with one survey variable of type *Text*, one line
+per item (checked with the runner when the setting is saved and at each new change):
+
+| Kind | Survey variable | A line | One per |
+|---|---|---|---|
+| Port descriptions | `port_descriptions` | `<host> <interface> <description>` | port |
+| Spanning tree root priority | `stp_priorities` | `<host> <mode> <instances> <priority>` | device and mode |
+
+* **host:** a target of the change, as the plugin's inventory names it (`inventory_hostname`).
+* **interface:** a port of that device as LibreNMS names it (its `ifName`, e.g. `Gi1/0/1`): letters, digits and
+  `/ . _ : -`, at most 64. A fix with a port whose name is not that is refused as a whole.
+* **description:** the rest of the line, the link check's description: letters, digits, spaces and
+  `. _ / : + ( ) # @ , -` (no backslash), at most 80, no space at either end or two in a row. A name a neighbor sends by LLDP or
+  CDP reaches a playbook only like this.
+* **mode:** `pvst` (a priority per VLAN: the instances are VLANs 1–4094), `mst` (the instances are MST instances
+  0–4094; the fix sets the CIST, 0) or `stp` (one instance: `-`). **instances:** a canonical list (ascending; two in
+  a row as `20,21`, three or more as a range: `1,10-12,20,21`). **priority:** a multiple of 4096 from 0 to 61440.
+
+The plugin builds the lines itself from the topology plugin's data and checks every field (the host a target, the
+interface a port of it in LibreNMS, the rest as above) at the preview and again at the creation; the answer is then
+part of what is dry-run and approved, so no batch sends other lines. The playbook checks them again before it uses
+them, and sets only what they say. The
+examples in [`contrib/playbooks`](contrib/playbooks) do so for Cisco IOS (`cisco.ios.ios_config`): a host with a line
+that is not as above fails and changes nothing; the description playbook finds each port in the running
+configuration by its name or abbreviation (`Fa0/1` is `FastEthernet0/1`) and diffs it against an intended
+configuration, so the dry run shows a diff per port; the priority playbook sends `spanning-tree vlan <instances>
+priority <n>` (or `mst`; `-` is VLAN 1, the tree LibreNMS reads from a single-instance switch).
+
 ## How runs work
 
 * **Inventory:** built from LibreNMS' devices by the plugin for the user of the API token: the devices that user may
@@ -967,12 +1268,32 @@ released has stopped by then.
   eventlog. The blast radius is computed before each batch and again right before its launch.
 * **The planner's batches are the ones applied:** the plan is fixed when the change is created, is part of what is
   dry-run and approved, and the batches launch their own devices, in their order.
+* **No batch after one whose verification found unexpected changes, or that could not be verified,** unless an admin
+  accepted that explicitly (the rule of a new blast radius: the approve permission, never the requester with a second
+  admin; the run permission while no approval is asked for), for what the change page showed; never with *stop the
+  change*. Both are recorded in the timeline and the eventlog. A paused batch is not started by *Continue*. A change
+  applied without verification (*Verify changes* off, or no verification API at its *Apply*) is never verified, and
+  its outcome says so from its Apply on.
+* **Never a comparison on stale data:** the state after a batch is taken only from a discovery and a poll of its scope
+  that started after the batch ended and its settle time; without them within the wait, the batch is not verified,
+  never verified. **Nor on less than its scope:** a device the state before it covered (or of its spanning tree domain)
+  that LibreNMS no longer has as the admin who started the batch sees it, or that the state after it lacks, makes the
+  batch one that cannot be verified, named; and no state is taken as an admin who may no longer start the batch
+  (gone, disabled, no longer an admin, without the run permission).
+* **A fix sends only checked, structured answers:** lines the plugin builds from the topology plugin's data, each
+  field checked against the fix templates' contract (the host a target, the interface a port of it in LibreNMS, the
+  description in the link check's characters and length, the mode, a canonical list of instances, the priority),
+  computed again at the creation and compared with what the page showed, then part of what is dry-run and approved;
+  the example playbooks check them again. A name or port a neighbor sends by LLDP/CDP reaches a playbook only as the
+  link check's cleaned description.
 * **A batch's maintenance window covers its devices and every monitored device the blast radius computed right before
   its launch says it cuts off** (for a batch an admin continued without a blast radius: the devices approved, and
   every device accepted since, as cut off, with what it cuts off then as far as the topology plugin can tell),
   nothing else, and closes like every window.
-* **The topology plugin answers as the admin sees the network:** the plugin asks its planning API as the LibreNMS user
-  who makes the change or starts the batch (scoped like the topology pages), never with its console-only system scope.
+* **The topology plugin answers as the admin sees the network:** the plugin asks its planning and verification APIs
+  as the LibreNMS user who makes the change or starts the batch (scoped like the topology pages): a plan, a state or a
+  fix never has a device, fact, finding or name outside their view. Only the comparison of two such states, which
+  reads nothing but them, uses its console-only system scope (in the sync command).
 * **Maintenance windows and backups** are always ended or recorded: a window ends with its batch plus the settle time,
   or at once when its batch never ran; a removed window is recorded; a backup is fresh, failed, or recorded as not
   possible, never left unknown.
@@ -1127,17 +1448,55 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   network behind it) are not in its blast radius, nor under its maintenance window.
 * **Port states are as LibreNMS last polled them:** a link that went down since its last poll is still up for the
   planner, so the check right before a launch is only as fresh as the polling.
+* **Changes whose scopes overlap see each other's changes.** Two changes applied at the same time whose batches share
+  a neighbor or an L2 domain both compare what is around them: a link one of them took down is unexpected for both,
+  and both pause (each cannot tell whose it was). That is on the safe side: an admin accepts it on the change that
+  did not take it down.
 * **A link that fails while a batch runs is not caught then.** The blast radius is computed only before each batch
-  and right before its launch: a failure during a batch shows only in the next batch's check, and one during the last
-  batch nowhere. Watching the topology while and after a change runs is
-  [phase 4](../ROADMAP.md#change-automation-with-ansible)'s verification.
+  and right before its launch, and the verification compares the states before and after each batch: a link that
+  failed during a batch and came back before its state after it is not seen.
+* **A state before a batch taken from older data can miss a problem.** The state before a batch is taken from data
+  LibreNMS discovered again for it when it can, else (the wait over, or *Fresh data: wait*) from older data: a link
+  that was down at the last discovery, came back since, and that the batch breaks again reads as unchanged (down in
+  both states). The change page and the timeline say when a state is older than the Apply (or than the request for
+  fresh data it was taken again from).
+* **The verification sees what LibreNMS discovers and polls:** LLDP/CDP links, port-channels, the spanning tree,
+  OSPF and BGP tables, and the topology plugin's checks of them; not traffic, nor a link LLDP/CDP does not report. It
+  is as fresh as LibreNMS' last discovery and poll: with *Fresh data: wait* and LibreNMS' default discovery every 6
+  hours, a batch can rarely be verified within the wait; a batch with a large scope (a big L2 domain) waits for a
+  discovery of every covered device and a poll of every switch of the domain.
+* **A topology check that fails leaves batches that cannot be verified.** When one of the topology plugin's checks
+  (spanning tree, links, redundancy, routing) fails in the state before or after a batch (an error, a table it cannot
+  read), or a kind of facts cannot be read, it is not compared, and a batch whose comparison found nothing else cannot
+  be verified: it fails safe, and with *When a batch cannot be verified: pause* every such batch waits for an admin.
+  The change page and the timeline name the check, its error (one line, never SQL: the details are in
+  `logs/librenms.log`) and the state it failed in, and the ways out: fix it, or switch that check off in the topology
+  plugin's settings (*Background checks*): the plugin takes a new state after the batch every 5 minutes, and goes on by
+  itself once the check works again; or an admin who may accept it goes on without its verification. (*When a batch
+  cannot be verified: only record it* applies to the batches checked after it is set, not to one paused already.)
+* **Findings are compared by the findings history's identity** (the check, the VLAN, the devices and ports) and its
+  rule for a finding that takes another's place (the same check about the same devices): a finding whose devices or
+  ports changed reads as a new one and the old one as resolved; one the topology plugin words differently but about
+  the same thing is the same finding. A finding of a check that failed in either state is not compared (see above).
+* **The Fixes page on a large network:** listing every fix runs the topology plugin's link and spanning tree checks
+  of the whole network the admin sees, in the page's request: on its large test network (4,922 devices, 10 PVST+
+  VLANs, one L2 domain) 15 to 16 s and 380 MB, which the request raises PHP's memory limit for (filtered, the fixes of
+  those devices only: their link check is quick, the spanning tree check of their domains is not when a domain is
+  that large). A change made from fixes
+  computes only what its fixes need, at its preview and at its creation: a description fix of a switch there 0.3 s
+  and 12 MB (the link check of the switch and its neighbors, with the name of every device); a root fix the spanning
+  tree check of its domain, which there is the whole network: 12 s and 330 MB.
+* **Secret answers:** with verification, every batch launches from the sync command (its state before it is the
+  last step before its launch), so the secret answers given at *Apply* or *Continue* reach it only while the change
+  page that holds them is open; otherwise it waits for an admin to enter them (for the *Expected batch time*), and
+  when they come more than 2 minutes after the state, the state is taken again first.
 * The plan and the checks see the network as the admin who makes the change or starts the batch sees it: devices
   outside their view are unknown to the planner (left out, or planned by hand).
 
 ## Later phases
 
-See [ROADMAP.md](../ROADMAP.md#change-automation-with-ansible): verification of the topology before and after a change
-(phase 4).
+Phase 4 completes [change automation with Ansible](../ROADMAP.md#change-automation-with-ansible) as the roadmap
+planned it; see the roadmap for what may follow.
 
 Other LibreNMS inventory plugins for Ansible exist (e.g. `0uwl/librenms-inventory-plugin`); they do not map LibreNMS'
 os to `ansible_network_os` or clean the network data, which is why this plugin builds its own.

@@ -21,7 +21,8 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Follows changes through their lifecycle (Changes\ChangeLifecycle), for the change page and the sync command, and
- * carries out users' actions on them. One lock per change keeps two requests from moving the same change at once:
+ * carries out users' actions on them. Only the sync command's follower takes the states of the batches' verification
+ * ($takesStates); a page's request leaves them to it. One lock per change keeps two requests from moving the same change at once:
  * the sync command, page polls, Stop, Approve and Continue all take it (a poll skips a change another request holds,
  * an action waits a few seconds for it). The lock is short and renewed during long work; a step whose lock another
  * request took meanwhile stops there (Changes\LockLost), so what is not a compare-and-set (a window opened, a backup
@@ -53,6 +54,9 @@ final class ChangeFollower
         private readonly ?ConfigBackups $backups = null,
         private readonly ?MaintenanceWindows $windows = null,
         private readonly ?Topology $topology = null,
+        private readonly bool $takesStates = false,
+        private readonly ?\Agoodley\LibrenmsAnsible\Changes\Verifier $verifier = null,
+        private readonly ?\Agoodley\LibrenmsAnsible\Changes\DataRefresh $refresh = null,
     ) {
     }
 
@@ -63,9 +67,10 @@ final class ChangeFollower
     {
         $url = function_exists('url') ? rtrim((string) url('plugin/ansible/changes'), '/') . '/%d' : 'plugin/ansible/changes/%d';
 
+        // the batches' verification: the states are taken by the sync command only ($takesStates), each in a process of its own
         return new ChangeLifecycle($this->changes, $this->runs, new ChangeActions($this->plugin, $this->runs, $this->changes, $this->inventory, $this->settings, $this->eventlog),
             $this->backups ?? new OxidizedBackups(), $this->windows ?? new LibrenmsMaintenance(), $this->eventlog, $this->settings->changeSettings($url),
-            $this->topology ?? new TopologyPlanning());
+            $this->topology ?? new TopologyPlanning(), $this->verifier ?? new TopologyVerification($this->takesStates), $this->refresh ?? new LibrenmsRefresh());
     }
 
     /**

@@ -47,9 +47,21 @@ class SettingsController extends Controller
                 $input[$key] = is_scalar($request->input($key)) ? (string) $request->input($key) : '';
             }
         }
-        $result = PluginSettings::fromInput($input, $before, $groups, $users);
+        // a template mapped to a kind of fix must have the survey variable the contract names: asked of the runner when it changes
+        $fixTemplate = function (string $kind, string $templateId): ?string {
+            try {
+                $plugin = new Plugin();
+                $template = $plugin->runner($plugin->connection())->template($templateId);
+            } catch (RunnerError $e) {
+                return 'the runner cannot give template #' . $templateId . ' (' . $e->getMessage() . '): check the id, or save again once it can be reached';
+            }
+
+            return \Agoodley\LibrenmsAnsible\Changes\FixAnswers::templateProblem($template, $kind);
+        };
+        $result = PluginSettings::fromInput($input, $before, $groups, $users, $fixTemplate);
         $anchor = array_key_exists('inventory_user', $input) && count($input) === 1 ? 'ans-inventory-user'
-            : (in_array($request->input('section'), ['ans-changes-form', 'ans-backups-form', 'ans-topology-form'], true) ? (string) $request->input('section') : 'ans-settings-form');
+            : (in_array($request->input('section'), ['ans-changes-form', 'ans-backups-form', 'ans-topology-form', 'ans-verify-form'], true) ? (string) $request->input('section')
+                : 'ans-settings-form');
         if ($result['settings'] === null) {
             return $this->back($anchor)->with('ansible_errors', $result['errors'])->with('ansible_old_settings', $input);
         }

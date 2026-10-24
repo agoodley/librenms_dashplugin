@@ -11,7 +11,7 @@ use Agoodley\LibrenmsAnsible\Inventory\UntrustedText;
  * (the LibreNMS user whose API token the runner fetches the inventory with); and how changes go (phase 2): approvals,
  * how long a dry run and an approval count, the batches, the Oxidized backups and the maintenance windows; and (phase 3)
  * whether the topology plugin plans the batches and what a batch does when its blast radius grew since the approval or
- * cannot be computed. The plugin
+ * cannot be computed; and (phase 4) how each batch is verified and which template applies each kind of fix. The plugin
  * stores them itself (Data\SettingsRepository) and only LibreNMS admins change them, like the runner connection:
  * LibreNMS' own plugin settings form can be saved by any holder of its plugin.admin permission, which non-admin roles
  * can have, so the plugin keeps nothing there.
@@ -44,7 +44,18 @@ final class PluginSettings
         'topology_plan' => '1',
         'blast_grew' => 'pause',
         'blast_unknown' => 'pause',
+        'verify' => '1',
+        'verify_fresh' => 'ask',
+        'verify_wait_minutes' => '30',
+        'verify_unexpected' => 'pause',
+        'verify_unknown' => 'pause',
+        'verify_minimum' => 'warning',
+        'fix_template_port_descriptions' => '',
+        'fix_template_stp_root_priority' => '',
     ];
+
+    /** The settings that map a kind of fix to the template that applies it (Changes\FixAnswers::KINDS). */
+    public const FIX_TEMPLATES = ['port_descriptions' => 'fix_template_port_descriptions', 'stp_root_priority' => 'fix_template_stp_root_priority'];
 
     /** Settings with a fixed set of values: key => value => label. */
     public const CHOICES = [
@@ -57,6 +68,11 @@ final class PluginSettings
         'topology_plan' => ['1' => 'on', '0' => 'off'],
         'blast_grew' => ['pause' => 'pause until an admin accepts it', 'refuse' => 'refuse the batch'],
         'blast_unknown' => ['pause' => 'pause for an admin', 'refuse' => 'refuse the batch'],
+        'verify' => ['1' => 'on', '0' => 'off'],
+        'verify_fresh' => ['ask' => 'ask LibreNMS for a discovery', 'wait' => 'wait for LibreNMS\' own discovery and polling'],
+        'verify_unexpected' => ['pause' => 'pause until an admin accepts them', 'stop' => 'stop the change', 'record' => 'only record them'],
+        'verify_unknown' => ['pause' => 'pause until an admin accepts it', 'stop' => 'stop the change', 'record' => 'only record it'],
+        'verify_minimum' => ['critical' => 'critical', 'warning' => 'warning', 'info' => 'info'],
     ];
 
     /** Ranges of the numbers: [minimum, maximum]. */
@@ -74,6 +90,8 @@ final class PluginSettings
         'backup_timeout_minutes' => [1, 120],
         'maintenance_minutes' => [5, 1440],
         'settle_minutes' => [0, 1440],
+        // above LibreNMS' polling and discovery intervals (5 minutes each by default): fresh data takes 5 to 10 minutes
+        'verify_wait_minutes' => [10, 1440],
     ];
 
     /** Names of the settings in messages and the eventlog. */
@@ -103,6 +121,14 @@ final class PluginSettings
         'topology_plan' => 'plan with the topology plugin',
         'blast_grew' => 'when the blast radius grew',
         'blast_unknown' => 'when the blast radius cannot be computed',
+        'verify' => 'verify changes',
+        'verify_fresh' => 'fresh data',
+        'verify_wait_minutes' => 'wait for fresh data (minutes)',
+        'verify_unexpected' => 'when a batch makes unexpected changes',
+        'verify_unknown' => 'when a batch cannot be verified',
+        'verify_minimum' => 'count findings from',
+        'fix_template_port_descriptions' => 'template for port description fixes',
+        'fix_template_stp_root_priority' => 'template for root priority fixes',
     ];
 
     /** Most characters of the platform mapping. */
@@ -145,9 +171,11 @@ final class PluginSettings
      * @param  array<string, mixed>  $input  platform_map, allowed_group, max_targets, output_max_kb, stop_after_hours, stop_hold_minutes, inventory_user
      * @param  array<int, string>  $groups  the device groups (id => name)
      * @param  array<int, string>  $users  the LibreNMS users (id => username)
+     * @param  (\Closure(string, string): ?string)|null  $fixTemplate  why a template may not apply a kind of fix (kind, template id), null when it
+     *                                                               may: it must have the survey variable the fix templates' contract names
      * @return array{settings: self|null, errors: array<string, string>}
      */
-    public static function fromInput(array $input, self $current, array $groups, array $users): array
+    public static function fromInput(array $input, self $current, array $groups, array $users, ?\Closure $fixTemplate = null): array
     {
         $values = $current->values;
         foreach (self::DEFAULTS as $key => $default) {
@@ -182,6 +210,17 @@ final class PluginSettings
                 $errors[$key] = ucfirst(self::LABELS[$key]) . ' is one of: ' . implode(', ', $choices) . '.';
             }
         }
+        // the template of each kind of fix: a template of the runner with the survey variable the contract names (checked when it changes)
+        foreach (self::FIX_TEMPLATES as $kind => $key) {
+            if ($values[$key] === '' || $values[$key] === $current->values[$key]) {
+                continue;
+            }
+            if (! preg_match('/^\d{1,10}$/D', $values[$key])) {
+                $errors[$key] = ucfirst(self::LABELS[$key]) . ' is the id of a template of the runner, or none.';
+            } elseif ($fixTemplate !== null && ($why = $fixTemplate($kind, $values[$key])) !== null) {
+                $errors[$key] = ucfirst(self::LABELS[$key]) . ': ' . $why;
+            }
+        }
 
         return $errors ? ['settings' => null, 'errors' => $errors] : ['settings' => new self($values), 'errors' => []];
     }
@@ -205,6 +244,8 @@ final class PluginSettings
                 'platform_map' => 'platform mapping: ' . self::mapChanges($before->platformMap(), $this->platformMap()),
                 'allowed_group' => 'allowed device group ' . self::name($old, $groups, 'every device') . ' → ' . self::name($new, $groups, 'every device'),
                 'inventory_user' => 'inventory user ' . self::name($old, $users, 'not chosen') . ' → ' . self::name($new, $users, 'not chosen'),
+                'fix_template_port_descriptions', 'fix_template_stp_root_priority' => self::LABELS[$key] . ' ' . ($old === '' ? 'none' : "#$old") . ' → '
+                    . ($new === '' ? 'none' : "#$new"),
                 default => self::LABELS[$key] . ' ' . (self::CHOICES[$key][$old] ?? $old) . ' → ' . (self::CHOICES[$key][$new] ?? $new),
             };
         }
@@ -342,7 +383,31 @@ final class PluginSettings
             $changeUrl,
             $this->values['blast_grew'] === 'refuse',
             $this->values['blast_unknown'] === 'refuse',
+            $this->values['verify'] !== '0',
+            $this->values['verify_fresh'] === 'wait' ? 'wait' : 'ask',
+            $this->int('verify_wait_minutes') * 60,
+            self::choice($this->values['verify_unexpected'], 'verify_unexpected', 'pause'),
+            self::choice($this->values['verify_unknown'], 'verify_unknown', 'pause'),
+            self::choice($this->values['verify_minimum'], 'verify_minimum', 'warning'),
         );
+    }
+
+    /**
+     * The template that applies a kind of fix (its id), null when none is set.
+     */
+    public function fixTemplate(string $kind): ?string
+    {
+        $key = self::FIX_TEMPLATES[$kind] ?? null;
+
+        return $key !== null && preg_match('/^\d{1,10}$/D', $this->values[$key]) ? $this->values[$key] : null;
+    }
+
+    /**
+     * A setting's value when it is one of its choices, else $default.
+     */
+    private static function choice(string $value, string $key, string $default): string
+    {
+        return array_key_exists($value, self::CHOICES[$key]) ? $value : $default;
     }
 
     /**

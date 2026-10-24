@@ -1,0 +1,103 @@
+---
+# LibreNMS Ansible plugin: the spanning tree root priority fix of its Fixes page (Cisco IOS, cisco.ios.ios_config). An example:
+# review it and adapt it to your platforms before a template of the plugin runs it.
+# The fix templates' contract (the plugin's README, Fixes): the survey variable stp_priorities (Text, required), one line
+# per device and spanning tree mode, "<host> <mode> <instances> <priority>":
+#   host       the device as the plugin's inventory names it (inventory_hostname);
+#   mode       pvst (PVST+ or Rapid-PVST+: a priority per VLAN), mst (MST: per instance) or stp (one instance: 802.1D,
+#              RSTP);
+#   instances  the VLANs 1-4094 (pvst), the MST instances 0-4094 (mst: 0 is the CIST) as a canonical list (ascending,
+#              two in a row as 20,21, three or more as a range: 1,10-12,20,21), or - (stp);
+#   priority   the bridge priority, a multiple of 4096 from 0 to 61440 (the intended root 4096, its secondary 8192).
+# The plugin checked every field before the launch; this playbook checks them again before it uses them: a host with a
+# line that is not that fails and changes nothing. Each host takes the lines that name it; a host without one changes
+# nothing. IOS runs a tree per VLAN or MST: a single instance (stp) is the tree of VLAN 1, which is what LibreNMS reads
+# from such a switch's BRIDGE-MIB.
+# Give the template -v: the dry run then shows the commands ios_config would send to each device.
+- name: Spanning tree root priority
+  hosts: all
+  gather_facts: false
+  vars:
+    # a regular expression with a backslash is a variable (YAML single quotes keep it as it is), never a string in a template
+    lnms_pvst_re: '^\S+ pvst ([0-9,-]+) ([0-9]+)$'
+    lnms_pvst_to: 'spanning-tree vlan \1 priority \2'
+    lnms_mst_re: '^\S+ mst ([0-9,-]+) ([0-9]+)$'
+    lnms_mst_to: 'spanning-tree mst \1 priority \2'
+    lnms_stp_re: '^\S+ stp - ([0-9]+)$'
+    lnms_stp_to: 'spanning-tree vlan 1 priority \1'
+    lnms_mine: "{{ stp_priorities.splitlines() | select('match', (inventory_hostname | regex_escape) ~ ' ') | list }}"
+    lnms_lines: >-
+      {{ lnms_mine | select('match', (inventory_hostname | regex_escape) ~ ' ((pvst|mst) [0-9][0-9,-]*|stp -) [0-9]{1,5}$') | list }}
+    lnms_commands: >-
+      {{ lnms_lines | map('regex_replace', lnms_pvst_re, lnms_pvst_to) | map('regex_replace', lnms_mst_re, lnms_mst_to)
+         | map('regex_replace', lnms_stp_re, lnms_stp_to) | list }}
+  tasks:
+    - name: Check the lines of this host (the contract's fields)
+      ansible.builtin.assert:
+        that: lnms_lines | length == lnms_mine | length
+        fail_msg: >-
+          {{ (lnms_mine | length) - (lnms_lines | length) }} of the lines naming this host are not "<host> <mode> <instances> <priority>" as the
+          fix templates' contract says: nothing is changed
+        quiet: true
+    - name: Check each line's instances and priority
+      ansible.builtin.assert:
+        that: lnms_problem | string | trim == 'ok'
+        fail_msg: "{{ item }}: {{ lnms_problem | string | trim }}: nothing is changed"
+        quiet: true
+      vars:
+        lnms_problem: >-
+          {%- set mode = item.split(' ')[1] -%}
+          {%- set given = item.split(' ')[2] -%}
+          {%- set priority = item.split(' ')[3] | int -%}
+          {%- set ns = namespace(numbers=[], bad=false) -%}
+          {%- if mode != 'stp' -%}
+            {%- for part in given.split(',') -%}
+              {%- set bounds = part.split('-') -%}
+              {%- if bounds | length == 1 and bounds[0] is match('[0-9]{1,4}$') -%}
+                {%- set ns.numbers = ns.numbers + [bounds[0] | int] -%}
+              {%- elif bounds | length == 2 and bounds[0] is match('[0-9]{1,4}$') and bounds[1] is match('[0-9]{1,4}$') and (bounds[0] | int) < (bounds[1] | int) -%}
+                {%- set ns.numbers = ns.numbers + range(bounds[0] | int, (bounds[1] | int) + 1) | list -%}
+              {%- else -%}
+                {%- set ns.bad = true -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endif -%}
+          {%- set sorted = ns.numbers | unique | sort -%}
+          {%- set runs = namespace(parts=[], first=none, last=none) -%}
+          {%- for number in sorted + [none] -%}
+            {%- if runs.first is none -%}
+              {%- set runs.first = number -%}{%- set runs.last = number -%}
+            {%- elif number is not none and number == runs.last + 1 -%}
+              {%- set runs.last = number -%}
+            {%- else -%}
+              {%- if runs.last == runs.first -%}{%- set runs.parts = runs.parts + [runs.first | string] -%}
+              {%- elif runs.last == runs.first + 1 -%}{%- set runs.parts = runs.parts + [runs.first | string, runs.last | string] -%}
+              {%- else -%}{%- set runs.parts = runs.parts + [runs.first ~ '-' ~ runs.last] -%}{%- endif -%}
+              {%- set runs.first = number -%}{%- set runs.last = number -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- if priority % 4096 != 0 or priority > 61440 -%}
+            its priority is not a multiple of 4096 from 0 to 61440
+          {%- elif mode != 'stp' and (ns.bad or sorted | length == 0 or sorted | min < (0 if mode == 'mst' else 1) or sorted | max > 4094
+               or runs.parts | join(',') != given) -%}
+            its instances are not a canonical list of {{ 'MST instances 0-4094' if mode == 'mst' else 'VLANs 1-4094' }}
+          {%- else -%}
+            ok
+          {%- endif -%}
+      loop: "{{ lnms_lines }}"
+    - name: Only Cisco IOS
+      ansible.builtin.assert:
+        that: ansible_network_os == 'cisco.ios.ios'
+        fail_msg: "this example playbook sets priorities on Cisco IOS only, and this host is {{ ansible_network_os | default('of no network OS') }}"
+        quiet: true
+      when: lnms_lines | length > 0
+    - name: Every line is one command
+      ansible.builtin.assert:
+        that: lnms_commands | reject('match', 'spanning-tree (vlan|mst) [0-9,-]+ priority [0-9]+$') | list | length == 0
+        fail_msg: "a line did not become a spanning tree command: nothing is changed"
+        quiet: true
+      when: lnms_lines | length > 0
+    - name: Set the bridge priorities
+      cisco.ios.ios_config:
+        lines: "{{ lnms_commands }}"
+      when: lnms_lines | length > 0

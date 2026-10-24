@@ -3,6 +3,7 @@
 use Agoodley\LibrenmsAnsible\AnsibleServiceProvider;
 use Agoodley\LibrenmsAnsible\Http\Controllers\AssetController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\ChangeController;
+use Agoodley\LibrenmsAnsible\Http\Controllers\FixController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\InventoryController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\TargetController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\RunController;
@@ -40,6 +41,10 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
         Route::get('assets/{file}', AssetController::class)->where('file', '[A-Za-z0-9_-]+\.(js|css)')->name('asset');
 
         Route::middleware(RequireAdmin::class . ':run')->group(function (): void {
+            // the topology plugin's findings whose fix is clear (phase 4): a page to make changes from, as New change is; its list runs the
+            // topology plugin's checks (of the whole network without a filter), one computation per admin at a time
+            Route::get('fixes', [FixController::class, 'index'])->name('fixes');
+            Route::get('api/fixes', [FixController::class, 'list'])->name('api.fixes');
             Route::get('changes/new', [ChangeController::class, 'create'])->name('changes.new');
             Route::get('runs/new', fn () => redirect()->route('ansible.changes.new', array_filter(['template' => request()->query('template'),
                 'device' => request()->query('device')], fn ($v) => is_string($v) && ctype_alnum($v))))->name('runs.new');
@@ -62,6 +67,8 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
         // accepting a batch's new blast radius needs the approve permission, or the run permission while the settings ask
         // for no approval: the controller checks which
         Route::post('changes/{id}/accept-blast', [ChangeController::class, 'acceptBlast'])->whereNumber('id')->name('changes.accept-blast');
+        // accepting what a batch's verification found (unexpected changes, or a batch that cannot be verified) follows the same rule
+        Route::post('changes/{id}/accept-verification', [ChangeController::class, 'acceptVerification'])->whereNumber('id')->name('changes.accept-verification');
         // continuing a paused change needs the run permission; a batch whose blast radius cannot be computed, what accepting
         // a new blast radius needs (the controller checks which)
         Route::post('changes/{id}/continue', [ChangeController::class, 'resume'])->whereNumber('id')->name('changes.continue');

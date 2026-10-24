@@ -111,6 +111,52 @@ class SettingsTest extends TestCase
             $result['settings']->changes(new PluginSettings(), self::GROUPS, self::USERS));
     }
 
+    public function testTheSettingsOfVerificationAndFixes(): void
+    {
+        $defaults = (new PluginSettings())->changeSettings();
+        $this->assertSame([true, 'ask', 1800, 'pause', 'pause', 'warning'], [$defaults->verify, $defaults->verifyFresh, $defaults->verifyWaitSeconds,
+            $defaults->verifyUnexpected, $defaults->verifyUnknown, $defaults->verifyMinimum], 'on, asking for fresh data, waiting 30 minutes, pausing, from warning');
+        $this->assertNull((new PluginSettings())->fixTemplate('port_descriptions'), 'no fix template until an admin sets one');
+
+        $settings = new PluginSettings(['verify' => '0', 'verify_fresh' => 'wait', 'verify_wait_minutes' => '99999', 'verify_unexpected' => 'stop', 'verify_unknown' => 'record',
+            'verify_minimum' => 'everything', 'fix_template_port_descriptions' => '211', 'fix_template_stp_root_priority' => 'x']);
+        $changes = $settings->changeSettings();
+        $this->assertSame([false, 'wait', 1440 * 60, 'stop', 'record', 'warning'], [$changes->verify, $changes->verifyFresh, $changes->verifyWaitSeconds,
+            $changes->verifyUnexpected, $changes->verifyUnknown, $changes->verifyMinimum], 'stored values out of range are clamped, unknown ones take the default');
+        $this->assertSame(['211', null], [$settings->fixTemplate('port_descriptions'), $settings->fixTemplate('stp_root_priority')]);
+
+        $result = PluginSettings::fromInput(['verify' => 'yes', 'verify_fresh' => 'poll', 'verify_wait_minutes' => '0', 'verify_unexpected' => 'ignore',
+            'verify_unknown' => 'go', 'verify_minimum' => 'notice', 'fix_template_port_descriptions' => '21a'], new PluginSettings(), self::GROUPS, self::USERS);
+        $this->assertSame(['verify', 'verify_fresh', 'verify_wait_minutes', 'verify_unexpected', 'verify_unknown', 'verify_minimum', 'fix_template_port_descriptions'],
+            array_values(array_intersect(array_keys(PluginSettings::DEFAULTS), array_keys($result['errors']))), 'each wrong value is refused');
+        $this->assertSame('Wait for fresh data (minutes) is a whole number from 10 to 1440.', $result['errors']['verify_wait_minutes']);
+        // above LibreNMS' polling and discovery intervals (5 minutes each): at least 10 minutes; a smaller value stored before counts as 10
+        $this->assertArrayHasKey('verify_wait_minutes', PluginSettings::fromInput(['verify_wait_minutes' => '9'], new PluginSettings(), self::GROUPS, self::USERS)['errors']);
+        $this->assertArrayNotHasKey('verify_wait_minutes', PluginSettings::fromInput(['verify_wait_minutes' => '10'], new PluginSettings(), self::GROUPS, self::USERS)['errors']);
+        $this->assertSame(600, (new PluginSettings(['verify_wait_minutes' => '5']))->changeSettings()->verifyWaitSeconds);
+        $this->assertSame('Count findings from is one of: critical, warning, info.', $result['errors']['verify_minimum']);
+        $this->assertSame('Template for port description fixes is the id of a template of the runner, or none.', $result['errors']['fix_template_port_descriptions']);
+
+        // a fix template must have the contract's survey variable: asked of the runner when it changes
+        $asked = [];
+        $check = function (string $kind, string $id) use (&$asked): ?string {
+            $asked[] = [$kind, $id];
+
+            return $id === '186' ? 'template #186 (Show version) has no survey variable port_descriptions' : null;
+        };
+        $refused = PluginSettings::fromInput(['fix_template_port_descriptions' => '186'], new PluginSettings(), self::GROUPS, self::USERS, $check);
+        $this->assertSame('Template for port description fixes: template #186 (Show version) has no survey variable port_descriptions',
+            $refused['errors']['fix_template_port_descriptions']);
+        $saved = PluginSettings::fromInput(['fix_template_port_descriptions' => '211', 'fix_template_stp_root_priority' => '212', 'verify_minimum' => 'critical'],
+            new PluginSettings(), self::GROUPS, self::USERS, $check)['settings'];
+        $this->assertSame(['211', '212'], [$saved->fixTemplate('port_descriptions'), $saved->fixTemplate('stp_root_priority')]);
+        $asked = [];
+        PluginSettings::fromInput(['fix_template_port_descriptions' => '211', 'verify' => '0'], $saved, self::GROUPS, self::USERS, $check);
+        $this->assertSame([], $asked, 'an unchanged template is not asked again (a new change checks it)');
+        $this->assertSame(['count findings from warning → critical', 'template for port description fixes none → #211', 'template for root priority fixes none → #212'],
+            $saved->changes(new PluginSettings(), self::GROUPS, self::USERS));
+    }
+
     public function testUnreadableSettingsCarryTheirError(): void
     {
         $settings = new PluginSettings([], 'cannot be read');

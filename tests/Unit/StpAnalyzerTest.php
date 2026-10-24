@@ -186,6 +186,12 @@ class StpAnalyzerTest extends TestCase
         $codes = $this->codes($result);
         $this->assertSame('warning', $codes['root_default_priority'] ?? null);
         $this->assertSame('warning', $codes['root_not_preferred'] ?? null);
+
+        // what a fix starts from (the verification API's fixes): the root bridge now
+        $root = array_values(array_filter($result['findings'], fn ($f) => $f['code'] === 'root_not_preferred'))[0];
+        $this->assertSame(['root' => 1, 'root_mac' => $root['fix']['root_mac']], $root['fix']);
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{12}$/', $root['fix']['root_mac']);
+        $this->assertArrayNotHasKey('fix', array_values(array_filter($result['findings'], fn ($f) => ! in_array($f['code'], ['root_not_preferred', 'root_default_priority'], true)))[0] ?? []);
     }
 
     public function testTopologyChangeAndFlapping(): void

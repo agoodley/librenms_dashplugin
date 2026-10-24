@@ -14,6 +14,10 @@
     $usableTemplate = $template !== null && ! $templateReasons;
     // a new change made from an earlier one: its answers (not the secret ones) and reference filled in
     $answer = fn ($var) => $prefill !== null && array_key_exists($var->name, $prefill['vars']) ? $prefill['vars'][$var->name] : $var->default;
+    // a change made from fixes (the Fixes page): its template, devices and the lines of its fix variable (read only) are the fix's
+    $fixVar = $fix !== null ? ($fix['variable'] ?? null) : null;
+    // the kind and how many devices, never their names: the reference names the change in the eventlog of every target
+    $fixReference = $fix !== null && ($fix['devices'] ?? []) ? \Agoodley\LibrenmsAnsible\Changes\FixAnswers::reference((string) $fix['kind'], count($fix['devices'])) : null;
     $typeLabels = ['string' => 'text', 'text' => 'several lines', 'int' => 'whole number', 'enum' => 'one of a list', 'secret' => 'secret'];
 @endphp
 
@@ -50,6 +54,18 @@
         @endif
     </p>
 
+    @if($fix)
+        <div class="alert alert-{{ $fix['errors'] ? 'danger' : 'info' }}" id="ans-fix-note"><i class="fa fa-wrench"></i>
+            <strong>A change made from {{ count($fix['ids'] ?? []) === 1 ? 'a fix' : count($fix['ids'] ?? []) . ' fixes' }} of the topology plugin ({{ strtolower($fix['label'] ?? '') }}):</strong>
+            {{ $fix['title'] ?? '' }}.
+            @if(($fix['effect'] ?? '') !== '')<div style="margin-top: 4px" id="ans-fix-effect">{{ $fix['effect'] }}</div>@endif
+            <div style="margin-top: 4px">The template, the devices and the answer of <span class="ans-code">{{ $fixVar }}</span> are the fix's: computed from the findings as you
+                see them now, read only; the change is created only if they are still what this page shows. <a href="{{ route('ansible.fixes') }}">Back to the Fixes page</a>.</div>
+            @if($fix['errors'])
+                <ul style="margin: 4px 0 0" id="ans-fix-errors">@foreach($fix['errors'] as $error)<li>{{ $error }}</li>@endforeach</ul>
+            @endif
+        </div>
+    @endif
     @if($prefill)
         <div class="alert alert-info" id="ans-prefill-note"><i class="fa fa-copy"></i> A new change from
             <a href="{{ route('ansible.changes.show', $prefill['from']) }}">change #{{ (int) $prefill['from'] }}</a>, {{ $prefill['text'] }}: its template,
@@ -71,7 +87,7 @@
     <form method="get" action="{{ route('ansible.changes.new') }}" class="form-inline" id="ans-template-form">
         @if($device)<input type="hidden" name="device" value="{{ $device }}">@endif
         @if($prefill)<input type="hidden" name="from" value="{{ $prefill['from'] }}"><input type="hidden" name="devices" value="{{ $prefill['kind'] }}">@endif
-        <select name="template" class="form-control input-sm" id="ans-template" style="min-width: 320px" onchange="this.form.submit()">
+        <select name="template" class="form-control input-sm" id="ans-template" style="min-width: 320px" onchange="this.form.submit()" @if($fix) disabled title="the template the settings map to this kind of fix" @endif>
             <option value="">Choose a template…</option>
             @foreach($usable as $option)
                 <option value="{{ $option->id }}" @selected($template && $template->id === $option->id)>{{ $option->name }} ({{ $option->playbook }})</option>
@@ -150,7 +166,12 @@
                     <div class="col-sm-7">
                         @switch($var->type)
                             @case('text')
-                                <textarea class="form-control input-sm ans-var" id="ans-var-{{ $loop->index }}" name="{{ $var->name }}" rows="4" maxlength="10000">{{ $answer($var) }}</textarea>
+                                @if($fixVar === $var->name)
+                                    <textarea class="form-control input-sm ans-var ans-fix-var" id="ans-var-{{ $loop->index }}" name="{{ $var->name }}" rows="{{ min(12, max(2, count($fix['lines'] ?? []))) }}" readonly>{{ implode("\n", $fix['lines'] ?? []) }}</textarea>
+                                    <p class="ans-help ans-fix-var-note">computed from the fixes, read only: one line per {{ ($fix['kind'] ?? '') === 'stp_root_priority' ? 'switch: <host> <mode> <instances> <priority>' : 'port: <host> <interface> <description>' }}</p>
+                                @else
+                                    <textarea class="form-control input-sm ans-var" id="ans-var-{{ $loop->index }}" name="{{ $var->name }}" rows="4" maxlength="10000">{{ $answer($var) }}</textarea>
+                                @endif
                                 @break
                             @case('enum')
                                 <select class="form-control input-sm ans-var" id="ans-var-{{ $loop->index }}" name="{{ $var->name }}">
@@ -180,16 +201,17 @@
 
         <h4 class="ans-step"><span class="badge">4</span> Reference</h4>
         <div class="form-inline">
-            <input type="text" class="form-control input-sm" id="ans-reference" maxlength="120" placeholder="e.g. CHG-1234" style="min-width: 260px" autocomplete="off" value="{{ $prefill['reference'] ?? '' }}">
+            <input type="text" class="form-control input-sm" id="ans-reference" maxlength="120" placeholder="e.g. CHG-1234" style="min-width: 260px" autocomplete="off" value="{{ $fixReference ?? ($prefill['reference'] ?? '') }}">
             <span class="ans-help">optional: a ticket number or a few words (letters, digits, spaces and . , : _ - / ( ) @ + =)</span>
         </div>
 
         <h4 class="ans-step"><span class="badge">5</span> Preview and create</h4>
         <p class="ans-help">The preview shows exactly what the change will be, with its batches. Creating it runs nothing: its page launches the dry run.</p>
         <div class="ans-launchbar">
-            <button type="button" class="btn btn-primary btn-sm" id="ans-preview-button"><i class="fa fa-eye"></i> Preview</button>
+            {{-- a change cannot be made from fixes the plugin refuses (above): nothing to preview, back to the Fixes page --}}
+            <button type="button" class="btn btn-primary btn-sm" id="ans-preview-button" @if($fix && $fix['errors']) disabled @endif><i class="fa fa-eye"></i> Preview</button>
             <button type="button" class="btn btn-success btn-sm" id="ans-create-button" disabled><i class="fa fa-plus"></i> Create the change</button>
-            <span class="ans-muted" id="ans-launch-state"></span>
+            <span class="ans-muted" id="ans-launch-state">@if($fix && $fix['errors'])a change cannot be made from these fixes (above): <a href="{{ route('ansible.fixes') }}">back to the Fixes page</a>@endif</span>
         </div>
         <div id="ans-preview" class="ans-preview"></div>
 
@@ -202,6 +224,11 @@
                 'requestToken' => $requestToken,
                 'device' => $device,
                 'prefill' => $prefill !== null ? ['devices' => $prefill['devices'], 'canary' => $prefill['canary'], 'unplanned' => $prefill['unplanned'] ?? 'leave'] : null,
+                // a change made from fixes: its devices are the fix's (not to be changed here), its lines go with the preview and the creation
+                'fix' => $fix !== null && ! $fix['errors'] ? ['kind' => $fix['kind'], 'ids' => $fix['ids'], 'scope' => $fix['scope'], 'devices' => $fix['devices'],
+                    'lines' => $fix['lines'], 'variable' => $fix['variable']] : null,
+                // fixes the plugin refuses (said above): their page offers no devices to choose and no preview
+                'fixRefused' => $fix !== null && (bool) $fix['errors'],
                 'maxTargets' => $maxTargets,
                 'deviceUrl' => url('device'),
                 // the topology plugin plans the batches (the first batch comes from its first one)

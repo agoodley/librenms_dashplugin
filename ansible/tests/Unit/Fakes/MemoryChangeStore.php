@@ -35,6 +35,9 @@ final class MemoryChangeStore implements ChangeStore
     /** @var array<int, array<int, array>> change id => diff rows */
     public array $diffs = [];
 
+    /** @var array<string, array{covered: int[], domain: int[], taken_at: ?string, state: ?array, result: ?array}> "change|batch|phase" => the state kept */
+    public array $states = [];
+
     public ?\Closure $beforeUpdate = null;
 
     /** @var \Closure|null runs once right after the next change of a change's row that succeeded (another request writing right after it) */
@@ -58,7 +61,7 @@ final class MemoryChangeStore implements ChangeStore
             'dry_run_findings' => null, 'plan_fingerprint' => null, 'fingerprint_parts' => null, 'approval_fingerprint' => null, 'approved_by' => null,
             'approved_user_id' => null, 'approved_at' => null, 'applied_by' => null, 'applied_user_id' => null, 'apply_started_at' => null, 'waiting' => null,
             'resume_at' => null, 'stop_requested_by' => null, 'stop_requested_at' => null, 'error' => null, 'finished_at' => null,
-            'created_at' => '2026-10-22 10:00:00'];
+            'created_at' => '2026-10-22 10:00:00', 'fix' => null, 'verification' => null, 'verification_note' => null];
         $position = 0;
         foreach ($targets as $deviceId => $name) {
             $this->targets[$id][$deviceId] = ['change_id' => $id, 'device_id' => $deviceId, 'inventory_name' => $name, 'hostname' => $name, 'display' => strtok($name, '.'),
@@ -70,7 +73,7 @@ final class MemoryChangeStore implements ChangeStore
         foreach ($plan->batches as $index => $devices) {
             $this->batches[$id][$index + 1] = ['change_id' => $id, 'number' => $index + 1, 'status' => 'pending', 'run_id' => null, 'failures' => 0,
                 'started_at' => null, 'ended_at' => null, 'note' => null, 'user_id' => null, 'username' => null, 'blast' => null, 'blast_accepted' => null,
-                'blast_override' => null];
+                'blast_override' => null, 'verify' => null];
         }
 
         return $id;
@@ -217,6 +220,45 @@ final class MemoryChangeStore implements ChangeStore
         }
 
         return false;
+    }
+
+    public function saveScope(int $changeId, int $batch, string $phase, array $covered, array $domain, array $names = []): void
+    {
+        $key = "$changeId|$batch|$phase";
+        $this->states[$key] = ['covered' => array_values(array_map('intval', $covered)), 'domain' => array_values(array_map('intval', $domain)), 'names' => $names]
+            + ($this->states[$key] ?? ['taken_at' => null, 'state' => null, 'result' => null]);
+    }
+
+    public function scopeOf(int $changeId, int $batch, string $phase): ?array
+    {
+        $kept = $this->states["$changeId|$batch|$phase"] ?? null;
+
+        return $kept === null ? null : ['covered' => $kept['covered'], 'domain' => $kept['domain'], 'names' => $kept['names'], 'taken_at' => $kept['taken_at']];
+    }
+
+    public function saveState(int $changeId, int $batch, string $phase, array $state, ?array $result = null): void
+    {
+        if (strlen((string) json_encode($state)) > \Agoodley\LibrenmsAnsible\Data\ChangeRepository::STATE_MAX) {
+            throw new \LengthException('the state is larger than the plugin keeps');
+        }
+        $scope = (array) ($state['scope'] ?? []);
+        $covered = array_merge(...array_map(fn ($role) => array_map('intval', (array) ($scope[$role] ?? [])), ['subjects', 'dependents', 'neighbors', 'included']));
+        $this->saveScope($changeId, $batch, $phase, $covered, array_map('intval', (array) ($scope['domain'] ?? [])),
+            array_intersect_key((array) ($state['names'] ?? []), array_flip($covered)));
+        $key = "$changeId|$batch|$phase";
+        $this->states[$key]['taken_at'] = Clock::store((int) ($state['taken_at'] ?? 0));
+        $this->states[$key]['state'] = json_decode((string) json_encode($state), true); // as read back: JSON
+        $this->states[$key]['result'] = $result !== null ? json_decode((string) json_encode($result), true) : null;
+    }
+
+    public function stateOf(int $changeId, int $batch, string $phase): ?array
+    {
+        return $this->states["$changeId|$batch|$phase"]['state'] ?? null;
+    }
+
+    public function resultOf(int $changeId, int $batch): ?array
+    {
+        return $this->states["$changeId|$batch|after"]['result'] ?? null;
     }
 
     public function replaceDiffs(int $changeId, int $runId, array $rows): void

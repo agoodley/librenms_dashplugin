@@ -18,7 +18,8 @@ use Illuminate\Console\Command;
  * end (status, output, results, eventlog), so the audit log is complete when nobody watches the run page, and asks
  * about lost and released runs every few minutes for a week, so a later real end is recorded (Runs\RunLifecycle).
  * Then it moves every change on (Changes\ChangeLifecycle): the end of its dry run, the expiry of its dry run and
- * approval, its batches, and the maintenance windows and backups it still follows, also of changes that ended.
+ * approval, its batches and their verification (it alone takes their states), and the maintenance windows and backups it
+ * still follows, also of changes that ended.
  */
 class SyncCommand extends Command
 {
@@ -61,7 +62,8 @@ class SyncCommand extends Command
         $changes = new ChangeRepository();
         $followed = 0;
         if ($changes->available()) {
-            $follower = new ChangeFollower(new Plugin(), $runs, $changes, $settings, new InventoryService(new DeviceRepository(), $settings));
+            // the sync command takes the states of the batches' verification (each in a process of its own: ansible:state)
+            $follower = new ChangeFollower(new Plugin(), $runs, $changes, $settings, new InventoryService(new DeviceRepository(), $settings), takesStates: true);
             foreach ($changes->pendingIds() as $id) {
                 $follower->refresh($id, false);
                 $followed++;

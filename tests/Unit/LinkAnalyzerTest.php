@@ -319,6 +319,46 @@ class LinkAnalyzerTest extends TestCase
 
         $this->assertCount(1, $codes['description_missing']);
         $this->assertSame('1 port: Te1/1/2 (core2 Te1/0/3).', $codes['description_missing'][0]['detail']);
+
+        // the same descriptions as data, for the verification API's fixes: port id => description
+        $this->assertSame(['ports' => [31 => 'core1 Te1/0/3', 33 => 'lab-sw Gi0/1', 34 => 'ap-12 eth0']], $wrong['fix']);
+        $this->assertSame(['ports' => [32 => 'core2 Te1/0/3']], $codes['description_missing'][0]['fix']);
+    }
+
+    public function testACheckOfSomeDevicesKnowsTheNamesOfEveryDevice(): void
+    {
+        // the check of acc1 alone, with its neighbors core1 and core2: its uplink's description names acc2, which is no neighbor
+        $all = LinkFixture::devices();
+        $devices = array_intersect_key($all, [1 => true, 2 => true, 3 => true]);
+        $links = array_values(array_filter(LinkFixture::links(), fn (array $link) => $link['local_device_id'] === 3 || $link['remote_device_id'] === 3));
+        $check = fn (array $names) => $this->codes((new LinkAnalyzer($devices, [3], $links, LinkFixture::ports([31 => ['ifAlias' => 'uplink to acc2']]),
+            LinkFixture::portVlans([]), LinkFixture::lagParent(), new PluginSettings(), [], [], [], $names))->analyze());
+
+        $this->assertArrayNotHasKey('description_wrong', $check([]), 'without the other names, "acc2" names nothing');
+        $wrong = $check(array_map(fn (array $device) => array_intersect_key($device, array_flip(['hostname', 'sysName', 'display'])), $all))['description_wrong'] ?? [];
+        $this->assertCount(1, $wrong, 'with them, as the check of the whole network finds it');
+        $this->assertSame(['ports' => [31 => 'core1 Te1/0/3']], $wrong[0]['fix']);
+        $this->assertSame([3], $wrong[0]['devices']);
+    }
+
+    public function testADescriptionKeepsItsCharactersAndLength(): void
+    {
+        $this->assertSame('core1 Te1/0/3', LinkAnalyzer::cleanDescription('core1 Te1/0/3'));
+        $this->assertSame('sw_shut_end', LinkAnalyzer::cleanDescription("sw\n!\nshut\r\nend"), 'each run of other characters is one underscore');
+        $this->assertSame('a b', LinkAnalyzer::cleanDescription('  a    b  '));
+        $this->assertSame('x_y_z', LinkAnalyzer::cleanDescription('x"y\'z'));
+        $this->assertSame('C:_temp/x', LinkAnalyzer::cleanDescription('C:\\temp/x'), 'a backslash is none of its characters, a slash is');
+        $this->assertSame('A-Za-z0-9 ._\\/:+()#@,-', LinkAnalyzer::DESCRIPTION_CHARS, 'the slash escaped for the / delimiter');
+        $this->assertSame('ap-12.example.net Gi1/0/1 (port 1) #2 @rack:3,+_', LinkAnalyzer::cleanDescription('ap-12.example.net Gi1/0/1 (port 1) #2 @rack:3,+;'));
+        $long = LinkAnalyzer::cleanDescription(str_repeat('abcdefghij', 12));
+        $this->assertSame(LinkAnalyzer::DESCRIPTION_MAX, mb_strlen($long));
+        foreach (["\u{00e9}t\u{00e9} \u{2192} <b>&amp;</b> `rm -rf` \$(id) {x} [y] |z| ~ ^ % * = ? !", str_repeat(' ', 100) . 'a', "\0\x1b[31m"] as $hostile) {
+            $clean = LinkAnalyzer::cleanDescription($hostile);
+            $this->assertMatchesRegularExpression('/^[' . LinkAnalyzer::DESCRIPTION_CHARS . ']*$/D', $clean);
+            $this->assertLessThanOrEqual(LinkAnalyzer::DESCRIPTION_MAX, strlen($clean));
+            $this->assertSame(trim($clean), $clean);
+            $this->assertStringNotContainsString('  ', $clean);
+        }
     }
 
     public function testDescriptionConfigUsesTheSyntaxOfTheOs(): void
@@ -442,6 +482,7 @@ class LinkAnalyzerTest extends TestCase
 
         $config = $codes['description_wrong'][0]['config'];
         $this->assertSame(['interface GigabitEthernet1/0/33', ' description switch_username backdoor privilege 15 secret 0 pw port 1_end'], explode("\n", $config));
+        $this->assertSame([33 => 'switch_username backdoor privilege 15 secret 0 pw port 1_end'], $codes['description_wrong'][0]['fix']['ports']);
     }
 
     public function testPortWithTwoMonitoredNeighborsMayNameEither(): void

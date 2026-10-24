@@ -102,6 +102,11 @@ class ChangeController extends Controller
             'target_names' => $change['target_names'], 'batches' => (int) $change['batch_count'], 'current_batch' => (int) $change['current_batch'],
             // what a paused change waits for: an admin, the secret answers, the pause, the acceptance of a batch's new blast radius ...
             'waiting' => $change['waiting'], 'waiting_text' => ChangeStatus::waitingText($change['waiting']),
+            // the outcome of its verification (phase 4): verified, verified with accepted changes, not verified (and why: from its Apply on for
+            // a change applied without verification); null while it runs or without one
+            'verification' => $change['verification'] ?? null,
+            'verification_label' => \Agoodley\LibrenmsAnsible\Changes\VerificationText::listed($change['verification'] ?? null, $change['verification_note'] ?? null),
+            'verification_note' => \Agoodley\LibrenmsAnsible\Changes\VerificationText::note($change['verification_note'] ?? null),
             'url' => route('ansible.changes.show', $change['id']),
         ], $result['rows'])]);
     }
@@ -117,6 +122,19 @@ class ChangeController extends Controller
         $plugin = new Plugin();
         $connection = $plugin->connection();
         $templateId = is_string($request->query('template')) ? mb_substr($request->query('template'), 0, 64) : '';
+        // a new change made from fixes (?fix=KIND&ids=ID,...&scope=DEVICE,...: the Fixes page): its template, devices and lines, computed now
+        $fix = null;
+        if (is_string($request->query('fix')) && in_array($request->query('fix'), \Agoodley\LibrenmsAnsible\Changes\FixAnswers::KINDS, true)) {
+            $split = fn (mixed $value, string $pattern) => array_values(array_filter(explode(',', is_string($value) ? mb_substr($value, 0, 40000) : ''),
+                fn (string $part) => preg_match($pattern, $part) === 1));
+            try {
+                $fix = $this->changeService()->fixDraft((string) $request->query('fix'), array_slice($split($request->query('ids'), '/^[0-9a-f]{40}$/D'), 0, 200),
+                    array_map('intval', array_slice($split($request->query('scope'), '/^\d{1,10}$/D'), 0, self::MAX_DEVICES)), (int) $request->user()->user_id);
+            } catch (\Throwable $e) {
+                $fix = ['errors' => [$this->failure('new change from fixes', $e)], 'template' => null, 'lines' => [], 'devices' => []];
+            }
+            $templateId = (string) ($fix['template'] ?? '');
+        }
         // a new change made from an earlier one (?from=ID&devices=remaining|passed): its template, answers, reference, first batch and devices
         $prefill = null;
         $kind = $request->query('devices');
@@ -142,7 +160,7 @@ class ChangeController extends Controller
             }
         }
         $data = ['usable' => [], 'unusable' => [], 'template' => null, 'templateReasons' => [], 'templateNotes' => [], 'runnerError' => null, 'blocked' => [],
-            'prefill' => $prefill,
+            'prefill' => $prefill, 'fix' => $fix,
             'device' => ctype_digit((string) $request->query('device', '')) ? (int) $request->query('device') : null,
             'requestToken' => bin2hex(random_bytes(16)), 'maxTargets' => $this->settings()->maxTargets(), 'assetVersion' => self::assetVersion(),
             'groups' => [], 'locations' => [], 'planText' => $this->settings()->batchRule(), 'changeSettings' => $this->settings()->changeSettings(),
@@ -207,7 +225,7 @@ class ChangeController extends Controller
         [$templateId, $devices, $answers, $canary, $reference, $unplanned] = self::input($request);
         try {
             return response()->json(ChangeService::forPage($this->changeService()->preview($templateId, $devices, $answers, $canary, $reference, $unplanned,
-                (int) $request->user()->user_id)));
+                (int) $request->user()->user_id, self::fixInput($request))));
         } catch (\Throwable $e) {
             return response()->json(['error' => $this->failure('preview', $e)], 500);
         }
@@ -242,7 +260,8 @@ class ChangeController extends Controller
             }
         }
         try {
-            $result = $this->changeService()->create($request->user(), $templateId, $devices, $answers, $canary, $reference, $token, $expected, $unplanned, $blast);
+            $result = $this->changeService()->create($request->user(), $templateId, $devices, $answers, $canary, $reference, $token, $expected, $unplanned, $blast,
+                self::fixInput($request));
         } catch (\Throwable $e) {
             return response()->json(['errors' => [$this->failure('new change', $e)]], 500);
         }
@@ -289,7 +308,7 @@ class ChangeController extends Controller
             }
             // light: the change's batches, windows and targets, no run's log but the one the page shows
             $state = $this->live($change);
-            $state['actions'] = $this->actions($request, $change)['actions'];
+            $state['actions'] = $this->actions($request, $change, $state['batches'])['actions'];
         } catch (\Throwable $e) {
             return response()->json(['error' => $this->failure('change refresh', $e)], 500);
         }
@@ -308,6 +327,7 @@ class ChangeController extends Controller
             'final' => ChangeStatus::isFinal($change['status']), 'version' => (int) $change['version'], 'pending' => $state['pending'],
             'waiting' => $change['waiting'], 'waiting_text' => ChangeStatus::waitingText($change['waiting']), 'current_batch' => (int) $change['current_batch'],
             'blast_check' => self::blastCheck($change, $state['batches']),
+            'verify_check' => self::verifyCheck($change, $state['batches']),
             'error' => $change['error'] !== null ? Clock::localize($change['error']) : null,
             'actions' => $state['actions'], 'signature' => $state['signature'], 'log' => $log,
         ]);
@@ -366,6 +386,27 @@ class ChangeController extends Controller
         $seen = self::seen($request);
 
         return $this->act($id, fn (ChangeLifecycle $lifecycle) => $lifecycle->acceptBlast($id, $user, $holds, self::comment($request), time(), $seen));
+    }
+
+    /**
+     * POST plugin/ansible/changes/{id}/accept-verification {comment, verify}: accept what the verification of the batch the
+     * change waits after found (unexpected changes, or that it cannot be verified), as the change page showed it (verify:
+     * ChangeLifecycle::verifyCheckId(); refused when it changed since). The permission an acceptance of a new blast radius
+     * needs (ApprovalRules::acceptPermission()).
+     */
+    public function acceptVerification(Request $request, int $id): JsonResponse
+    {
+        $user = self::user($request);
+        $mode = $this->settings()->changeSettings()->approval;
+        $holds = self::canAccept($request, $mode);
+        if (! $holds) {
+            return response()->json(['error' => ApprovalRules::acceptVerificationRefusal($mode, ['status' => ChangeStatus::PAUSED, 'waiting' => 'verification', 'user_id' => null], 0,
+                false)], 403);
+        }
+        $seen = $request->input('verify');
+        $seen = is_string($seen) && preg_match('/^[0-9a-f]{32}$/D', $seen) ? $seen : '';
+
+        return $this->act($id, fn (ChangeLifecycle $lifecycle) => $lifecycle->acceptVerification($id, $user, $holds, self::comment($request), time(), $seen));
     }
 
     /**
@@ -506,7 +547,15 @@ class ChangeController extends Controller
         ['run' => $run, 'batches' => $batches, 'batchRuns' => $batchRuns, 'windows' => $windows, 'targets' => $targets, 'approvals' => $approvals,
             'signature' => $signature, 'pending' => $pending, 'withheld' => $withheld] = $this->live($change);
         ['actions' => $actions, 'approvalRefusal' => $approvalRefusal, 'canRun' => $canRun, 'canApprove' => $canApprove, 'canAccept' => $canAccept,
-            'acceptRefusal' => $acceptRefusal, 'continueRefusal' => $continueRefusal] = $this->actions($request, $change);
+            'acceptRefusal' => $acceptRefusal, 'continueRefusal' => $continueRefusal, 'verifyRefusal' => $verifyRefusal] = $this->actions($request, $change, $batches);
+        // phase 4: what each batch's verification found (the lists kept with its state after it)
+        $verification = [];
+        foreach ($batches as $number => $batch) {
+            if (is_array($batch['verify'] ?? null)) {
+                $verification[(int) $number] = $batch['verify'] + ['evaluation' => ($batch['verify']['result'] ?? null) !== null
+                    ? ($changes->resultOf($id, (int) $number)['evaluation'] ?? null) : null];
+            }
+        }
         // what the topology plugin said about each batch (approved with the change), and what it says before each batch
         $topology = \Agoodley\LibrenmsAnsible\Changes\BatchPlan::topologyPart($change['plan'] ?? null);
         $blast = [];
@@ -561,14 +610,18 @@ class ChangeController extends Controller
             // as the admin who started it (ChangeLifecycle::resume())
             'continueAs' => $actions['continue'] && ! $canRun ? ChangeLifecycle::startedBy($change, $batches[(int) $change['current_batch']] ?? [])['username'] : null,
             'laterBusy' => $laterBusy, 'topology' => $topology, 'blast' => $blast, 'blastCheck' => self::blastCheck($change, $batches),
+            'verification' => $verification, 'verifyCheck' => self::verifyCheck($change, $batches), 'verifyRefusal' => $verifyRefusal,
+            // before the apply: why a change applied now would not be verified (the topology plugin's verification API not there)
+            'verifyWhy' => $settings->verify && $change['apply_started_at'] === null && ! ChangeStatus::isFinal($status)
+                ? (new \Agoodley\LibrenmsAnsible\Services\TopologyVerification())->unavailable() : null,
             'topologyPlanned' => \Agoodley\LibrenmsAnsible\Changes\BatchPlan::isTopology($change['plan'] ?? null),
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
             'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($settings->approval, $change) : null,
             // a batch whose blast radius grew waits for an admin to accept it, one whose blast radius cannot be computed for an admin to continue
             // it (or for it to be computable): said when nobody can (while the settings ask for no approval: with one, the approver of an
             // approval that counts can)
-            'noAccepter' => $status === ChangeStatus::PAUSED && in_array($change['waiting'], ['blast', 'blast_unknown'], true) && $settings->approval === ApprovalRules::OFF
-                ? self::noAccepter((string) $change['waiting']) : null,
+            'noAccepter' => $status === ChangeStatus::PAUSED && in_array($change['waiting'], ['blast', 'blast_unknown', ...ChangeLifecycle::VERIFY_WAITS], true)
+                && $settings->approval === ApprovalRules::OFF ? self::noAccepter((string) $change['waiting']) : null,
             // before the apply: the targets Oxidized cannot back up (asked at the dry run), whose batches the setting would refuse
             'backupWarning' => $settings->backups && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true)
                 ? BackupCheck::warning(BackupCheck::missing(array_map(fn ($t) => $t['backup_check'] ?? null, $targets), array_map(fn ($t) => NextChange::name($t), $targets)),
@@ -611,7 +664,9 @@ class ChangeController extends Controller
         // what the page shows changed: it fetches itself again (the log is followed apart)
         $signature = md5((string) json_encode([(int) $change['version'], $run['id'] ?? null, $run['status'] ?? null,
             array_map(fn ($b) => [$b['status'], $b['run_id'], $b['note'], $b['blast']['state'] ?? null, $b['blast']['at'] ?? null, $b['blast_accepted']['at'] ?? null,
-                $b['blast_override']['at'] ?? null], $batches), array_map(fn ($r) => $r['status'], $batchRuns),
+                $b['blast_override']['at'] ?? null, $b['verify']['before']['status'] ?? null, $b['verify']['before']['waiting'] ?? null, $b['verify']['after']['status'] ?? null,
+                $b['verify']['after']['waiting'] ?? null, $b['verify']['result'] ?? null, $b['verify']['decision'] ?? null, $b['verify']['accepted']['at'] ?? null], $batches),
+            array_map(fn ($r) => $r['status'], $batchRuns),
             array_map(fn ($w) => [$w['status'], $w['closing'], $w['ends_at'], $w['cut_off'] ?? null], $windows),
             array_map(fn ($t) => [$t['dry_result'], $t['result'], $t['before_status'], $t['after_status'], ($t['served_hash'] ?? null) === InventoryGuard::LEFT_OUT], $targets),
             $changes->eventCount($id), count($approvals), $withheld]));
@@ -697,12 +752,28 @@ class ChangeController extends Controller
     }
 
     /**
+     * The identity of the verification the change waits after (unexpected changes, or a batch that cannot be verified),
+     * which an acceptance names (ChangeLifecycle::verifyCheckId()); null when it waits for no such acceptance.
+     *
+     * @param  array<int, array>  $batches
+     */
+    public static function verifyCheck(array $change, array $batches): ?string
+    {
+        $number = (int) $change['current_batch'];
+        $verify = $batches[$number]['verify'] ?? null;
+
+        return $change['status'] === ChangeStatus::PAUSED && in_array($change['waiting'], ChangeLifecycle::VERIFY_WAITS, true) && is_array($verify)
+            ? ChangeLifecycle::verifyCheckId($verify, (int) $change['id'], $number) : null;
+    }
+
+    /**
      * The actions the user may take on the change now (the lifecycle checks each again).
      *
+     * @param  array<int, array>  $batches  the change's batches
      * @return array{actions: array<string, bool>, approvalRefusal: ?string, canRun: bool, canApprove: bool, canAccept: bool, acceptRefusal: ?string,
-     *     continueRefusal: ?string}
+     *     continueRefusal: ?string, verifyRefusal: ?string}
      */
-    private function actions(Request $request, array $change): array
+    private function actions(Request $request, array $change, array $batches): array
     {
         $user = $request->user();
         $canRun = Access::canRun($user);
@@ -717,18 +788,24 @@ class ChangeController extends Controller
         // and who may continue a batch whose blast radius cannot be computed (a Continue goes without one while it cannot): the same admins
         $continueRefusal = $status === ChangeStatus::PAUSED && $change['waiting'] === 'blast_unknown'
             ? ApprovalRules::continueRefusal($mode, $change, (int) $user->user_id, $canAccept) : null;
+        // and who may accept what a batch's verification found
+        $verifyRefusal = $status === ChangeStatus::PAUSED && in_array($change['waiting'], ChangeLifecycle::VERIFY_WAITS, true)
+            ? ApprovalRules::acceptVerificationRefusal($mode, $change, (int) $user->user_id, $canAccept) : null;
 
         return ['canRun' => $canRun, 'canApprove' => $canApprove, 'canAccept' => $canAccept, 'approvalRefusal' => $approvalRefusal, 'acceptRefusal' => $acceptRefusal,
-            'continueRefusal' => $continueRefusal, 'actions' => [
+            'continueRefusal' => $continueRefusal, 'verifyRefusal' => $verifyRefusal, 'actions' => [
             'dry_run' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
             'approve' => $canApprove && $status === ChangeStatus::AWAITING && $approvalRefusal === null,
             'reject' => $canApprove && $status === ChangeStatus::AWAITING,
             'apply' => $canRun && $status === ChangeStatus::READY,
             // a batch whose blast radius grew is not continued: its new blast radius is accepted; one whose blast radius cannot be computed is
             // continued by who may accept one (an approver without the run permission too: it then starts as the admin who started it)
-            'continue' => $status === ChangeStatus::PAUSED && $change['waiting'] !== 'blast'
-                && ($change['waiting'] === 'blast_unknown' ? $continueRefusal === null : $canRun),
+            // a batch whose state before it is taken again (its secret answers came late) is launched once it is, by the page that holds them
+            'continue' => $status === ChangeStatus::PAUSED && $change['waiting'] !== 'blast' && ! in_array($change['waiting'], ChangeLifecycle::VERIFY_WAITS, true)
+                && ($change['waiting'] === 'blast_unknown' ? $continueRefusal === null : $canRun)
+                && ! ChangeLifecycle::beforeRetaking($change, $batches[(int) $change['current_batch']] ?? []),
             'accept' => $canAccept && $status === ChangeStatus::PAUSED && $change['waiting'] === 'blast' && $acceptRefusal === null,
+            'accept_verification' => $canAccept && $status === ChangeStatus::PAUSED && in_array($change['waiting'], ChangeLifecycle::VERIFY_WAITS, true) && $verifyRefusal === null,
             'stop' => $canRun && in_array($status, [ChangeStatus::APPLYING, ChangeStatus::PAUSED, ChangeStatus::DRY_RUN], true),
             'cancel' => $canRun && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true),
         ]];
@@ -769,7 +846,7 @@ class ChangeController extends Controller
             return null;
         }
 
-        return $able ? null : ($waiting === 'blast' ? 'Nobody can accept it yet: no admin holds the run permission.'
+        return $able ? null : (in_array($waiting, ['blast', ...ChangeLifecycle::VERIFY_WAITS], true) ? 'Nobody can accept it yet: no admin holds the run permission.'
             : 'Nobody can continue it yet: no admin holds the run permission (it starts on its own once its blast radius can be computed).');
     }
 
@@ -866,6 +943,31 @@ class ChangeController extends Controller
         return [is_scalar($template) ? mb_substr((string) $template, 0, 64) : '', $ids($request->input('devices')), $answers, $ids($request->input('canary')),
             is_string($request->input('reference')) ? mb_substr($request->input('reference'), 0, 1000) : '',
             $request->input('unplanned') === RolloutPlan::HAND ? RolloutPlan::HAND : RolloutPlan::LEAVE];
+    }
+
+    /**
+     * The fixes a preview or create request is made from (the new change page of the Fixes page): {kind, ids, scope, lines}, the
+     * lines as the page showed them; null for a change that is no fix. Anything of another shape is dropped.
+     *
+     * @return array{kind: string, ids: string[], scope: int[], lines: ?string[]}|null
+     */
+    private static function fixInput(Request $request): ?array
+    {
+        $fix = $request->input('fix');
+        if (! is_array($fix) || ! is_string($fix['kind'] ?? null)) {
+            return null;
+        }
+        $ids = array_values(array_filter(array_slice(is_array($fix['ids'] ?? null) ? $fix['ids'] : [], 0, 200), fn ($id) => is_string($id) && preg_match('/^[0-9a-f]{40}$/D', $id)));
+        $scope = [];
+        foreach (array_slice(is_array($fix['scope'] ?? null) ? $fix['scope'] : [], 0, self::MAX_DEVICES) as $id) {
+            if ((is_int($id) || (is_string($id) && ctype_digit($id))) && (int) $id > 0) {
+                $scope[] = (int) $id;
+            }
+        }
+        $lines = is_array($fix['lines'] ?? null) ? array_values(array_map(fn ($line) => mb_substr((string) $line, 0, 1000),
+            array_filter(array_slice($fix['lines'], 0, \Agoodley\LibrenmsAnsible\Changes\FixAnswers::LINES_MAX + 1), 'is_string'))) : null;
+
+        return ['kind' => mb_substr($fix['kind'], 0, 40), 'ids' => $ids, 'scope' => array_values(array_unique($scope)), 'lines' => $lines];
     }
 
     /**

@@ -450,6 +450,10 @@
         // the devices the topology plugin cannot plan: left out of the change, or in final batches planned by hand (as the earlier
         // change planned them, for a new change from one)
         var unplanned = config.prefill && config.prefill.unplanned === 'hand' ? 'hand' : 'leave';
+        // a change made from fixes: its devices are the fix's, and the lines of its fix variable go with the preview and the creation
+        var fix = config.fix || null;
+        // fixes the plugin refuses (the page says why): nothing to choose, nothing to preview; back to the Fixes page
+        var locked = !!fix || !!config.fixRefused;
 
         // the chosen devices in the list's order (the batches follow it)
         function selectedIds() {
@@ -525,10 +529,10 @@
                 var link = el('a', null, device.display);
                 link.href = config.deviceUrl + '/' + device.id;
                 append(row, [
-                    el('td', null, checkbox('ans-target-check', !!selected[device.id], !!device.refusal && !selected[device.id], 'Target ' + device.display, function (on) {
+                    el('td', null, checkbox('ans-target-check', !!selected[device.id], locked || (!!device.refusal && !selected[device.id]), 'Target ' + device.display, function (on) {
                         toggle(device, on);
                     })),
-                    el('td', null, checkbox('ans-canary-check', !!canary[device.id], !selected[device.id], device.display + ' in the first batch', function (on) {
+                    el('td', null, checkbox('ans-canary-check', !!canary[device.id], locked || !selected[device.id], device.display + ' in the first batch', function (on) {
                         if (on) {
                             canary[device.id] = true;
                         } else {
@@ -594,7 +598,13 @@
             clear(previewBox);
             previewBox.style.opacity = '1';
             showVariableErrors(plan ? plan.variable_errors : null);
-            var messages = (errors || []).concat(plan && plan.errors ? plan.errors : []);
+            // a refused creation gives the preview's errors twice (in its own and in its plan's): each is said once
+            var messages = [];
+            (errors || []).concat(plan && plan.errors ? plan.errors : []).forEach(function (message) {
+                if (messages.indexOf(message) < 0) {
+                    messages.push(message);
+                }
+            });
             if (plan && plan.variable_errors && Object.keys(plan.variable_errors).length && !errors) {
                 messages.push('Fix the answers marked above.');
             }
@@ -785,6 +795,9 @@
             previewButton.disabled = true;
             launchState.textContent = 'checking with the runner…';
             var request_ = {template: config.template, devices: selectedIds(), vars: answers(), canary: canaryIds(), reference: reference.value, unplanned: unplanned};
+            if (fix) {
+                request_.fix = {kind: fix.kind, ids: fix.ids, scope: fix.scope, lines: fix.lines};
+            }
             request('POST', config.preview, request_).then(function (result) {
                 previewButton.disabled = false;
                 if (result.status !== 200) {
@@ -798,7 +811,7 @@
                         return t.device_id;
                     }), canary: result.body.batches[0].devices.map(function (d) {
                         return d.device_id;
-                    }), vars: request_.vars, reference: request_.reference, unplanned: unplanned, blast: result.body.blast_signature || ''};
+                    }), vars: request_.vars, reference: request_.reference, unplanned: unplanned, blast: result.body.blast_signature || '', fix: request_.fix || null};
                     // the devices in the order of the batches, and the batches: the change gets exactly these or none; the devices the
                     // topology plugin leaves out go along, so that its plan is the same, and what each batch cuts off too
                     previewed.devices = [];
@@ -827,9 +840,13 @@
             createButton.disabled = true;
             previewButton.disabled = true;
             launchState.textContent = 'creating…';
-            request('POST', config.store, {template: config.template, devices: previewed.devices, vars: previewed.vars, canary: previewed.canary,
+            var stored = {template: config.template, devices: previewed.devices, vars: previewed.vars, canary: previewed.canary,
                 batches: previewed.batches, reference: previewed.reference, unplanned: previewed.unplanned, blast_signature: previewed.blast,
-                request_token: config.requestToken}).then(function (result) {
+                request_token: config.requestToken};
+            if (previewed.fix) {
+                stored.fix = previewed.fix;
+            }
+            request('POST', config.store, stored).then(function (result) {
                 if ((result.status === 201 || result.status === 200) && result.body.url) {
                     launchState.textContent = 'created: opening the change…';
                     window.location.assign(result.body.url);
@@ -846,6 +863,10 @@
             input.addEventListener('change', render);
         });
         filters.text.addEventListener('input', render);
+        if (locked) {
+            byId('ans-select-shown').disabled = true;
+            byId('ans-select-none').disabled = true;
+        }
         byId('ans-select-shown').addEventListener('click', function () {
             shown().forEach(function (device) {
                 if (!device.refusal && selectedIds().length < config.maxTargets) {
@@ -880,7 +901,12 @@
                 wanted.push(Number(id));
             });
         }
-        var hash = /(?:^#|&)devices=([0-9,]{1,20000})/.exec(window.location.hash || '');
+        if (fix) {
+            fix.devices.forEach(function (id) {
+                wanted.push(Number(id));
+            });
+        }
+        var hash = fix ? null : /(?:^#|&)devices=([0-9,]{1,20000})/.exec(window.location.hash || '');
         if (hash) {
             hash[1].split(',').forEach(function (id) {
                 if (/^[0-9]+$/.test(id)) {
@@ -896,6 +922,20 @@
                 return;
             }
             devices = result.body.devices;
+            if (fix) {
+                // the fix's devices first, in its order (a root priority fix: the intended roots, then their secondaries)
+                var fixRank = {};
+                fix.devices.forEach(function (id, index) {
+                    fixRank[Number(id)] = index;
+                });
+                devices = devices.filter(function (device) {
+                    return fixRank[device.id] !== undefined;
+                }).sort(function (a, b) {
+                    return fixRank[a.id] - fixRank[b.id];
+                }).concat(devices.filter(function (device) {
+                    return fixRank[device.id] === undefined;
+                }));
+            }
             if (config.prefill) {
                 // the chosen devices first, in the earlier change's order (the batches follow the list)
                 var rank = {};
@@ -995,6 +1035,11 @@
                         : 'Continue with batch ' + (now.currentBatch + 1) + '? Check the devices of the batches so far first.'),
                 accept: 'Accept the new blast radius of batch ' + now.currentBatch + ', as shown above? The batch then starts again, its blast radius checked '
                     + 'once more, and its maintenance window covers what it cuts off. Your acceptance is recorded in the timeline and in the eventlog.',
+                'accept-verification': now.waiting === 'verification'
+                    ? 'Accept the unexpected changes of batch ' + now.currentBatch + ', as shown above? The change then goes on to batch ' + (now.currentBatch + 1)
+                        + '; its outcome becomes "verified with accepted changes". Your acceptance is recorded in the timeline and in the eventlog.'
+                    : 'Go on without the verification of batch ' + now.currentBatch + '? Nothing then tells whether it changed more than intended; the change goes on to batch '
+                        + (now.currentBatch + 1) + ' and its outcome is "not verified". Your decision is recorded in the timeline and in the eventlog.',
                 stop: 'Stop this change? A running batch is stopped as a run\'s stop (the step in progress on each device runs on), no further batch starts, '
                     + 'and the change ends: it cannot be resumed.',
                 cancel: 'Cancel this change? It ends it: nothing is applied.'
@@ -1228,7 +1273,8 @@
             }
             var commentField = byId('ans-approval-comment');
             // an acceptance or a Continue without a blast radius is for the blast radius this page shows: refused when it changed since
-            var body = {secrets: secrets, comment: commentField ? commentField.value : '', blast: current().blast || ''};
+            // an acceptance of a batch's verification likewise names the verification this page shows
+            var body = {secrets: secrets, comment: commentField ? commentField.value : '', blast: current().blast || '', verify: current().verify || ''};
             busy = true;
             button.disabled = true;
             actionState('sending…');
@@ -1381,5 +1427,285 @@
         });
     }
 
-    window.AnsiblePlugin = {run: run, newChange: newChange, change: change, settings: settings};
+    /* ---------------------------------------------------------------- fixes */
+
+    /**
+     * The Fixes page: the topology plugin's fixes by kind, loaded from the plugin's JSON and shown as text; the fixes of one
+     * kind ticked here open a new change made from them (the server computes their lines again).
+     */
+    function fixes(config) {
+        var status = byId('ans-fixes-status');
+        var list = byId('ans-fixes-list');
+        var LABELS = {port_descriptions: 'Port descriptions', stp_root_priority: 'Spanning tree root priority'};
+        var severity = {critical: 'danger', warning: 'warning', info: 'info'};
+        // a topology plugin's page links a finding here by its identity: its fix is marked, and chosen when it can be
+        var wanted = (/[?&]finding=([0-9a-f]{40})(?:&|$)/.exec(window.location.search) || [])[1] || null;
+        var wantedRow = null;
+        var hasWanted = function (fix) {
+            return wanted !== null && fix.findings.some(function (finding) {
+                return finding.identity === wanted;
+            });
+        };
+
+        function findings(fix) {
+            return fix.findings.map(function (finding) {
+                return el('div', null, [el('span', 'label label-' + (severity[finding.severity] || 'default'), finding.severity), ' ', finding.title]);
+            });
+        }
+
+        function changes(fix) {
+            if (fix.kind === 'port_descriptions') {
+                return fix.ports.map(function (port) {
+                    return el('div', port.passes ? null : 'text-warning', [el('span', 'ans-code', port.device + ' ' + port.interface), ': ',
+                        port.current ? el('span', 'ans-code', '"' + port.current + '"') : el('span', 'text-muted', '(none)'), ' \u2192 ',
+                        el('span', 'ans-code', '"' + port.description + '"'),
+                        port.passes ? null : el('div', 'ans-help', 'this interface name cannot be passed to a playbook (letters, digits and / . _ : -)')]);
+                });
+            }
+            var bridge = function (b, role) {
+                return b ? el('div', null, [role + ': ', el('strong', null, b.name), ' priority ' + b.priority + ' ',
+                    el('span', 'ans-code', b.mode + (b.instances !== '-' ? ' ' + b.instances : ''))]) : null;
+            };
+            return [el('div', null, fix.vlans + (fix.roots_now ? ' (root now: ' + fix.roots_now + ')' : '')), bridge(fix.primary, 'intended root'),
+                bridge(fix.secondary, 'secondary'), el('div', 'ans-help', 'chosen from ' + fix.chosen_from + '; set alone first, then the secondary')];
+        }
+
+        // the fixes chosen change at most maxTargets devices (Max targets per change): a change of more is refused
+        function section(kind, entries, template, canRun, newChange, maxTargets) {
+            var box = el('div', 'panel panel-default');
+            box.id = 'ans-fixes-' + kind;
+            var templateText = template.problem ? el('span', 'text-warning', [el('i', 'fa fa-exclamation-triangle'), ' Template: ' + template.problem + ' '])
+                : el('span', 'text-muted', 'template: ' + template.name + ' (#' + template.id + ')');
+            if (template.problem) {
+                var settingsLink = el('a', null, 'Settings');
+                settingsLink.href = config.settings;
+                append(templateText, settingsLink);
+            }
+            var selected = {};
+            var button = el('button', 'btn btn-sm btn-success', [el('i', 'fa fa-wrench'), ' Fix the selected']);
+            button.type = 'button';
+            button.disabled = true;
+            button.id = 'ans-fix-' + kind;
+            var chosenText = el('span', 'ans-help');
+            chosenText.id = 'ans-fix-devices-' + kind;
+            var capText = el('div', 'panel-body ans-help text-warning');
+            capText.id = 'ans-fix-cap-' + kind;
+            capText.style.display = 'none';
+            // the checkboxes shown, by fix
+            var boxes = {};
+            var refresh = function () {
+                var count = Object.keys(selected).length;
+                button.disabled = !count || !canRun || !!template.problem;
+                button.textContent = '';
+                append(button, [el('i', 'fa fa-wrench'), ' Fix the selected (' + count + ')']);
+                // the devices the chosen fixes change
+                var chosen = {};
+                entries.forEach(function (fix) {
+                    if (selected[fix.id]) {
+                        fix.devices.forEach(function (device) {
+                            chosen[device.device_id] = true;
+                        });
+                    }
+                });
+                var devices = Object.keys(chosen).length;
+                var capped = false;
+                // a fix that would take the change past the most targets cannot be chosen, until one is no longer chosen
+                Object.keys(boxes).forEach(function (id) {
+                    var entry = boxes[id];
+                    var more = entry.fix.devices.filter(function (device) {
+                        return !chosen[device.device_id];
+                    }).length;
+                    var over = usable(entry.fix) && devices + more > maxTargets;
+                    capped = capped || (!entry.box.checked && over);
+                    entry.box.disabled = !entry.box.checked && (!usable(entry.fix) || over);
+                    entry.box.title = whyNot(entry.fix) || (entry.box.disabled ? 'A change has at most ' + maxTargets + ' targets (Max targets per change): the fixes chosen change '
+                        + devices + ' device' + (devices === 1 ? '' : 's') + '. Choose this fix in another change.' : '');
+                });
+                // said next to the button, and above the fixes once a fix cannot be chosen for it
+                var those = devices + ' device' + (devices === 1 ? '' : 's');
+                chosenText.textContent = !count ? '' : 'they change ' + those + (capped ? ', the most a change may have (see above)' : ' (a change has at most ' + maxTargets + ')');
+                capText.textContent = capped ? 'The fixes chosen change ' + those + ', the most a change may have (Max targets per change): a fix of another device cannot be '
+                    + 'chosen until one is no longer chosen.' : '';
+                capText.style.display = capped ? '' : 'none';
+            };
+            button.addEventListener('click', function () {
+                var ids = [];
+                var scope = {};
+                entries.forEach(function (fix) {
+                    if (selected[fix.id]) {
+                        ids.push(fix.id);
+                        fix.devices.forEach(function (device) {
+                            scope[device.device_id] = true;
+                        });
+                    }
+                });
+                window.location.assign(newChange + '?fix=' + encodeURIComponent(kind) + '&ids=' + ids.join(',') + '&scope=' + Object.keys(scope).join(','));
+            });
+            var rows = el('tbody');
+            // a port whose name cannot be passed to a playbook, a device that cannot be a target (the target check of New change): the plugin
+            // refuses the whole fix (every field is checked)
+            var refusedFix = function (fix) {
+                return fix.kind === 'port_descriptions' && fix.ports.some(function (port) {
+                    return !port.passes;
+                });
+            };
+            var whyNot = function (fix) {
+                if (refusedFix(fix)) {
+                    return 'The plugin cannot apply this fix: an interface name cannot be passed to a playbook';
+                }
+                if (fix.refusals && fix.refusals.length) {
+                    return 'The plugin cannot apply this fix: ' + fix.refusals.map(function (refusal) {
+                        return refusal.device + ' cannot be a target (' + refusal.text + ')';
+                    }).join('; ');
+                }
+                return '';
+            };
+            var usable = function (fix) {
+                return canRun && !template.problem && !whyNot(fix);
+            };
+            // the fix of the finding a link names is chosen, and shown on its page
+            var wantedIndex = -1;
+            entries.forEach(function (fix, index) {
+                if (hasWanted(fix)) {
+                    wantedIndex = index;
+                    if (usable(fix)) {
+                        selected[fix.id] = true;
+                    }
+                }
+            });
+            var rowOf = function (fix) {
+                var box_ = el('input');
+                box_.type = 'checkbox';
+                box_.className = 'ans-fix-check';
+                box_.setAttribute('aria-label', 'Fix ' + fix.title);
+                box_.checked = !!selected[fix.id];
+                boxes[fix.id] = {box: box_, fix: fix};
+                box_.addEventListener('change', function () {
+                    if (box_.checked) {
+                        selected[fix.id] = true;
+                    } else {
+                        delete selected[fix.id];
+                    }
+                    refresh();
+                });
+                var refusals = (fix.refusals || []).map(function (refusal) {
+                    return el('div', 'ans-help text-warning ans-fix-refusal', refusal.device + ' cannot be a target: ' + refusal.text);
+                });
+                var row = el('tr', whyNot(fix) ? 'ans-refused' : null, [el('td', null, box_), el('td', 'ans-wrap', [el('strong', null, fix.title), el('div', 'ans-help', fix.devices.map(function (d) {
+                    return d.name;
+                }).join(', '))].concat(refusals)), el('td', 'ans-wrap', changes(fix)), el('td', 'ans-wrap', findings(fix))]);
+                row.setAttribute('data-fix', fix.id);
+                if (hasWanted(fix)) {
+                    row.classList.add('info', 'ans-fix-wanted');
+                    wantedRow = row;
+                }
+                return row;
+            };
+            // a large network has many fixes of a kind: a page of them at a time (the choice is kept from page to page), or all of them
+            var PAGE = 25;
+            var page = wantedIndex >= 0 ? Math.floor(wantedIndex / PAGE) : 0;
+            var all = false;
+            var pageButton = function (label, id) {
+                var b = el('button', 'btn btn-xs btn-default', label);
+                b.type = 'button';
+                b.id = id + kind;
+                return b;
+            };
+            var prev = pageButton('\u2039 Previous', 'ans-fixes-prev-');
+            var next = pageButton('Next \u203a', 'ans-fixes-next-');
+            var allButton = pageButton('Show all ' + entries.length, 'ans-fixes-all-');
+            var range = el('span', 'ans-muted');
+            range.id = 'ans-fixes-range-' + kind;
+            var render = function () {
+                var from = all ? 0 : page * PAGE;
+                var to = all ? entries.length : Math.min(entries.length, from + PAGE);
+                rows.textContent = '';
+                boxes = {};
+                for (var i = from; i < to; i++) {
+                    rows.appendChild(rowOf(entries[i]));
+                }
+                refresh();
+                range.textContent = all ? 'all ' + entries.length : (from + 1) + '\u2013' + to + ' of ' + entries.length;
+                prev.disabled = all || page === 0;
+                next.disabled = all || to >= entries.length;
+                allButton.textContent = all ? 'Show ' + PAGE + ' at a time' : 'Show all ' + entries.length;
+            };
+            prev.addEventListener('click', function () {
+                page = Math.max(0, page - 1);
+                render();
+            });
+            next.addEventListener('click', function () {
+                page++;
+                render();
+            });
+            allButton.addEventListener('click', function () {
+                all = !all;
+                page = 0;
+                render();
+            });
+            render();
+            var table = el('table', 'table table-condensed ans-table ans-stack');
+            append(table, [el('thead', null, el('tr', null, [el('th', null, ''), el('th', null, 'Fix'), el('th', null, 'What it changes'), el('th', null, 'Findings it resolves')])), rows]);
+            refresh();
+            var pager = null;
+            if (entries.length > PAGE) {
+                pager = el('span', 'ans-fixes-pager', [prev, ' ', range, ' ', next, ' ', allButton]);
+                pager.id = 'ans-fixes-pages-' + kind;
+            }
+            append(box, [el('div', 'panel-heading', [el('strong', null, LABELS[kind] + ' (' + entries.length + ')'), ' ', templateText]),
+                pager ? el('div', 'panel-body', pager) : null, capText, el('div', 'table-responsive', table), el('div', 'panel-body', [button, ' ', chosenText, ' ', el('span', 'ans-help', canRun
+                    ? 'opens a new change: nothing runs before its dry run' : 'making a change needs the run permission')])]);
+            return box;
+        }
+
+        request('GET', config.list).then(function (result) {
+            if (result.status !== 200) {
+                status.textContent = result.body.error || ('The fixes cannot be loaded: HTTP ' + result.status);
+                status.className = 'text-danger';
+                return;
+            }
+            var data = result.body;
+            var count = data.fixes.length + ' fix' + (data.fixes.length === 1 ? '' : 'es');
+            if (config.filtered && !data.devices) {
+                status.textContent = 'No device you may see matches the filter.';
+            } else if (config.filtered) {
+                status.textContent = data.fixes.length ? count + ' of the ' + data.devices + ' device' + (data.devices === 1 ? '' : 's') + ' of the filter, and of the findings about them'
+                    : 'No finding of the topology plugin about the ' + data.devices + ' device' + (data.devices === 1 ? '' : 's') + ' of the filter has a clear fix now.';
+            } else {
+                status.textContent = data.fixes.length ? count + ' as you see the network' : 'No finding of the topology plugin has a clear fix now, as you see the network.';
+            }
+            if (data.role_hidden && data.role_hidden.length) {
+                list.appendChild(alertBox('warning', null, ['Your LibreNMS role may not view ' + data.role_hidden.join(', ') + ': the list may be incomplete.']));
+            }
+            Object.keys(LABELS).forEach(function (kind) {
+                var entries = data.fixes.filter(function (fix) {
+                    return fix.kind === kind;
+                });
+                if (entries.length) {
+                    list.appendChild(section(kind, entries, data.templates[kind] || {problem: 'unknown'}, data.can_run, data.new_change, data.max_targets || 25));
+                }
+            });
+            if (data.not_fixable.length) {
+                var box = el('div', 'panel panel-default');
+                box.id = 'ans-fixes-not-fixable';
+                append(box, [el('div', 'panel-heading', el('strong', null, 'Findings without a clear fix (' + data.not_fixable.length + ')')),
+                    el('ul', 'list-unstyled panel-body', data.not_fixable.map(function (entry) {
+                        var item = el('li', entry.identity === wanted && wanted !== null ? 'bg-info ans-fix-wanted' : null, [el('strong', null, entry.title), ': ', entry.why]);
+                        if (entry.identity === wanted && wanted !== null) {
+                            wantedRow = item;
+                        }
+                        return item;
+                    }))]);
+                list.appendChild(box);
+            }
+            if (wanted !== null && wantedRow === null) {
+                list.insertBefore(alertBox('info', null, ['The finding you came from has no fix here now: it was resolved, or it changed since that page was loaded'
+                    + (config.filtered ? ', or it is not about the devices of the filter.' : '.')]), list.firstChild);
+            } else if (wantedRow !== null && wantedRow.scrollIntoView) {
+                wantedRow.scrollIntoView({block: 'center'});
+            }
+        });
+    }
+
+    window.AnsiblePlugin = {run: run, newChange: newChange, change: change, settings: settings, fixes: fixes};
 })(window, document);

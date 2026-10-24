@@ -127,6 +127,7 @@ a.topo-card:hover { border-color: #1f6fb2; box-shadow: 0 1px 6px rgba(31, 111, 1
 .topo-rollout-hosts textarea { margin-top: 3px; font-family: monospace; font-size: 11px; }
 .topo-finding-detail { color: #555; }
 .topo-finding-rec { color: #2c6e49; font-size: 12px; margin-top: 3px; }
+.topo-fix-link { font-size: 12px; margin-left: 6px; white-space: nowrap; }
 .topo-details { border-top: 1px solid #ddd; }
 .topo-details > summary { padding: 6px 10px; cursor: pointer; color: #555; }
 .topo-stp-table td, .topo-stp-table th { font-size: 12px; white-space: nowrap; }

@@ -102,4 +102,10 @@ class FormatTest extends TestCase
         $this->assertSame('0 hosts', Format::count(0, 'host'));
         $this->assertSame('2 mice', Format::count(2, 'mouse', 'mice'));
     }
+
+    public function testMemorySizesAsPhpWritesThem(): void
+    {
+        $this->assertSame([128 * 1048576, 2 * 1073741824, 512 * 1024, 1000, -1, -1], array_map([\Agoodley\LibrenmsAnsible\Support\MemoryLimit::class, 'bytes'],
+            ['128M', '2G', '512k', '1000', '-1', '']));
+    }
 }

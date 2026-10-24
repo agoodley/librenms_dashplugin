@@ -434,6 +434,70 @@ class TopologyService
     }
 
     /**
+     * Spanning tree findings of these devices (a batch's L2 domains, for the verification API), as the background check
+     * finds them, with the domains of each VLAN as the analysis splits them. One VLAN at a time, and only that VLAN's
+     * instance rows are held (StpIndex::partial(), as the STP page loads one VLAN), so the memory does not grow with the
+     * VLANs of a PVST network. Only the devices the user may see.
+     *
+     * @param  int[]  $ids
+     * @return array{findings: array<int, array>, domains: array<int, list<int[]>>} domains: VLAN key => member ids of each domain
+     */
+    public function stpFindingsFor(array $ids): array
+    {
+        $ids = array_values(array_intersect($this->repo->deviceIds(), array_map('intval', $ids)));
+        $keys = $this->repo->stpKeys($ids);
+        if (! $ids || ! $keys['keys']) {
+            return ['findings' => [], 'domains' => []];
+        }
+        $lag = $this->repo->lagParents($ids);
+        $links = $this->repo->links($ids);
+        $linkPorts = array_merge(array_keys($lag), array_values($lag));
+        foreach ($links as $link) {
+            $linkPorts[] = (int) $link['local_port_id'];
+            $linkPorts[] = (int) $link['remote_port_id'];
+        }
+        // has_stp of a link port covers every instance (portHasStp() trusts it)
+        $linkPortRows = $this->repo->analysisPorts($linkPorts);
+        $devices = $this->repo->devices($ids);
+        $analyzer = new StpAnalyzer($devices, StpIndex::partial($keys['keys'], [], [], $lag, $keys['bridges']), $links, $linkPortRows, $lag, $this->settings,
+            $this->repo->stpEvents($ids, $this->settings->int('stp_event_days', 1, 365)));
+
+        $vlans = [];
+        foreach ($keys['keys'] as $deviceKeys) {
+            foreach ($deviceKeys as $key) {
+                $vlans[$key] = true;
+            }
+        }
+        ksort($vlans);
+        $findings = [];
+        $domains = [];
+        $lookups = [];
+        $networkWide = true;
+        foreach (array_keys($vlans) as $key) {
+            $selected = [];
+            foreach ($keys['keys'] as $deviceId => $deviceKeys) {
+                if (in_array($key, $deviceKeys, true)) {
+                    $selected[$deviceId] = [$key];
+                }
+            }
+            $index = StpIndex::partial($keys['keys'], $this->repo->stpInstancesFor($selected), $this->repo->stpPorts(array_keys($selected), $selected), $lag,
+                $keys['bridges']);
+            $unknown = array_values(array_diff($index->unknownRootMacs(), array_keys($lookups)));
+            if ($unknown) {
+                $lookups += $this->repo->rootLookups($unknown);
+            }
+            $ports = $linkPortRows + $this->repo->analysisPorts(array_values(array_diff($index->portIds(), array_keys($linkPortRows))));
+            $vlanAnalyzer = $analyzer->withInstance($index, $ports);
+            array_push($findings, ...$vlanAnalyzer->instanceFindings($lookups, $key, $networkWide));
+            $domains[$key] = $vlanAnalyzer->instanceDomains($key);
+            $networkWide = false;
+            unset($index, $vlanAnalyzer, $ports);
+        }
+
+        return ['findings' => array_merge(StpAnalyzer::mergeAcrossVlans($findings), $this->loopEvidence($devices, $links, null)['findings']), 'domains' => $domains];
+    }
+
+    /**
      * Loop evidence of the devices in scope: broadcast / multicast counters of their inter-switch
      * ports and the loop related syslog messages of their switches and routers (when the user may
      * read syslog). For one device: its ports, its neighbors' ports toward it and its own messages.
@@ -476,10 +540,14 @@ class TopologyService
      * group/location filter are compared too; the VLAN topology is analyzed inside the scope.
      *
      * @param  array{device: ?int, group: ?int, location: ?int}  $p
+     * @param  int[]|null  $ids  the devices to check instead of the page's scope (the verification API's states and fixes: a batch's
+     *                           devices and their neighbors, a fix's devices), those of them the user may see; checked as the check
+     *                           of the whole network checks them: with the links their neighbors report toward them, and knowing
+     *                           the name of every device the user may see
      */
-    public function links(array $p): array
+    public function links(array $p, ?array $ids = null): array
     {
-        [$scope, $device] = $this->repo->scope($p);
+        [$scope, $device] = $ids === null ? $this->repo->scope($p) : [array_values(array_intersect($this->repo->deviceIds(), array_map('intval', $ids))), null];
         // end devices (phones, servers, access points) take part in one link check only: the description of their
         // port may still name the monitored device that was there before. Else LinkAnalyzer only needs to know that
         // a device reports neighbours, which one row without a port tells for all of them
@@ -494,20 +562,27 @@ class TopologyService
 
             return false;
         });
-        $remote = [];
+        // a check of some devices also takes the links their monitored neighbors report toward them (a cable LLDP/CDP sees from
+        // one side only is one all the same), as the check of the whole network does
+        $toward = $ids === null ? [] : $this->repo->linksToward($scope);
+        $remote = array_map(fn (array $link) => (int) $link['local_device_id'], $toward);
         foreach ($links as $link) {
             if ($link['remote_device_id']) {
                 $remote[] = (int) $link['remote_device_id'];
             }
         }
         $devices = $this->repo->devices(array_values(array_unique(array_merge($scope, $remote))), roles: false);
-        $named = LinkAnalyzer::portsNamingDevices($this->repo->portDescriptions(array_keys($endPorts)), $devices);
+        // the check of some devices knows the names of every device the user may see: a description may name any of them, as
+        // the check of the whole network finds it
+        $names = $ids === null ? [] : $this->repo->nameRows();
+        $named = LinkAnalyzer::portsNamingDevices($this->repo->portDescriptions(array_keys($endPorts)), $names + $devices);
         unset($endPorts);
         if ($named) {
             $links += $this->repo->linksWhere($scope, fn (array $link) => isset($named[(int) $link['local_port_id']]) && self::endDeviceNeighbor($link));
             ksort($links);
         }
-        $links = array_values($links);
+        $links = [...array_values($links), ...$toward];
+        unset($toward);
         foreach (array_keys($reporting) as $deviceId) {
             $links[] = ['id' => 0, 'local_device_id' => $deviceId, 'local_port_id' => 0, 'remote_device_id' => 0, 'remote_port_id' => null,
                 'remote_hostname' => '', 'remote_port' => '', 'remote_platform' => '', 'remote_version' => '', 'protocol' => ''];
@@ -519,6 +594,7 @@ class TopologyService
         $interSwitch = [];
         foreach ($links as $link) {
             $linkPorts[] = (int) $link['local_port_id'];
+            $remote[] = (int) $link['local_device_id'];
             if ($link['remote_device_id']) {
                 $remote[] = (int) $link['remote_device_id'];
                 $linkPorts[] = (int) $link['remote_port_id'];
@@ -577,7 +653,9 @@ class TopologyService
             $portVlans ? $this->repo->activeVlans($scope, $interSwitch) : [],
             $this->repo->portStatistics($physicalPorts),
             $this->repo->opticalRx($physicalPorts),
+            $names,
         );
+        unset($names);
 
         $result = $analyzer->analyze();
         if ($device) {

@@ -1,0 +1,85 @@
+---
+# LibreNMS Ansible plugin: the port description fix of its Fixes page (Cisco IOS, cisco.ios.ios_config). An example: review it
+# and adapt it to your platforms before a template of the plugin runs it.
+# The fix templates' contract (the plugin's README, Fixes): the survey variable port_descriptions (Text, required), one
+# line per port, "<host> <interface> <description>":
+#   host         the device as the plugin's inventory names it (inventory_hostname);
+#   interface    the port as LibreNMS names it (its ifName, e.g. Fa0/1): letters, digits and / . _ : -, at most 64;
+#   description  the rest of the line: the description the topology plugin's link check built from the LLDP/CDP
+#                neighbor, letters, digits, spaces and . _ / : + ( ) # @ , - (no backslash), at most 80, no space at either end or
+#                two in a row.
+# The plugin checked every field before the launch; this playbook checks them again before it uses them: a host with a
+# line that is not that fails and changes nothing. Each host takes the lines that name it; a host without one changes
+# nothing. The port is found in the running configuration by its name or its abbreviation (Fa0/1 is
+# FastEthernet0/1), and each description is diffed against an intended configuration (the running one with the
+# description set), so the dry run (--check --diff) shows a unified diff per port.
+- name: Port descriptions
+  hosts: all
+  gather_facts: false
+  vars:
+    # a regular expression with a backslash is a variable (YAML single quotes keep it as it is), never a string in a template
+    lnms_interface_re: '[A-Za-z0-9][A-Za-z0-9/._:-]{0,63}'
+    lnms_interfaces_re: '(?m)^interface (\S+)[ \t]*$'
+    lnms_backslash: '\'
+    lnms_description_re: '(?=.{1,80}$)[A-Za-z0-9._/:+()#@,-]+(?: [A-Za-z0-9._/:+()#@,-]+)*'
+    lnms_mine: "{{ port_descriptions.splitlines() | select('match', (inventory_hostname | regex_escape) ~ ' ') | list }}"
+    lnms_ports: >-
+      {{ lnms_mine | select('match', (inventory_hostname | regex_escape) ~ ' ' ~ lnms_interface_re ~ ' ' ~ lnms_description_re ~ '$') | list }}
+  tasks:
+    - name: Check the lines of this host (the contract's fields)
+      ansible.builtin.assert:
+        that: lnms_ports | length == lnms_mine | length
+        fail_msg: >-
+          {{ (lnms_mine | length) - (lnms_ports | length) }} of the lines naming this host are not "<host> <interface> <description>" as the
+          fix templates' contract says: nothing is changed
+        quiet: true
+    - name: Only Cisco IOS
+      ansible.builtin.assert:
+        that: ansible_network_os == 'cisco.ios.ios'
+        fail_msg: "this example playbook sets descriptions on Cisco IOS only, and this host is {{ ansible_network_os | default('of no network OS') }}"
+        quiet: true
+      when: lnms_ports | length > 0
+    - name: Read the running configuration
+      cisco.ios.ios_command:
+        commands: [show running-config]
+      register: running
+      when: lnms_ports | length > 0
+    - name: Find each port in the running configuration
+      ansible.builtin.set_fact:
+        lnms_set: "{{ lnms_set | default([]) + [{'name': lnms_name, 'found': lnms_found, 'text': item.split(' ', 2)[2]}] }}"
+      vars:
+        lnms_name: "{{ item.split(' ', 2)[1] }}"
+        lnms_letters: "{{ lnms_name | regex_search('^[A-Za-z-]*') }}"
+        lnms_rest: "{{ lnms_name | regex_replace('^[A-Za-z-]*', '') }}"
+        lnms_found: >-
+          {{ running.stdout[0] | regex_findall(lnms_interfaces_re)
+             | select('match', '(?i)' ~ (lnms_letters | regex_escape) ~ '[A-Za-z-]*' ~ (lnms_rest | regex_escape) ~ '$') | list }}
+      loop: "{{ lnms_ports }}"
+      loop_control:
+        label: "{{ item.split(' ', 2)[1] }}"
+    - name: Every port is one interface of the running configuration
+      ansible.builtin.assert:
+        that: item.found | length == 1
+        fail_msg: >-
+          the port {{ item.name }} is {{ 'not an interface' if item.found | length == 0 else 'more than one interface (' ~ (item.found | join(', ')) ~ ')' }}
+          of the running configuration: nothing is changed
+        quiet: true
+      loop: "{{ lnms_set | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+    - name: Set the descriptions
+      cisco.ios.ios_config:
+        parents: "interface {{ item.found[0] }}"
+        lines: ["description {{ item.text }}"]
+        diff_against: intended
+        # the running configuration with the description set (in the replacement, a backslash of the description doubled)
+        intended_config: >-
+          {{ running.stdout[0] | regex_replace('(?m)^(interface ' ~ (item.found[0] | regex_escape) ~ lnms_block_re, lnms_block_to
+             ~ (item.text | replace(lnms_backslash, lnms_backslash ~ lnms_backslash)) ~ lnms_newline) }}
+      vars:
+        lnms_block_re: ')[ \t]*\n(?: description [^\n]*\n)?'
+        lnms_block_to: '\1\n description '
+        lnms_newline: '\n'
+      loop: "{{ lnms_set | default([]) }}"
+      loop_control:
+        label: "{{ item.found[0] }}"

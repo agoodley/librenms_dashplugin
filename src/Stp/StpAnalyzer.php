@@ -209,6 +209,17 @@ class StpAnalyzer
     }
 
     /**
+     * The connected L2 domains of one instance (VLAN key) as the analysis splits them: the bridges of each that have the
+     * instance (single-instance bridges join the PVST islands they link), as domainsFor() finds them for the checks.
+     *
+     * @return list<int[]> the member device ids of each domain, sorted
+     */
+    public function instanceDomains(int $vlanKey): array
+    {
+        return array_map(fn (array $domain) => $domain[0], $this->domainsFor($vlanKey, $this->stp->byVlan()[$vlanKey] ?? []));
+    }
+
+    /**
      * Summary cards of a (possibly filtered) analysis result.
      *
      * @param  int  $recentWindow  seconds within which a topology change counts as recent
@@ -561,6 +572,8 @@ class StpAnalyzer
     private function checkRootPlacement(int $key, int $rootDevice, array $rootInstance, array $memberIds, Graph $graph): void
     {
         $name = $this->deviceName($rootDevice);
+        // what a fix of the root's placement starts from (the verification API's fixes: the intended root of the domain)
+        $fix = ['root' => $rootDevice, 'root_mac' => $rootInstance['bridgeAddress']];
 
         if ($this->isDefaultPriority($rootInstance['priority'], $key)) {
             $this->add(new Finding(
@@ -569,7 +582,7 @@ class StpAnalyzer
                 "$name is root with priority {$rootInstance['priority']}; the election was decided by the lowest MAC address, "
                 . 'so any new switch with a lower MAC can take over the root role.',
                 'Set an explicit, low priority on the intended primary root (e.g. 4096) and a secondary root (e.g. 8192).',
-                $key, [$rootDevice],
+                $key, [$rootDevice], fix: $fix,
             ));
         }
 
@@ -580,7 +593,7 @@ class StpAnalyzer
                 "root bridge $name is not one of the designated root bridges",
                 "Configured root bridges: " . $this->names(array_keys($preferred)) . ". Current root: $name.",
                 'Lower the bridge priority on the designated root or raise it on ' . $name . '.',
-                $key, [$rootDevice],
+                $key, [$rootDevice], fix: $fix,
             ));
         }
 

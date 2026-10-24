@@ -55,7 +55,7 @@ These are useful but are not about topology, or would change devices, so they fi
 
 * **Change automation with Ansible:** push configuration changes to all or some devices from LibreNMS, made safer by
   this plugin's topology data. It is the largest of these ideas, so it is worked out
-  [below](#change-automation-with-ansible); phases 1, 2 and 3 are built, as [a plugin of its own](ansible/README.md)
+  [below](#change-automation-with-ansible); its four phases are built, as [a plugin of its own](ansible/README.md)
   in this repository.
 * **Switch port capacity:** ports unused for N days (`ifLastChange` and uptime), err-disabled ports, free (PoE) ports
   per wiring closet or location.
@@ -100,7 +100,7 @@ from the LibreNMS pages.
 | 1 | **Done:** [the Ansible plugin](ansible/README.md). Connection to the runner; an Ansible inventory from LibreNMS (device groups, locations, LibreNMS `os` mapped to `ansible_network_os`; devices without a mapping are refused); run a template on selected devices; live status and log; an audit log (who, what, when, result), also in each device's eventlog | – |
 | 2 | **Done:** [changes](ansible/README.md#how-a-change-works). A dry run (`--check --diff`) the plugin proves from the log (`ANSIBLE_CHECK_MODE_MARKERS`), with the diff per device; approval, optionally by a second admin, bound to the dry run, the template as the runner has it and its commit, and checked again before every batch; batches (a first one on its own, then batches of a set size) that stop at the first failures; Oxidized backups before and after each batch (LibreNMS' Oxidized client, `node/next`); a LibreNMS maintenance window per batch | 1 |
 | 3 | **Done:** [rollout plan and blast radius](ansible/README.md#rollout-plan-and-blast-radius) from this plugin, through a [planning API](README.md#planning-api-for-other-plugins) for other plugins (the data of `api/rollout` and `api/simulate`, scoped as its pages). A new change is planned in the planner's order (farthest from the core first, the core last, never two devices that back each other up in one batch), the devices it cannot plan left out or planned by hand; what each batch cuts off is approved with the change and computed again before each batch and right before its launch: a batch whose blast radius grew waits for an approver, one whose blast radius cannot be computed for an admin's explicit decision (or the settings refuse them); the maintenance window also covers what each batch cuts off. Without the topology plugin, phase 2's plan with the blast radius unknown | 1 |
-| 4 | Verification: topology and findings before and after the change (root bridge moved, uplink lost, new single point of failure); one-click fixes for findings with a clear configuration (port descriptions, STP root priority) | 1; this plugin's topology history and background checks (items 5 and 6) |
+| 4 | **Done:** [verification](ansible/README.md#verification) of each batch through a [verification API](README.md#verification-api-for-other-plugins) for other plugins: the state of the network around the batch (its devices, what it cuts off, their neighbors and spanning tree domains: the topology history's facts and the background checks' findings) before it and after it on fresh LibreNMS data, compared; a batch that lost an uplink, moved a root bridge or made a new single point of failure pauses the change until an approver accepts it (or the settings stop it); the change ends verified, verified with accepted changes, or not verified. [One-click fixes](ansible/README.md#fixes) of the findings with a clear configuration (port descriptions, STP root priority), as data checked field by field, applied and verified like any change | 1; this plugin's topology history and background checks (items 5 and 6) |
 
 * **Safety:**
   * admin only, ideally with a permission of its own; the runner's API token may only launch the plugin's templates;
@@ -112,4 +112,4 @@ from the LibreNMS pages.
   * never everything at once: every run goes in batches.
 * Keep it to picking targets, launching, following and verifying on top of the runner, not a configuration management
   product.
-* Effort: L overall; phases 1, 2 and 3 were M each.
+* Effort: L overall; each of the four phases was M.

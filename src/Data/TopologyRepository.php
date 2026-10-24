@@ -63,6 +63,24 @@ class TopologyRepository extends ScopedRepository
     }
 
     /**
+     * The names of every device the user may see (hostname, sysName, display): what a port description may name, for a
+     * link check of some devices only (LinkAnalyzer's $names).
+     *
+     * @return array<int, array{hostname: string, sysName: string, display: string}>
+     */
+    public function nameRows(): array
+    {
+        $rows = [];
+        foreach (array_chunk(array_keys($this->accessible()), 5000) as $chunk) {
+            foreach (DB::table('devices')->whereIntegerInRaw('device_id', $chunk)->get(['device_id', 'hostname', 'sysName', 'display']) as $row) {
+                $rows[(int) $row->device_id] = ['hostname' => (string) $row->hostname, 'sysName' => (string) ($row->sysName ?? ''), 'display' => (string) ($row->display ?? '')];
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
      * Facts used to pick the icon of a device (bridging, routed interfaces, routing protocols).
      *
      * @param  int[]  $ids
@@ -166,6 +184,37 @@ class TopologyRepository extends ScopedRepository
                 $links[$position] = $link;
             }
             $position++;
+        }
+
+        return $links;
+    }
+
+    /**
+     * The links other devices the user may see report toward these devices (the LLDP/CDP neighbors' side of their
+     * cables): the rows of links() of those devices whose far end is one of these, in the table's order; the links these
+     * devices report themselves are links()'.
+     *
+     * @param  int[]  $ids
+     * @return list<array>
+     */
+    public function linksToward(array $ids): array
+    {
+        if (! $ids || ! $this->allowsTable('links')) {
+            return [];
+        }
+
+        $accessible = $this->accessible();
+        $own = array_fill_keys(array_map('intval', $ids), true);
+        $links = [];
+        foreach (array_chunk(array_keys($own), 5000) as $chunk) {
+            foreach (DB::table('links')->where('active', 1)->whereIntegerInRaw('remote_device_id', $chunk)->orderBy('id')
+                ->get(['id', 'local_device_id', 'local_port_id', 'remote_device_id', 'remote_port_id', 'remote_hostname',
+                    'remote_port', 'remote_platform', 'remote_version', 'protocol']) as $link) {
+                $link = (array) $link;
+                if (! isset($own[(int) $link['local_device_id']]) && isset($accessible[(int) $link['local_device_id']])) {
+                    $links[] = $link;
+                }
+            }
         }
 
         return $links;
@@ -613,6 +662,29 @@ class TopologyRepository extends ScopedRepository
         }
 
         return ['keys' => array_map('array_keys', $keys), 'bridges' => $bridges, 'count' => $count];
+    }
+
+    /**
+     * stp rows of the devices' instances whose bridge priority is below the default (32768): the explicit priorities a
+     * root priority fix competes with (few rows: the stp table has one per switch and VLAN, mostly at the default).
+     *
+     * @param  int[]  $ids
+     * @return list<array>
+     */
+    public function lowPriorityInstances(array $ids): array
+    {
+        if (! $ids || ! $this->allowsTable('stp')) {
+            return [];
+        }
+        $rows = [];
+        foreach (array_chunk(array_values(array_unique(array_map('intval', $ids))), 5000) as $chunk) {
+            foreach (DB::table('stp')->whereIntegerInRaw('device_id', $chunk)->where('priority', '<', 32768)
+                ->select(['device_id', 'vlan', 'priority', 'bridgeAddress', 'protocolSpecification'])->get() as $row) {
+                $rows[] = (array) $row;
+            }
+        }
+
+        return $rows;
     }
 
     /**

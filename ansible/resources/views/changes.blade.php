@@ -72,7 +72,8 @@
         <div class="table-responsive">
         <table class="table table-condensed table-hover ans-table ans-stack" id="ans-changes">
             <thead>
-            <tr><th>#</th><th>Created</th><th>Requester</th><th>Template</th><th>Reference</th><th>Targets</th><th>Dry run</th><th>Status</th></tr>
+            <tr><th>#</th><th>Created</th><th>Requester</th><th>Template</th><th>Reference</th><th>Targets</th><th>Dry run</th><th>Status</th>
+                <th title="the outcome of its verification: the network around each batch, before and after it (topology plugin)">Verification</th></tr>
             </thead>
             <tbody>
             @forelse($rows as $change)
@@ -93,12 +94,15 @@
                             <span class="ans-muted ans-change-waiting" @if($change['waiting']) data-waiting="{{ $change['waiting'] }}" @endif>batch {{ $change['current_batch'] }} of {{ $change['batch_count'] }}{{ $waitText !== null ? ' · ' . $waitText : '' }}</span>
                         @endif
                     </td>
+                    {{-- the outcome of its verification (phase 4), in a column of its own: not the dry run's "verified" --}}
+                    <td data-label="Verification">@if(($change['verification'] ?? null) !== null)<span class="label label-{{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::css($change['verification'], $change['verification_note'] ?? null) }} ans-change-verification"
+                            data-verification="{{ $change['verification'] }}" title="the outcome of its verification{{ ($change['verification_note'] ?? null) ? ': ' . \Agoodley\LibrenmsAnsible\Changes\VerificationText::note($change['verification_note']) : '' }}"><i class="fa fa-sitemap" aria-hidden="true"></i> {{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::listed($change['verification'], $change['verification_note'] ?? null) }}</span>@else<span class="text-muted">-</span>@endif</td>
                 </tr>
             @empty
                 @if($total > 0)
-                    <tr><td colspan="8" class="text-muted">No changes on page {{ $page }}: <a href="{{ $pageUrl(1) }}">back to the first page</a>.</td></tr>
+                    <tr><td colspan="9" class="text-muted">No changes on page {{ $page }}: <a href="{{ $pageUrl(1) }}">back to the first page</a>.</td></tr>
                 @else
-                    <tr><td colspan="8" class="text-muted">No changes{{ array_filter($filters) ? ' match these filters' : ' yet' }}.</td></tr>
+                    <tr><td colspan="9" class="text-muted">No changes{{ array_filter($filters) ? ' match these filters' : ' yet' }}.</td></tr>
                 @endif
             @endforelse
             </tbody>

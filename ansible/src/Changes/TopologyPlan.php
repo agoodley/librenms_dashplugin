@@ -97,14 +97,15 @@ final class TopologyPlan
 
     /**
      * What a plan measured from this core should make the admin check, in words ([] when nothing): a first batch of the
-     * core (the batches cannot go from the edge to the core), a core the topology plugin guessed.
+     * core (the batches cannot go from the edge to the core; not for a change that starts with the core on purpose, a root
+     * priority fix, whose intended root is a core device), a core the topology plugin guessed.
      *
      * @return string[]
      */
-    public function coreWarnings(): array
+    public function coreWarnings(bool $coreFirst = false): array
     {
         $warnings = [];
-        if ($this->startsWithCore()) {
+        if ($this->startsWithCore() && ! $coreFirst) {
             $warnings[] = 'The first batch is of the core the topology plugin measures from (' . $this->coreText() . '): the batches do not go from the edge to the '
                 . 'core. Check the core' . ($this->coreGuessed() ? '' : ', or choose devices beyond it') . '.';
         }

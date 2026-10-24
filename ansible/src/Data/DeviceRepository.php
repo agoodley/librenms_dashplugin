@@ -38,6 +38,25 @@ final class DeviceRepository
     }
 
     /**
+     * The names of these devices' ports as LibreNMS knows them (ifName; deleted ports left out): what a fix of port
+     * descriptions may name.
+     *
+     * @param  int[]  $deviceIds
+     * @return array<int, string[]> device_id => ifNames
+     */
+    public function interfaces(array $deviceIds): array
+    {
+        $interfaces = array_fill_keys(array_map('intval', $deviceIds), []);
+        foreach (array_chunk(array_keys($interfaces), 500) as $chunk) {
+            foreach (DB::table('ports')->whereIn('device_id', $chunk)->where('deleted', 0)->whereNotNull('ifName')->get(['device_id', 'ifName']) as $row) {
+                $interfaces[(int) $row->device_id][] = (string) $row->ifName;
+            }
+        }
+
+        return $interfaces;
+    }
+
+    /**
      * Device ids that exist.
      *
      * @return array<int, true>

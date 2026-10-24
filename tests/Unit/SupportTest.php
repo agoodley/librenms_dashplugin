@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsTopology\Tests\Unit;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
 use Agoodley\LibrenmsTopology\Support\Cidr;
 use Agoodley\LibrenmsTopology\Support\DeviceRole;
+use Agoodley\LibrenmsTopology\Support\ErrorText;
 use Agoodley\LibrenmsTopology\Support\Graph;
 use Agoodley\LibrenmsTopology\Support\InterfaceName;
 use Agoodley\LibrenmsTopology\Support\MapParams;
@@ -26,6 +27,22 @@ class SupportTest extends TestCase
 
         $this->assertSame([1 => true, 2 => true, 7 => true], $settings->devicesIn('stp_preferred_roots', $devices));
         $this->assertSame([], $settings->devicesIn('redundancy_core', $devices));
+    }
+
+    public function testAnErrorInOneLineNeverCarriesSql(): void
+    {
+        $this->assertSame('RuntimeException: the check timed out', ErrorText::line(new \RuntimeException("the check\ntimed out\x1b[0m")));
+        $pdo = new \PDOException("SQLSTATE[42S02]: Base table or view not found: 1146 Table 'librenms.ospf_nbrs' doesn't exist (Connection: mysql, SQL: select * from ospf_nbrs where device_id = 7)");
+        $pdo->errorInfo = ['42S02', 1146, "Table 'librenms.ospf_nbrs' doesn't exist"];
+        $this->assertSame("database error 42S02/1146: Table 'librenms.ospf_nbrs' doesn't exist", ErrorText::line($pdo), 'a database error: its code and the driver\'s words');
+        $wrapped = new \RuntimeException('cannot read the OSPF neighbours: ' . $pdo->getMessage(), 0, $pdo);
+        $this->assertSame("RuntimeException: cannot read the OSPF neighbours: database error 42S02/1146: Table 'librenms.ospf_nbrs' doesn't exist", ErrorText::line($wrapped),
+            'wrapped: the message up to the SQL, then the database error\'s words');
+        $this->assertSame('database error 08S01', ErrorText::line(new \PDOException('SQLSTATE[08S01]: Communication link failure (SQL: select secret)', 0)), 'no SQL from the message');
+        $long = ErrorText::line(new \LogicException(str_repeat('x', 500)), 60);
+        $this->assertSame(60, mb_strlen($long));
+        $this->assertStringEndsWith('…', $long);
+        $this->assertSame('ErrorException: bad byte ? here', str_replace("\u{FFFD}", '?', ErrorText::line(new \ErrorException("bad byte \xff here"))));
     }
 
     public function testInterfaceNamesAreAbbreviated(): void

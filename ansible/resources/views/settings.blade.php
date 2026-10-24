@@ -12,7 +12,7 @@
     // the part the admin saved: the page returns to its anchor, and shows the answer there
     $section = (string) session('ansible_section', '');
     $section = in_array($section, ['ans-connection-form', 'ans-inventory-user', 'ans-settings-form', 'ans-changes-form', 'ans-backups-form', 'ans-topology-form',
-        'ans-permission', 'ans-approve-permission'], true) ? $section : '';
+        'ans-verify-form', 'ans-permission', 'ans-approve-permission'], true) ? $section : '';
     $invalid = fn (string $key) => isset($errors_[$key]) ? ' ans-invalid' : '';
     $describedBy = fn (string $key) => isset($errors_[$key]) ? new \Illuminate\Support\HtmlString('aria-invalid="true" aria-describedby="ans-error-' . e($key) . '"') : '';
     $fieldError = fn (string $key) => isset($errors_[$key])
@@ -66,6 +66,35 @@
             . 'computed. Meanwhile an admin may continue it, as one accepts a new blast radius (with the approve permission, not the requester with a second admin; '
             . 'with the run permission while Approval is off): Continue computes it first, and only while it still cannot be computed does the batch go without one '
             . '(recorded; its window then covers the devices approved or accepted as cut off). Or the change ends'],
+    ];
+    // phase 4: the verification of each batch, and the templates of the fixes
+    $verifyFields = [
+        ['verify', 'Verify changes', 'before each batch the state of the network around it is taken (its devices, what it cuts off, their LLDP/CDP neighbors and spanning tree '
+            . 'domains: links, port-channels, blocked ports, root bridges, OSPF and BGP, and the topology plugin\'s findings), and again after it once LibreNMS\' data is '
+            . 'fresh; the two are compared. Needs the topology plugin. Decided at Apply: a change applied while it is off, or without the topology plugin, runs without a '
+            . 'verification and ends not verified'],
+        ['verify_fresh', 'Fresh data', 'ask: LibreNMS is asked for a discovery of the devices before a batch and after it (its devices, what it cuts off and their neighbors), as its '
+            . 'Rediscover button does; wait: the plugin waits for LibreNMS\' own discovery and polling (by default every 6 hours and 5 minutes)'],
+        ['verify_wait_minutes', 'Wait for fresh data (minutes)', 'after a batch (and its settle time), the longest the plugin waits for a discovery and a poll of its devices '
+            . 'that started after it: then the batch cannot be verified. Before the first batch, the longest it waits for the refresh it asked: then the state is taken anyway, '
+            . 'older than the Apply. It must exceed LibreNMS\' polling and discovery intervals (with ask, the discovery cron takes a device marked for rediscovery within '
+            . '5 minutes and the poller polls it within the next 5: a batch starts 5 to 10 minutes after its request): at least 10'],
+        ['verify_unexpected', 'When a batch makes unexpected changes', 'a link gone, a cable moved, a root bridge moved, a port that started blocking, an OSPF adjacency or BGP '
+            . 'session lost, a device down, a new or worse finding: pause until an admin accepts them (as a new blast radius is accepted), stop the change, or only record '
+            . 'them. The last batch never pauses: the change ends, not verified. A change of it applies to the batches verified after it: one paused already waits for '
+            . 'an admin to accept what it changed'],
+        ['verify_unknown', 'When a batch cannot be verified', 'no fresh data within the wait, the topology plugin disabled since the Apply, a state that cannot be taken: pause until an admin '
+            . 'accepts going on without the verification (checked again every minute meanwhile), stop the change, or only record it. A change of it applies to the batches '
+            . 'checked after it: one paused already goes on by itself once its cause is fixed (it is then verified), or when an admin who may accept it goes on without '
+            . 'its verification'],
+        ['verify_minimum', 'Count findings from', 'the lowest severity of the topology plugin\'s findings that counts as an unexpected change when new or worse; lower ones are '
+            . 'listed, never pause'],
+    ];
+    $fixTemplateFields = [
+        ['fix_template_port_descriptions', 'Template for port description fixes', 'the template the Fixes page uses for port descriptions: a survey variable port_descriptions '
+            . 'of type text (lines "<host> <interface> <description>")'],
+        ['fix_template_stp_root_priority', 'Template for root priority fixes', 'the template for the spanning tree root priority: a survey variable stp_priorities of type '
+            . 'text (lines "<host> <pvst|mst|stp> <instances> <priority>")'],
     ];
 @endphp
 
@@ -337,6 +366,56 @@
             </fieldset>
         </form>
     @endforeach
+
+    <form method="post" action="{{ route('ansible.settings.runs') }}" id="ans-verify-form">
+        @csrf
+        <input type="hidden" name="section" value="ans-verify-form">
+        <fieldset>
+            <legend>Verification and fixes</legend>
+            @if($section === 'ans-verify-form')
+                @include('ansible::partials.settings-answer', ['failed' => 'Nothing was saved:'])
+            @endif
+            <p class="help-block" id="ans-verify-intro">@if(array_key_exists('verification', $a) && $a['verification'] === null)The topology plugin offers its verification API: each batch can be
+                verified, and its Fixes page lists the findings whose fix is clear.@else<span class="text-warning"><i class="fa fa-exclamation-triangle"></i> The topology plugin
+                cannot verify now: {{ $a['verification'] }}.</span> A change applied meanwhile is not verified: it runs without a verification (none of its batches waits or
+                pauses for one), and its outcome says why. A change applied before goes on as When a batch cannot be verified says.@endif
+                Saved by the plugin; each change goes to the eventlog.</p>
+            @foreach($verifyFields as [$name, $label, $help])
+                <div class="form-group row">
+                    <label class="col-sm-4 control-label" for="ans-setting-{{ $name }}" style="font-weight: normal">{{ $label }}</label>
+                    <div class="col-sm-8">
+                        @if(isset($choices[$name]))
+                            <select id="ans-setting-{{ $name }}" class="form-control input-sm{{ $invalid($name) }}" {{ $describedBy($name) }} style="max-width: 320px" name="{{ $name }}">
+                                @foreach($choices[$name] as $choice => $choiceLabel)
+                                    <option value="{{ $choice }}" @selected($setting($name) === (string) $choice)>{{ $choiceLabel }}</option>
+                                @endforeach
+                            </select>
+                            {{ $fieldError($name) }}
+                            <span class="help-block" style="margin: 2px 0 0; font-size: 12px">{{ $help }} · default: {{ $choices[$name][$defaults[$name]] ?? $defaults[$name] }}</span>
+                        @else
+                            <input id="ans-setting-{{ $name }}" type="number" min="{{ $limits[$name][0] }}" max="{{ $limits[$name][1] }}" class="form-control input-sm{{ $invalid($name) }}" {{ $describedBy($name) }} style="max-width: 140px"
+                                   name="{{ $name }}" value="{{ $setting($name) }}">
+                            {{ $fieldError($name) }}
+                            <span class="help-block" style="margin: 2px 0 0; font-size: 12px">{{ $help }} · {{ $limits[$name][0] }} to {{ $limits[$name][1] }} · default: {{ $defaults[$name] }}</span>
+                        @endif
+                    </div>
+                </div>
+            @endforeach
+            @foreach($fixTemplateFields as [$name, $label, $help])
+                <div class="form-group row">
+                    <label class="col-sm-4 control-label" for="ans-setting-{{ $name }}" style="font-weight: normal">{{ $label }}</label>
+                    <div class="col-sm-8">
+                        <input id="ans-setting-{{ $name }}" type="text" inputmode="numeric" pattern="[0-9]*" class="form-control input-sm{{ $invalid($name) }}" {{ $describedBy($name) }} style="max-width: 140px"
+                               name="{{ $name }}" value="{{ $setting($name) }}" placeholder="none" autocomplete="off">
+                        {{ $fieldError($name) }}
+                        <span class="help-block" style="margin: 2px 0 0; font-size: 12px">{{ $help }}; its id in Semaphore UI (the connection test lists the templates), checked
+                            with the runner when it is saved and at each change; empty: none (such fixes cannot be made)</span>
+                    </div>
+                </div>
+            @endforeach
+            <button type="submit" class="btn btn-primary btn-sm" id="ans-verify-save"><i class="fa fa-save"></i> Save</button>
+        </fieldset>
+    </form>
 
         <fieldset id="ans-permission">
             <legend>Run permission</legend>

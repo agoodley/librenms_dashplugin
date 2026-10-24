@@ -32,12 +32,32 @@
         'failed' => 'danger', 'stopped' => 'warning', 'cancelled' => 'default'];
     $batchLabels = ['pending' => 'to do', 'preparing' => 'window and backups', 'prepared' => 'waits for the secret answers', 'launching' => 'launching',
         'running' => 'running', 'done' => 'done', 'failed' => 'failed', 'stopped' => 'stopped', 'cancelled' => 'not run'];
+    // phase 4: a batch whose secret answers came later than its state before it counts: the state is taken again, then the page that holds them launches it
+    $retaking = \Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::beforeRetaking($change, $batches[(int) $change['current_batch']] ?? []);
     $waitText = ['canary' => 'waits for an admin to continue after the first batch',
-        'secrets' => 'waits for the secret answers until ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?') . ' (the plugin never keeps them), then the change ends',
+        'secrets' => $retaking ? 'batch ' . (int) $change['current_batch'] . '\'s state before it is taken again (its secret answers came later than it counts), then the page '
+            . 'that holds them launches it; if none does by ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?') . ', the change ends'
+            : 'waits for the secret answers until ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?') . ' (the plugin never keeps them), then the change ends',
         'timer' => 'pause between batches until ' . (Clock::local($change['resume_at'], 'Y-m-d H:i T') ?? '?'),
         'blast' => 'batch ' . (int) $change['current_batch'] . ' waits for an approver to accept its new blast radius (it grew since the approval)',
         'blast_unknown' => 'batch ' . (int) $change['current_batch'] . ' waits: its blast radius cannot be computed now (checked again every minute: the batch starts '
-            . 'once it can be); Continue computes it first, and goes without one only while it still cannot'];
+            . 'once it can be); Continue computes it first, and goes without one only while it still cannot',
+        'verification' => 'batch ' . (int) $change['current_batch'] . ' made unexpected changes: batch ' . ((int) $change['current_batch'] + 1) . ' waits for an admin to accept them',
+        'verify_unknown' => 'batch ' . (int) $change['current_batch'] . ' cannot be verified' . (($recheck = \Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::recheckOf(
+            (array) ($batches[(int) $change['current_batch']]['verify'] ?? []))) !== null ? " (checked again $recheck: the change goes on by itself once it is verified)" : '')
+            . ': batch ' . ((int) $change['current_batch'] + 1) . ' waits ' . ($recheck !== null ? 'for that, or ' : '') . 'for an admin to accept going on without its verification'];
+    // phase 4: the verification of the batches
+    // a change applied without verification (Verify changes off, or no topology plugin then) has its outcome from its Apply on;
+    // one not applied yet says when a change applied now would not be verified ($verifyWhy)
+    $outcome = $change['verification'] ?? null;
+    $verifyWhy = $change['apply_started_at'] === null && ! $final ? ($verifyWhy ?? null) : null;
+    // applied before the upgrade to phase 4: its first batch ran before it, not verified, and it goes on as in phase 3
+    $beforeUpgrade = \Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::appliedBefore($change, $batches);
+    $verifyOn = $settings->verify || $verification || $outcome !== null || $beforeUpgrade;
+    $verifyCurrent = $verification[(int) $change['current_batch']] ?? null;
+    $verifyWait = in_array($change['waiting'], \Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::VERIFY_WAITS, true) && ! $final ? $verifyCurrent : null;
+    $resultCss = ['verified' => 'success', 'unexpected' => 'danger', 'unknown' => 'warning'];
+    $resultLabels = ['verified' => 'verified', 'unexpected' => 'unexpected changes', 'unknown' => 'cannot be verified'];
     // the blast radius of the batch the change waits for (it grew, or cannot be computed), as computed before it
     $waitBatch = in_array($change['waiting'], ['blast', 'blast_unknown'], true) && ! $final ? ($batches[(int) $change['current_batch']] ?? null) : null;
     $waitBlast = is_array($waitBatch['blast'] ?? null) ? $waitBatch['blast'] : null;
@@ -62,9 +82,14 @@
         $waits = ($currentBatch['status'] ?? null) === 'pending' && str_starts_with((string) ($currentBatch['note'] ?? ''), 'waits: ');
         // a batch blocked by its blast radius (it grew, or cannot be computed) waits: it is not about to start
         $blocked = $status === ChangeStatus::PAUSED && in_array($change['waiting'], ['blast', 'blast_unknown'], true) && ($currentBatch['status'] ?? null) === 'pending';
+        // phase 4: nor is a batch whose state before it waits for fresh data
+        $beforeNow = (array) (((array) ($currentBatch['verify'] ?? []))['before'] ?? []);
+        $dataWait = in_array($beforeNow['status'] ?? null, ['refresh', 'waiting', 'retake'], true) && ($currentBatch['status'] ?? null) === 'pending' && ! $final
+            ? 'waits for fresh data for the state before it' . (($beforeNow['status'] ?? null) === 'waiting' && (int) ($beforeNow['deadline'] ?? 0) > time()
+                ? ', at most until ' . Clock::show((int) $beforeNow['deadline'], 'H:i T') : '') : null;
         $logNote = $final || $currentBatch === null ? 'no batch was launched' : 'batch ' . (int) $change['current_batch'] . ($waits
             ? ' ' . Clock::localize((string) $currentBatch['note']) : ': ' . ($blocked ? (string) ChangeStatus::waitingText($change['waiting']) : match ($currentBatch['status']) { // "batch 2 waits: lab-sw3 is busy in run #92 ..."
-            'pending' => 'about to start',
+            'pending' => $dataWait ?? 'about to start',
             'preparing' => 'preparing' . ($preparing !== '' ? " ($preparing)" : ''),
             'prepared' => 'waits for the secret answers',
             'launching' => 'being launched',
@@ -116,6 +141,26 @@
                 @endif
                 @if($dryRunExpires) · counts until {{ Clock::show($dryRunExpires, 'Y-m-d H:i T') }}@endif</p>
         </div>
+        @if($verifyOn)
+            @php
+                // a change that ran as in phase 3 (Verify changes off at its Apply, applied before the upgrade): neutral, not the red of a failure
+                $verifyCss = $outcome !== null ? (\Agoodley\LibrenmsAnsible\Changes\VerificationText::neutral($outcome, $change['verification_note'] ?? null) ? 'info'
+                        : ['verified' => 'ok', 'accepted' => 'warning', 'not_verified' => 'critical'][$outcome] ?? 'info')
+                    : ($beforeUpgrade ? 'info' : (($verifyCurrent['result'] ?? null) === 'unexpected' ? 'critical' : (($verifyCurrent['result'] ?? null) === 'unknown' || $verifyWhy !== null ? 'warning' : 'info')));
+                $verifyNow = $outcome !== null ? ucfirst((string) \Agoodley\LibrenmsAnsible\Changes\VerificationText::label($outcome))
+                    : ($final || $beforeUpgrade ? 'Not verified' : ($change['apply_started_at'] === null ? ($verifyWhy !== null ? 'Not if applied now' : 'Each batch') : 'Batch ' . (int) $change['current_batch'] . ': '
+                        . (isset($verifyCurrent['result']) ? $resultLabels[$verifyCurrent['result']] ?? $verifyCurrent['result'] : (in_array($verifyCurrent['after']['status'] ?? null, ['waiting', 'settling'], true)
+                            ? 'waits for fresh data' : (in_array($verifyCurrent['before']['status'] ?? null, ['refresh', 'waiting', 'take'], true) ? 'state before it' : 'to do')))));
+            @endphp
+            <div class="ans-card ans-{{ $verifyCss }}" id="ans-verify-card">
+                <h4>Verification</h4>
+                <div class="ans-card-value" style="font-size: 17px" id="ans-verify-state">{{ $verifyNow }}</div>
+                <p id="ans-verify-note">@if($outcome !== null && ($change['verification_note'] ?? null)){{ \Agoodley\LibrenmsAnsible\Changes\VerificationText::note($change['verification_note'],
+                        ! $verification && $change['apply_started_at'] !== null) }}@elseif($beforeUpgrade){{ ucfirst((string) \Agoodley\LibrenmsAnsible\Changes\VerificationText::note(
+                        \Agoodley\LibrenmsAnsible\Changes\VerificationOutcome::BEFORE_UPGRADE)) }}@elseif($verifyWhy !== null){{ ucfirst($verifyWhy) }}: a change applied now runs without a verification
+                    @elseif(! $settings->verify && ! $final)switched off in the settings @else the network around each batch, before and after it (topology plugin)@endif</p>
+            </div>
+        @endif
     </div>
 
     <div id="ans-change-alerts">
@@ -232,6 +277,27 @@
                     until an admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#ans-permission">settings page</a>, or stops the change.</div>
             @endif
         @endif
+        @if($verifyWait !== null)
+            @php $verifyEval = (array) ($verifyWait['evaluation'] ?? []); @endphp
+            <div class="ans-warning-loud" id="{{ $change['waiting'] === 'verification' ? 'ans-verify-unexpected' : 'ans-verify-unknown' }}"><i class="fa fa-{{ $change['waiting'] === 'verification' ? 'exclamation-triangle' : 'question-circle' }}"></i>
+                @if($change['waiting'] === 'verification')
+                    Batch {{ (int) $change['current_batch'] }} made {{ \Agoodley\LibrenmsAnsible\Support\Format::count((int) ($verifyWait['counts']['unexpected'] ?? 0), 'unexpected change') }}:
+                    <ul style="margin: 4px 0 0; font-weight: normal" id="ans-verify-unexpected-list">@foreach(array_slice((array) ($verifyEval['unexpected'] ?? []), 0, 20) as $entry)<li data-type="{{ $entry['type'] }}">{{ $entry['text'] }}</li>@endforeach</ul>
+                    <div style="font-weight: normal; margin-top: 4px">Batch {{ (int) $change['current_batch'] + 1 }} does not start before {{ ApprovalRules::accepter($settings->approval) }} accepts them
+                        (recorded in the timeline and the eventlog); or stop the change. Compared {{ Clock::show((int) ($verifyWait['after']['taken_at'] ?? 0), 'Y-m-d H:i T') }} on fresh data,
+                        as {{ ($batches[(int) $change['current_batch']]['username'] ?? '') ?: 'the admin who started the batch' }} sees the network.</div>
+                @else
+                    Batch {{ (int) $change['current_batch'] }} cannot be verified: {{ $verifyWait['error'] ?? 'unknown' }}.
+                    <div style="font-weight: normal; margin-top: 4px">@if(($verifyWait['after']['status'] ?? null) === 'incomplete')The plugin takes a new state after it every 5 minutes
+                        and goes on by itself once the topology plugin reads all of it. @elseif(($verifyWait['before']['status'] ?? null) === 'taken')The plugin checks again every minute and goes on by
+                        itself once the batch can be verified. @endif Or {{ ApprovalRules::accepter($settings->approval) }} accepts going on without its verification (recorded); or stop the change.</div>
+                @endif
+            </div>
+            @if($noAccepter)
+                <div class="alert alert-warning" id="ans-no-accepter"><i class="fa fa-user-times"></i> {{ $noAccepter }} The change waits, its devices reserved for it,
+                    until an admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#ans-permission">settings page</a>, or stops the change.</div>
+            @endif
+        @endif
         @if($laterBusy)
             <div class="alert alert-warning" id="ans-change-later-busy"><i class="fa fa-clock-o"></i> <strong>Busy devices of later batches:</strong> {{ $laterBusy }}.
                 A batch waits for its devices when it starts, at most {{ intdiv(\Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::waitSeconds($settings), 60) }} minutes;
@@ -272,11 +338,15 @@
                     @if($actions['dry_run'])
                         <button type="button" class="btn btn-sm btn-primary" data-action="dry-run" id="ans-action-dry-run"><i class="fa fa-search"></i> {{ $change['dry_runs'] ? 'Run the dry run again' : 'Run the dry run' }}</button>
                     @endif
-                    @if($actions['approve'] || $actions['reject'] || $actions['accept'])
+                    @if($actions['approve'] || $actions['reject'] || $actions['accept'] || $actions['accept_verification'])
                         <input type="text" class="form-control input-sm" id="ans-approval-comment" maxlength="500" placeholder="comment (optional)" style="width: 240px">
                     @endif
                     @if($actions['accept'])
                         <button type="button" class="btn btn-sm btn-warning" data-action="accept" id="ans-action-accept"><i class="fa fa-check"></i> Accept the new blast radius of batch {{ (int) $change['current_batch'] }}</button>
+                    @endif
+                    @if($actions['accept_verification'])
+                        <button type="button" class="btn btn-sm btn-warning" data-action="accept-verification" id="ans-action-accept-verification"><i class="fa fa-check"></i>
+                            {{ $change['waiting'] === 'verification' ? 'Accept what batch ' . (int) $change['current_batch'] . ' changed' : 'Go on without the verification of batch ' . (int) $change['current_batch'] }}</button>
                     @endif
                     @if($actions['approve'])
                         <button type="button" class="btn btn-sm btn-success" data-action="approve" id="ans-action-approve"><i class="fa fa-check"></i> Approve</button>
@@ -302,7 +372,10 @@
                     @endif
                     <span class="ans-muted" id="ans-action-state"></span>
                 </div>
-                @if($actions['approve'] || $actions['reject'] || $actions['accept'])
+                @if(in_array($change['waiting'], \Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::VERIFY_WAITS, true) && ! $actions['accept_verification'] && ! $final)
+                    <p class="ans-help" id="ans-accept-verification-waits" style="margin-top: 6px">{{ $canAccept && $verifyRefusal ? $verifyRefusal : ucfirst(ApprovalRules::accepter($settings->approval)) . ' accepts it.' }}</p>
+                @endif
+                @if($actions['approve'] || $actions['reject'] || $actions['accept'] || $actions['accept_verification'])
                     <p class="ans-help" id="ans-comment-note" style="margin-top: 6px">The comment goes into the timeline and, as written, into the eventlog of each device of
                         the change: whoever may see one of those devices in LibreNMS can read it.</p>
                 @endif
@@ -362,10 +435,10 @@
                         <div class="ans-help" id="ans-blast-unknown-note"><i class="fa fa-question-circle"></i> Blast radius unknown: these batches were planned by the plugin's settings, not by the topology plugin{{ $unknownWhy !== null ? '. When the change was made: ' . $unknownWhy : '' }}.</div>
                     @endif
                 </div>
-                @if($topology && ! $topology->allByHand() && $topology->coreWarnings())
-                    {{-- what the admin should check of the core, in the warning's colour (as the preview says it) --}}
+                @if($topology && ! $topology->allByHand() && $topology->coreWarnings(($change['fix']['kind'] ?? null) === 'stp_root_priority'))
+                    {{-- what the admin should check of the core, in the warning's colour (as the preview says it); a root priority fix starts with the core on purpose --}}
                     <div class="panel-body" id="ans-core-warnings" style="padding-bottom: 0">
-                        @foreach($topology->coreWarnings() as $warning)
+                        @foreach($topology->coreWarnings(($change['fix']['kind'] ?? null) === 'stp_root_priority') as $warning)
                             <p class="ans-help text-warning ans-core-warning">{{ $warning }}</p>
                         @endforeach
                     </div>
@@ -436,6 +509,9 @@
                         {{ \Agoodley\LibrenmsAnsible\Changes\RolloutPlan::reasonsText($topology->leftOut, $topology->names, 20) }}.</div>
                 @endif
             </div>
+            @if($verification)
+                @include('ansible::partials.verification', ['verification' => $verification, 'resultCss' => $resultCss, 'resultLabels' => $resultLabels, 'final' => $final])
+            @endif
         </div>
         <div class="col-md-5">
             <div class="panel panel-default">
@@ -609,6 +685,7 @@
                 'dry-run' => route('ansible.changes.dry-run', $change['id']), 'approve' => route('ansible.changes.approve', $change['id']),
                 'reject' => route('ansible.changes.reject', $change['id']), 'apply' => route('ansible.changes.apply', $change['id']),
                 'accept' => route('ansible.changes.accept-blast', $change['id']),
+                'accept-verification' => route('ansible.changes.accept-verification', $change['id']),
                 'continue' => route('ansible.changes.continue', $change['id']), 'stop' => route('ansible.changes.stop', $change['id']),
                 'cancel' => route('ansible.changes.cancel', $change['id']),
             ],
@@ -625,6 +702,8 @@
             'waiting' => $change['waiting'],
             // the check of the blast radius this page shows, which Accept and Continue name (refused when it changed since)
             'blast' => $blastCheck,
+            // the verification this page shows, which an acceptance names (refused when it changed since)
+            'verify' => $verifyCheck,
             'hasSecrets' => (bool) $secretVars,
             // whom a Continue starts the batch as when it is not the admin of this page (an approver without the run permission)
             'continueAs' => $continueAs,
