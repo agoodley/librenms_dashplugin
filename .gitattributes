@@ -1,2 +1,4 @@
 # the topology plugin's package archive (composer, GitHub's "Download ZIP") does not carry the Ansible plugin
 /ansible export-ignore
+# nor the installer for Rocky Linux (install/rocky/install.sh), which runs from a clone of the repository
+/install export-ignore

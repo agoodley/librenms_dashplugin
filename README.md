@@ -798,7 +798,19 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
 
 ## Installation
 
-The plugin is a standard Composer package (LibreNMS "plugin package"). Run everything as the `librenms` user.
+**On a Rocky Linux 9 or 10 server, an installer sets up everything for a real-world test in one run:** LibreNMS (when
+the server has none), this plugin and the [Ansible plugin](ansible/README.md), Ansible with the network collections,
+Semaphore UI with its project for LibreNMS, and Oxidized; with an offline mode for servers that cannot reach GitHub. It
+never changes a LibreNMS it did not install. See [install/rocky/README.md](install/rocky/README.md):
+
+```bash
+git clone https://github.com/agoodley/librenms_dashplugin && cd librenms_dashplugin
+install/rocky/install.sh --check      # what it would do
+install/rocky/install.sh
+```
+
+By hand, on any LibreNMS: the plugin is a standard Composer package (LibreNMS "plugin package"). Run everything as the
+`librenms` user.
 
 ```bash
 sudo su - librenms

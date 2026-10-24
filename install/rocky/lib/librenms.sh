@@ -8,6 +8,7 @@
 LNMS_DIR=/opt/librenms
 LNMS_MODE=''      # new: no /opt/librenms; ours: set up by the installer (maybe not finished); existing: installed otherwise
 LNMS_VERSION=''
+LNMS_INSTALLED_NOW=0
 
 librenms_version_of() {
     local f=$1/LibreNMS/Util/Version.php
@@ -111,6 +112,7 @@ part_librenms() {
     else
         part_header librenms "LibreNMS ${LNMS_VERSION}: set up by an earlier run of the installer, checking it"
     fi
+    [[ $LNMS_MODE == new ]] && LNMS_INSTALLED_NOW=1
     lnms_repos
     lnms_packages
     lnms_user
@@ -138,7 +140,11 @@ part_librenms() {
         LNMS_MODE=ours
         LNMS_VERSION=$(librenms_version_of "$LNMS_DIR")
     fi
-    summary_add "LibreNMS ${LNMS_VERSION:-(from $LIBRENMS_SOURCE)}: http://$SERVER_NAME/ (admin: $ADMIN_USER)$( [[ $LNMS_MODE == new ]] && echo ', installed' )"
+    if [[ $CHECK == 1 && $LNMS_MODE == new ]]; then
+        summary_add "LibreNMS (from $LIBRENMS_SOURCE): would be installed, on http://$SERVER_NAME/"
+    else
+        summary_add "LibreNMS ${LNMS_VERSION}: http://$SERVER_NAME/ (admin: $ADMIN_USER)$( [[ $LNMS_INSTALLED_NOW == 1 ]] && echo ', installed by this run' )"
+    fi
 }
 
 # A LibreNMS installed otherwise: its version (the plugins need 26.10 or a later 26.x) and what the plugins need of it.

@@ -151,11 +151,12 @@ run_secret() {
 # act DESCRIPTION CMD...: a change. With --check it is only said; otherwise said, logged and run.
 act() {
     local desc=$1; shift
-    CHANGES+=("$CURRENT_PART: $desc")
     if [[ $CHECK == 1 ]]; then
-        info "would $desc"
+        # an earlier part's change that has not happened yet (--check) is said once
+        if [[ " ${CHANGES[*]/#/|} " != *"|"*": $desc"* ]]; then info "would $desc"; CHANGES+=("$CURRENT_PART: $desc"); fi
         return 0
     fi
+    CHANGES+=("$CURRENT_PART: $desc")
     info "$desc"
     run "$@"
 }
@@ -163,8 +164,11 @@ act() {
 # would DESCRIPTION: with --check, say a change it would make (for changes made by several commands below it);
 # returns 0 with --check (so the caller skips the change), 1 otherwise. Without --check it says what it does.
 would() {
+    if [[ $CHECK == 1 ]]; then
+        if [[ " ${CHANGES[*]/#/|} " != *"|"*": $1"* ]]; then info "would $1"; CHANGES+=("$CURRENT_PART: $1"); fi
+        return 0
+    fi
     CHANGES+=("$CURRENT_PART: $1")
-    if [[ $CHECK == 1 ]]; then info "would $1"; return 0; fi
     info "$1"
     return 1
 }
