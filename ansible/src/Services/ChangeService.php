@@ -98,7 +98,8 @@ final class ChangeService
         // of the others cannot be one
         $selected = $this->inventory->targetSelection($this->runs, $this->changes)->select($devices);
         $built = FixAnswers::lines($kind, $chosen['fixes'], $selected['targets'], $names, array_map(fn (array $refusal) => (string) $refusal['text'], $selected['refused']));
-        $errors = [...$draft['errors'], ...$built['errors']];
+        // each a sentence ("lab-sw2 Fa0/1: it cannot be a target: ...")
+        $errors = [...$draft['errors'], ...array_map(fn (string $error) => rtrim($error, '.') . '.', $built['errors'])];
         if (count($devices) > $this->settings->maxTargets()) {
             $errors[] = 'The fixes chosen change ' . count($devices) . ' devices: a change has at most ' . $this->settings->maxTargets()
                 . ' targets (Max targets per change). Choose fewer fixes on the Fixes page.';
@@ -135,8 +136,14 @@ final class ChangeService
         }
         $launcher = new RunLauncher($this->plugin, $this->runs, $this->inventory, $this->settings, new Eventlog(), $this->changes);
         $plan = $launcher->plan($templateId, $deviceIds, $answers, new RunSpec(0, RunSpec::DRY_RUN, 0, ''));
+        // a change made from fixes the plugin refuses (the fix changed, a device of it that cannot be a target, no template...): its refusal
+        // is what the preview says, once; what follows from it (no target left, the read-only answer empty, the batches) is not said again
+        $refused = $draft !== null && $draft['errors'];
         if ($draft !== null) {
-            array_push($plan->errors, ...$draft['errors']);
+            if ($refused) {
+                $plan->errors = $draft['errors'];
+                unset($plan->variableErrors[$draft['variable']]);
+            }
             // the template must have the variable the contract names, and the lines pass the contract's checks for these targets
             $problem = $plan->template !== null ? FixAnswers::templateProblem($plan->template, $draft['kind']) : null;
             if ($problem !== null) {
@@ -151,7 +158,7 @@ final class ChangeService
         }
         $batches = null;
         $planner = ['used' => false, 'why' => null, 'api' => null, 'unplanned' => $unplanned, 'left_out' => [], 'notes' => []];
-        if ($plan->targets) {
+        if ($plan->targets && ! $refused) {
             $ordered = array_values(array_filter(array_map('intval', $deviceIds), fn ($id) => isset($plan->targets[$id])));
             $chosen = array_values(array_intersect(array_map('intval', $canary), $ordered));
             $planner = ($draft !== null && $draft['kind'] === FixAnswers::STP_ROOT_PRIORITY ? $this->planRootFix($draft, $ordered, $userId)
@@ -171,15 +178,20 @@ final class ChangeService
             }
             unset($planner['plan'], $planner['error']);
         }
-        if ($draft !== null) {
+        if ($draft !== null && ! $refused) {
             // the fix's lines are those of the change's targets only, once the planner left devices out: a line of another device in
             // the approved answer would reach a playbook (a delegate_to) outside the change, its windows and its blast radius
             $kept = FixChange::forTargets($draft['kind'], $draft['fixes'], array_keys($plan->targets), $draft['names']);
             if ($kept['dropped']) {
-                $built = FixAnswers::lines($draft['kind'], $kept['fixes'], array_map(fn (array $target) => (string) $target['name'], $plan->targets));
+                $built = FixAnswers::lines($draft['kind'], $kept['fixes'], array_map(fn (array $target) => (string) $target['name'], $plan->targets), $draft['names']);
                 $draft = ['fixes' => $kept['fixes'], 'lines' => $built['lines'], 'devices' => array_values(array_intersect($draft['devices'], array_keys($plan->targets)))] + $draft;
                 $plan->values[$draft['variable']] = implode("\n", $built['lines']);
-                array_push($plan->errors, ...array_map(fn (string $error) => 'The fix\'s ' . $error . '.', $built['errors']));
+                // each a sentence of its own (they are: "lab-sw2 Fa0/1: its description ...", "More than 2000 lines: ..."); none left: said so once
+                array_push($plan->errors, ...($kept['fixes'] ? array_map(fn (string $error) => rtrim($error, '.') . '.', $built['errors'])
+                    : ['The topology plugin\'s planner leaves out the devices of every chosen fix: the change would change nothing.']));
+                if (! $kept['fixes']) {
+                    unset($plan->variableErrors[$draft['variable']]);
+                }
                 $plan->warnings[] = 'Left out, as the topology plugin\'s planner leaves their devices out (the change\'s lines are those of its targets only): '
                     . implode('; ', array_slice($kept['dropped'], 0, 20)) . (count($kept['dropped']) > 20 ? '; ...' : '') . '.';
             }
@@ -190,10 +202,11 @@ final class ChangeService
                     $plan->errors[] = 'The fix\'s ' . $error . '.';
                 }
             }
-            if ($reference === '') {
-                $reference = FixAnswers::reference($draft['kind'], count($draft['devices']));
-            }
-        } elseif ($plan->template !== null && $plan->targets) {
+        }
+        if ($draft !== null && $reference === '') {
+            $reference = FixAnswers::reference($draft['kind'], count($draft['devices']));
+        }
+        if ($draft === null && $plan->template !== null && $plan->targets) {
             // a template the settings map to a kind of fix takes only lines that pass the contract's checks for the change's targets, also
             // in a change not made from fixes
             $kind = FixAnswers::mappedKind(array_combine(FixAnswers::KINDS, array_map(fn (string $kind) => $this->settings->fixTemplate($kind), FixAnswers::KINDS)),
@@ -454,6 +467,10 @@ final class ChangeService
         }
         $preview = $this->preview($templateId, $deviceIds, $answers, $canary, $reference, $unplanned, (int) $user->user_id, $fix);
         $plan = $preview['plan'];
+        if ((($preview['fix'] ?? null)['errors'] ?? []) !== []) {
+            // fixes the plugin refuses: their refusal, once (previewing again repeats it; the fix changed: only reloading the page shows it as it is)
+            return ['change_id' => null, 'errors' => $plan->errors, 'preview' => self::forPage($preview), 'existing' => false];
+        }
         $errors = $plan->errors;
         if ($plan->variableErrors) {
             $errors[] = 'Fix the answers to the survey variables.';
