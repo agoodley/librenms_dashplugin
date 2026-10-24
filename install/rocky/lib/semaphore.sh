@@ -286,6 +286,7 @@ sem_admin() {
     local out
     run_secret out "$(json_object url "$SEM_API" token "$SEM_TOKEN" username "$ADMIN_USER" current_password "$throwaway" password "$password")" \
         python3 -I "$WORK/lib/semaphore_api.py" password
+    CHANGES+=("semaphore: the password of the admin $ADMIN_USER")
     cred_unset SEMAPHORE_ADMIN_THROWAWAY
 }
 

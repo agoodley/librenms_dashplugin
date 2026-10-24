@@ -35,8 +35,8 @@ INSTALLER_DEVICE_PASSWORD='the devices password' install/rocky/install.sh --devi
 It asks once before it starts (`--yes` for unattended runs), says what it does part by part and ends with a summary:
 where each part answers, the passwords and tokens it generated (in `/root/librenms-installer-credentials`, root only,
 never on the screen or in the log) and what to do next. Everything it runs is logged in `/var/log/librenms-installer/`
-(`latest.log` is the last run). A first run takes 15 to 30 minutes, most of it dnf, Composer and the compilation of
-Oxidized's gems.
+(`latest.log` is the last run). A first run takes 5 to 30 minutes (5 in offline mode on a fast server), most of it dnf,
+Composer and the compilation of Oxidized's gems.
 
 ## What it installs
 
@@ -107,7 +107,7 @@ contacts GitHub:
 |---|---|---|
 | `librenms.tar.gz` (or `librenms/`) | LibreNMS with its PHP dependencies | `git clone https://github.com/librenms/librenms.git && cd librenms && ./scripts/composer_wrapper.php install --no-dev && tar -czf ../librenms.tar.gz .` (needs PHP 8.2+ with the extensions LibreNMS asks for). The installer leaves out what belongs to the machine the copy was made on: `.env` (its `APP_KEY`), `config.php`, `composer.plugins.json`, the caches, sessions, logs and graphs |
 | `librenms_dashplugin/` | this repository | `git clone https://github.com/agoodley/librenms_dashplugin` |
-| `semaphore_2.19.17_linux_amd64.rpm` (or `semaphore_2.19.17_linux_amd64.tar.gz`, or the binary as `semaphore`) | Semaphore UI | from <https://github.com/semaphoreui/semaphore/releases/tag/v2.19.17> |
+| `semaphore_2.19.17_linux_amd64.rpm` (or `semaphore_2.19.17_linux_amd64.tar.gz`, or the binary as `semaphore-2.19.17` or `semaphore`) | Semaphore UI | from <https://github.com/semaphoreui/semaphore/releases/tag/v2.19.17> |
 | `composer.phar` | Composer, only when the LibreNMS copy has none | <https://getcomposer.org/download/latest-stable/composer.phar> |
 | `wheels/` | Python wheels: Ansible, and LibreNMS' Python modules dnf has not | on a Rocky Linux of the same version: `python3.12 -m pip download -d wheels -r install/rocky/files/ansible-requirements.txt` and `python3 -m pip download -d wheels -r librenms/requirements.txt` |
 | `gems/` | Oxidized's gems with all they depend on | on a Rocky Linux of the same version, with Ruby 3.3 and Oxidized's build packages: `gem install --install-dir /tmp/gems --no-document oxidized:0.37.0 oxidized-web:0.18.1 && cp /tmp/gems/cache/*.gem gems/` |
@@ -141,7 +141,8 @@ each. In Semaphore UI: the admin and the Task Runner user `librenms`. In MariaDB
 (MariaDB), 3000 (Semaphore UI) and 8888 (Oxidized) on 127.0.0.1 only, unless `--semaphore-listen` or
 `--oxidized-listen` say otherwise.
 
-**Files:** `/etc/php.d/90-librenms.ini` (PHP's time zone), `/etc/my.cnf.d/90-librenms.cnf` (MariaDB's settings),
+**Files:** `/opt/librenms/.env` made readable by `librenms` only (mode 640: it holds the database password and
+`APP_KEY`), `/etc/php.d/90-librenms.ini` (PHP's time zone), `/etc/my.cnf.d/90-librenms.cnf` (MariaDB's settings),
 `/etc/php-fpm.d/librenms.conf`, `/etc/nginx/conf.d/librenms.conf`, `/etc/nginx/nginx.conf` without its default server
 (as LibreNMS' documentation says; the original is kept as `/etc/nginx/nginx.conf.librenms-installer`),
 `/etc/snmp/snmpd.conf` (while it is the package's), `/etc/cron.d/librenms`, `/etc/logrotate.d/librenms`,

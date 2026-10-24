@@ -390,11 +390,13 @@ lnms_env() {
     if [[ -n $database && -n $password ]]; then
         [[ $database == librenms ]] || warn "$LNMS_DIR/.env names the database $database: left as it is"
         detail "$LNMS_DIR/.env has the database settings"
-        return 0
+    elif ! would "write the database settings into $LNMS_DIR/.env"; then
+        # LibreNMS' EnvHelper fills the settings that are empty, as the web installer does
+        helper env-set "$(json_object set "@json:$(json_object DB_HOST localhost DB_DATABASE librenms DB_USERNAME librenms DB_PASSWORD "$LNMS_DB_PASSWORD")" unset '@json:["INSTALL"]')"
     fi
-    would "write the database settings into $LNMS_DIR/.env" && return 0
-    # LibreNMS' EnvHelper fills the settings that are empty, as the web installer does
-    helper env-set "$(json_object set "@json:$(json_object DB_HOST localhost DB_DATABASE librenms DB_USERNAME librenms DB_PASSWORD "$LNMS_DB_PASSWORD")" unset '@json:["INSTALL"]')"
+    # .env holds the database password and APP_KEY: LibreNMS (its PHP-FPM pool, cron jobs, scheduler) reads it as librenms
+    local mode; mode=$(stat -c %a "$LNMS_DIR/.env")
+    if [[ $mode != 640 && $mode != 600 ]]; then act "make $LNMS_DIR/.env readable by librenms only (mode $mode -> 640)" chmod 640 "$LNMS_DIR/.env"; fi
 }
 
 lnms_php_fpm() {
