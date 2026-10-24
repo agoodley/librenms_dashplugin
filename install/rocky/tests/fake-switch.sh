@@ -10,13 +10,13 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VENV=/opt/fakesw
 SITE=$VENV/lib/python3.12/site-packages
 
-if [[ ! -f $VENV/.patched-security ]]; then
+if [[ ! -f $VENV/.patched-security-v2 ]]; then
     command -v patch >/dev/null || dnf -y -q install patch
     rm -rf "$VENV"
     python3.12 -m venv "$VENV"
     "$VENV/bin/pip" install --disable-pip-version-check --quiet --no-deps -r "$HERE/fake-switches-requirements.txt"
     patch --quiet -p1 -d "$SITE" <"$HERE/fake-switches.patch"
-    touch "$VENV/.patched-security"
+    touch "$VENV/.patched-security-v2"
 fi
 listening() { local out; out=$(ss -Htln "sport = :22"); [[ $out == *"$IP:22 "* ]]; }
 if listening; then
