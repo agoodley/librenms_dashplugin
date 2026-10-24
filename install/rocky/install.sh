@@ -75,11 +75,11 @@ The devices' login (Semaphore UI's key store and Oxidized; without it both are s
   --device-enable-password PW   (default: the device password)              (INSTALLER_DEVICE_ENABLE_PASSWORD)
 
 Sources (local copies of every download: offline mode)
-  --plugin-source URL|DIR  this repository: a Git URL or a local directory
-                           (default: https://github.com/agoodley/librenms_dashplugin; GITHUB_TOKEN for a private
-                           GitHub repository)                                       (INSTALLER_PLUGIN_SOURCE)
-  --plugin-branch BRANCH   (default: main; for a local Git directory, its checked-out branch)
-                                                                                     (INSTALLER_PLUGIN_BRANCH)
+  --plugin-source URL|DIR  this repository: a Git URL or a local directory (default: the run before's, else
+                           https://github.com/agoodley/librenms_dashplugin; GITHUB_TOKEN for a private GitHub
+                           repository)                                              (INSTALLER_PLUGIN_SOURCE)
+  --plugin-branch BRANCH   (default: the run before's, else main; for a local Git directory, its checked-out
+                           branch)                                                  (INSTALLER_PLUGIN_BRANCH)
   --librenms-source SRC    a Git URL (default: https://github.com/librenms/librenms.git), or a directory or
                            .tar.gz of a LibreNMS with its vendor/ installed          (INSTALLER_LIBRENMS_SOURCE)
   --semaphore-source FILE  Semaphore UI 2.19.17 as its .rpm, .tar.gz or binary (default: its GitHub release)
@@ -273,8 +273,17 @@ check_options() {
     if [[ -n $PLUGIN_SOURCE && $PLUGIN_SOURCE != *://* && $PLUGIN_SOURCE != *@*:* && ! -d $PLUGIN_SOURCE ]]; then
         bad_option "--plugin-source: $PLUGIN_SOURCE is neither a Git URL nor a directory"
     fi
-    if [[ -n $OFFLINE_DIR && $PLUGIN_SOURCE == *github.com* ]]; then bad_option "--offline: give the plugins as a local directory (--plugin-source DIR, or librenms_dashplugin/ in $OFFLINE_DIR)"; fi
+    # a later run takes the plugins from where (and the branch) the installer took them before, unless told otherwise
+    if [[ -z $PLUGIN_SOURCE ]] && PLUGIN_SOURCE=$(state_get plugin_source 2>/dev/null); then
+        if [[ -z $PLUGIN_BRANCH ]]; then PLUGIN_BRANCH=$(state_get plugin_branch 2>/dev/null || true); fi
+        if [[ ${WANT[plugins]} == 1 && $PLUGIN_SOURCE != *://* && $PLUGIN_SOURCE != *@*:* && ! -d $PLUGIN_SOURCE ]]; then
+            bad_option "the plugins came from $PLUGIN_SOURCE, which is gone: give their source with --plugin-source (or --skip plugins)"
+        fi
+    fi
     [[ -z $PLUGIN_SOURCE ]] && PLUGIN_SOURCE=https://github.com/agoodley/librenms_dashplugin
+    if [[ -n $OFFLINE_DIR && ${WANT[plugins]} == 1 && $PLUGIN_SOURCE == *github.com* ]]; then
+        bad_option "--offline: give the plugins as a local directory (--plugin-source DIR, or librenms_dashplugin/ in $OFFLINE_DIR)"
+    fi
     [[ -z $LIBRENMS_SOURCE ]] && LIBRENMS_SOURCE=https://github.com/librenms/librenms.git
     return 0
 }

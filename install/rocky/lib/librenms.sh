@@ -179,6 +179,9 @@ lnms_repos() {
         remi_https_mirrors
     fi
     local stream; stream=$(module_stream php)
+    if [[ $PHP_STREAM != remi-* && $OS_MAJOR == 10 && $PHP_STREAM != 8.3 ]]; then
+        die "Rocky Linux 10's own PHP is 8.3, not $PHP_STREAM" "give --php-stream 8.3, or one of Remi's (remi-8.4, remi-8.5)"
+    fi
     if [[ $PHP_STREAM == remi-* || $OS_MAJOR == 9 ]]; then
         if [[ $stream != "$PHP_STREAM" ]]; then
             if [[ -n $stream ]] && rpm -q php-common >/dev/null 2>&1; then

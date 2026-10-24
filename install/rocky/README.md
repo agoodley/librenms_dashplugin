@@ -81,8 +81,8 @@ Every option has an environment variable for unattended runs; passwords are bett
 | `--device-user USER` | `INSTALLER_DEVICE_USER` | none | the devices' SSH login, for Semaphore UI's key store and Oxidized; without it both are set up empty, to fill in later |
 | `--device-password PW` | `INSTALLER_DEVICE_PASSWORD` | | |
 | `--device-enable-password PW` | `INSTALLER_DEVICE_ENABLE_PASSWORD` | the device password | for platforms with an enable mode (IOS, IOS-XE, EOS) |
-| `--plugin-source URL\|DIR` | `INSTALLER_PLUGIN_SOURCE` | `https://github.com/agoodley/librenms_dashplugin` | this repository: a Git URL, a local Git checkout, or a plain directory; a private GitHub repository takes `GITHUB_TOKEN` from the environment (given to git as a header, never stored in the clone) |
-| `--plugin-branch BRANCH` | `INSTALLER_PLUGIN_BRANCH` | `main` | for a local Git checkout: its checked-out branch |
+| `--plugin-source URL\|DIR` | `INSTALLER_PLUGIN_SOURCE` | the run before's, else `https://github.com/agoodley/librenms_dashplugin` | this repository: a Git URL, a local Git checkout, or a plain directory; a private GitHub repository takes `GITHUB_TOKEN` from the environment (given to git as a header, never stored in the clone) |
+| `--plugin-branch BRANCH` | `INSTALLER_PLUGIN_BRANCH` | the run before's (with its source), else `main` | for a local Git checkout: its checked-out branch |
 | `--librenms-source SRC` | `INSTALLER_LIBRENMS_SOURCE` | `https://github.com/librenms/librenms.git` | a Git URL, or a directory or `.tar.gz` of a LibreNMS with its `vendor/` installed |
 | `--semaphore-source FILE` | `INSTALLER_SEMAPHORE_SOURCE` | the GitHub release | Semaphore UI 2.19.17 as its `.rpm`, `.tar.gz` or binary |
 | `--composer-source FILE` | `INSTALLER_COMPOSER_SOURCE` | getcomposer.org | `composer.phar`, when LibreNMS has none |
@@ -169,7 +169,8 @@ a playbook in the playbook repository) stays as it is, with a warning; a plugin 
 key store entries keep their secrets unless the devices' login of the options changed; settings of the plugins other
 than the connection, the inventory user and the fix templates are left alone.
 
-A run updates the plugins: it fetches the clone's branch from the plugins' source and, when it moved, adds both
+A run updates the plugins: it fetches the clone's branch from the plugins' source (without `--plugin-source` and
+`--plugin-branch`, the source and branch of the run before) and, when it moved, adds both
 plugins again (Composer takes the new version), migrates their tables, caches LibreNMS' routes again and puts a new
 inventory script or fix playbook into the playbook repository (unless someone changed that file there).
 

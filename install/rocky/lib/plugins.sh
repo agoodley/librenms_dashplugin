@@ -112,6 +112,8 @@ plugins_clone() {
         fi
     fi
     [[ -d $PLUGIN_CLONE/.git ]] && PLUGIN_COMMIT=$(clone_git rev-parse --short HEAD)
+    state_set plugin_source "$PLUGIN_SOURCE"
+    state_set plugin_branch "$PLUGIN_BRANCH_USED"
     return 0
 }
 
@@ -133,6 +135,7 @@ plugins_copy() {
     run mv "$partial" "$PLUGIN_CLONE"
     rm -rf "$PLUGIN_CLONE.old"
     PLUGIN_UPDATED=1
+    state_set plugin_source "$PLUGIN_SOURCE"
 }
 
 # composer_run ARGS...: Composer through LibreNMS' wrapper, as the librenms user.
