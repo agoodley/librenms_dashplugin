@@ -1,0 +1,15 @@
+module http_fping 1.0;
+
+require {
+type node_t;
+type httpd_t;
+class capability net_raw;
+class icmp_socket create;
+class rawip_socket { getopt create setopt write read bind node_bind };
+}
+
+#============= httpd_t ==============
+allow httpd_t node_t:rawip_socket node_bind;
+allow httpd_t self:capability net_raw;
+allow httpd_t self:icmp_socket create;
+allow httpd_t self:rawip_socket { getopt create setopt write read bind };

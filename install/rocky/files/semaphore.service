@@ -1,0 +1,25 @@
+# Semaphore UI for LibreNMS' Ansible plugin (install/rocky/install.sh). Ansible comes from @ANSIBLE_VENV@ (first on
+# PATH); the configuration is /etc/semaphore/config.json.
+[Unit]
+Description=Semaphore UI (the runner of LibreNMS' Ansible plugin)
+Documentation=https://docs.semaphoreui.com
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=semaphore
+Group=semaphore
+WorkingDirectory=/var/lib/semaphore
+Environment=HOME=/var/lib/semaphore
+Environment=PATH=@ANSIBLE_VENV@/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@SEMAPHORE_BIN@ server --config /etc/semaphore/config.json
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

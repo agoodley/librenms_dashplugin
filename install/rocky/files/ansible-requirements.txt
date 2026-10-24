@@ -1,0 +1,10 @@
+# Ansible for the LibreNMS Ansible plugin (install/rocky/install.sh installs it in /opt/ansible): the versions the
+# Semaphore UI 2.19.17 container image ships, which the plugin was developed and tested with. The ansible package
+# brings ansible-core and the collections the plugin's platform mapping names (cisco.ios, cisco.iosxr, cisco.nxos,
+# arista.eos, junipernetworks.junos, vyos.vyos, community.routeros, community.ciscosmb, dellemc.enterprise_sonic,
+# ansible.netcommon, ansible.utils, ...); paramiko is network_cli's SSH client there.
+# For local copies (--pip-wheels DIR): pip download -d DIR -r ansible-requirements.txt (with Python 3.12, on x86_64).
+ansible==13.5.0
+ansible-core==2.20.10
+paramiko==5.1.0
+jmespath==1.1.0
