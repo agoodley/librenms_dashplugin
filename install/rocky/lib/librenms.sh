@@ -135,6 +135,7 @@ part_librenms() {
     lnms_cron_scheduler
     lnms_logrotate
     lnms_migrate
+    lnms_update_channel
     lnms_admin
     lnms_validate
     if [[ $CHECK == 0 ]]; then
@@ -145,7 +146,8 @@ part_librenms() {
     if [[ $CHECK == 1 && $LNMS_MODE == new ]]; then
         summary_add "LibreNMS (from $LIBRENMS_SOURCE): would be installed, on http://$SERVER_NAME/"
     else
-        summary_add "LibreNMS ${LNMS_VERSION}: http://$SERVER_NAME/ (admin: $ADMIN_USER)$( [[ $LNMS_INSTALLED_NOW == 1 ]] && echo ', installed by this run' )"
+        local described; described=$(librenms_describe)
+        summary_add "LibreNMS ${LNMS_VERSION}${described:+ (git: $described)}: http://$SERVER_NAME/ (admin: $ADMIN_USER)$( [[ $LNMS_INSTALLED_NOW == 1 ]] && echo ', installed by this run' )"
     fi
 }
 
@@ -165,7 +167,8 @@ librenms_check_existing() {
         warn "LibreNMS' scheduler does not seem to run (no librenms-scheduler.timer, no schedule:run cron job): the plugins' background jobs need it (see ./validate.php)"
     fi
     if [[ ! -f $LNMS_DIR/.env ]]; then die "$LNMS_DIR has no .env: this LibreNMS is not set up" "finish LibreNMS' installation first"; fi
-    summary_add "LibreNMS $LNMS_VERSION (installed otherwise): left as it is"
+    local described; described=$(librenms_describe)
+    summary_add "LibreNMS $LNMS_VERSION${described:+ (git: $described)} (installed otherwise): left as it is"
 }
 
 # ---------------------------------------------------------------------------------------------------- the steps
@@ -227,13 +230,28 @@ lnms_user() {
 # /opt/.librenms.partial and moved in place when complete, so /opt/librenms never holds half a copy.
 lnms_source() {
     if [[ -d $LNMS_DIR ]]; then detail "$LNMS_DIR is there"; return 0; fi
-    would "get LibreNMS from $LIBRENMS_SOURCE into $LNMS_DIR" && return 0
+    if [[ $CHECK == 1 ]]; then
+        local what=$LIBRENMS_SOURCE
+        if [[ $LIBRENMS_SOURCE == *://* ]]; then what="$(librenms_ref_wanted_check) of $LIBRENMS_SOURCE"; fi
+        would "get LibreNMS ($what) into $LNMS_DIR"
+        return 0
+    fi
     state_set librenms installing
     local partial=/opt/.librenms.partial
     rm -rf "$partial"
     if [[ $LIBRENMS_SOURCE == *://* ]]; then
         [[ -z $OFFLINE_DIR ]] || die "--offline: LibreNMS would come from $LIBRENMS_SOURCE" "give a local copy (--librenms-source DIR|FILE, or librenms.tar.gz in $OFFLINE_DIR)"
         FAIL_HINT="check that this server reaches $LIBRENMS_SOURCE, or give a local copy (--librenms-source)" run git clone "$LIBRENMS_SOURCE" "$partial"
+        # not the default branch (master: what LibreNMS develops on) but a release: the newest of the major version
+        # the plugins support, unless --librenms-ref names something else
+        local ref=$LIBRENMS_REF
+        if [[ -z $ref ]]; then
+            ref=$(git -C "$partial" tag -l "$LIBRENMS_MAX_MAJOR.*" | grep -E "^$LIBRENMS_MAX_MAJOR\.[0-9]+\.[0-9]+\$" | sort -V | tail -n 1 || true)
+            [[ -n $ref ]] || die "$LIBRENMS_SOURCE has no $LIBRENMS_MAX_MAJOR.x release tag" "name the LibreNMS to install with --librenms-ref (a tag such as $LIBRENMS_MIN, or master)"
+        fi
+        FAIL_HINT="--librenms-ref names a tag, branch or commit of $LIBRENMS_SOURCE" \
+            run git -C "$partial" -c advice.detachedHead=false checkout --quiet "$ref"
+        state_set librenms_ref "$ref"
     elif [[ -d $LIBRENMS_SOURCE ]]; then
         mkdir -p "$partial"
         run in_dir "$LIBRENMS_SOURCE" tar -cf "$WORK/librenms.tar" .
@@ -588,6 +606,37 @@ lnms_migrate() {
 lnms_admin() {
     [[ -f $LNMS_DIR/artisan ]] || { would "add the LibreNMS admin $ADMIN_USER"; return 0; }
     librenms_admin_ensure
+}
+
+# librenms_ref_wanted_check: (--check) what a run would check out of the LibreNMS repository: --librenms-ref, else
+# its newest release tag of the supported major version (asked of the repository, which a run clones).
+librenms_ref_wanted_check() {
+    if [[ -n $LIBRENMS_REF ]]; then printf '%s' "$LIBRENMS_REF"; return 0; fi
+    local tags newest
+    tags=$(git ls-remote --tags --refs "$LIBRENMS_SOURCE" "refs/tags/$LIBRENMS_MAX_MAJOR.*" 2>>"$LOG_FILE" || true)
+    newest=$(sed -n "s|.*refs/tags/\($LIBRENMS_MAX_MAJOR\.[0-9]*\.[0-9]*\)\$|\1|p" <<<"$tags" | sort -V | tail -n 1 || true)
+    printf '%s' "${newest:-the newest $LIBRENMS_MAX_MAJOR.x release}"
+}
+
+# librenms_describe: what git says the LibreNMS in /opt/librenms is (git describe: a tag, or tag-commits-gHASH), empty
+# for a copy without Git.
+librenms_describe() {
+    [[ -d $LNMS_DIR/.git ]] || return 0
+    git -c safe.directory="$LNMS_DIR" -C "$LNMS_DIR" describe --tags --always 2>/dev/null || true
+}
+
+# lnms_update_channel: LibreNMS' update channel (daily.sh): release, so that it stays on releases like the one the
+# installer checked out, or master when --librenms-ref master installed the master branch. Only for a LibreNMS with Git
+# (daily.sh updates a copy without it not at all).
+lnms_update_channel() {
+    [[ -d $LNMS_DIR/.git && -f $LNMS_DIR/artisan ]] || return 0
+    if [[ $CHECK == 1 && $(state_get librenms_db || true) != yes ]]; then return 0; fi
+    local want=release current
+    [[ $(state_get librenms_ref || true) == master ]] && want=master
+    current=$(lnms config:get update_channel 2>>"$LOG_FILE" | tail -n 1 || true)
+    if [[ $current == "$want" ]]; then detail "LibreNMS' update channel is $want"; return 0; fi
+    act "set LibreNMS' update channel to $want (daily.sh keeps it on $( [[ $want == release ]] && echo releases || echo 'the master branch' ))" \
+        lnms config:set update_channel "$want"
 }
 
 # librenms_admin_precheck: in a LibreNMS installed otherwise, the admin --admin-user names must be one of its admins:

@@ -86,6 +86,8 @@ Sources (local copies of every download: offline mode)
                            branch)                                                  (INSTALLER_PLUGIN_BRANCH)
   --librenms-source SRC    a Git URL (default: https://github.com/librenms/librenms.git), or a directory or
                            .tar.gz of a LibreNMS with its vendor/ installed          (INSTALLER_LIBRENMS_SOURCE)
+  --librenms-ref REF       what of that Git repository: a tag, a branch (master: LibreNMS' daily updates) or a
+                           commit (default: the newest 26.x release tag)                 (INSTALLER_LIBRENMS_REF)
   --semaphore-source FILE  Semaphore UI 2.19.17 as its .rpm, .tar.gz or binary (default: its GitHub release)
                                                                                     (INSTALLER_SEMAPHORE_SOURCE)
   --composer-source FILE   composer.phar (default: https://getcomposer.org)         (INSTALLER_COMPOSER_SOURCE)
@@ -133,6 +135,7 @@ DEVICE_ENABLE_PASSWORD=${INSTALLER_DEVICE_ENABLE_PASSWORD:-}
 PLUGIN_SOURCE=${INSTALLER_PLUGIN_SOURCE:-}
 PLUGIN_BRANCH=${INSTALLER_PLUGIN_BRANCH:-}
 LIBRENMS_SOURCE=${INSTALLER_LIBRENMS_SOURCE:-}
+LIBRENMS_REF=${INSTALLER_LIBRENMS_REF:-}
 SEMAPHORE_SOURCE=${INSTALLER_SEMAPHORE_SOURCE:-}
 COMPOSER_SOURCE=${INSTALLER_COMPOSER_SOURCE:-}
 PIP_WHEELS=${INSTALLER_PIP_WHEELS:-}
@@ -149,7 +152,7 @@ GITHUB_TOKEN_VALUE=${GITHUB_TOKEN:-}
 unset INSTALLER_ADMIN_PASSWORD INSTALLER_DEVICE_PASSWORD INSTALLER_DEVICE_ENABLE_PASSWORD GITHUB_TOKEN
 
 VALUE_OPTIONS=(--skip --only --admin-user --admin-password --admin-email --server-name --timezone --php-stream --librenms-url
-    --device-user --device-password --device-enable-password --plugin-source --plugin-branch --librenms-source --semaphore-source
+    --device-user --device-password --device-enable-password --plugin-source --plugin-branch --librenms-source --librenms-ref --semaphore-source
     --composer-source --pip-wheels --gems --distro-source --offline --semaphore-listen --semaphore-port --oxidized-listen --oxidized-port)
 
 parse_options() {
@@ -183,6 +186,7 @@ parse_options() {
             --plugin-source) PLUGIN_SOURCE=$value ;;
             --plugin-branch) PLUGIN_BRANCH=$value ;;
             --librenms-source) LIBRENMS_SOURCE=$value ;;
+            --librenms-ref) LIBRENMS_REF=$value ;;
             --semaphore-source) SEMAPHORE_SOURCE=$value ;;
             --composer-source) COMPOSER_SOURCE=$value ;;
             --pip-wheels) PIP_WHEELS=$value ;;
@@ -289,6 +293,10 @@ check_options() {
         bad_option "--offline: give the plugins as a local directory (--plugin-source DIR, or librenms_dashplugin/ in $OFFLINE_DIR)"
     fi
     [[ -z $LIBRENMS_SOURCE ]] && LIBRENMS_SOURCE=https://github.com/librenms/librenms.git
+    if [[ -n $LIBRENMS_REF ]]; then
+        [[ $LIBRENMS_REF =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] || bad_option "--librenms-ref: '$LIBRENMS_REF' is not a tag, branch or commit"
+        [[ $LIBRENMS_SOURCE == *://* ]] || bad_option "--librenms-ref is for a Git URL as the LibreNMS source, and $LIBRENMS_SOURCE is a local copy"
+    fi
     return 0
 }
 
