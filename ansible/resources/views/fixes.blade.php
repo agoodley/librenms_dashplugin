@@ -24,28 +24,32 @@
     @endif
     {{-- as the topology plugin's pages filter: a device, a device group, a location (each one given narrows the list; the topology
          plugin then computes the fixes of those devices only) --}}
-    <form class="form-inline ans-filterbar" method="get" action="{{ route('ansible.fixes') }}" id="ans-fixes-filter" style="margin: 0 0 8px">
-        <label for="ans-fixes-device" style="font-weight: normal">Device</label>
-        <select id="ans-fixes-device" name="device" class="form-control input-sm" style="min-width: 200px">
-            <option value="">All devices</option>
-            @if(isset($filter['device']))
-                <option value="{{ $filter['device'] }}" selected>{{ $deviceName }}</option>
-            @endif
-        </select>
-        <label for="ans-fixes-group" style="font-weight: normal">Group</label>
-        <select id="ans-fixes-group" name="group" class="form-control input-sm">
-            <option value="">All</option>
-            @foreach($groups as $groupId => $groupName)
-                <option value="{{ $groupId }}" @selected(($filter['group'] ?? null) === (int) $groupId)>{{ $groupName }}</option>
-            @endforeach
-        </select>
-        <label for="ans-fixes-location" style="font-weight: normal">Location</label>
-        <select id="ans-fixes-location" name="location" class="form-control input-sm" style="max-width: 240px">
-            <option value="">All</option>
-            @foreach($locations as $locationId => $locationName)
-                <option value="{{ $locationId }}" @selected(($filter['location'] ?? null) === (int) $locationId)>{{ $locationName }}</option>
-            @endforeach
-        </select>
+    {{-- each label above its select, as the other filters of the plugin (a phone width wraps a field whole, never a label from its select) --}}
+    <form class="ans-filterbar" method="get" action="{{ route('ansible.fixes') }}" id="ans-fixes-filter" style="margin: 0 0 8px">
+        <label for="ans-fixes-device">Device
+            <select id="ans-fixes-device" name="device" class="form-control input-sm" style="min-width: 200px">
+                <option value="">All devices</option>
+                @if(isset($filter['device']))
+                    <option value="{{ $filter['device'] }}" selected>{{ $deviceName }}</option>
+                @endif
+            </select>
+        </label>
+        <label for="ans-fixes-group">Group
+            <select id="ans-fixes-group" name="group" class="form-control input-sm">
+                <option value="">All</option>
+                @foreach($groups as $groupId => $groupName)
+                    <option value="{{ $groupId }}" @selected(($filter['group'] ?? null) === (int) $groupId)>{{ $groupName }}</option>
+                @endforeach
+            </select>
+        </label>
+        <label for="ans-fixes-location">Location
+            <select id="ans-fixes-location" name="location" class="form-control input-sm" style="max-width: 240px">
+                <option value="">All</option>
+                @foreach($locations as $locationId => $locationName)
+                    <option value="{{ $locationId }}" @selected(($filter['location'] ?? null) === (int) $locationId)>{{ $locationName }}</option>
+                @endforeach
+            </select>
+        </label>
         <button type="submit" class="btn btn-sm btn-primary" id="ans-fixes-filter-button"><i class="fa fa-filter"></i> Filter</button>
         @if($filter)
             <a class="btn btn-sm btn-default" href="{{ route('ansible.fixes') }}" id="ans-fixes-filter-clear">Every device</a>
