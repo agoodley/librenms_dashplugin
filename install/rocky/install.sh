@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # install/rocky/install.sh: set up LibreNMS (when the server has none), the LibreNMS topology and Ansible plugins of
 # this repository, Ansible with the network collections, Semaphore UI (the runner the Ansible plugin drives) and
 # Oxidized (the backups it takes) on Rocky Linux 9 or 10. Run it as root; install.sh --help lists the options and
@@ -316,7 +317,7 @@ preflight() {
     [[ -n $ADMIN_EMAIL ]] || ADMIN_EMAIL="root@$SERVER_NAME"
     [[ -n $TIMEZONE ]] || TIMEZONE=$(timedatectl show -p Timezone --value 2>/dev/null || true)
     if [[ -z $TIMEZONE || ! -f /usr/share/zoneinfo/$TIMEZONE ]]; then
-        TIMEZONE=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')
+        TIMEZONE=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p' || true)
     fi
     [[ -n $TIMEZONE && -f /usr/share/zoneinfo/$TIMEZONE ]] || TIMEZONE=UTC
 }

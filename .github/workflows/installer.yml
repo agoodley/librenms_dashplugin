@@ -1,0 +1,93 @@
+name: installer
+
+# install/rocky/install.sh: shellcheck, then a real run on Rocky Linux 9 and 10 containers (systemd as PID 1). GitHub's
+# runners reach GitHub, so these runs take the online path: LibreNMS cloned from GitHub with its Composer packages,
+# Semaphore UI's release RPM, PyPI, RubyGems. The plugins come from this commit (a local directory), and once from
+# this repository's URL with the workflow's token (the path of a private repository).
+on:
+  push:
+    paths:
+      - 'install/**'
+      - '.github/workflows/installer.yml'
+  pull_request:
+    paths:
+      - 'install/**'
+      - '.github/workflows/installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -x install/rocky/install.sh install/rocky/tests/*.sh install/rocky/tests/stubs/[a-z]*
+      - name: The installer's Python and PHP helpers
+        run: |
+          python3 -m py_compile install/rocky/lib/*.py
+          php -l install/rocky/lib/librenms_helper.php
+
+  rocky:
+    needs: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        rocky: ['9', '10']
+    env:
+      RUN: docker exec -e INSTALLER_DEVICE_PASSWORD=netops-pw inst /src/install/rocky/install.sh --yes --device-user netops --plugin-source /src
+    steps:
+      - uses: actions/checkout@v4
+      - name: The commit as a local branch (the installer clones the plugins from it)
+        run: git checkout -B ci-installer
+      - name: A Rocky Linux ${{ matrix.rocky }} test system with systemd
+        run: |
+          mkdir -p /tmp/ctx/ca
+          cp install/rocky/tests/Dockerfile install/rocky/tests/entrypoint.sh /tmp/ctx/
+          docker build --build-arg BASE=quay.io/rockylinux/rockylinux:${{ matrix.rocky }} -t inst-rocky /tmp/ctx
+          docker run -d --name inst --hostname inst.test --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD:/src:ro" inst-rocky
+          for i in $(seq 1 60); do
+            state=$(docker exec inst systemctl is-system-running 2>/dev/null || true)
+            case $state in running|degraded) break ;; esac
+            sleep 2
+          done
+          echo "systemd: $state"
+      - name: --check on the fresh system
+        run: $RUN --check
+      - name: Install everything
+        run: $RUN
+      - name: Verify
+        run: docker exec inst /src/install/rocky/tests/verify.sh
+      - name: End to end (a fake Cisco IOS switch, a change through the Ansible plugin, Oxidized's backups)
+        run: |
+          docker exec inst sh -c 'python3.12 -m venv /opt/fakesw && /opt/fakesw/bin/pip install --quiet fake-switches'
+          docker exec -d inst /opt/fakesw/bin/fake-switches --model cisco_generic --hostname inst-sw1 --username netops \
+            --password netops-pw --listen-host 127.0.4.11 --listen-port 22
+          sleep 5
+          docker exec inst /src/install/rocky/tests/e2e.sh inst-sw1 127.0.4.11
+      - name: A second run changes nothing
+        run: |
+          $RUN | tee /tmp/second.out
+          grep -q 'Nothing needed a change' /tmp/second.out
+      - name: The plugins from this repository's URL (with the workflow's token, as for a private repository)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker exec -e GITHUB_TOKEN inst /src/install/rocky/install.sh --yes --only plugins \
+            --plugin-source "https://github.com/${{ github.repository }}" --plugin-branch "${{ github.head_ref || github.ref_name }}"
+          docker exec inst /src/install/rocky/tests/verify.sh
+      - name: The installer's log
+        if: always()
+        run: |
+          docker cp inst:/var/log/librenms-installer /tmp/installer-logs || true
+          docker exec inst journalctl --no-pager -n 300 -u semaphore -u oxidized -u php-fpm -u nginx > /tmp/installer-logs/journal.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-logs-rocky${{ matrix.rocky }}
+          path: /tmp/installer-logs

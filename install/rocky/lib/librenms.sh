@@ -10,7 +10,9 @@ LNMS_MODE=''      # new: no /opt/librenms; ours: set up by the installer (maybe 
 LNMS_VERSION=''
 
 librenms_version_of() {
-    sed -n "s/.*const VERSION = '\([0-9][0-9.]*\)'.*/\1/p" "$1/LibreNMS/Util/Version.php" 2>/dev/null | head -n 1
+    local f=$1/LibreNMS/Util/Version.php
+    [[ -f $f ]] || return 0
+    sed -n "s/.*const VERSION = '\([0-9][0-9.]*\)'.*/\1/p" "$f" | sed -n 1p
 }
 
 librenms_detect() {
@@ -27,7 +29,7 @@ librenms_detect() {
 }
 
 # version_ge A B: whether version A is B or later.
-version_ge() { [[ $(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1) == "$2" ]]; }
+version_ge() { [[ $(printf '%s\n%s\n' "$1" "$2" | sort -V | sed -n 1p) == "$2" ]]; }
 
 # librenms_supported VERSION: whether the plugins support this LibreNMS (26.10 or a later 26.x).
 librenms_supported() {
@@ -70,6 +72,10 @@ helper() {
     if [[ $rc != 0 ]]; then
         local error; error=$(json_field "$HELPER_OUT" error 2>/dev/null || true)
         die "LibreNMS refused: ${error:-librenms_helper.php $command failed (exit code $rc)}" "${HELPER_HINT:-read the log, and logs/librenms.log in $LNMS_DIR}"
+    fi
+    if ! python3 -I -c 'import json,sys; json.loads(sys.argv[1])' "$HELPER_OUT" 2>/dev/null; then
+        log "librenms_helper.php $command answered: ${HELPER_OUT:0:2000}"
+        die "LibreNMS answered librenms_helper.php $command with something else than JSON (the log has it)" "read the log, and logs/librenms.log in $LNMS_DIR"
     fi
 }
 
@@ -143,9 +149,9 @@ librenms_check_existing() {
     php=$(php -r 'echo PHP_VERSION;' 2>/dev/null || true)
     if [[ -z $php ]]; then die "the php command of this server does not run" "LibreNMS needs PHP 8.2 or later on the command line"; fi
     version_ge "$php" 8.2 || die "PHP $php is older than the plugins support (8.2 or later)" "update PHP as LibreNMS' documentation says, then run the installer again"
-    local ext
+    local ext modules; modules=$(php -m 2>/dev/null || true)
     for ext in curl mbstring; do
-        php -m 2>/dev/null | grep -qx "$ext" || die "PHP has no $ext extension, which the Ansible plugin needs" "install it (dnf install php-$ext), then run the installer again"
+        grep -qx "$ext" <<<"$modules" || die "PHP has no $ext extension, which the Ansible plugin needs" "install it (dnf install php-$ext), then run the installer again"
     done
     if ! systemctl is-active --quiet librenms-scheduler.timer && ! grep -qs 'schedule:run' /etc/cron.d/* /var/spool/cron/librenms; then
         warn "LibreNMS' scheduler does not seem to run (no librenms-scheduler.timer, no schedule:run cron job): the plugins' background jobs need it (see ./validate.php)"
@@ -327,8 +333,9 @@ lower_case_table_names=0
 " /etc/my.cnf.d/90-librenms.cnf root:root 644 "set MariaDB's LibreNMS settings in /etc/my.cnf.d/90-librenms.cnf"; then
         state_set mariadb_restart 1
     fi
-    service_enable_start mariadb
+    port_check 3306 MariaDB "free it (another database server?)" mariadbd mysqld
     restart_if_pending mariadb_restart mariadb
+    service_enable_start mariadb
 }
 
 # mysql_root SQL: run SQL as MariaDB's root (unix socket, or /root/.my.cnf); the SQL is not logged (passwords).
@@ -398,8 +405,8 @@ lnms_php_fpm() {
     else
         would "add the PHP-FPM pool librenms ($pool)"
     fi
-    service_enable_start php-fpm
     restart_if_pending php_fpm_restart php-fpm
+    service_enable_start php-fpm
 }
 
 lnms_nginx() {
@@ -419,8 +426,9 @@ lnms_nginx() {
         fi
     fi
     if [[ $CHECK == 0 && -x /usr/sbin/nginx ]]; then FAIL_HINT="fix the nginx configuration (nginx -t says what is wrong)" run nginx -t; fi
-    service_enable_start nginx
+    port_check 80 "LibreNMS' web server (nginx)" "stop the web server that holds it (LibreNMS' documentation uses nginx alone on this server)" nginx
     restart_if_pending nginx_reload nginx reload
+    service_enable_start nginx
 }
 
 # SELinux, as LibreNMS' documentation sets it (only when SELinux is enforcing or permissive).
@@ -438,7 +446,8 @@ lnms_selinux() {
     run setsebool -P httpd_execmem=1
     run setsebool -P httpd_can_network_connect_db=1
     [[ -f $LNMS_DIR/.env ]] && run chcon -t httpd_sys_rw_content_t "$LNMS_DIR/.env"
-    if ! semodule -l 2>/dev/null | grep -q '^http_fping'; then
+    local modules; modules=$(semodule -l 2>/dev/null || true)
+    if ! grep -q '^http_fping' <<<"$modules"; then
         local d=$WORK/selinux
         mkdir -p "$d"
         cp "$FILES_DIR/http_fping.tt" "$d/"
@@ -451,7 +460,8 @@ lnms_selinux() {
 
 # selinux_fcontext TYPE SPEC: a file context rule (added, or changed when it is there with another type).
 selinux_fcontext() {
-    if semanage fcontext -l 2>/dev/null | grep -qF "$2 "; then
+    local rules; rules=$(semanage fcontext -l 2>/dev/null || true)
+    if grep -qF "$2 " <<<"$rules"; then
         run semanage fcontext -m -t "$1" "$2"
     else
         run semanage fcontext -a -t "$1" "$2"
@@ -471,7 +481,8 @@ lnms_snmpd() {
     local conf=/etc/snmp/snmpd.conf
     if [[ ! -f $LNMS_DIR/snmpd.conf.example ]]; then would "configure snmpd (LibreNMS' snmpd.conf.example, a generated community)"; return 0; fi
     if [[ $(state_get snmpd || true) != yes ]]; then
-        if [[ -f $conf ]] && rpm -V net-snmp 2>/dev/null | grep -q " $conf\$"; then
+        local verify; verify=$(rpm -V net-snmp 2>/dev/null || true)
+        if [[ -f $conf ]] && grep -q " $conf\$" <<<"$verify"; then
             warn "$conf was changed on this server: left as it is (LibreNMS' documentation replaces it with snmpd.conf.example)"
         else
             local community; community=$(secret_for SNMP_COMMUNITY 20)
@@ -492,8 +503,8 @@ lnms_snmpd() {
             install -m 755 "$WORK/distro" /usr/bin/distro
         fi
     fi
-    service_enable_start snmpd
     restart_if_pending snmpd_restart snmpd
+    service_enable_start snmpd
 }
 
 lnms_cron_scheduler() {
@@ -556,8 +567,12 @@ librenms_admin_ensure() {
 # ./validate.php: what it still reports. A server without devices or a fresh install has a few warnings.
 lnms_validate() {
     [[ -f $LNMS_DIR/validate.php && $CHECK == 0 ]] || return 0
+    # the scheduler's heartbeat (a task it runs every five minutes) and the poller cron job, once now: validate.php
+    # otherwise reports a scheduler and pollers that have not run yet
+    run in_dir "$LNMS_DIR" as librenms php artisan schedule:test --name="schedule operational check" --no-ansi --no-interaction
+    run in_dir "$LNMS_DIR" as librenms ./poller-wrapper.py 1
     local out
-    out=$(in_dir "$LNMS_DIR" as librenms ./validate.php 2>&1 || true)
+    out=$(in_dir "$LNMS_DIR" as librenms ./validate.php 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)
     printf '%s\n' "$out" >>"$LOG_FILE"
     local fails warns
     fails=$(grep -c '\[FAIL\]' <<<"$out" || true)
@@ -566,7 +581,7 @@ lnms_validate() {
         info "./validate.php: everything OK"
     else
         info "./validate.php: $fails failures, $warns warnings (the log has its whole output):"
-        grep -E '\[(FAIL|WARN)\]' <<<"$out" | sed 's/^/      /' | head -n 20
+        grep -E '\[(FAIL|WARN)\]' <<<"$out" | sed -n 's/^/      /;1,20p' || true
 
     fi
 }

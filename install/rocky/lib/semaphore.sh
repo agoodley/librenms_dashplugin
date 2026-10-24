@@ -126,6 +126,7 @@ sem_database() {
     if ! rpm -q mariadb-server >/dev/null 2>&1; then
         dnf_install "MariaDB (for Semaphore UI's database)" mariadb-server
     fi
+    port_check 3306 MariaDB "free it (another database server?)" mariadbd mysqld
     service_enable_start mariadb
     [[ $CHECK == 1 ]] && ! command -v mysql >/dev/null && { would "create the database semaphore and its user"; return 0; }
     local password; password=$(sem_config_value mysql.pass)
@@ -206,8 +207,9 @@ sem_service() {
         [[ $CHECK == 0 ]] && run systemctl daemon-reload
         state_set semaphore_restart 1
     fi
-    service_enable_start semaphore
+    port_check "$SEMAPHORE_PORT" "Semaphore UI" "free it, or give Semaphore UI another one (--semaphore-port)" semaphore
     restart_if_pending semaphore_restart semaphore
+    service_enable_start semaphore
     [[ $CHECK == 1 ]] && return 0
     wait_http "$SEM_API/api/ping" 60 || die "Semaphore UI does not answer on $SEM_API" "see journalctl -u semaphore"
 }
@@ -261,22 +263,29 @@ sem_playbook_repo() {
     info "the playbook repository has: ${changed[*]}"
 }
 
-# sem_admin: the admin (--admin-user). It is made with a throwaway password, which the API then replaces with the real
-# one: a password on the command line could be read by every user (ps).
+# sem_admin: the admin (--admin-user). It is made with a throwaway password (on the command line, which every user
+# can read in ps for that moment), which the API then replaces with the real one. The throwaway stays in the
+# credentials file until then, so a run stopped in between finishes it the next time.
 sem_admin() {
+    local throwaway; throwaway=$(cred_get SEMAPHORE_ADMIN_THROWAWAY || true)
     if "$SEM_BIN" users get --login "$ADMIN_USER" --config "$SEM_CONF" >/dev/null 2>&1; then
-        detail "the Semaphore UI admin $ADMIN_USER exists"
-        return 0
+        if [[ -z $throwaway ]]; then detail "the Semaphore UI admin $ADMIN_USER exists"; return 0; fi
+        info "the Semaphore UI admin $ADMIN_USER still has the installer's throwaway password: setting the real one"
+    else
+        throwaway=$(gen_secret 32)
+        cred_set SEMAPHORE_ADMIN_THROWAWAY "$throwaway"
+        LOG_REDACT+=("$throwaway")
+        act "add the Semaphore UI admin $ADMIN_USER" "$SEM_BIN" users add --admin --login "$ADMIN_USER" --name "$ADMIN_USER" \
+            --email "$ADMIN_EMAIL" --password "$throwaway" --config "$SEM_CONF"
     fi
-    local throwaway; throwaway=$(gen_secret 32)
-    act "add the Semaphore UI admin $ADMIN_USER" "$SEM_BIN" users add --admin --login "$ADMIN_USER" --name "$ADMIN_USER" \
-        --email "$ADMIN_EMAIL" --password "$throwaway" --config "$SEM_CONF"
     sem_admin_token
     local password=$ADMIN_PASSWORD
     [[ -n $password ]] || password=$(cred_get ADMIN_PASSWORD || true)
     [[ -n $password ]] || password=$(secret_for SEMAPHORE_ADMIN_PASSWORD 20)
     local out
-    run_secret out "$(json_object url "$SEM_API" token "$SEM_TOKEN" username "$ADMIN_USER" password "$password")" python3 -I "$WORK/lib/semaphore_api.py" password
+    run_secret out "$(json_object url "$SEM_API" token "$SEM_TOKEN" username "$ADMIN_USER" current_password "$throwaway" password "$password")" \
+        python3 -I "$WORK/lib/semaphore_api.py" password
+    cred_unset SEMAPHORE_ADMIN_THROWAWAY
 }
 
 sem_admin_token() {
@@ -290,7 +299,7 @@ sem_admin_token() {
 # the devices and changes nothing), and its token (made again when the one the installer keeps is no longer valid).
 lnms_inventory_user() {
     helper user-ensure "$(json_object username "$LNMS_INVENTORY_USER" password "$(secret_for LIBRENMS_INVENTORY_PASSWORD 32)" roles '@json:["global-read"]' \
-        realname "Ansible inventory (Semaphore UI)" descr "The Ansible plugin's inventory user: the runner fetches the devices with its API token (install/rocky/install.sh)")"
+        realname "Ansible inventory (Semaphore UI)" descr "Ansible plugin inventory user")"
     local roles; roles=$(json_field "$HELPER_OUT" roles)
     LNMS_INVENTORY_ID=$(json_field "$HELPER_OUT" user_id)
     [[ $(json_field "$HELPER_OUT" created) == true ]] && info "LibreNMS user $LNMS_INVENTORY_USER (global-read: the Ansible plugin's inventory user)"

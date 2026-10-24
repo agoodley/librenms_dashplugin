@@ -48,7 +48,8 @@ part_oxidized() {
 ox_ruby() {
     dnf_install "EPEL" epel-release
     dnf_install "dnf's plugins" dnf-plugins-core
-    if ! dnf repolist --enabled 2>/dev/null | grep -q '^crb'; then
+    local repos; repos=$(dnf repolist --enabled 2>/dev/null || true)
+    if ! grep -q '^crb' <<<"$repos"; then
         act "enable the CRB repository (Oxidized's build packages)" dnf config-manager --set-enabled crb
     fi
     if rpm -q ruby >/dev/null 2>&1; then
@@ -70,8 +71,8 @@ ox_gems() {
     if [[ $have_ox == 1 && $have_web == 1 ]]; then detail "oxidized $OXIDIZED_VERSION and oxidized-web $OXIDIZED_WEB_VERSION are installed"; return 0; fi
     if [[ -n $GEMS_DIR ]]; then
         local ox web
-        ox=$(find "$GEMS_DIR" -maxdepth 1 -name "oxidized-$OXIDIZED_VERSION.gem" | head -n 1)
-        web=$(find "$GEMS_DIR" -maxdepth 1 -name "oxidized-web-$OXIDIZED_WEB_VERSION.gem" | head -n 1)
+        ox=$(find "$GEMS_DIR" -maxdepth 1 -name "oxidized-$OXIDIZED_VERSION.gem" -print -quit)
+        web=$(find "$GEMS_DIR" -maxdepth 1 -name "oxidized-web-$OXIDIZED_WEB_VERSION.gem" -print -quit)
         [[ -n $ox && -n $web ]] || die "$GEMS_DIR lacks oxidized-$OXIDIZED_VERSION.gem or oxidized-web-$OXIDIZED_WEB_VERSION.gem" "see install/rocky/README.md (Offline mode) for how to make the gem directory"
         FAIL_HINT="the gem directory must hold every gem they depend on (see install/rocky/README.md, Offline mode)" \
             act "install oxidized $OXIDIZED_VERSION and oxidized-web $OXIDIZED_WEB_VERSION from $GEMS_DIR (native gems are compiled: some minutes)" \
@@ -98,7 +99,7 @@ ox_user() {
 # ox_librenms_user: the LibreNMS user whose API token Oxidized reads the devices with (global-read).
 ox_librenms_user() {
     helper user-ensure "$(json_object username "$LNMS_OXIDIZED_USER" password "$(secret_for LIBRENMS_OXIDIZED_PASSWORD 32)" roles '@json:["global-read"]' \
-        realname "Oxidized" descr "Oxidized reads the devices to back up with its API token (install/rocky/install.sh)")"
+        realname "Oxidized" descr "Oxidized backups (API token)")"
     [[ $(json_field "$HELPER_OUT" created) == true ]] && info "LibreNMS user $LNMS_OXIDIZED_USER (global-read: Oxidized's)"
     OX_TOKEN=$(cred_get LIBRENMS_OXIDIZED_TOKEN || true)
     if [[ -n $OX_TOKEN ]]; then
@@ -204,8 +205,9 @@ ox_service() {
         [[ $CHECK == 0 ]] && run systemctl daemon-reload
         state_set oxidized_restart 1
     fi
-    service_enable_start oxidized
+    port_check "$OXIDIZED_PORT" "Oxidized's REST API" "free it, or give Oxidized another one (--oxidized-port)" oxidized ruby
     restart_if_pending oxidized_restart oxidized
+    service_enable_start oxidized
 }
 
 # ox_librenms_settings: LibreNMS' Oxidized settings (its documentation, Extensions/Oxidized): on, at our Oxidized,

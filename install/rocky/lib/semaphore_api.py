@@ -239,7 +239,11 @@ def password(req):
     user = by_name(api.call('GET', '/users'), req['username'], 'username')
     if user is None:
         raise ApiError('Semaphore UI has no user %s' % req['username'])
-    api.call('POST', '/users/%d/password' % user['id'], {'password': req['password']})
+    body = {'password': req['password']}
+    if req.get('current_password'):
+        # a user who changes their own password gives the current one too
+        body['current_password'] = req['current_password']
+    api.call('POST', '/users/%d/password' % user['id'], body)
     return {'user_id': user['id']}
 
 
@@ -258,6 +262,8 @@ def main():
             raise ApiError('unknown command %r' % command)
         print(json.dumps(handler(req)))
     except (ApiError, KeyError, ValueError) as e:
+        # stderr goes to the installer's log (stdout is not logged: it can hold tokens)
+        print('semaphore_api.py %s: %s' % (command, e), file=sys.stderr)
         print(json.dumps({'error': str(e), 'changes': changes}))
         sys.exit(1)
 

@@ -29,8 +29,13 @@ declare -A WANT=()      # part => 1 when this run sets it up (install.sh's --ski
 
 _ts() { date '+%F %T'; }
 
-# log TEXT...: a line in the log only.
-log() { printf '%s %s\n' "$(_ts)" "$*" >>"$LOG_FILE"; }
+# log TEXT...: a line in the log only, without the values of LOG_REDACT (secrets a command line has to carry).
+declare -a LOG_REDACT=()
+log() {
+    local text="$*" secret
+    for secret in "${LOG_REDACT[@]}"; do text=${text//"$secret"/<hidden>}; done
+    printf '%s %s\n' "$(_ts)" "$text" >>"$LOG_FILE"
+}
 
 # say TEXT...: a line on the screen and in the log.
 say() { printf '%s\n' "$*"; log "$*"; }
@@ -260,6 +265,14 @@ state_set() {
 }
 
 cred_get() { _kv_get "$CRED_FILE" "$1"; }
+cred_unset() {
+    [[ $CHECK == 1 || ! -f $CRED_FILE ]] && return 0
+    local tmp; tmp=$(umask 077 && mktemp "$(dirname "$CRED_FILE")/.$(basename "$CRED_FILE").XXXXXX")
+    grep -v "^$1=" "$CRED_FILE" >"$tmp" || true
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$CRED_FILE"
+    log "credentials file: $1 removed"
+}
 cred_set() {
     [[ $CHECK == 1 ]] && return 0
     _kv_set "$CRED_FILE" "$1" "$2" "# Passwords and tokens the LibreNMS installer (install/rocky/install.sh) generated. Root only (mode 600).
@@ -323,27 +336,40 @@ service_enable_start() {
     if ! systemctl is-enabled --quiet "$unit" 2>/dev/null; then
         act "enable $unit" systemctl enable "$unit"
     fi
-    if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
-        act "start $unit" systemctl start "$unit"
-    fi
+    # activating: starting, or waiting to be restarted (Restart=): systemd is at it already
+    local state; state=$(systemctl show -p ActiveState --value "$unit" 2>/dev/null || true)
+    case $state in
+        active|reloading|activating) detail "$unit is $state" ;;
+        *) act "start $unit" systemctl start "$unit" ;;
+    esac
 }
 
 # restart_if_pending FLAG UNIT [reload]: restart (or reload) a service when FLAG is set in the state (set before its
-# configuration was changed, so a run stopped in between restarts it the next time), then clear FLAG.
+# configuration was changed, so a run stopped in between restarts it the next time), then clear FLAG. A service that
+# does not run yet is left to service_enable_start (call this first): its start reads the new configuration.
 restart_if_pending() {
     local flag=$1 unit=$2 how=${3:-restart}
     [[ $(state_get "$flag" || true) == 1 ]] || return 0
     if systemctl is-active --quiet "$unit"; then
         act "$how $unit (its configuration changed)" systemctl "$how" "$unit"
-    else
-        act "start $unit" systemctl start "$unit"
     fi
     state_set "$flag" 0
 }
 
 # port_owner PORT: the process that listens on a TCP port (empty when none).
 port_owner() {
-    ss -Htlnp "sport = :$1" 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -n 1
+    local out; out=$(ss -Htlnp "sport = :$1" 2>/dev/null || true)
+    if [[ $out =~ users:\(\(\"([^\"]+)\" ]]; then printf '%s' "${BASH_REMATCH[1]}"; fi
+}
+
+# port_check PORT WHAT HINT OWNER...: stop when a TCP port is in use by another program than OWNER (a process
+# name); a port held by a process this server cannot see (another container) counts as in use.
+port_check() {
+    local port=$1 what=$2 hint=$3; shift 3
+    [[ -n $(ss -Htln "sport = :$port" 2>/dev/null) ]] || return 0
+    local owner o; owner=$(port_owner "$port")
+    for o in "$@"; do [[ $owner == "$o" ]] && return 0; done
+    die "port $port, which $what needs, is in use by ${owner:-a program this installer cannot see (another container?)}" "$hint"
 }
 
 # wait_http URL SECONDS: wait until URL answers (any HTTP status but 000/5xx).

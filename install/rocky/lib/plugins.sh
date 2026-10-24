@@ -26,8 +26,12 @@ part_plugins() {
     plugins_add
     plugins_migrate
     plugins_enable
+    plugins_routes
     summary_add "topology + Ansible plugins from ${PLUGIN_SOURCE##*/} ($PLUGIN_BRANCH_USED${PLUGIN_COMMIT:+, $PLUGIN_COMMIT})$( [[ $PLUGIN_UPDATED == 1 ]] && echo ', installed/updated' ), enabled"
 }
+
+# clone_git ARGS...: git in the clone, as root, for what only reads (the clone belongs to librenms).
+clone_git() { git -c safe.directory="$PLUGIN_CLONE" -C "$PLUGIN_CLONE" "$@"; }
 
 # git_auth CMD...: CMD with the GitHub token (GITHUB_TOKEN) as an HTTP header for github.com, given to git in its
 # environment (GIT_CONFIG_*), never on its command line or in the clone's configuration.
@@ -70,26 +74,26 @@ plugins_clone() {
         run mv "$partial" "$PLUGIN_CLONE"
         PLUGIN_UPDATED=1
     else
-        local origin; origin=$(git -C "$PLUGIN_CLONE" config --get remote.origin.url || true)
+        local origin; origin=$(clone_git config --get remote.origin.url || true)
         if [[ $origin != "$src" ]]; then
             act "take the plugins from $src (the clone came from $origin)" as librenms git -C "$PLUGIN_CLONE" remote set-url origin "$src"
         fi
         local before after
-        before=$(git -C "$PLUGIN_CLONE" rev-parse HEAD)
+        before=$(clone_git rev-parse HEAD)
         if [[ $CHECK == 1 ]]; then
             info "a run updates $PLUGIN_CLONE from $src ($branch) (--check does not fetch)"
         else
             FAIL_HINT="check that this server reaches $src (a private repository needs GITHUB_TOKEN)" \
                 run git_auth as librenms git -c safe.directory="$src" -c safe.directory="$src/.git" -C "$PLUGIN_CLONE" fetch --quiet origin "$branch"
-            local current; current=$(git -C "$PLUGIN_CLONE" symbolic-ref --short HEAD 2>/dev/null || true)
+            local current; current=$(clone_git symbolic-ref --short HEAD 2>/dev/null || true)
             if [[ $current != "$branch" ]]; then
                 run as librenms git -C "$PLUGIN_CLONE" checkout --quiet -B "$branch" FETCH_HEAD
-            elif [[ -n $(git -C "$PLUGIN_CLONE" status --porcelain --untracked-files=no) ]]; then
+            elif [[ -n $(clone_git status --porcelain --untracked-files=no) ]]; then
                 warn "$PLUGIN_CLONE has local changes: not updated (git -C $PLUGIN_CLONE status shows them)"
             elif ! probe as librenms git -C "$PLUGIN_CLONE" merge --ff-only --quiet FETCH_HEAD; then
                 warn "$PLUGIN_CLONE has commits of its own and cannot follow $branch of $src: not updated"
             fi
-            after=$(git -C "$PLUGIN_CLONE" rev-parse HEAD)
+            after=$(clone_git rev-parse HEAD)
             if [[ $before != "$after" ]]; then
                 info "the plugins: updated ${before:0:7} -> ${after:0:7}"
                 PLUGIN_UPDATED=1
@@ -99,7 +103,7 @@ plugins_clone() {
             fi
         fi
     fi
-    [[ -d $PLUGIN_CLONE/.git ]] && PLUGIN_COMMIT=$(git -C "$PLUGIN_CLONE" rev-parse --short HEAD)
+    [[ -d $PLUGIN_CLONE/.git ]] && PLUGIN_COMMIT=$(clone_git rev-parse --short HEAD)
     return 0
 }
 
@@ -145,7 +149,7 @@ plugins_composer_repos() {
 # composer_global_repo NAME: "type url symlink" of a repository in the librenms user's global Composer configuration.
 composer_global_repo() {
     local home
-    home=$(in_dir "$LNMS_DIR" as librenms env -u TERM php "$LNMS_DIR/scripts/composer_wrapper.php" --no-interaction config --global home 2>/dev/null | tail -n 1)
+    home=$(in_dir "$LNMS_DIR" as librenms env -u TERM php "$LNMS_DIR/scripts/composer_wrapper.php" --no-interaction config --global home 2>/dev/null | tail -n 1 || true)
     [[ -n $home && -f $home/config.json ]] || return 0
     python3 -I -c 'import json,sys
 r=(json.load(open(sys.argv[1])).get("repositories") or {})
@@ -204,3 +208,18 @@ plugins_enable() {
     fi
 }
 PLUGIN_BRANCH_USED=''
+
+# plugins_routes: LibreNMS caches its routes (composer install runs artisan optimize), and ./lnms plugin:add leaves
+# that cache as it was: without the plugins' routes their pages fail (Route [ansible.changes] not defined) until the
+# next composer install. LibreNMS' plugin:enable caches the routes again; so does the installer, when the cache lacks
+# the plugins' routes.
+plugins_routes() {
+    local cache
+    cache=$(find "$LNMS_DIR/bootstrap/cache" -maxdepth 1 -name 'routes-v*.php' -print -quit 2>/dev/null)
+    [[ -n $cache ]] || { detail "LibreNMS does not cache its routes"; return 0; }
+    if grep -q "'topology\.l2'" "$cache" && grep -q "'ansible\.changes'" "$cache"; then
+        detail "LibreNMS' route cache has the plugins' routes"
+        return 0
+    fi
+    act "cache LibreNMS' routes again, with the plugins' (./lnms route:cache)" lnms route:cache
+}
