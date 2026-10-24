@@ -6,7 +6,8 @@ server (x86_64), in one run: LibreNMS itself when the server has none, the [topo
 (the runner the Ansible plugin drives) with its project for LibreNMS, and [Oxidized](https://github.com/ytti/oxidized)
 (the backups the Ansible plugin takes before and after each batch). It sets up each part it finds missing and checks
 the parts that are there: a second run changes nothing that is right, and a run that was stopped picks up where it
-stopped. It never changes a LibreNMS it did not install.
+stopped. On a LibreNMS it did not install, it adds the plugins and leaves the web server, PHP, MariaDB and the
+configuration files (`.env`, `config.php`) as they are.
 
 * [Quick start](#quick-start)
 * [What it installs](#what-it-installs)
@@ -50,14 +51,16 @@ The parts, in the order a run sets them up (`--skip` and `--only` name them):
 | `semaphore` | Semaphore UI 2.19.17 (the version the plugin was tested with) and the project for LibreNMS | its release RPM (or tarball or binary), its own MariaDB database and user, `/etc/semaphore/config.json`, the service `semaphore` as the user `semaphore`, on `127.0.0.1:3000`, its admin; then the project "LibreNMS changes" as the [Ansible plugin's README](../../ansible/README.md#semaphore-ui-setup) sets it up: the key store entries "Devices: SSH login" and "Devices: enable password" (the devices' login of the options, or empty and named), a Git repository on the server (`file:///var/lib/semaphore/playbooks.git`) with the plugin's inventory script and the example fix playbooks of `ansible/contrib/`, the inventory "LibreNMS" (the script), the variable group "LibreNMS" (`LIBRENMS_URL`, `ANSIBLE_CHECK_MODE_MARKERS=true`, the secret `LIBRENMS_TOKEN`), the templates "Fix port descriptions" and "Fix spanning tree root priority", and the Task Runner user `librenms` with its API token. In LibreNMS: the inventory user `ansible-inventory` (role global-read: it sees the devices and changes nothing) with its API token; the Ansible plugin's runner connection, inventory user and fix templates, saved as its settings page saves them (with its checks and eventlog entries); the run and approve permissions of the admin; its connection test |
 | `oxidized` | Oxidized 0.37.0 with oxidized-web 0.18.1 (the versions the plugin was tested with), on by default | as [Oxidized's documentation](https://github.com/ytti/oxidized#rocky-linux-red-hat-enterprise-linux) installs it on Rocky: EPEL, CRB, Ruby (the `ruby:3.3` module stream on Rocky 9), the build packages, the gems, the user `oxidized` and the service `oxidized`; its devices come from LibreNMS' API (the LibreNMS user `oxidized`, global-read, with an API token of its own), its versions go to git, its REST API listens on `127.0.0.1:8888`, the devices' login is the one of the options; LibreNMS' Oxidized settings point at it (`oxidized.enabled`, `oxidized.url`, `oxidized.features.versioning`, `oxidized.reload_nodes`). A LibreNMS that already uses another Oxidized keeps it |
 
-**A LibreNMS the server has already** (one in `/opt/librenms` that the installer did not install) is never changed:
-not its web server, PHP, database, `.env` or `config.php`. The installer checks that its version is one the plugins
-support (26.10 or a later 26.x: they were developed and tested against 26.10) and stops with what to do when it is not
-(update it, `./daily.sh`), checks PHP 8.2+ with curl and mbstring and warns when its scheduler does not run; then it
-adds the plugins and the rest. It adds rows to LibreNMS' database (the plugins' tables, the users `ansible-inventory`
-and `oxidized` and their API tokens, the admin of `--admin-user` when there is none, the plugins' settings and
-LibreNMS' Oxidized settings) and, under SELinux, turns on `httpd_can_network_connect`. Semaphore UI gets a database of
-its own in the server's MariaDB (installed when the server has none).
+**A LibreNMS the server has already** (one in `/opt/librenms` that the installer did not install) keeps its web
+server, PHP, MariaDB settings, `.env` and `config.php` as they are. The installer checks that its version is one the
+plugins support (26.10 or a later 26.x: they were developed and tested against 26.10) and stops with what to do when
+it is not (update it, `./daily.sh`), checks PHP 8.2+ with curl and mbstring and warns when its scheduler does not run;
+then it adds the plugins and the rest: `./lnms plugin:add` changes LibreNMS' `composer.json` and `composer.lock` (as
+the plugins' READMEs install them), `./lnms route:cache` renews its route cache (when it has one), and the installer
+adds to LibreNMS' database (the plugins' tables, the users `ansible-inventory` and `oxidized` and their API tokens,
+the admin of `--admin-user` when there is none, the plugins' settings and LibreNMS' Oxidized settings) and, under
+SELinux, turns on `httpd_can_network_connect`. Semaphore UI gets a database of its own in the server's MariaDB
+(installed when the server has none).
 
 ## Options
 

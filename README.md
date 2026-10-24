@@ -800,8 +800,9 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
 
 **On a Rocky Linux 9 or 10 server, an installer sets up everything for a real-world test in one run:** LibreNMS (when
 the server has none), this plugin and the [Ansible plugin](ansible/README.md), Ansible with the network collections,
-Semaphore UI with its project for LibreNMS, and Oxidized; with an offline mode for servers that cannot reach GitHub. It
-never changes a LibreNMS it did not install. See [install/rocky/README.md](install/rocky/README.md):
+Semaphore UI with its project for LibreNMS, and Oxidized; with an offline mode for servers that cannot reach GitHub. On
+a LibreNMS it did not install, it adds the plugins and leaves the web server, PHP, MariaDB and the configuration files
+(`.env`, `config.php`) as they are. See [install/rocky/README.md](install/rocky/README.md):
 
 ```bash
 git clone https://github.com/agoodley/librenms_dashplugin && cd librenms_dashplugin
