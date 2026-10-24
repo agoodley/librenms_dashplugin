@@ -123,7 +123,9 @@ put_file() { printf '%s|%s\n' "$1" "$2" >>"$WORK/copies"; }
 put_text() { printf '%s' "$1" >"$WORK/snmp"; }
 run() { :; }; act() { :; }; service_enable_start() { :; }; restart_if_pending() { :; }; lnms_cron_account() { :; }
 rpm() { :; }; secret_for() { echo fixture-community; }
-DISTRO_SOURCE=; OFFLINE_DIR=
+DISTRO_SOURCE=; OFFLINE_DIR=$WORK
+download() { echo 'unexpected download in isolated fixture' >&2; return 99; }
+install() { echo 'unexpected install in isolated fixture' >&2; return 99; }
 lnms_completion; lnms_cron_scheduler; lnms_logrotate; lnms_snmpd
 ''')
         copies = (self.work / 'copies').read_text().splitlines()
