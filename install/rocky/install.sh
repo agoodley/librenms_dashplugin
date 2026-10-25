@@ -467,6 +467,10 @@ next_steps() {
     fi
     printf '  - Add your devices to LibreNMS (Devices > Add Device, or lnms device:add), with their LLDP/CDP neighbors discovered\n'
     printf '    for the topology plugin; set its Core devices (Plugin Admin > topology > Settings).\n'
+    if [[ ${WANT[semaphore]} == 1 || ${WANT[oxidized]} == 1 ]]; then
+        printf '  - Then their SSH host keys, without which Ansible and Oxidized refuse them: %s/device-keys.sh shows\n' "$INSTALLER_DIR"
+        printf '    each device'"'"'s fingerprints to confirm (run it again when a device is added or gets a new key).\n'
+    fi
     if [[ -z $DEVICE_USER && ( ${WANT[semaphore]} == 1 || ${WANT[oxidized]} == 1 ) ]]; then
         printf '  - The devices'"'"' login was not given: set it in Semaphore UI (project "%s", Key Store: "Devices: SSH login",\n' "$SEM_PROJECT"
         printf '    "Devices: enable password") and in %s (username, password, vars: enable), then\n' "$OX_CONF"

@@ -21,6 +21,8 @@
  *                                                               fix templates and the admin's permissions, saved as
  *                                                               its settings page saves them (with the same checks
  *                                                               and eventlog entries), then its connection test
+ *   device-addresses    {"oxidized_user"}                       every device, with where Ansible and Oxidized connect
+ *                                                               to it (device-keys.sh scans their SSH host keys there)
  */
 
 declare(strict_types=1);
@@ -34,6 +36,7 @@ use Agoodley\LibrenmsAnsible\Data\UserRepository;
 use Agoodley\LibrenmsAnsible\Http\Controllers\SettingsController;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Services\Eventlog;
+use Agoodley\LibrenmsAnsible\Services\InventoryService;
 use Agoodley\LibrenmsAnsible\Services\Plugin;
 use Agoodley\LibrenmsAnsible\Support\Access;
 use Agoodley\LibrenmsAnsible\Support\AuditText;
@@ -287,6 +290,61 @@ try {
                 $out['test'] = ['ok' => false, 'error' => 'the connection test failed: ' . $e->getMessage()];
             }
             answer($out);
+
+            // no break
+        case 'device-addresses':
+            // Every device, and where Ansible and Oxidized connect to it. Ansible: the Ansible plugin's inventory of
+            // every device (ansible_host, its overwrite IP else its hostname; port 22, as the inventory sets no
+            // ansible_port), or why a device is not in it. Oxidized: what LibreNMS' API gives it (list_oxidized(), for
+            // its token's user): the device's IP, which Oxidized connects to (it resolves the hostname when there is
+            // none), and its SSH port.
+            $devices = [];
+            foreach (DB::table('devices')->orderBy('device_id')->get(['device_id', 'hostname', 'sysName', 'disabled']) as $row) {
+                $devices[(int) $row->device_id] = ['id' => (int) $row->device_id, 'hostname' => (string) $row->hostname,
+                    'sysname' => (string) ($row->sysName ?? ''), 'disabled' => (bool) $row->disabled,
+                    'ansible' => null, 'ansible_left_out' => null, 'oxidized' => null];
+            }
+            $out = ['ansible' => null, 'oxidized' => null];
+            if (! class_exists(InventoryService::class) || ! Schema::hasTable('ansible_config')) {
+                $out['ansible'] = 'the Ansible plugin is not installed';
+            } elseif (($settings = (new SettingsRepository())->get())->error !== null) {
+                $out['ansible'] = "the Ansible plugin's settings cannot be read: " . $settings->error;
+            } else {
+                $inventory = (new InventoryService(new DeviceRepository(), $settings))->build();
+                $hosts = $inventory->hosts();
+                foreach ($inventory->names() as $id => $name) {
+                    if (isset($devices[$id])) {
+                        $devices[$id]['ansible'] = ['name' => $name, 'host' => (string) $hosts[$name]['ansible_host'], 'port' => 22];
+                    }
+                }
+                foreach ($inventory->leftOut() as $id => $reason) {
+                    if (isset($devices[$id])) {
+                        $devices[$id]['ansible_left_out'] = $reason['reason'];
+                    }
+                }
+            }
+            $oxidizedUser = find_user((string) ($input['oxidized_user'] ?? ''));
+            if (! \App\Facades\LibrenmsConfig::get('oxidized.enabled')) {
+                $out['oxidized'] = "LibreNMS' Oxidized integration is off";
+            } elseif ($oxidizedUser === null) {
+                $out['oxidized'] = 'LibreNMS has no user ' . ($input['oxidized_user'] ?? '') . ' (whose API token Oxidized reads the devices with)';
+            } else {
+                // as LibreNMS' API answers Oxidized's GET /api/v0/oxidized (LegacyApiController)
+                require_once base_path('includes/html/api_functions.inc.php');
+                $request = Illuminate\Http\Request::create('/api/v0/oxidized');
+                $request->setUserResolver(fn () => $oxidizedUser);
+                $ids = [];
+                foreach ($devices as $id => $device) {
+                    $ids[strtolower($device['hostname'])] = $id;
+                }
+                foreach ((array) list_oxidized($request)->getData(true) as $node) {
+                    $id = $ids[strtolower((string) ($node['hostname'] ?? ''))] ?? null;
+                    if ($id !== null) {
+                        $devices[$id]['oxidized'] = ['ip' => (string) ($node['ip'] ?? ''), 'port' => (int) ($node['ssh_port'] ?? 0) ?: 22];
+                    }
+                }
+            }
+            answer(['devices' => array_values($devices)] + $out);
 
             // no break
         default:
