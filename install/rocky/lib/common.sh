@@ -489,9 +489,13 @@ readable_copy() {
 # The devices' SSH host keys. Ansible (Semaphore UI's runs, through paramiko) and Oxidized (net-ssh) refuse a device
 # whose key they do not know or that changed, and both read /etc/ssh/ssh_known_hosts, as every SSH client of this
 # server does; only root may change it. --device-known-hosts FILE installs FILE there while the file there is the one
-# the installer wrote, or there is none: a file of the server's own is left as it is.
+# the installer wrote, or there is none: a file of the server's own is left as it is. device-keys.sh makes such a
+# file from the keys of LibreNMS' devices, confirmed one device at a time, and installs it the same way.
 KNOWN_HOSTS_FILE=/etc/ssh/ssh_known_hosts
 KNOWN_HOSTS_DONE=0
+
+# device_keys_tools: ssh-keyscan, which device-keys.sh takes the devices' keys with (most servers have it already).
+device_keys_tools() { dnf_install "ssh-keyscan (device-keys.sh takes the devices' SSH host keys with it)" openssh-clients; }
 
 # known_hosts_keys FILE: the keys of an OpenSSH known_hosts file (its lines that are not comments).
 known_hosts_keys() { grep -c -v -E '^[[:space:]]*(#|$)' "$1" || true; }
@@ -521,7 +525,7 @@ device_known_hosts() {
             "install the devices' verified SSH host keys as $dest ($(known_hosts_keys "$DEVICE_KNOWN_HOSTS") keys: Ansible and Oxidized check the devices against them)" || true
         if [[ $CHECK == 0 ]]; then state_set device_known_hosts "$(sha256sum "$dest" | cut -d' ' -f1)"; fi
     elif [[ ! -s $dest ]]; then
-        warn "Ansible and Oxidized refuse devices whose SSH host keys they do not know, and $dest has none: give the devices' verified keys with --device-known-hosts FILE before the first change or backup (install/rocky/README.md, Device SSH host keys)"
+        warn "Ansible and Oxidized refuse devices whose SSH host keys they do not know, and $dest has none: once the devices are in LibreNMS, run install/rocky/device-keys.sh (it shows each device's fingerprints to confirm), or give their verified keys with --device-known-hosts FILE (install/rocky/README.md, Device SSH host keys)"
     fi
 }
 

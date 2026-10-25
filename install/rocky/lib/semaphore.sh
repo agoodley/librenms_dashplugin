@@ -35,6 +35,7 @@ part_semaphore() {
     sem_service
     sem_playbook_repo
     # the devices' SSH host keys: Ansible checks them (the variable group's ansible_host_key_checking)
+    device_keys_tools
     device_known_hosts
     if [[ $CHECK == 1 ]]; then
         # --check does not log in to Semaphore UI (that would make a token): a run checks the project through its API

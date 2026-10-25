@@ -65,6 +65,7 @@ ox_previous_url() {
 # use), and the copy in Oxidized's home an earlier installer made. net-ssh trusts the keys of both files, so a key
 # removed from one would stay trusted through the other: the copy goes while it holds what the system file holds.
 ox_known_hosts() {
+    device_keys_tools
     device_known_hosts
     local copy=$OX_HOME/.ssh/known_hosts
     [[ -f $copy ]] || return 0

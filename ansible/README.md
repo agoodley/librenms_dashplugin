@@ -327,7 +327,8 @@ that could change Semaphore. Step by step (the names are suggestions):
    devices' login to whoever answers on a device's address: give the group the extra variable
    `ansible_host_key_checking: true` (*Extra variables* this time; a variable outweighs that environment variable), and
    the devices' verified SSH host keys to the runner's `/etc/ssh/ssh_known_hosts`, which Ansible then checks every
-   device against (the [installer for Rocky Linux](../install/rocky/README.md#device-ssh-host-keys) does both).
+   device against (the [installer for Rocky Linux](../install/rocky/README.md#device-ssh-host-keys) does both: its
+   `device-keys.sh` takes the keys of LibreNMS' devices and installs those you confirm).
 8. **The LibreNMS inventory** (*Inventory*): type *File*, path `inventory/librenms_inventory.py` in the repository of
    step 4, with the device key of step 3 as its user credentials (and the enable key as *Sudo credentials* when
    needed). Semaphore UI does not show inventory ids: save the plugin's connection without one and press *Test
