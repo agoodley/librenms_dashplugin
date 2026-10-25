@@ -75,13 +75,12 @@ echo "PASS  a changed key is shown, left out with --accept-new, and taken once c
 # a device LibreNMS does not have; a run while the installer runs
 run 2 --list no-such-device
 has 'LibreNMS has no device no-such-device' "no-such-device"
-flock /var/lib/librenms-installer/lock sleep 10 &
-holder=$!
-sleep 1
+# the installer's lock, held here as a run of the installer holds it
+exec 8>/var/lib/librenms-installer/lock
+flock -n 8 || fail "the installer's lock is held already"
 run 2
 has 'the installer runs' "(while the installer runs)"
-kill "$holder" 2>/dev/null || true
-wait "$holder" 2>/dev/null || true
+exec 8>&-
 echo "PASS  it refuses a device LibreNMS does not have, and a run while the installer runs"
 
 # back to the keys installed before, through device-keys.sh and the installer's state
