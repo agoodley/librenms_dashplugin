@@ -2,10 +2,11 @@
 # install/rocky/tests/device-logins-integration.sh NAME IP USER PASSWORD OTHER OTHER_IP: device-logins.sh on a test
 # system after tests/e2e.sh and device-keys-integration.sh. A second fake switch NAME at IP has only the login USER /
 # PASSWORD (fake-switch.sh NAME IP USER PASSWORD), not the default one: it is added to LibreNMS and its key taken
-# (device-keys.sh); a CSV file gives it its login; then a change through the Ansible plugin, with Oxidized's backups
-# before and after (e2e.sh), works on it, and still on OTHER (OTHER_IP), the switch of the default login; its line
-# removed, the login is gone from Oxidized, LibreNMS, Semaphore UI and the playbook repository (once confirmed); and
-# the file back, for the installer's second run, which keeps it. Run as root on the test system.
+# (device-keys.sh); a CSV file gives it its login, which the Ansible plugin's pages mark; then a change through the
+# Ansible plugin, with Oxidized's backups before and after (e2e.sh), works on it, and still on OTHER (OTHER_IP), the
+# switch of the default login; its line removed, the login is gone from Oxidized, LibreNMS, Semaphore UI, the
+# playbook repository and the plugin's pages (once confirmed); and the file back, for the installer's second run,
+# which keeps it. Run as root on the test system.
 set -euo pipefail
 usage='usage: device-logins-integration.sh NAME IP USER PASSWORD OTHER OTHER_IP'
 NAME=${1:?$usage} IP=${2:?$usage} USER_NAME=${3:?$usage} USER_PASSWORD=${4:?$usage} OTHER=${5:?$usage} OTHER_IP=${6:?$usage}
@@ -66,15 +67,48 @@ print(' '.join(sorted(s['name'] for s in env.get('secrets') or [])))
 call('DELETE', '/user/tokens/' + os.environ['T'])
 PY
 }
+device_id() {  # device_id HOSTNAME: its LibreNMS device id
+    # shellcheck disable=SC2016 # PHP code
+    (cd /opt/librenms && runuser -u librenms -- php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php";
+$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); echo DB::table("devices")->where("hostname", $argv[1])->value("device_id");' "$1")
+}
+JAR=$(mktemp) PANEL=$(mktemp) INVENTORY=$(mktemp)
+trap 'rm -f "$JAR" "$PANEL" "$INVENTORY"' EXIT
+web() { curl -s --noproxy '*' --max-time 120 -b "$JAR" -c "$JAR" "$@"; }
+signed_in=0
+page() {  # page PATH: a LibreNMS page as the installer's admin
+    if [[ $signed_in == 0 ]]; then
+        local token
+        token=$(web http://localhost/login | sed -n 's/.*<meta name="csrf-token" content="\([^"]*\)".*/\1/p' | head -n 1)
+        web -o /dev/null --data-urlencode "_token=$token" --data-urlencode "username=${INSTALLER_ADMIN_USER:-admin}" \
+            --data-urlencode "password=${INSTALLER_ADMIN_PASSWORD:-$(sed -n 's/^ADMIN_PASSWORD=//p' "$CRED" | head -n 1)}" http://localhost/login
+        signed_in=1
+    fi
+    web "http://localhost/$1"
+}
+marker() {  # marker ID: the Ansible plugin's own-login marker of device ID in its device panel and among the Inventory page's hosts
+    page "device/$1" >"$PANEL"
+    page plugin/ansible/inventory >"$INVENTORY"
+    if grep -q -F -- "$USER_PASSWORD" "$PANEL" "$INVENTORY"; then fail "the Ansible plugin's pages show the password of $NAME"; fi
+    python3 - "$1" "$PANEL" "$INVENTORY" <<'PY'
+import re, sys
+mark = re.compile(r'ans-own-login" data-state="([a-z_]+)"')
+panel = mark.search(open(sys.argv[2], encoding='utf-8', errors='replace').read())
+row = re.search(r'<tr data-device="%s">(.*?)</tr>' % sys.argv[1], open(sys.argv[3], encoding='utf-8', errors='replace').read(), re.S)
+host = mark.search(row.group(1)) if row else None
+print('%s/%s' % (panel.group(1) if panel else '-', host.group(1) if host else ('-' if row else 'not a host')))
+PY
+}
 
 # the switch in LibreNMS, and its key (the fake switches share theirs: it is known already, at another address)
 E2E_ADD_ONLY=1 "$HERE/e2e.sh" "$NAME" "$IP" >/dev/null || fail "e2e.sh could not add $NAME to LibreNMS"
 "$HERE/../device-keys.sh" --accept-new "$NAME" </dev/null >/dev/null || fail "device-keys.sh did not take the key of $NAME"
-# shellcheck disable=SC2016 # PHP code
-id=$(cd /opt/librenms && runuser -u librenms -- php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php";
-$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); echo DB::table("devices")->where("hostname", $argv[1])->value("device_id");' "$NAME")
+id=$(device_id "$NAME")
 [[ $id =~ ^[0-9]+$ ]] || fail "no LibreNMS device $NAME"
+other_id=$(device_id "$OTHER")
+[[ $other_id =~ ^[0-9]+$ ]] || fail "no LibreNMS device $OTHER"
 group=login-$id
+[[ $(marker "$id") == -/- ]] || fail "the Ansible plugin marks $NAME before it has a login of its own: $(marker "$id")"
 
 # the file: root's alone, a comment, a password with a comma; --list changes nothing
 (umask 077 && printf 'device,username,password,enable\n# %s has a login of its own\n%s,%s,"%s",\n' "$NAME" "$NAME" "$USER_NAME" "$USER_PASSWORD" >"$LOGINS")
@@ -94,6 +128,9 @@ grep -q -F "  $group:" "$OX_CONF" || fail "Oxidized's configuration has no group
 run 0 --file "$LOGINS"
 has 'Nothing needed a change.' "(a second run)"
 echo "PASS  device-logins.sh gives $NAME its own login: Oxidized's group $group, LibreNMS' mapping, the variable group's secrets, host_vars"
+[[ $(marker "$id") == own/own ]] || fail "the Ansible plugin does not mark $NAME as having its own login (device panel/Inventory page): $(marker "$id")"
+[[ $(marker "$other_id") == -/- ]] || fail "the Ansible plugin marks $OTHER, which has the default login: $(marker "$other_id")"
+echo "PASS  the Ansible plugin marks $NAME 'own login' in its device panel and on the Inventory page, and not $OTHER"
 
 # a change on it with its own login (the default one does not log in there), Oxidized's backups before and after
 SWITCH_USER=$USER_NAME SWITCH_PASSWORD=$USER_PASSWORD "$HERE/e2e.sh" "$NAME" "$IP" >/tmp/ci-e2e-own-login.out 2>&1 \
@@ -114,10 +151,12 @@ if grep -q -F "  $group:" "$OX_CONF"; then fail "Oxidized's configuration still 
 [[ $(host_vars) != *"$NAME.yml"* ]] || fail "the playbook repository still has inventory/host_vars/$NAME.yml"
 [[ " $(secrets) " != *" DEVICE_LOGIN_${id}_"* ]] || fail "the variable group still has the secrets of $NAME: $(secrets)"
 [[ $(cd /opt/librenms && runuser -u librenms -- ./lnms config:get oxidized.group_support) == false ]] || fail "Oxidized's group support is still on"
-echo "PASS  its line removed (once confirmed): its login is gone from Oxidized, LibreNMS, the variable group and the repository"
+[[ $(marker "$id") == -/- ]] || fail "the Ansible plugin still marks $NAME: $(marker "$id")"
+echo "PASS  its line removed (once confirmed): its login is gone from Oxidized, LibreNMS, the variable group, the repository and the plugin's pages"
 
 # and back, for the installer's second run (which must keep it)
 (umask 077 && printf 'device,username,password,enable\n%s,%s,"%s",\n' "$NAME" "$USER_NAME" "$USER_PASSWORD" >"$LOGINS")
 run 0 --file "$LOGINS"
 [[ $(group_of "$NAME") == "$group" ]] || fail "$NAME did not get its group back"
+[[ $(marker "$id") == own/own ]] || fail "the Ansible plugin does not mark $NAME again: $(marker "$id")"
 echo "PASS  and back again"
