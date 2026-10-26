@@ -1,10 +1,11 @@
-{{-- Device overview panel (Hooks\DeviceOverview, admins only): the device's latest changes and runs, and a link to a new
-     change on it. --}}
+{{-- Device overview panel (Hooks\DeviceOverview, admins only): the device's latest changes and runs, a link to a new
+     change on it, and its own-login marker. --}}
 <link href="{{ route('ansible.asset', 'ansible.css') }}?v={{ \Agoodley\LibrenmsAnsible\Http\Controllers\Controller::assetVersion() }}" rel="stylesheet">
 <div class="panel panel-default panel-condensed ans-device-panel" id="ans-device-panel">
     <div class="panel-heading">
         <i class="fa fa-terminal fa-lg icon-theme" aria-hidden="true"></i>
         <strong>Ansible</strong>
+        @include('ansible::partials.own-login', ['login' => $login ?? null])
         <span class="pull-right">
             <a class="btn btn-xs btn-default" href="{{ route('ansible.changes', ['device' => $device->device_id]) }}">All changes</a>
             <a class="btn btn-xs btn-default" href="{{ route('ansible.runs', ['device' => $device->device_id]) }}">All runs</a>
@@ -17,6 +18,10 @@
     </div>
     @if($error)
         <div class="panel-body text-danger">{{ $error }}</div>
+    @endif
+    @if(! empty($login) && $login['state'] !== \Agoodley\LibrenmsAnsible\Inventory\OwnLogins::OWN)
+        {{-- what does not apply as device-logins.sh gave it, said here too (a label's title does not show on a phone) --}}
+        <div class="panel-body" id="ans-device-login"><div class="alert alert-warning" style="margin: 0; padding: 6px 10px"><i class="fa fa-exclamation-triangle"></i> {{ $login['text'] }}.</div></div>
     @endif
     @if(! $error && $changes)
         {{-- three columns, so that it fits a phone like the runs below: the status under the change, who and when under the template --}}

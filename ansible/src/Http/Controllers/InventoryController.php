@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsAnsible\Http\Controllers;
 use Agoodley\LibrenmsAnsible\Changes\InventoryGuard;
 use Agoodley\LibrenmsAnsible\Data\ChangeRepository;
 use Agoodley\LibrenmsAnsible\Data\FetchRepository;
+use Agoodley\LibrenmsAnsible\Data\OwnLoginRepository;
 use Agoodley\LibrenmsAnsible\Inventory\Inventory;
 use Agoodley\LibrenmsAnsible\Services\Eventlog;
 use Agoodley\LibrenmsAnsible\Support\InventoryScript;
@@ -24,13 +25,14 @@ class InventoryController extends Controller
 
     /**
      * plugin/ansible/inventory: the inventory as the runner gets it with the inventory user's token (as a user who
-     * sees every device while none is chosen), the devices left out and why, the fetches and the setup steps.
+     * sees every device while none is chosen), the devices left out and why, the devices with a login of their own
+     * (from LibreNMS' Oxidized group mapping: never a login), the fetches and the setup steps.
      */
     public function show(): View
     {
         $data = ['inventory' => null, 'leftOut' => [], 'names' => [], 'fetches' => [], 'inventoryUser' => null, 'inventoryUserProblem' => null,
             'error' => $this->settings()->error, 'connection' => null, 'endpoint' => route('ansible.api.inventory'), 'assetVersion' => self::assetVersion(),
-            'mapErrors' => $this->settings()->platformMap()->errors()];
+            'mapErrors' => $this->settings()->platformMap()->errors(), 'logins' => [], 'loginsGone' => []];
         try {
             $service = $this->inventoryService();
             $inventoryUser = $service->inventoryUser();
@@ -47,7 +49,16 @@ class InventoryController extends Controller
             }
             $data['inventory'] = $inventory;
             $data['leftOut'] = $leftOut;
-            $data['names'] = $service->devices()->names(array_keys($leftOut + array_flip(array_keys($inventory->names()))));
+            $logins = new OwnLoginRepository();
+            $ownLogins = $logins->ownLogins();
+            foreach ($service->devices()->devices() as $deviceId => $row) {
+                $login = $ownLogins->of($deviceId, (string) $row['hostname'], fn (string $field) => $logins->value($deviceId, $field));
+                if ($login !== null) {
+                    $data['logins'][$deviceId] = $login;
+                }
+            }
+            $data['loginsGone'] = array_diff_key($ownLogins->given(), $service->devices()->exists());
+            $data['names'] = $service->devices()->names(array_keys($leftOut + array_flip(array_keys($inventory->names())) + $data['logins']));
             $data['fetches'] = (new FetchRepository())->all();
             $data['connection'] = (new Plugin())->connection()->forPage();
         } catch (\Throwable $e) {
