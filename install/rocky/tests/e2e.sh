@@ -9,9 +9,11 @@
 #  3. a change made with the template "Fix port descriptions" (the example playbook fix_port_descriptions.yml) on the
 #     switch: preview, create, dry run (proven by the plugin), approve, apply; the run changed the device;
 #  4. Oxidized's backups of it before and after the batch, the one after holding the new description.
-# The switch must listen on IP:22 with the login the installer was given (fake-switches: netops / netops-pw).
+# The switch must listen on IP:22 with the login the installer was given (fake-switches: netops / netops-pw), or with
+# the device's own (device-logins.sh), which SWITCH_USER and SWITCH_PASSWORD then give the test too.
 #
 #   e2e.sh NAME IP [INTERFACE]          e.g. e2e.sh inst-sw1 127.0.4.11 FastEthernet0/1
+#   E2E_ADD_ONLY=1 e2e.sh NAME IP       only step 1: the switch in LibreNMS
 #
 # Each step prints PASS or FAIL; the exit code is 0 when all passed. Verification of batches is switched off first
 # (in the plugin's settings, as an admin would): a switch without SNMP never has the fresh LibreNMS data it waits for.
@@ -64,6 +66,7 @@ if (! DB::table("ports")->where("device_id", $id)->where("ifIndex", 1)->exists()
 }
 echo $id;')
 [[ $id =~ ^[0-9]+$ ]] && pass "device $NAME ($IP) in LibreNMS (#$id)" || stop "device $NAME not added: $id"
+if [[ ${E2E_ADD_ONLY:-0} == 1 ]]; then printf '%d failures\n' "$FAILS"; exit "$FAILS"; fi
 
 # --- 2. Oxidized lists it (its service starts within a minute once LibreNMS has a device)
 for _ in $(seq 1 30); do
@@ -140,7 +143,13 @@ dry=$(field "$results" dry_result); result=$(field "$results" result)
 before=$(field "$results" before_status); after=$(field "$results" after_status)
 [[ $before == fresh && $after == fresh ]] && pass "Oxidized backups before and after the batch: fresh ($(field "$results" before_version | cut -c1-8) -> $(field "$results" after_version | cut -c1-8))" \
     || fail "Oxidized backups before/after the batch: $before / $after ($(field "$results" before_error) $(field "$results" after_error))"
-config=$(curl -s --noproxy '*' --max-time 20 "http://127.0.0.1:$OX_PORT/node/fetch/$NAME")
+# a device in a group (its own login: device-logins.sh) is <group>/<name> in Oxidized's repository: its full name
+# (nodes.json shows the group "default" for the others, whose full name is their name)
+node=$(curl -s --noproxy '*' --max-time 10 "http://127.0.0.1:$OX_PORT/nodes.json" | python3 -c 'import json, sys
+for n in json.load(sys.stdin):
+    if n.get("name") == sys.argv[1]:
+        print(n.get("full_name") or n["name"])' "$NAME" 2>/dev/null)
+config=$(curl -s --noproxy '*' --max-time 20 "http://127.0.0.1:$OX_PORT/node/fetch/${node:-$NAME}")
 grep -q "description $DESC" <<<"$config" && pass "Oxidized's backup of $NAME holds the new description ($DESC)" || fail "Oxidized's backup of $NAME lacks the description '$DESC' (${config:0:200})"
 
 printf '%d failures\n' "$FAILS"

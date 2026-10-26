@@ -1,6 +1,7 @@
 #!/bin/bash
-# install/rocky/tests/fake-switch.sh NAME IP: start a fake Cisco IOS switch NAME on IP:22 inside a test system, the one
-# tests/e2e.sh drives (SSH only; login netops / netops-pw, enable password netops-pw): fake-switches 1.5.0 with
+# install/rocky/tests/fake-switch.sh NAME IP [USER PASSWORD]: start a fake Cisco IOS switch NAME on IP:22 inside a test
+# system, the one tests/e2e.sh drives (SSH only; login USER / PASSWORD, by default netops / netops-pw, the installer's
+# default login in CI; its enable password is the same password): fake-switches 1.5.0 with
 # tests/fake-switches.patch, as the lab runs it, in a Python 3.12 virtual environment in /opt/fakesw. The first call
 # makes the environment (pip with tests/fake-switches-requirements.txt: fake-switches 1.5.0 asks for a Twisted that
 # no longer builds on Python 3) and needs PyPI and dnf's repositories (patch). Run as root on the test system.
@@ -8,7 +9,8 @@
 # installer's --device-known-hosts: like most Cisco IOS releases, the switch offers its RSA key's SHA-1 signature
 # (ssh-rsa) besides the SHA-2 ones.
 set -euo pipefail
-NAME=${1:?usage: fake-switch.sh NAME IP} IP=${2:?usage: fake-switch.sh NAME IP}
+NAME=${1:?usage: fake-switch.sh NAME IP [USER PASSWORD]} IP=${2:?usage: fake-switch.sh NAME IP [USER PASSWORD]}
+USER_NAME=${3:-netops} USER_PASSWORD=${4:-netops-pw}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VENV=/opt/fakesw
 SITE=$VENV/lib/python3.12/site-packages
@@ -26,7 +28,7 @@ if listening; then
     echo "something listens on $IP:22 already" >&2
     exit 1
 fi
-setsid nohup "$VENV/bin/fake-switches" --model cisco_generic --hostname "$NAME" --username netops --password netops-pw \
+setsid nohup "$VENV/bin/fake-switches" --model cisco_generic --hostname "$NAME" --username "$USER_NAME" --password "$USER_PASSWORD" \
     --listen-host "$IP" --listen-port 22 >"/var/log/fake-switch-$NAME.log" 2>&1 </dev/null &
 for _ in $(seq 1 30); do
     if listening; then

@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
-        run: shellcheck -x install/rocky/install.sh install/rocky/device-keys.sh install/rocky/tests/*.sh install/rocky/tests/stubs/[a-z]*
+        run: shellcheck -x install/rocky/install.sh install/rocky/device-keys.sh install/rocky/device-logins.sh install/rocky/tests/*.sh install/rocky/tests/stubs/[a-z]*
       - name: The installer's Python and PHP helpers
         run: |
           python3 -m py_compile install/rocky/lib/*.py
@@ -90,6 +90,10 @@ jobs:
           docker exec inst /src/install/rocky/tests/e2e.sh inst-sw1 127.0.4.11
       - name: device-keys.sh (it knows the fake switch's key; a new and a changed key, confirmed or not)
         run: docker exec inst /src/install/rocky/tests/device-keys-integration.sh inst-sw1 127.0.4.11
+      - name: device-logins.sh (a second fake switch whose only login is its own; a change and its backups there)
+        run: |
+          docker exec inst /src/install/rocky/tests/fake-switch.sh inst-sw2 127.0.4.12 local2 'local2,pw'
+          docker exec inst /src/install/rocky/tests/device-logins-integration.sh inst-sw2 127.0.4.12 local2 'local2,pw' inst-sw1 127.0.4.11
       - name: A second run changes nothing
         run: |
           $RUN | tee /tmp/second.out

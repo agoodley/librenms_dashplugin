@@ -283,7 +283,12 @@ that could change Semaphore. Step by step (the names are suggestions):
    change.
 3. **The device credentials** in the project's *Key Store*: a *Login with password* key (or an SSH key) for the
    devices, and the enable password as a key too when your platforms need it (the plugin's platform mapping sets
-   `ansible_become` and `ansible_become_method: enable` for IOS, IOS-XE and EOS).
+   `ansible_become` and `ansible_become_method: enable` for IOS, IOS-XE and EOS). A device with a login of its own
+   gets it from the repository's `inventory/host_vars/<inventory name>.yml` (`ansible_user`, `ansible_password`,
+   `ansible_become_password`), which outweighs the key store's login; its passwords can stay out of the repository as
+   secrets of the variable group of step 7, read with `{{ lookup('ansible.builtin.env', 'NAME') }}` (the
+   [installer for Rocky Linux](../install/rocky/README.md#device-logins)'s `device-logins.sh` sets that up from a CSV
+   file).
 4. **The repository** of your playbooks (*Repositories*): only reviewed playbooks belong there (see [Safety](#safety)).
    Give it a **Git URL** (`https://`, `ssh://` or `file://`), not a local path: the runner then records the commit of
    each task, and the plugin applies a change with the commit its dry run ran (a local path records none, and a change

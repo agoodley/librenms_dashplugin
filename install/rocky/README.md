@@ -34,10 +34,13 @@ install/rocky/install.sh --check                      # what it would do; change
 INSTALLER_DEVICE_PASSWORD='the devices password' install/rocky/install.sh --device-user netops --server-name librenms.example.com
 # then add the devices to LibreNMS, and confirm their SSH host keys by their fingerprints:
 install/rocky/device-keys.sh
+# devices with a login of their own (the others use the one above): a line each in /root/device-logins.csv, then
+install/rocky/device-logins.sh
 ```
 
 Ansible and Oxidized refuse a device whose SSH host key they do not know: `device-keys.sh` takes the keys of the
-devices in LibreNMS and installs those you confirm ([Device SSH host keys](#device-ssh-host-keys)).
+devices in LibreNMS and installs those you confirm ([Device SSH host keys](#device-ssh-host-keys)). Every device logs in
+with the default login unless `device-logins.sh` gives it its own ([Device logins](#device-logins)).
 
 Run the installer from a reviewed, root-owned checkout whose parent directories are not writable by service
 accounts. Do not run the copy under `/opt/librenms-plugins` as root. Privileged cron, scheduler, SNMP, logrotate,
@@ -199,6 +202,61 @@ How Ansible and Oxidized check the keys:
 * An earlier installer put the keys in `/home/oxidized/.ssh/known_hosts`: a run removes that copy while it holds what
   `/etc/ssh/ssh_known_hosts` holds, and warns about it otherwise (Oxidized trusts the keys of both).
 
+## Device logins
+
+Every device logs in with the default login, the one the installer was given (`--device-user` and
+`INSTALLER_DEVICE_PASSWORD`, a RADIUS account for instance), unless it has a login of its own.
+`install/rocky/device-logins.sh` gives devices their own logins, from a CSV file that root alone may read
+(`/root/device-logins.csv`; `--file FILE` for another). The file has a header line, then a line per device that has its
+own login; `#` starts a comment line:
+
+```text
+device,username,password,enable
+sw5.example.com,localadmin,S3cret!,En4ble!
+10.20.0.7,admin2,"pass,with,commas",
+```
+
+* **`device`:** its hostname, sysName, IP address or LibreNMS device id.
+* **`enable`:** its enable password. When it is empty, the password itself is used.
+* Quote a value that has a comma or a quote, as spreadsheets export it; other columns are left out.
+
+Run it as root once the devices are in LibreNMS, and again after each change of the file (`--list` shows what it would
+change, and changes nothing):
+
+```bash
+(umask 077; vi /root/device-logins.csv)    # root's alone: it holds the passwords
+install/rocky/device-logins.sh --list
+install/rocky/device-logins.sh
+```
+
+What it does for each device of the file:
+
+* **Oxidized** (the backups): a group `login-<device id>` with the device's login in Oxidized's configuration, which the
+  installer keeps on its later runs. LibreNMS gives Oxidized the device's group (`oxidized.maps.group.hostname`, with
+  `oxidized.group_support` on). Its backups go to the same repository as the others' (`single_repo`), as
+  `login-<id>/<hostname>`: the ones from before it had its own login stay under its name.
+* **Ansible** (the plugin's changes): `inventory/host_vars/<name>.yml` in the playbook repository, named as the
+  plugin's inventory names the device. It sets `ansible_user` and reads the passwords from the secrets
+  `DEVICE_LOGIN_<id>_PASSWORD` and `DEVICE_LOGIN_<id>_ENABLE` of the variable group "LibreNMS": Semaphore UI puts them
+  in the environment of the project's runs, and they never go into the repository. These variables outweigh the login
+  of the project's key store, which the other devices use.
+* **A device whose line is gone** goes back to the default login: its group, mapping, secrets and host_vars file are
+  removed. The run asks first, and `--yes` lets it do so without asking (a run without a terminal stops with what it
+  would remove). An empty file with only the header line removes every device's own login.
+
+The passwords stay out of LibreNMS: they are in the file, in Oxidized's configuration (the oxidized user's alone) and
+in Semaphore UI's secrets, and never on the screen, in a log or on a command line. The run's state
+(`/var/lib/librenms-installer/state`) keeps only a salted hash of each device's login, to tell what changed.
+
+Things to know:
+
+* LibreNMS gives a device its group by its hostname: run it again after renaming a device in LibreNMS.
+* LibreNMS' other entries of `oxidized.maps.group` stay as they are. A map of another field (os, location) that
+  matches one of these devices gives it that group instead, and with it that group's login.
+* A change in progress keeps the logins it was dry-run with: its batches run the commit of its dry run.
+* A host_vars file of the same name that `device-logins.sh` did not write stays as it is (it warns), and so does an
+  Oxidized configuration changed by hand: then it stops, and the groups are yours to add.
+
 ## Offline mode
 
 When the server cannot reach GitHub (or should not download anything but packages), give local copies of what it would
@@ -258,7 +316,9 @@ package's), `/etc/cron.d/librenms`, `/etc/logrotate.d/librenms`,
 `/etc/systemd/system/librenms-scheduler.{service,timer}`, `semaphore.service` and `oxidized.service`,
 `/etc/semaphore/config.json`, `~oxidized/.config/oxidized/config`, `/etc/ssh/ssh_known_hosts` from
 `--device-known-hosts` or `device-keys.sh` (unless the server has one of its own) and `device-keys.sh`'s
-`/root/device-known-hosts`, `/usr/bin/lnms`, the bash completion of lnms; the
+`/root/device-known-hosts`, `/usr/bin/lnms`, the bash completion of lnms; for `device-logins.sh` (from your
+`/root/device-logins.csv`): Oxidized's groups, LibreNMS' `oxidized.group_support` and `oxidized.maps.group.hostname`,
+the variable group's secrets `DEVICE_LOGIN_*` and the playbook repository's `inventory/host_vars/`; the
 librenms user's global Composer configuration (`/opt/librenms/.config/composer/config.json`: the two path
 repositories); the installer's own `/var/lib/librenms-installer/` (what earlier runs did),
 `/var/log/librenms-installer/` and `/root/librenms-installer-credentials`.
@@ -305,14 +365,16 @@ the last lines of the command's output, what to do, and the log.
    to confirm each device's by its fingerprints ([Device SSH host keys](#device-ssh-host-keys)). Until then Ansible and
    Oxidized refuse the devices: no backup, and no change past its dry run. Run it again when you add a device or one
    gets a new key.
-4. **The devices' login**, when you did not give it: in Semaphore UI (project "LibreNMS changes", *Key Store*: "Devices:
+4. **Devices with a login of their own:** a line each in `/root/device-logins.csv`, then `install/rocky/device-logins.sh`
+   ([Device logins](#device-logins)); the others keep the default login.
+5. **The devices' login**, when you did not give it: in Semaphore UI (project "LibreNMS changes", *Key Store*: "Devices:
    SSH login" and "Devices: enable password") and in `~oxidized/.config/oxidized/config` (`username`, `password`,
    `vars: enable`), then `systemctl restart oxidized`. Or run the installer again with `--device-user` and
    `INSTALLER_DEVICE_PASSWORD`. Oxidized does not start while LibreNMS has no device (its service tries again every
    minute).
-5. **Semaphore UI** listens on the server only: `ssh -L 3000:127.0.0.1:3000 root@<server>`, then `http://localhost:3000`
+6. **Semaphore UI** listens on the server only: `ssh -L 3000:127.0.0.1:3000 root@<server>`, then `http://localhost:3000`
    (the admin's login).
-6. **The first change:** *Overview > Plugins > Ansible > Changes > New change* (or *Fixes*). Review the example fix
+7. **The first change:** *Overview > Plugins > Ansible > Changes > New change* (or *Fixes*). Review the example fix
    playbooks first (Cisco IOS); add your own to the playbook repository (as the semaphore user, who owns it: `sudo -u
    semaphore git clone /var/lib/semaphore/playbooks.git /tmp/playbooks`, then commit and push as semaphore) with a
    template each, as the Ansible plugin's README describes. Its defaults ask for an approval (the admin holds the
@@ -341,8 +403,9 @@ the last lines of the command's output, what to do, and the log.
   endpoint, Oxidized and LibreNMS' Oxidized settings.
 * `e2e.sh NAME IP`: a fake Cisco IOS switch added to LibreNMS, then a change through the Ansible plugin's pages with
   the template "Fix port descriptions": preview, dry run (proven), approval, apply, and Oxidized's backups before and
-  after the batch, the one after with the new description. `fake-switch.sh NAME IP` starts the switch in a test system
-  (SSH only, `netops` / `netops-pw`): [fake-switches](https://pypi.org/project/fake-switches/) 1.5.0 with
+  after the batch, the one after with the new description (`E2E_ADD_ONLY=1`: only the switch in LibreNMS;
+  `SWITCH_USER` and `SWITCH_PASSWORD`: a switch with a login of its own). `fake-switch.sh NAME IP [USER PASSWORD]`
+  starts the switch in a test system (SSH only, by default `netops` / `netops-pw`): [fake-switches](https://pypi.org/project/fake-switches/) 1.5.0 with
   `fake-switches.patch` (`show privilege`, `terminal`, `end`, the enable password under Python 3, `spanning-tree vlan
   <list> priority <n>`: what `cisco.ios` and the example playbooks need), on the versions of
   `fake-switches-requirements.txt` (fake-switches asks for a Twisted that no longer builds on Python 3), as the lab
@@ -358,6 +421,11 @@ the last lines of the command's output, what to do, and the log.
   Oxidized connect to it and knows its key; a file without the key gets it only once confirmed, and is installed; a
   changed key is shown, left out with `--accept-new` and taken once confirmed; it refuses a device LibreNMS does not
   have and a run while the installer runs; at the end the keys installed before are installed again.
+* `device-logins-integration.sh NAME IP USER PASSWORD OTHER OTHER_IP`: `device-logins.sh` with a second fake switch
+  whose only login is its own: it gets its group in Oxidized and LibreNMS' mapping, the variable group's secrets and
+  its host_vars file; a change on it through the Ansible plugin works with Oxidized's backups before and after, and
+  still on the switch of the default login; its line removed (once confirmed), its login is gone everywhere; then it
+  gets it back, which the installer's next run keeps.
 * `diagnose.sh [--run-poller]`: crond and its journal, LibreNMS' cron file, pollers and log, the services; with
   `--run-poller` then the poller cron job as cron runs it. CI prints it into the job log when a step fails, and
   `verify.sh` when LibreNMS' poller check fails (it then waits for cron's next run and checks again).
@@ -369,15 +437,16 @@ the last lines of the command's output, what to do, and the log.
   Semaphore UI's settings and variable group, Oxidized's configuration, the device keys, the files root installs, Git,
   pip and SQL as the service accounts see them, copies of what they may not read) and `device-keys.sh`'s core against
   a fake ssh-keyscan (new, changed, revoked and wildcard keys, a device's name and IP address, its SSH port, what it
-  asks and what it writes).
+  asks and what it writes), and `device-logins.sh`'s parts (its CSV file and what it says of it, Oxidized's groups
+  written and read back, the variable group's secrets against a fake API).
 * `stubs/`: `getenforce`, `firewall-cmd`, `semanage`, `setsebool`, ... that record their calls: with them first on
   `PATH`, a container (where SELinux is disabled and firewalld does not run) goes through the installer's SELinux and
   firewalld steps.
 
 The CI workflow `.github/workflows/installer.yml` runs shellcheck and `unit.sh`, then the installer on Rocky Linux 9
 and 10 containers (the online path: LibreNMS, its packages and Semaphore UI from GitHub), `verify.sh`, a run with the
-fake switch's host key (`--device-known-hosts`), `security-integration.sh`, `e2e.sh`, `device-keys-integration.sh`, a
-second run that must change nothing, the plugins from a checkout in `/root` and from the repository's URL with the
+fake switch's host key (`--device-known-hosts`), `security-integration.sh`, `e2e.sh`, `device-keys-integration.sh`,
+`device-logins-integration.sh` with a second fake switch, a second run that must change nothing, the plugins from a checkout in `/root` and from the repository's URL with the
 workflow's token; on changes to `install/` and on demand.
 
 ## Undoing it
@@ -385,9 +454,10 @@ workflow's token; on changes to `install/` and on demand.
 There is no uninstaller; what it did is listed [above](#what-it-changes-on-the-server). For the plugins alone, follow
 their READMEs (*Removing*: `./lnms migrate:reset --path=...` and `./lnms plugin:remove` of each, then
 `rm -rf /opt/librenms-plugins` and the two repositories of the librenms user's global Composer configuration). For the
-rest, as root:
+rest, as root (first the devices' own logins, while Oxidized and Semaphore UI are there: an empty file of logins):
 
 ```bash
+printf 'device,username,password,enable\n' >/root/device-logins.csv && install/rocky/device-logins.sh --yes
 systemctl disable --now oxidized semaphore
 rm -f /etc/systemd/system/oxidized.service /etc/systemd/system/semaphore.service && systemctl daemon-reload
 gem uninstall -a -x oxidized oxidized-web            # and the gems they brought, if nothing else uses them
@@ -397,6 +467,7 @@ mysql -e "DROP DATABASE semaphore; DROP USER 'semaphore'@'localhost'; DROP USER 
 cd /opt/librenms && sudo -u librenms ./lnms config:set oxidized.enabled false   # a LibreNMS that stays
 rm -rf /var/lib/librenms-installer /var/log/librenms-installer /root/librenms-installer-credentials
 rm -f /etc/ssh/ssh_known_hosts /root/device-known-hosts   # if it holds only the devices' keys (device-keys.sh's)
+rm -f /root/device-logins.csv
 ```
 
 and, for a LibreNMS it installed, as LibreNMS' own components are removed: `systemctl disable --now nginx php-fpm

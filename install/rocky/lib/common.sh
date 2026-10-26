@@ -282,6 +282,14 @@ state_set() {
     _kv_set "$STATE_FILE" "$1" "$2" "# install/rocky/install.sh: what earlier runs did (do not edit)"
     log "state: $1=$2"
 }
+state_unset() {
+    [[ $CHECK == 1 || ! -f $STATE_FILE ]] && return 0
+    local tmp; tmp=$(umask 077 && mktemp "$(dirname "$STATE_FILE")/.$(basename "$STATE_FILE").XXXXXX")
+    grep -v "^$1=" "$STATE_FILE" >"$tmp" || true
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$STATE_FILE"
+    log "state: $1 removed"
+}
 
 cred_get() { _kv_get "$CRED_FILE" "$1"; }
 cred_unset() {
