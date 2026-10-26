@@ -30,7 +30,8 @@ This is phases 1 to 4 of [change automation with Ansible](../ROADMAP.md#change-a
 * **Fixes:** the topology plugin's findings whose fix is clear, with what each fix changes; *Fix the selected* opens a
   new change made from them, its answers computed from the findings.
 * **Runs:** each run of a change (its dry run or a batch) with live status, per-device result and the Ansible log.
-* **Inventory:** what the runner gets from LibreNMS, the devices left out and why, and the setup steps.
+* **Inventory:** what the runner gets from LibreNMS, the devices left out and why, the devices with a login of their
+  own, and the setup steps.
 * An **Ansible** panel on each device's overview page, and **Settings** in Plugin Admin.
 
 ![A change applied in batches, waiting for an admin after its first batch](docs/images/change-batches-paused.png)
@@ -288,7 +289,7 @@ that could change Semaphore. Step by step (the names are suggestions):
    `ansible_become_password`), which outweighs the key store's login; its passwords can stay out of the repository as
    secrets of the variable group of step 7, read with `{{ lookup('ansible.builtin.env', 'NAME') }}` (the
    [installer for Rocky Linux](../install/rocky/README.md#device-logins)'s `device-logins.sh` sets that up from a CSV
-   file).
+   file; the Inventory page and the device panel then mark those devices, see [Using it](#using-it)).
 4. **The repository** of your playbooks (*Repositories*): only reviewed playbooks belong there (see [Safety](#safety)).
    Give it a **Git URL** (`https://`, `ssh://` or `file://`), not a local path: the runner then records the commit of
    each task, and the plugin applies a change with the commit its dry run ran (a local path records none, and a change
@@ -602,6 +603,15 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   last fetch (when, as which user, how many hosts) and a JSON download of the inventory.
 * **Device panel:** the device's latest changes (with its dry run and its result there) and runs, and *New change on
   this device*.
+* **Own logins** (read only): a device that the installer's `device-logins.sh` gave a login of its own, instead of the
+  default one of the runner's key store and Oxidized, is marked *own login* among the Inventory page's hosts and in its
+  device panel, and the Inventory page counts them. The plugin reads this from LibreNMS' Oxidized group mapping
+  (`device-logins.sh` gives the device the group `login-<device id>` by its hostname) and decides it as LibreNMS
+  decides which group Oxidized gets; it never sees a username or a password. When a device's own login does not apply
+  as `device-logins.sh` gave it, it says why and what to do instead: the device was renamed, `oxidized.group_support`
+  is off, another of LibreNMS' Oxidized map rules wins over it (for example a rule by os added later in LibreNMS'
+  settings), or the device has the hostname of another device's login; and it lists the rules of devices that are
+  gone.
 * **Eventlog:** each target gets entries (type `ansible`) for every step of a change: created, the dry run launched and
   what it found for that device ("would change", or an error when it is not proven to be a dry run), the approval
   asked for and given, the apply, its maintenance window, its backups (each fresh one with the version Oxidized keeps,

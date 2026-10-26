@@ -248,6 +248,11 @@ The passwords stay out of LibreNMS: they are in the file, in Oxidized's configur
 in Semaphore UI's secrets, and never on the screen, in a log or on a command line. The run's state
 (`/var/lib/librenms-installer/state`) keeps only a salted hash of each device's login, to tell what changed.
 
+In LibreNMS, the Ansible plugin marks these devices *own login*, read only, on its Inventory page and in their device
+panel, from LibreNMS' Oxidized group mapping (never the login itself). When one does not apply as `device-logins.sh`
+gave it (a renamed device, group support turned off, another map rule of LibreNMS' that wins, a device that is gone),
+the marker says why and what to do ([Own logins](../../ansible/README.md#using-it)).
+
 Things to know:
 
 * LibreNMS gives a device its group by its hostname: run it again after renaming a device in LibreNMS.

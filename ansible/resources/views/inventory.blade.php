@@ -24,6 +24,8 @@
         'withheld' => 'reached elsewhere than its change\'s dry run recorded'];
     $script = 'inventory/librenms_inventory.py';
     $fetch = $inventoryUser['fetch'] ?? null;
+    $ownLoginCount = count(array_filter($logins, fn ($login) => $login['state'] === \Agoodley\LibrenmsAnsible\Inventory\OwnLogins::OWN));
+    $loginProblems = array_filter($logins, fn ($login) => $login['state'] !== \Agoodley\LibrenmsAnsible\Inventory\OwnLogins::OWN);
 @endphp
 
 @section('content')
@@ -71,7 +73,27 @@
                 @endif
             @endif
         </div>
+        @if($logins || $loginsGone)
+            <div class="ans-card ans-{{ $loginProblems || $loginsGone ? 'warning' : 'info' }}" id="ans-own-logins">
+                <h4>Own logins</h4>
+                <div class="ans-card-value">{{ $ownLoginCount }}</div>
+                <p>devices that log in with a login of their own (install/rocky/device-logins.sh), the others with the default one{{ $loginProblems || $loginsGone ? '; below, the ones that do not apply' : '' }}</p>
+            </div>
+        @endif
     </div>
+
+    @if($loginProblems || $loginsGone)
+        <div class="alert alert-warning" id="ans-own-login-problems"><i class="fa fa-exclamation-triangle"></i> Logins of their own that do not apply as device-logins.sh gave them:
+            <ul style="margin: 4px 0 0">
+                @foreach($loginProblems as $deviceId => $login)
+                    <li data-device="{{ $deviceId }}" data-state="{{ $login['state'] }}"><a href="{{ url('device/' . $deviceId) }}">{{ $names[$deviceId] ?? '#' . $deviceId }}</a>: {{ $login['text'] }}.</li>
+                @endforeach
+                @foreach($loginsGone as $deviceId => $hostname)
+                    <li data-gone="{{ $deviceId }}">device #{{ $deviceId }} ({{ \Agoodley\LibrenmsAnsible\Inventory\UntrustedText::line($hostname, 100) }}) is not in LibreNMS any more, and its group stays in
+                        LibreNMS' Oxidized map rules: delete its line from the file, then run device-logins.sh again.</li>
+                @endforeach
+            </ul></div>
+    @endif
 
     @if($fetch && \Agoodley\LibrenmsAnsible\Support\InventoryScript::outdated($fetch['script_version'] ?? null))
         <div class="alert alert-warning" id="ans-script-outdated"><i class="fa fa-exclamation-triangle"></i> The runner fetched the inventory with version
@@ -169,7 +191,8 @@
                         <td class="ans-wrap"><a href="{{ url('device/' . $vars['librenms_device_id']) }}">{{ $names[$vars['librenms_device_id']] ?? $vars['librenms_hostname'] }}</a></td>
                         <td class="ans-code">{{ $vars['ansible_host'] }}</td>
                         <td class="ans-code">{{ $vars['ansible_network_os'] }}</td>
-                        <td class="ans-code" title="{{ $vars['ansible_connection'] }}">{{ \Illuminate\Support\Str::afterLast($vars['ansible_connection'], '.') }}{{ ! empty($vars['ansible_become']) ? ' + enable' : '' }}</td>
+                        <td><span class="ans-code" title="{{ $vars['ansible_connection'] }}">{{ \Illuminate\Support\Str::afterLast($vars['ansible_connection'], '.') }}{{ ! empty($vars['ansible_become']) ? ' + enable' : '' }}</span>
+                            @include('ansible::partials.own-login', ['login' => $logins[$vars['librenms_device_id']] ?? null, 'hostName' => $name])</td>
                         <td class="ans-wrap" style="font-size: 12px">
                             {{ $vars['librenms_os'] }}@if($vars['librenms_sysname']) · {{ $vars['librenms_sysname'] }}@endif
                             @if($vars['librenms_hardware']) · {{ $vars['librenms_hardware'] }}@endif
