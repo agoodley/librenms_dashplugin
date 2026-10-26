@@ -3,6 +3,8 @@
     python3 -I semaphore_api.py setup < request.json      the project for LibreNMS, as the Ansible plugin's README
                                                            sets it up (see install.sh's part semaphore)
     python3 -I semaphore_api.py token-delete < request.json
+    python3 -I semaphore_api.py logins < request.json      the secrets of the devices' own logins in the variable
+                                                           group (device-logins.sh)
 
 The request is a JSON object on stdin (the API token and the secrets never go on a command line); the answer is a
 JSON object on stdout ({"error": ...} and exit code 1 when something fails). Each object is found by its name, made
@@ -246,11 +248,48 @@ def token_delete(req):
     return {}
 
 
+def logins(req):
+    """The secrets of the devices' own logins (environment secrets of the variable group, named with the prefix, which
+    their host_vars files read): made when missing, set again when the request lists them as changed, removed when
+    the request no longer has them. The group's other secrets and variables stay as they are."""
+    api = Api(req['url'], req['token'])
+    project = by_name(api.call('GET', '/projects'), req['project'])
+    if project is None:
+        raise ApiError('Semaphore UI has no project "%s" (run install.sh first)' % req['project'])
+    p = project['id']
+    env = by_name(api.call('GET', '/project/%d/environment' % p), req['environment'])
+    if env is None:
+        raise ApiError('the project "%s" has no variable group "%s" (run install.sh first)' % (req['project'], req['environment']))
+    env = api.call('GET', '/project/%d/environment/%d' % (p, env['id']))
+    prefix, wanted, changed = req['prefix'], req['secrets'], set(req.get('changed') or [])
+    if not prefix or any(not name.startswith(prefix) for name in wanted):
+        raise ApiError('every secret of the devices\' logins starts with the prefix')
+    known = {s['name']: s for s in env.get('secrets') or [] if s.get('type') == 'env'}
+    updates = []
+    for name, value in sorted(wanted.items()):
+        if name not in known:
+            updates.append({'type': 'env', 'name': name, 'secret': value, 'operation': 'create'})
+        elif name in changed:
+            updates.append({'id': known[name]['id'], 'type': 'env', 'name': name, 'secret': value, 'operation': 'update'})
+    for name, secret in sorted(known.items()):
+        if name.startswith(prefix) and name not in wanted:
+            updates.append({'id': secret['id'], 'type': 'env', 'name': name, 'operation': 'delete'})
+    if updates:
+        body = {'id': env['id'], 'name': env['name'], 'project_id': p, 'json': env.get('json') or '{}', 'env': env.get('env') or '{}',
+                'secrets': updates}
+        if 'password' in env:
+            body['password'] = env['password']
+        api.call('PUT', '/project/%d/environment/%d' % (p, env['id']), body)
+        for u in updates:
+            changes.append('the secret %s %s' % (u['name'], {'create': 'added', 'update': 'set again', 'delete': 'removed'}[u['operation']]))
+    return {'changes': changes}
+
+
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else ''
     try:
         req = json.load(sys.stdin)
-        handler = {'setup': setup, 'token-delete': token_delete}.get(command)
+        handler = {'setup': setup, 'token-delete': token_delete, 'logins': logins}.get(command)
         if handler is None:
             raise ApiError('unknown command %r' % command)
         print(json.dumps(handler(req)))

@@ -145,10 +145,68 @@ ox_librenms_user() {
 }
 OX_TOKEN=''
 
+# ox_config_values: what the Oxidized configuration the installer wrote holds, as JSON: the default login's username,
+# LibreNMS' URL and the token of its source (librenms_url, token), the REST API's address and port (listen, port), the
+# server name of its git e-mail (server), and the groups of the devices with a login of their own (groups: name,
+# device, username, password, enable; device-logins.sh's). {} when there is no configuration.
+ox_config_values() {
+    [[ -f $OX_CONF ]] || { printf '{}'; return 0; }
+    python3 -I - "$OX_CONF" <<'PY'
+import json, re, sys
+out, groups, group, note, top = {}, [], None, '', None
+for line in open(sys.argv[1], encoding='utf-8').read().splitlines():
+    text = line.strip()
+    indent = len(line) - len(line.lstrip(' '))
+    if not text or text == '---' or (indent == 0 and text.startswith('#')):
+        continue
+    if indent == 0:
+        top = text.split(':', 1)[0]
+        if text.startswith('username: '):
+            try:
+                out['username'] = json.loads(text[len('username: '):])
+            except ValueError:
+                pass
+        continue
+    try:
+        if top == 'groups':
+            if indent == 2 and text.startswith('#'):
+                note = text[1:].strip()
+            elif indent == 2 and re.fullmatch(r'login-[0-9]+:', text):
+                group = {'name': text[:-1], 'device': note, 'username': '', 'password': '', 'enable': ''}
+                groups.append(group)
+                note = ''
+            elif group is not None and indent == 4 and text.startswith(('username: ', 'password: ')):
+                key, value = text.split(': ', 1)
+                group[key] = json.loads(value)
+            elif group is not None and indent == 6 and text.startswith('enable: '):
+                group['enable'] = json.loads(text[len('enable: '):])
+        elif top == 'source' and indent == 4 and text.startswith('url: '):
+            out['librenms_url'] = re.sub(r'/api/v0/oxidized$', '', json.loads(text[len('url: '):]))
+        elif top == 'source' and indent == 6 and text.startswith('X-Auth-Token: '):
+            out['token'] = json.loads(text[len('X-Auth-Token: '):])
+        elif top == 'output' and indent == 4 and text.startswith('email: '):
+            out['server'] = json.loads(text[len('email: '):]).split('@', 1)[-1]
+        elif top == 'extensions' and indent == 4 and text.startswith('listen: '):
+            out['listen'] = json.loads(text[len('listen: '):])
+        elif top == 'extensions' and indent == 4 and text.startswith('port: '):
+            out['port'] = text[len('port: '):]
+    except ValueError:
+        continue
+out['groups'] = groups
+print(json.dumps(out))
+PY
+}
+
+# OX_GROUPS: the groups of the devices with a login of their own, as JSON (device-logins.sh sets it); unset, the
+# configuration keeps the ones it has.
+OX_GROUPS=''
+
 # ox_config: Oxidized's configuration. The installer writes it while it is the one it wrote last (an admin who
 # changes it takes it over: the run then only warns about what it would set).
 ox_config() {
-    local text user=$DEVICE_USER password=$DEVICE_PASSWORD enable=$DEVICE_ENABLE_PASSWORD
+    local text user=$DEVICE_USER password=$DEVICE_PASSWORD enable=$DEVICE_ENABLE_PASSWORD groups=$OX_GROUPS
+    if [[ -z $groups ]]; then groups=$(json_field "$(ox_config_values)" groups); fi
+    [[ -n $groups ]] || groups='[]'
     if [[ -z $user && -f $OX_CONF ]]; then
         # no login given this time: the one the configuration has stays
         local current
@@ -167,11 +225,22 @@ PY
 ) || current='{}'
         user=$(json_field "$current" user); password=$(json_field "$current" password); enable=$(json_field "$current" enable)
     fi
-    text=$(I_USER=$user I_PASSWORD=$password I_ENABLE=$enable I_URL=$LIBRENMS_RESOLVED I_TOKEN=$OX_TOKEN \
+    text=$(I_USER=$user I_PASSWORD=$password I_ENABLE=$enable I_URL=$LIBRENMS_RESOLVED I_TOKEN=$OX_TOKEN I_GROUPS=$groups \
         I_LISTEN=$OXIDIZED_LISTEN I_PORT=$OXIDIZED_PORT I_DIR=$OX_DIR I_SERVER=$SERVER_NAME python3 -I - <<'PY'
-import json, os
+import json, os, re
 e = os.environ
 q = json.dumps  # a JSON string is a YAML double-quoted scalar
+# the devices with a login of their own (device-logins.sh): a group each, which LibreNMS gives Oxidized for it
+groups = []
+for g in json.loads(e['I_GROUPS']):
+    if not re.fullmatch(r'login-[0-9]+', g['name']):
+        raise SystemExit('ox_config: %r is not a group of device-logins.sh' % g['name'])
+    note = ''.join(c if c.isprintable() else '?' for c in g.get('device') or '')[:200]
+    groups += (['  # ' + note] if note else []) + ['  ' + g['name'] + ':', '    username: ' + q(g['username']),
+                                                   '    password: ' + q(g['password']), '    vars:', '      enable: ' + q(g['enable'])]
+if groups:
+    groups = ['# the devices with a login of their own (install/rocky/device-logins.sh): LibreNMS gives Oxidized their group',
+              'groups:'] + groups
 print('\n'.join([
     '---',
     '# Oxidized for LibreNMS (install/rocky/install.sh): the devices come from LibreNMS\' API, their versions go to git,',
@@ -195,6 +264,7 @@ print('\n'.join([
     '  # verify: SHA-2 first (the others follow, ssh-rsa last for devices that have nothing else)',
     '  ssh_host_key: ' + q(','.join(['rsa-sha2-512', 'rsa-sha2-256', 'ssh-ed25519', 'ecdsa-sha2-nistp256',
                                      'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521'])),
+] + groups + [
     'pid: ' + q(e['I_DIR'] + '/pid'),
     'crash:',
     '  directory: ' + q(e['I_DIR'] + '/crashes'),
@@ -213,6 +283,8 @@ print('\n'.join([
     '    user: Oxidized',
     '    email: ' + q('oxidized@' + e['I_SERVER']),
     '    repo: ' + q(e['I_DIR'] + '/configs.git'),
+    '    # every group in that one repository (as <group>/<device>), not a repository of its own',
+    '    single_repo: true',
     'source:',
     '  default: http',
     '  debug: false',

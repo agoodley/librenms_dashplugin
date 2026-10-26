@@ -23,6 +23,10 @@
  *                                                               and eventlog entries), then its connection test
  *   device-addresses    {"oxidized_user"}                       every device, with where Ansible and Oxidized connect
  *                                                               to it (device-keys.sh scans their SSH host keys there)
+ *                                                               and its name in the Ansible plugin's inventory
+ *   oxidized-groups     {"groups", "prefix", "support"}         LibreNMS' Oxidized group mapping of the devices with a
+ *                                                               login of their own (device-logins.sh): its entries
+ *                                                               whose group starts with prefix, and group support
  */
 
 declare(strict_types=1);
@@ -34,6 +38,7 @@ use Agoodley\LibrenmsAnsible\Data\PermissionRepository;
 use Agoodley\LibrenmsAnsible\Data\SettingsRepository;
 use Agoodley\LibrenmsAnsible\Data\UserRepository;
 use Agoodley\LibrenmsAnsible\Http\Controllers\SettingsController;
+use Agoodley\LibrenmsAnsible\Inventory\InventoryBuilder;
 use Agoodley\LibrenmsAnsible\Runner\RunnerError;
 use Agoodley\LibrenmsAnsible\Services\Eventlog;
 use Agoodley\LibrenmsAnsible\Services\InventoryService;
@@ -302,7 +307,7 @@ try {
             foreach (DB::table('devices')->orderBy('device_id')->get(['device_id', 'hostname', 'sysName', 'disabled']) as $row) {
                 $devices[(int) $row->device_id] = ['id' => (int) $row->device_id, 'hostname' => (string) $row->hostname,
                     'sysname' => (string) ($row->sysName ?? ''), 'disabled' => (bool) $row->disabled,
-                    'ansible' => null, 'ansible_left_out' => null, 'oxidized' => null];
+                    'ansible' => null, 'ansible_left_out' => null, 'inventory_name' => null, 'oxidized' => null];
             }
             $out = ['ansible' => null, 'oxidized' => null];
             if (! class_exists(InventoryService::class) || ! Schema::hasTable('ansible_config')) {
@@ -310,8 +315,17 @@ try {
             } elseif (($settings = (new SettingsRepository())->get())->error !== null) {
                 $out['ansible'] = "the Ansible plugin's settings cannot be read: " . $settings->error;
             } else {
-                $inventory = (new InventoryService(new DeviceRepository(), $settings))->build();
+                $repository = new DeviceRepository();
+                $inventory = (new InventoryService($repository, $settings))->build();
                 $hosts = $inventory->hosts();
+                // the name every device has in the inventory whenever it is a host (its host_vars file is named so)
+                $names = (new InventoryBuilder($settings->platformMap(), $settings->allowedGroup()))
+                    ->names($repository->devices(), $repository->deviceGroups(), $repository->locations());
+                foreach ($names as $id => $name) {
+                    if (isset($devices[$id])) {
+                        $devices[$id]['inventory_name'] = $name;
+                    }
+                }
                 foreach ($inventory->names() as $id => $name) {
                     if (isset($devices[$id])) {
                         $devices[$id]['ansible'] = ['name' => $name, 'host' => (string) $hosts[$name]['ansible_host'], 'port' => 22];
@@ -345,6 +359,65 @@ try {
                 }
             }
             answer(['devices' => array_values($devices)] + $out);
+
+            // no break
+        case 'oxidized-groups':
+            // LibreNMS gives Oxidized a device's group (oxidized.maps.group: here by hostname) while group support is
+            // on; Oxidized then logs in with that group's login. The entries of this mapping whose group is the
+            // prefix and a device id are device-logins.sh's: they become the ones asked for (first, so that they win
+            // over an admin's own patterns), and the others stay as they are. Group support is turned on while there is
+            // one; with "support": false it is turned off again (device-logins.sh turned it on, and none is left).
+            $prefix = (string) ($input['prefix'] ?? '');
+            if (! preg_match('/^[a-z][a-z0-9-]{1,30}-$/D', $prefix)) {
+                refuse('the group prefix ' . $prefix . ' is not one of device-logins.sh');
+            }
+            $isOurs = fn ($group) => (bool) preg_match('/^' . preg_quote($prefix, '/') . '[0-9]+$/D', (string) $group);
+            $ours = [];
+            foreach ((array) ($input['groups'] ?? []) as $hostname => $group) {
+                if (! $isOurs($group)) {
+                    refuse("the group $group of $hostname is not $prefix and a device id");
+                }
+                $ours[] = ['match' => (string) $hostname, 'value' => (string) $group];
+            }
+            $maps = (array) (\App\Facades\LibrenmsConfig::get('oxidized.maps') ?? []);
+            $current = array_values((array) ($maps['group']['hostname'] ?? []));
+            $others = array_values(array_filter($current, fn ($entry) => ! $isOurs($entry['value'] ?? '')));
+            $wanted = array_merge($ours, $others);
+            $out = ['changed' => [], 'support' => (bool) \App\Facades\LibrenmsConfig::get('oxidized.group_support', false)];
+            if ($wanted !== $current) {
+                if ($wanted) {
+                    $maps['group']['hostname'] = $wanted;
+                } else {
+                    unset($maps['group']['hostname']);
+                    if (empty($maps['group'])) {
+                        unset($maps['group']);
+                    }
+                }
+                // LibreNMS keeps oxidized.maps as one setting (as lnms config:set does, the rest goes with it); once it
+                // is LibreNMS' own default again, the stored copy goes
+                $default = (new \LibreNMS\Util\DynamicConfig())->get('oxidized.maps')?->default;
+                if (is_array($default) && $maps == $default) {
+                    \App\Facades\LibrenmsConfig::erase('oxidized.maps');
+                } else {
+                    \App\Facades\LibrenmsConfig::persist('oxidized.maps', $maps);
+                }
+                $out['changed'][] = 'oxidized.maps.group.hostname: ' . match (count($ours)) {
+                    0 => 'no device with a login of its own any more',
+                    1 => '1 device with a login of its own',
+                    default => count($ours) . ' devices with a login of their own',
+                };
+            }
+            $support = $ours ? true : ($input['support'] ?? null);
+            if ($support !== null && (bool) $support !== $out['support']) {
+                if (! $support && (new \LibreNMS\Util\DynamicConfig())->get('oxidized.group_support')?->default === false) {
+                    \App\Facades\LibrenmsConfig::erase('oxidized.group_support');
+                } else {
+                    \App\Facades\LibrenmsConfig::persist('oxidized.group_support', (bool) $support);
+                }
+                $out['changed'][] = 'oxidized.group_support: ' . ($support ? 'on' : 'off');
+                $out['support'] = (bool) $support;
+            }
+            answer($out);
 
             // no break
         default:

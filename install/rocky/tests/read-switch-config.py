@@ -1,5 +1,7 @@
-"""Read running/startup config from the local CI switch using its independently supplied host key."""
+"""Read running/startup config from the local CI switch using its independently supplied host key (its login:
+SWITCH_USER and SWITCH_PASSWORD, by default netops / netops-pw; the enable password is the same)."""
 import ipaddress
+import os
 import re
 import sys
 import time
@@ -8,6 +10,7 @@ import paramiko
 
 
 host, kind = sys.argv[1:]
+user, password = os.environ.get('SWITCH_USER', 'netops'), os.environ.get('SWITCH_PASSWORD', 'netops-pw')
 if not ipaddress.ip_address(host).is_loopback or kind not in ('running', 'startup'):
     raise SystemExit('only the local CI fixture and running/startup configuration are supported')
 
@@ -30,12 +33,12 @@ def receive(channel, pattern):
 with paramiko.SSHClient() as client:
     client.load_host_keys('/etc/ssh/ssh_known_hosts')
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
-    client.connect(host, username='netops', password='netops-pw', look_for_keys=False, allow_agent=False, timeout=10)
+    client.connect(host, username=user, password=password, look_for_keys=False, allow_agent=False, timeout=10)
     channel = client.invoke_shell()
     receive(channel, r'>\s*$')
     channel.sendall('enable\n')
     receive(channel, r'Password:\s*$')
-    channel.sendall('netops-pw\n')
+    channel.sendall(password + '\n')
     receive(channel, r'#\s*$')
     channel.sendall(f'show {kind}-config\n')
     print(receive(channel, r'#\s*$'))

@@ -470,6 +470,8 @@ next_steps() {
     if [[ ${WANT[semaphore]} == 1 || ${WANT[oxidized]} == 1 ]]; then
         printf '  - Then their SSH host keys, without which Ansible and Oxidized refuse them: %s/device-keys.sh shows\n' "$INSTALLER_DIR"
         printf '    each device'"'"'s fingerprints to confirm (run it again when a device is added or gets a new key).\n'
+        printf '  - Devices with a login of their own (the others use the default one): a line each in /root/device-logins.csv,\n'
+        printf '    then %s/device-logins.sh (install/rocky/README.md, Device logins).\n' "$INSTALLER_DIR"
     fi
     if [[ -z $DEVICE_USER && ( ${WANT[semaphore]} == 1 || ${WANT[oxidized]} == 1 ) ]]; then
         printf '  - The devices'"'"' login was not given: set it in Semaphore UI (project "%s", Key Store: "Devices: SSH login",\n' "$SEM_PROJECT"
