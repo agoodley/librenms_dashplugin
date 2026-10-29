@@ -6,6 +6,7 @@ use Agoodley\LibrenmsAnsible\Http\Controllers\ChangeController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\DiagnosticController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\FixController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\InventoryController;
+use Agoodley\LibrenmsAnsible\Http\Controllers\ReportController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\TargetController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\RunController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\SettingsController;
@@ -26,12 +27,15 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
         Route::get('api/changes', [ChangeController::class, 'list'])->name('api.changes');
         Route::get('changes/{id}', [ChangeController::class, 'show'])->whereNumber('id')->name('changes.show');
         Route::get('api/changes/{id}', [ChangeController::class, 'poll'])->whereNumber('id')->name('api.changes.show');
+        // the exports of a change and of a run: the report (html: to read, print or save as PDF), the Word document, the ZIP archive
+        Route::get('changes/{id}/export/{format}', [ReportController::class, 'change'])->whereNumber('id')->where('format', 'html|docx|zip')->name('changes.export');
 
         Route::get('runs', [RunController::class, 'index'])->name('runs');
         Route::get('api/runs', [RunController::class, 'list'])->name('api.runs');
         Route::get('runs/{id}', [RunController::class, 'show'])->whereNumber('id')->name('runs.show');
         Route::get('api/runs/{id}', [RunController::class, 'poll'])->whereNumber('id')->name('api.runs.show');
         Route::get('api/runs/{id}/outputs', [DiagnosticController::class, 'outputs'])->whereNumber('id')->name('api.runs.outputs');
+        Route::get('runs/{id}/export/{format}', [ReportController::class, 'run'])->whereNumber('id')->where('format', 'html|docx|zip')->name('runs.export');
 
         // the form for users with the run permission (the controller checks), the latest diagnostic runs for every admin
         Route::get('diagnostics', [DiagnosticController::class, 'index'])->name('diagnostics');

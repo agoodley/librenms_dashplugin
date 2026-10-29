@@ -152,11 +152,13 @@ final class DiagnosticService
     /**
      * What each task of a finished run printed per device (Runs\RunOutputs), from its whole log: the stored one, else the
      * runner's (the stored one was cut to the Output size setting); when neither is whole, nothing is attributed (a
-     * device's output would be read across the gap) and the page says so. Null when there is no such run.
+     * device's output would be read across the gap) and the page says so. Null when there is no such run. $log is the
+     * run's log() when the caller has it already (an export, which shows it too).
      *
+     * @param  array{lines: string[], source: string}|null  $log
      * @return array<string, mixed>|null
      */
-    public function outputs(int $runId): ?array
+    public function outputs(int $runId, ?array $log = null): ?array
     {
         $run = $this->runs->find($runId);
         if ($run === null) {
@@ -170,22 +172,33 @@ final class DiagnosticService
         foreach ($targets as $deviceId => $target) {
             $devices[$deviceId] = (string) (($target['display'] ?? '') ?: ($target['hostname'] ?? '') ?: $target['inventory_name']);
         }
-        $source = self::STORED;
-        $lines = OutputBuffer::display($run);
-        if (! empty($run['output_truncated'])) {
-            $source = self::CUT;
-            if ($run['runner_task_id'] !== null) {
-                try {
-                    $lines = ($this->runner !== null ? ($this->runner)() : $this->plugin->runner())->output((string) $run['runner_task_id'])->lines;
-                    $source = self::RUNNER;
-                } catch (RunnerError) {
-                    // the runner no longer has it, or cannot be reached: nothing is attributed
-                }
-            }
-        }
+        ['lines' => $lines, 'source' => $source] = $log ?? $this->log($run);
         $parsed = $source === self::CUT ? ['tasks' => [], 'unattributed' => [], 'cut' => false]
             : RunOutputs::parse($lines, array_map(fn (array $target) => (string) $target['inventory_name'], $targets), RecapParser::parse($lines));
 
         return ['final' => true, 'source' => $source, 'devices' => (object) $devices] + $parsed;
+    }
+
+    /**
+     * The log of a run (of any kind), whole when it can be: the stored one (STORED), else the runner's (RUNNER: the stored
+     * one was cut to the Output size setting); when neither is whole, the start and the end the plugin keeps, with the line
+     * that says how many were left out (CUT).
+     *
+     * @return array{lines: string[], source: string}
+     */
+    public function log(array $run): array
+    {
+        if (empty($run['output_truncated'])) {
+            return ['lines' => OutputBuffer::display($run), 'source' => self::STORED];
+        }
+        if ($run['runner_task_id'] !== null) {
+            try {
+                return ['lines' => ($this->runner !== null ? ($this->runner)() : $this->plugin->runner())->output((string) $run['runner_task_id'])->lines, 'source' => self::RUNNER];
+            } catch (RunnerError) {
+                // the runner no longer has it, or cannot be reached
+            }
+        }
+
+        return ['lines' => OutputBuffer::display($run), 'source' => self::CUT];
     }
 }

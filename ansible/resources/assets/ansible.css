@@ -46,6 +46,8 @@
 .ans-preview dt { width: 140px; }
 .ans-preview dd { margin-left: 160px; overflow-wrap: anywhere; }
 .ans-launchbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.ans-export { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: -4px 0 12px; }
+.ans-export .ans-help { margin: 0; }
 .ans-settings fieldset { margin-bottom: 20px; }
 .ans-settings legend { font-size: 15px; }
 .ans-settings textarea.ans-code { min-height: 190px; }
