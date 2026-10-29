@@ -20,8 +20,10 @@ dry-run, approved, applied and verified like any other. Its **Diagnostics** page
 choose **in check mode**, as no change (a *diagnostic run*: show commands, or what a template would change): no
 approval, batches, backups or windows, as its log must prove that every task ran in check mode, as a dry run's; its
 page shows what each device answered, the devices that answered the same grouped side by side. The topology plugin's
-maps launch it on a device or on the devices selected there. Everything goes to an audit log and to each device's
-eventlog. This is phases 1 to 5 of [change automation with Ansible](../ROADMAP.md#change-automation-with-ansible).
+maps launch it on a device or on the devices selected there. Each run and each change **exports a report** of what its
+page shows, to attach to a ticket or keep: in the browser to print or save as PDF, as a Word document, or as a ZIP
+with each device's output or diff, the logs, and the data as CSV and JSON. Everything goes to an audit log and to each
+device's eventlog. This is phases 1 to 6 of [change automation with Ansible](../ROADMAP.md#change-automation-with-ansible).
 
 * **Changes:** every change with its template, devices, reference, dry run and status, with filters.
 * **New change:** a template, the target devices and the first batch, the survey answers and a reference (a ticket
@@ -36,6 +38,8 @@ eventlog. This is phases 1 to 5 of [change automation with Ansible](../ROADMAP.m
 * **Diagnostics:** a template, the devices and the answers, then *Run in check mode*: a diagnostic run, whose page shows
   what each task printed per device; the latest diagnostic runs.
 * **Runs:** each run of a change (its dry run or a batch) with live status, per-device result and the Ansible log.
+* **Export** on a run's page and a change's page: the report (to print or save as PDF), a Word document, or a ZIP
+  with the raw data.
 * **Inventory:** what the runner gets from LibreNMS, the devices left out and why, the devices with a login of their
   own, and the setup steps.
 * An **Ansible** panel on each device's overview page, and **Settings** in Plugin Admin.
@@ -71,6 +75,10 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
 | ![Diagnostics](docs/images/diagnostics.png) | ![A diagnostic run](docs/images/diagnostic-run.png) |
 
 ![The topology plugin's L2 map: two devices selected, Diagnostics on them](docs/images/map-diagnostics.png)
+
+| A diagnostic run's report, to print or save as PDF | A change's report as a Word document |
+|---|---|
+| ![A diagnostic run's report](docs/images/report-run.png) | ![A change's report in Word](docs/images/report-change-word.png) |
 
 ![A change paused: its first batch's verification found an uplink lost](docs/images/change-verify-paused.png)
 
@@ -108,6 +116,7 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
 * [Verification](#verification)
 * [Fixes](#fixes)
 * [Diagnostic runs](#diagnostic-runs)
+* [Reports and exports](#reports-and-exports)
 * [How runs work](#how-runs-work)
 * [Safety](#safety)
 * [Semaphore UI behaviour the plugin relies on](#semaphore-ui-behaviour-the-plugin-relies-on)
@@ -619,6 +628,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   filter by device, user, template, status and dates. A run's page shows its status, each target's result with the
   PLAY RECAP counters, the answers and the log, live; **Stop** and **Release the devices** as in phase 1 (see [Run
   states](#run-states)).
+* **Export** (a run's page, a change's page): **Report**, **Word** or **ZIP** (see [Reports and
+  exports](#reports-and-exports)).
 * **Inventory:** the hosts with their variables and groups, the groups, the devices left out and why, the runner's
   last fetch (when, as which user, how many hosts) and a JSON download of the inventory.
 * **Device panel:** the device's latest changes (with its dry run and its result there) and runs, and *New change on
@@ -1248,6 +1259,46 @@ permission, as a change's dry run does, which also runs before any approval.
   and prints each command's answer by one debug task. The [installer for Rocky Linux](../install/rocky/README.md) sets
   it up as the template "Show commands".
 
+## Reports and exports
+
+The page of every run and of every change exports what it shows, as NetBrain exports the results of a runbook: to
+attach to a ticket or a change record, or to keep. *Export* on the page offers three formats; an admin who may see the
+page may export it, and an export changes nothing and launches nothing.
+
+* **Report:** one HTML page, opened in a new tab, to read, to print, or to save as PDF from the browser's print dialog
+  (A4; each block of output wrapped, not cut). It holds all it shows: no script, no image or font to load (its
+  Content-Security-Policy lets nothing run), so it can be saved and sent as it is.
+* **Word:** the same report as a Word document (`.docx`): its sections are Word headings (the navigation pane and a
+  table of contents find them), the header row of a table repeats on each page, output and diffs are in a monospaced
+  font with a diff's lines coloured, and each page has its number.
+* **ZIP:** the report and the raw data. For a run: the results as CSV, each device's output in a text file (a
+  diagnostic run), what was not attributed to a device, the whole log, and the run as JSON. For a change: the devices
+  as CSV (the results of the dry run and of the batch, the backups' versions), each device's diff from the dry run,
+  the timeline as CSV, the log of each of its runs (its dry runs and its batches), and the change as JSON.
+
+What they hold:
+
+* **A run:** what ran (the template and its playbook, the answers, who launched it and when, the runner's task, the
+  commit), whether its log proves that it ran in check mode (a diagnostic run, a dry run), each target's result with
+  the PLAY RECAP counters, a diagnostic run's output per device as its page shows it (the devices that printed the
+  same together, the tasks without output in one list, what is not attributed to a device with why), and its log. In
+  the report a log longer than 2,000 lines keeps its first and its last 1,000; the ZIP holds it whole. A log the
+  plugin cut to the *Output size* setting is read whole from the runner while the runner still has it.
+* **A change:** its summary (status, template, requester, reference, devices and batches, the dry run, the approval,
+  the apply, the outcome of its verification), what its page warns of (a dry run not proven or failed, how it ended),
+  the answers, the approvals, the batches (with what each cuts off while it runs), the verification of each batch and
+  what it found, the dry run per device with what would change (the diffs of the latest dry run, and those not
+  attributed, with why), the backups, the maintenance windows, its runs, and its whole timeline, oldest first.
+* **Times** are in the time zone of the admin who exports, said at the end with who exported it, when and from which
+  page.
+* **No secret answer** is in an export: the plugin does not keep them (the report names the answers that were secret).
+* **Device output is untrusted:** every text is escaped for HTML and XML (the characters XML cannot hold are dropped),
+  a CSV cell that a spreadsheet would read as a formula (`=`, `+`, `-` or `@` first, not a number) starts with an
+  apostrophe, and the names of the files in the ZIP keep letters, digits, dots, dashes and underscores only.
+* **Addresses:** `plugin/ansible/runs/{id}/export/{html|docx|zip}` and `plugin/ansible/changes/{id}/export/{html|docx|zip}`.
+  The Word document and the ZIP need PHP's zip extension (`php-zip`, part of LibreNMS' install instructions and
+  installed by the [installer for Rocky Linux](../install/rocky/README.md)).
+
 ## How runs work
 
 * **Inventory:** built from LibreNMS' devices by the plugin for the user of the API token: the devices that user may
@@ -1423,7 +1474,8 @@ released has stopped by then.
   PHP leaves them out of stack traces), the task message, the browser's storage or a page.
 * **Output** is untrusted too: it is stored capped and shown escaped; ANSI colours become a fixed set of CSS classes,
   other escape sequences and control characters are dropped, and the pages add new lines and diffs as text, never as
-  HTML. The change page fetches only its own address to refresh itself.
+  HTML. The change page fetches only its own address to refresh itself. An export escapes it for HTML or XML, guards
+  CSV cells against formulas, and its HTML report is served with a policy that lets it load and run nothing.
 * **Inventory endpoint:** read only (GET; other methods get 405), a LibreNMS API token (a session cookie is not
   enough), only the inventory user's once it is chosen, scoped to the token user's devices, cleaned values, no
   credentials (no SNMP data), JSON; the devices of a dry run or batch in progress only as its dry run recorded how the

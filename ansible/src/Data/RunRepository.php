@@ -138,6 +138,22 @@ final class RunRepository implements RunStore
     }
 
     /**
+     * A change's runs (its dry runs and the runs of its batches) without their log, oldest first: its report.
+     *
+     * @return array<int, array> id => row (JSON columns decoded)
+     */
+    public function ofChange(int $changeId): array
+    {
+        $runs = [];
+        foreach ($this->sql->select('SELECT ' . self::columns(self::SUMMARY_COLUMNS) . ' FROM ' . $this->sql->table('ansible_runs') . ' WHERE `change_id` = ? ORDER BY `id`',
+            [$changeId]) as $row) {
+            $runs[(int) $row['id']] = self::decode($row);
+        }
+
+        return $runs;
+    }
+
+    /**
      * The targets of a run.
      *
      * @return array<int, array> device_id => row (counts decoded)

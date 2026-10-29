@@ -163,6 +163,9 @@
         @endif
     </div>
 
+    @include('ansible::partials.export', ['exportRoute' => 'ansible.changes.export', 'exportId' => $change['id'],
+        'exportZip' => 'the report, the devices as CSV, the diff of each device, the timeline as CSV, the log of each run and the change as JSON'])
+
     <div id="ans-change-alerts">
         @if($dryState === 'unverified')
             <div class="ans-warning-loud" id="ans-dry-run-unverified"><i class="fa fa-exclamation-triangle"></i>

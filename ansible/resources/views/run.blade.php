@@ -51,6 +51,9 @@
         </div>
     </div>
 
+    @include('ansible::partials.export', ['exportRoute' => 'ansible.runs.export', 'exportId' => $run['id'],
+        'exportZip' => 'the report, the results as CSV, ' . ($diagnostic ? 'the output of each device, ' : '') . 'the whole log and the run as JSON'])
+
     @if($dryRun)
         <div class="ans-warning-loud" id="ans-run-not-proven" @if(! $unproven) style="display: none" @endif><i class="fa fa-exclamation-triangle"></i>
             @if($diagnostic)
