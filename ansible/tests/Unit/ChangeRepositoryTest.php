@@ -205,6 +205,15 @@ class ChangeRepositoryTest extends TestCase
         $stray = $record([], [513 => 'g']);
         $this->sql->change('UPDATE `ansible_run_targets` SET `unexpected` = 1 WHERE `run_id` = ?', [$stray]);
         $this->assertSame([513 => $stray], $runs->changedSince([513], $since, 7), 'a run on a device that was not its target counts too');
+
+        // a diagnostic run, in check mode as a dry run: proven or running, it changed nothing; not proven, it may have
+        $diagnostic = $record(['kind' => 'diagnostic'], [515 => 'i']);
+        $runs->setProof($diagnostic, 'verified');
+        $record(['kind' => 'diagnostic', 'status' => 'running'], [515 => 'i']);
+        $this->assertSame([], $runs->changedSince([515], $since, 7), 'a proven or unfinished diagnostic run does not void a dry run');
+        $unprovenDiagnostic = $record(['kind' => 'diagnostic'], [516 => 'j']);
+        $runs->setProof($unprovenDiagnostic, 'unverified');
+        $this->assertSame([516 => $unprovenDiagnostic], $runs->changedSince([516], $since, 7), 'one not proven to run in check mode may have changed its devices');
     }
 
     public function testEveryWaitFitsTheColumnThatKeepsIt(): void

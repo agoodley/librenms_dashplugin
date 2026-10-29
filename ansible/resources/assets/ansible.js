@@ -1,6 +1,7 @@
 /*
- * LibreNMS Ansible plugin: the run page (live status and log), the new change page (targets, first batch, preview,
- * create), the change page (live state and log, its actions) and the settings page (connection test). Everything
+ * LibreNMS Ansible plugin: the run page (live status and log, a diagnostic run's output per device), the new change page
+ * (targets, first batch, preview, create), the diagnostics page (targets, answers, run), the change page (live state and
+ * log, its actions) and the settings page (connection test). Everything
  * that comes from the server is inserted as text (textContent), never as HTML: device output, names and messages can
  * hold anything. The change page fetches itself again when the change moved on: that HTML is LibreNMS' own page.
  */
@@ -184,6 +185,124 @@
         log.appendChild(fragment);
     }
 
+    /* ---------------------------------------------------------------- output per device */
+
+    /** A result of a run in check mode as the output per device names it, and its label's class. */
+    var OUTPUT_RESULTS = {ok: 'ok', changed: 'would change', skipped: 'skipped', failed: 'failed', unreachable: 'unreachable'};
+    var OUTPUT_CSS = {ok: 'success', changed: 'warning', skipped: 'default', failed: 'danger', unreachable: 'danger'};
+    /** What a block of output is, said over it (an output is said nothing over). */
+    var BLOCK_CAPTIONS = {commands: 'the commands it would send', diff: 'what would change', yaml: 'as Ansible printed it', text: 'the module\'s text'};
+
+    /** Did the task print anything for a device? */
+    function printed(task) {
+        return task.groups.some(function (group) {
+            return group.results.some(function (result) {
+                return result.blocks.length > 0;
+            });
+        });
+    }
+
+    function outputResult(result) {
+        return el('span', label(OUTPUT_CSS[result] || 'default'), OUTPUT_RESULTS[result] || result);
+    }
+
+    /** A block of output as text: a diff's lines coloured as the change page colours them. */
+    function outputBlock(block) {
+        var pre = el('pre', 'ans-diff ans-output-block');
+        block.lines.forEach(function (line, index) {
+            var cls = block.kind !== 'diff' ? '' : (/^\+(?!\+\+)/.test(line) ? 'ans-diff-add' : (/^-(?!--)/.test(line) ? 'ans-diff-del' : (/^@@/.test(line) ? 'ans-diff-hunk' : '')));
+            append(pre, [cls ? el('span', cls, line) : line, index < block.lines.length - 1 ? '\n' : '']);
+        });
+        var caption = BLOCK_CAPTIONS[block.kind];
+        return caption || block.cut ? el('div', null, [el('div', 'ans-help', (caption || 'output') + (block.cut ? ' (cut)' : '')), pre]) : pre;
+    }
+
+    /**
+     * A diagnostic run's output per device (DiagnosticController::outputs): each task, its devices grouped by identical
+     * results, side by side, each group's devices over its output; a task that printed nothing in one line, shown only
+     * when asked for (showQuiet) once another task printed something; and the results the log shows that are not
+     * attributed to a device, with why. Everything is inserted as text.
+     */
+    function outputsView(data, deviceUrl, showQuiet) {
+        var box = el('div', 'ans-outputs');
+        var names = data.devices || {};
+        function devices(ids) {
+            var list = el('span', 'ans-output-names');
+            ids.forEach(function (id, index) {
+                var link = el('a', null, names[id] || '#' + id);
+                link.href = deviceUrl + '/' + Number(id);
+                append(list, [index ? ', ' : '', link]);
+            });
+            return list;
+        }
+        if (data.source === 'cut') {
+            box.appendChild(alertBox('warning', null, ['The log was cut to the Output size setting, and the runner no longer gives it whole: the output per device '
+                + 'cannot be read from a log with a gap. The log below keeps its start and its end.']));
+            return box;
+        }
+        var tasks = data.tasks || [];
+        var spoken = tasks.filter(printed).length;
+        if (!spoken) {
+            box.appendChild(el('p', 'ans-muted', 'No task printed output for a device. To read what the devices answer, register the result of the commands and '
+                + 'print it with a debug task (debug: var=result.stdout_lines), outside a loop.'));
+        }
+        tasks.forEach(function (task) {
+            var quiet = !printed(task);
+            if (quiet && spoken && !showQuiet) {
+                return;
+            }
+            var count = task.groups.reduce(function (sum, group) {
+                return sum + group.devices.length;
+            }, 0);
+            var section = el('div', 'ans-output-task' + (quiet ? ' ans-output-quiet' : ''));
+            section.appendChild(el('div', 'ans-output-title', [el('span', 'ans-code', task.task ? 'TASK [' + task.task + ']' : 'PLAY'), ' ',
+                el('span', 'ans-muted', count + (count === 1 ? ' device' : ' devices') + (quiet ? ', no output' : (count > 1 ? ' · ' + (task.groups.length === 1
+                    ? 'all the same' : task.groups.length + ' different results') : '')))]));
+            if (quiet) {
+                section.appendChild(el('div', 'ans-output-line', task.groups.map(function (group) {
+                    return el('span', 'ans-output-quiet-group', [outputResult(group.results[0] ? group.results[0].result : 'ok'), ' ', devices(group.devices)]);
+                })));
+            } else {
+                var grid = el('div', 'ans-output-groups');
+                task.groups.forEach(function (group) {
+                    var card = el('div', 'ans-output-group');
+                    card.appendChild(el('div', 'ans-output-devices', [devices(group.devices), group.devices.length > 1
+                        ? el('span', 'ans-muted', ' (' + group.devices.length + ' devices, the same)') : null]));
+                    group.results.forEach(function (result) {
+                        card.appendChild(el('div', 'ans-output-result', [outputResult(result.result), result.item !== null && result.item !== undefined
+                            ? el('span', 'ans-muted', ' item ' + result.item) : null]));
+                        result.blocks.forEach(function (block) {
+                            card.appendChild(outputBlock(block));
+                        });
+                    });
+                    grid.appendChild(card);
+                });
+                section.appendChild(grid);
+            }
+            box.appendChild(section);
+        });
+        if (data.unattributed && data.unattributed.length) {
+            var details = el('details', 'ans-output-unattributed');
+            details.id = 'ans-outputs-unattributed';
+            details.appendChild(el('summary', 'text-warning', data.unattributed.length + (data.unattributed.length === 1 ? ' result' : ' results')
+                + ' of the log not attributed to a device, and why'));
+            data.unattributed.forEach(function (entry) {
+                var card = el('div', 'ans-output-group', [el('div', 'ans-output-devices', [el('span', 'ans-code', entry.host), ' · TASK [' + entry.task + ']',
+                    entry.item !== null && entry.item !== undefined ? ' · item ' + entry.item : '', ' ', outputResult(entry.result)]),
+                    el('div', 'ans-help', 'Not attributed: ' + entry.reason + '.')]);
+                entry.blocks.forEach(function (block) {
+                    card.appendChild(outputBlock(block));
+                });
+                details.appendChild(card);
+            });
+            box.appendChild(details);
+        }
+        if (data.cut) {
+            box.appendChild(el('p', 'text-warning', 'The page keeps 4 MB of the output: the rest is in the log.'));
+        }
+        return box;
+    }
+
     /* ---------------------------------------------------------------- run page */
 
     /**
@@ -197,6 +316,38 @@
         var stopButton = byId('ans-run-stop');
         var releaseButton = byId('ans-run-release');
         var timer = null;
+        // a diagnostic run's output per device: read once, when the run has ended
+        var outputs = null;
+        var quietBox = byId('ans-outputs-quiet');
+
+        function showOutputs() {
+            if (outputs) {
+                clear(byId('ans-outputs')).appendChild(outputsView(outputs, config.deviceUrl, quietBox && quietBox.checked));
+            }
+        }
+
+        function loadOutputs() {
+            if (!config.outputs || outputs) {
+                return;
+            }
+            var state = byId('ans-outputs-state');
+            state.textContent = 'loading…';
+            request('GET', config.outputs).then(function (result) {
+                if (result.status === 200 && result.body.final) {
+                    outputs = result.body;
+                    state.textContent = outputs.source === 'runner' ? '(from the runner\'s whole log)' : '';
+                    showOutputs();
+                } else if (result.status === 200) {
+                    window.setTimeout(loadOutputs, 2000);
+                } else {
+                    state.textContent = '(cannot be read: ' + (result.body.error || 'HTTP ' + result.status) + ')';
+                }
+            });
+        }
+
+        if (quietBox) {
+            quietBox.addEventListener('change', showOutputs);
+        }
 
         function scroll() {
             if (follow && follow.checked) {
@@ -232,6 +383,11 @@
             var notProven = byId('ans-run-not-proven');
             if (notProven) {
                 notProven.style.display = data.proof === 'unverified' ? '' : 'none';
+            }
+            var proof = byId('ans-run-proof');
+            if (proof) {
+                proof.textContent = data.proof === 'verified' ? 'Its log proves that every task ran in check mode: it changed nothing.'
+                    : (data.proof === 'unverified' ? '' : (data.final ? 'Its log was not judged (the run did not start, or its log is not whole).' : 'Its log is judged when it ends.'));
             }
             data.targets.forEach(function (target) {
                 var row = document.querySelector('#ans-run-targets tr[data-device="' + Number(target.device_id) + '"]');
@@ -319,6 +475,7 @@
                 if (stopButton) {
                     stopButton.parentNode.style.display = 'none';
                 }
+                loadOutputs();
             }
         }
 
@@ -412,6 +569,8 @@
         scroll();
         if (!config.final) {
             timer = window.setTimeout(poll, 2000);
+        } else {
+            loadOutputs();
         }
         return {
             stop: function () {
@@ -1707,5 +1866,228 @@
         });
     }
 
-    window.AnsiblePlugin = {run: run, newChange: newChange, change: change, settings: settings, fixes: fixes};
+    /* ---------------------------------------------------------------- diagnostics page */
+
+    /**
+     * The diagnostics page: the targets list with filters and refusals (the devices a link chose ticked), the answers (the
+     * secret ones too: the run starts at once), and Run, which launches the diagnostic run and opens its page, or says
+     * why it was refused.
+     */
+    function diagnostics(config) {
+        var devices = [];
+        var selected = {};
+        var launching = false;
+        var filters = {
+            group: byId('ans-filter-group'),
+            location: byId('ans-filter-location'),
+            os: byId('ans-filter-os'),
+            text: byId('ans-filter-text'),
+            eligible: byId('ans-filter-eligible')
+        };
+        var status = byId('ans-targets-status');
+        var tbody = document.querySelector('#ans-targets tbody');
+        var runButton = byId('ans-diagnostic-run');
+        var launchState = byId('ans-launch-state');
+        var errorsBox = byId('ans-diagnostic-errors');
+        var MAX_ROWS = 500;
+
+        function selectedIds() {
+            return devices.filter(function (device) {
+                return selected[device.id];
+            }).map(function (device) {
+                return device.id;
+            });
+        }
+
+        function matches(device) {
+            if (filters.eligible.checked && device.refusal) {
+                return false;
+            }
+            if (filters.group.value && device.groups.indexOf(Number(filters.group.value)) < 0) {
+                return false;
+            }
+            if (filters.location.value && String(device.location_id) !== filters.location.value) {
+                return false;
+            }
+            if (filters.os.value && device.os !== filters.os.value) {
+                return false;
+            }
+            var text = filters.text.value.trim().toLowerCase();
+            if (text) {
+                var haystack = [device.display, device.hostname, device.os, device.name || '', device.platform || '', device.location].join(' ').toLowerCase();
+                return haystack.indexOf(text) >= 0;
+            }
+            return true;
+        }
+
+        function shown() {
+            return devices.filter(function (device) {
+                return matches(device) || selected[device.id];
+            });
+        }
+
+        function render() {
+            var list = shown();
+            clear(tbody);
+            list.slice(0, MAX_ROWS).forEach(function (device) {
+                var row = el('tr', device.refusal ? 'ans-refused' : (selected[device.id] ? 'ans-selected' : ''));
+                row.setAttribute('data-device', device.id);
+                var box = el('input');
+                box.type = 'checkbox';
+                box.className = 'ans-target-check';
+                box.checked = !!selected[device.id];
+                box.disabled = !!device.refusal && !selected[device.id];
+                box.title = 'Target ' + device.display;
+                box.setAttribute('aria-label', box.title);
+                box.addEventListener('change', function () {
+                    toggle(device, box.checked);
+                });
+                var link = el('a', null, device.display);
+                link.href = config.deviceUrl + '/' + device.id;
+                append(row, [
+                    el('td', null, box),
+                    el('td', 'ans-wrap', link),
+                    el('td', device.refusal ? 'ans-refusal' : 'text-success', device.refusal ? device.refusal.text : 'yes'),
+                    el('td', 'ans-code', device.name || '-'),
+                    el('td', 'hidden-xs', device.os),
+                    el('td', 'ans-code', device.platform || el('span', 'text-muted', 'no mapping')),
+                    el('td', 'hidden-xs', el('span', (device.status === 'up' ? 'text-success' : (device.status === 'down' ? 'text-danger' : 'text-muted')), device.status)),
+                    el('td', 'ans-wrap hidden-xs', device.location || '')
+                ]);
+                tbody.appendChild(row);
+            });
+            var count = selectedIds().length;
+            status.textContent = list.length + ' of ' + devices.length + ' devices shown' + (list.length > MAX_ROWS ? ' (the first ' + MAX_ROWS + ': narrow the filters)' : '')
+                + ' · ' + count + ' selected (at most ' + config.maxTargets + ')';
+            status.className = count > config.maxTargets ? 'text-danger' : 'ans-muted';
+            runButton.disabled = launching || !count || count > config.maxTargets;
+        }
+
+        function toggle(device, on) {
+            if (on && !device.refusal) {
+                if (selectedIds().length >= config.maxTargets) {
+                    window.alert('A run may have at most ' + config.maxTargets + ' targets (Max targets per change setting).');
+                } else {
+                    selected[device.id] = true;
+                }
+            } else {
+                delete selected[device.id];
+            }
+            render();
+        }
+
+        function answers() {
+            var vars = {};
+            Array.prototype.forEach.call(document.querySelectorAll('#ans-vars .ans-var'), function (input) {
+                vars[input.name] = input.value;
+            });
+            return vars;
+        }
+
+        function showVariableErrors(errors) {
+            Array.prototype.forEach.call(document.querySelectorAll('#ans-vars [data-var]'), function (group) {
+                var message = errors ? errors[group.getAttribute('data-var')] : null;
+                group.classList.toggle('has-error', !!message);
+                var text = group.querySelector('.ans-var-error');
+                if (text) {
+                    text.textContent = message ? 'This answer ' + message + '.' : '';
+                }
+            });
+        }
+
+        function launch() {
+            launching = true;
+            runButton.disabled = true;
+            launchState.textContent = 'launching…';
+            clear(errorsBox);
+            showVariableErrors(null);
+            request('POST', config.store, {template: config.template, devices: selectedIds(), vars: answers(), request_token: config.requestToken}).then(function (result) {
+                if ((result.status === 200 || result.status === 201) && result.body.url) {
+                    launchState.textContent = 'launched: opening its page…';
+                    window.location.href = result.body.url;
+                    return;
+                }
+                launching = false;
+                launchState.textContent = '';
+                var box = alertBox('danger', 'The diagnostic run was not launched:', result.body.errors || [result.body.error || 'HTTP ' + result.status]);
+                box.id = 'ans-diagnostic-refused';
+                errorsBox.appendChild(box);
+                showVariableErrors(result.body.variable_errors);
+                render();
+            });
+        }
+
+        [filters.group, filters.location, filters.os, filters.eligible].forEach(function (input) {
+            input.addEventListener('change', render);
+        });
+        filters.text.addEventListener('input', render);
+        byId('ans-select-shown').addEventListener('click', function () {
+            shown().forEach(function (device) {
+                if (!device.refusal && selectedIds().length < config.maxTargets) {
+                    selected[device.id] = true;
+                }
+            });
+            render();
+        });
+        byId('ans-select-none').addEventListener('click', function () {
+            selected = {};
+            render();
+        });
+        runButton.addEventListener('click', launch);
+
+        request('GET', config.targets).then(function (result) {
+            if (result.status !== 200) {
+                status.textContent = 'The devices cannot be loaded: ' + (result.body.error || 'HTTP ' + result.status);
+                status.className = 'text-danger';
+                return;
+            }
+            devices = result.body.devices;
+            // the devices a link chose (a device's panel, the topology plugin's map, an earlier run): ticked and listed first
+            var wanted = (config.devices || []).map(Number);
+            var position = {};
+            wanted.forEach(function (id, index) {
+                position[id] = index;
+            });
+            devices = devices.filter(function (device) {
+                return position[device.id] !== undefined;
+            }).sort(function (a, b) {
+                return position[a.id] - position[b.id];
+            }).concat(devices.filter(function (device) {
+                return position[device.id] === undefined;
+            }));
+            var oses = {};
+            devices.forEach(function (device) {
+                oses[device.os] = true;
+            });
+            Object.keys(oses).sort().forEach(function (os) {
+                filters.os.appendChild(new Option(os, os));
+            });
+            var refused = [];
+            var over = 0;
+            wanted.forEach(function (id) {
+                var device = devices.filter(function (candidate) {
+                    return candidate.id === id;
+                })[0];
+                if (device && !device.refusal && selectedIds().length < config.maxTargets) {
+                    selected[id] = true;
+                } else if (device && device.refusal) {
+                    refused.push(device.display + ': ' + device.refusal.text);
+                } else if (device) {
+                    over++;
+                }
+            });
+            if (over) {
+                refused.push(over + (over === 1 ? ' more device was' : ' more devices were') + ' chosen than a run may have (at most ' + config.maxTargets
+                    + ', Max targets per change setting): they are listed first, not ticked');
+            }
+            if (refused.length) {
+                var box = alertBox('warning', 'Of the devices chosen, these cannot be targets now:', refused.slice(0, 20));
+                box.id = 'ans-diagnostic-preset-refused';
+                errorsBox.appendChild(box);
+            }
+            render();
+        });
+    }
+
+    window.AnsiblePlugin = {run: run, newChange: newChange, diagnostics: diagnostics, change: change, settings: settings, fixes: fixes};
 })(window, document);

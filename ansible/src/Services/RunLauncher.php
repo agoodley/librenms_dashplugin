@@ -28,7 +28,9 @@ use Illuminate\Support\Facades\Log;
  * The runs of a change (a RunSpec: its dry run or a batch) are checked the same way, and more: the template must
  * allow a provable dry run (DryRunCheck), its snapshot must pass the spec's check (the change's fingerprint), and
  * devices reserved by another change being applied are refused. A dry run is launched with --check --diff, a batch
- * pinned to the dry run's commit; each has a one-time token of its own.
+ * pinned to the dry run's commit; each has a one-time token of its own. A diagnostic run (RunSpec::diagnostic(), of
+ * no change) is checked and launched as a dry run, with its form's one-time token: the template must allow a provable
+ * dry run, and devices reserved by a change being applied are refused.
  */
 final class RunLauncher
 {
@@ -96,8 +98,10 @@ final class RunLauncher
         if ($reasons) {
             $plan->errors[] = 'The template "' . $plan->template->name . '" cannot be launched safely: ' . implode('; ', $reasons) . '.';
         }
-        if ($spec !== null) {
+        if ($spec !== null && $spec->ofChange()) {
             $this->changeChecks($plan, $inventory, $connection->project, $spec);
+        } elseif ($spec !== null) {
+            $this->diagnosticChecks($plan, $connection->project);
         }
         $checked = VariableValidator::validate($plan->template->surveyVars, $answers);
         [$plan->values, $plan->secrets, $plan->variableErrors] = [$checked['values'], $checked['secrets'], $checked['errors']];
@@ -139,6 +143,18 @@ final class RunLauncher
     }
 
     /**
+     * The check of a diagnostic run: a check-mode run of the template must be provable, as a change's dry run (the
+     * template's own CLI arguments may hold --check: a diagnostic run is never anything else).
+     */
+    private function diagnosticChecks(LaunchPlan $plan, int $project): void
+    {
+        $reasons = (new TemplateReader($plan->runner, $project))->diagnosticReasons($plan->template);
+        if ($reasons) {
+            $plan->errors[] = 'The template "' . $plan->template->name . '" cannot be used for diagnostic runs: ' . implode('; ', $reasons) . '.';
+        }
+    }
+
+    /**
      * Sort the chosen devices into targets and refused ones, and check their number.
      *
      * @param  int[]  $deviceIds
@@ -154,7 +170,7 @@ final class RunLauncher
                 . 'the first run makes it fetch it (see the setup steps on the Inventory page).';
         }
         $selection = new TargetSelection($this->inventory->build(), $devices->exists(), $this->runs->busy(), $inventoryUser['visible'] ?? null,
-            (string) ($inventoryUser['user']->username ?? ''), $this->reserved($spec));
+            (string) ($inventoryUser['user']->username ?? ''), $this->reserved($spec), $spec !== null && ! $spec->ofChange());
         $chosen = $selection->select($deviceIds);
         $rows = $devices->devices();
         $names = $devices->names(array_keys($chosen['targets'] + $chosen['refused']));
@@ -182,7 +198,7 @@ final class RunLauncher
     }
 
     /**
-     * The devices reserved by changes being applied (not by the spec's own change).
+     * The devices reserved by changes being applied (not by the spec's own change; every one for a diagnostic run).
      *
      * @return array<int, int> device_id => change id
      */
@@ -190,7 +206,7 @@ final class RunLauncher
     {
         $changes = $this->changes ?? new ChangeRepository();
 
-        return $changes->available() ? $changes->reserved($spec?->changeId) : [];
+        return $changes->available() ? $changes->reserved($spec !== null && $spec->ofChange() ? $spec->changeId : null) : [];
     }
 
     /**
@@ -205,9 +221,11 @@ final class RunLauncher
     public function launch($user, string $templateId, array $deviceIds, #[\SensitiveParameter] array $answers, string $requestToken, ?RunSpec $spec = null): array
     {
         $plan = new LaunchPlan();
-        if ($spec !== null) {
+        if ($spec !== null && $spec->ofChange()) {
             $requestToken = $spec->token();
         }
+        // what a refusal asks for: a change's preview again, or another choice of devices for a diagnostic run
+        $again = $spec !== null && ! $spec->ofChange() ? 'choose the devices again' : 'preview again';
         if (! preg_match('/^(?:[a-f0-9]{32}|[a-f0-9]{64})$/D', $requestToken)) {
             return self::refused($plan, ['The launch form is out of date: reload the page.']);
         }
@@ -228,7 +246,7 @@ final class RunLauncher
             }
             if ($plan->refused) {
                 $errors[] = count($plan->refused) . ' of the chosen devices cannot be targets now (' . implode('; ',
-                    array_map(fn ($r) => $r['display'] . ': ' . $r['text'], array_slice($plan->refused, 0, 5))) . '): preview again.';
+                    array_map(fn ($r) => $r['display'] . ': ' . $r['text'], array_slice($plan->refused, 0, 5))) . "): $again.";
             }
 
             return self::refused($plan, $errors);
@@ -247,7 +265,7 @@ final class RunLauncher
             }
             $busy = array_intersect_key($this->runs->busy(), $plan->targets);
             if ($busy) {
-                return self::refused($plan, array_map(fn ($deviceId, $entry) => $plan->targets[$deviceId]['display'] . " became busy in run #{$entry['run']}: preview again.",
+                return self::refused($plan, array_map(fn ($deviceId, $entry) => $plan->targets[$deviceId]['display'] . " became busy in run #{$entry['run']}: $again.",
                     array_keys($busy), $busy));
             }
             $reserved = array_intersect_key($this->reserved($spec), $plan->targets);
@@ -280,7 +298,8 @@ final class RunLauncher
     private function existing(int $runId, LaunchPlan $plan, ?RunSpec $spec): array
     {
         if ($spec !== null && ! $spec->belongs($this->runs->find($runId))) {
-            return self::refused($plan, ["Run #$runId, which is not a run of this change, holds this launch's one-time token: nothing was launched."]);
+            return self::refused($plan, ["Run #$runId, which is not " . ($spec->ofChange() ? 'a run of this change' : 'a diagnostic run')
+                . ", holds this launch's one-time token: nothing was launched."]);
         }
 
         return ['run_id' => $runId, 'plan' => $plan, 'errors' => [], 'existing' => true];
@@ -311,8 +330,8 @@ final class RunLauncher
             'request_token' => $requestToken,
             'launch_nonce' => $nonce,
             'status' => RunStatus::PENDING,
-        ] + ($spec === null ? [] : ['change_id' => $spec->changeId, 'kind' => $spec->kind, 'batch' => $spec->kind === RunSpec::BATCH ? $spec->number : null,
-            'context' => mb_substr($spec->context, 0, 120)]), $targets);
+        ] + ($spec === null ? [] : ['change_id' => $spec->ofChange() ? $spec->changeId : null, 'kind' => $spec->kind,
+            'batch' => $spec->kind === RunSpec::BATCH ? $spec->number : null, 'context' => mb_substr($spec->context, 0, 120)]), $targets);
     }
 
     /**
@@ -352,14 +371,14 @@ final class RunLauncher
 
     /**
      * What the runner is asked to start: the template on the targets' inventory names with the answers; a change's dry
-     * run in check mode with diffs (--check --diff), a batch pinned to the commit its dry run ran; a run of phase 1 as
-     * it is.
+     * run and a diagnostic run in check mode with diffs (--check --diff), a batch pinned to the commit its dry run ran; a
+     * run of phase 1 as it is.
      */
     public static function request(LaunchPlan $plan, string $message, ?RunSpec $spec = null): LaunchRequest
     {
-        $dryRun = $spec !== null && $spec->isDryRun();
+        $checkMode = $spec !== null && $spec->inCheckMode();
 
-        return new LaunchRequest((string) $plan->template?->id, $plan->limit(), $plan->values, $plan->secrets, $message, $dryRun, $dryRun,
+        return new LaunchRequest((string) $plan->template?->id, $plan->limit(), $plan->values, $plan->secrets, $message, $checkMode, $checkMode,
             $spec !== null && $spec->kind === RunSpec::BATCH ? $spec->commit : null);
     }
 

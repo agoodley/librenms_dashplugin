@@ -10,12 +10,20 @@ namespace Agoodley\LibrenmsAnsible\Services;
  * change's id and its own random token (the one its creation form had), so a change that gets the id of an earlier one
  * (the change tables dropped by a rollback and made again) never takes over that change's runs; a run found by a token
  * counts only when it is a run of the same change, kind and batch (belongs()).
+ *
+ * Or a diagnostic run (diagnostic(), Services\DiagnosticService): in check mode with diffs like a dry run, proven to be
+ * one by its log like a dry run, but of no change; it carries its launch form's one-time token, as the runs of phase 1.
  */
 final class RunSpec
 {
     public const DRY_RUN = 'dry_run';
 
     public const BATCH = 'batch';
+
+    public const DIAGNOSTIC = 'diagnostic';
+
+    /** What a diagnostic run's eventlog entries say it is: "Ansible run #57 (diagnostic run) finished: no change". */
+    public const DIAGNOSTIC_CONTEXT = 'diagnostic run';
 
     /**
      * @param  int  $number  the dry run's attempt, or the batch's number
@@ -33,6 +41,30 @@ final class RunSpec
         public readonly ?\Closure $halt = null,
         public readonly string $salt = '',
     ) {
+    }
+
+    /**
+     * A diagnostic run: launched in check mode (--check --diff) like a change's dry run, of no change.
+     */
+    public static function diagnostic(): self
+    {
+        return new self(0, self::DIAGNOSTIC, 0, self::DIAGNOSTIC_CONTEXT);
+    }
+
+    /**
+     * Is it a run of a change (its dry run or a batch), whose one-time token the spec makes? A diagnostic run is not.
+     */
+    public function ofChange(): bool
+    {
+        return $this->kind !== self::DIAGNOSTIC;
+    }
+
+    /**
+     * Does Ansible run it in check mode (--check --diff): a change's dry run, or a diagnostic run?
+     */
+    public function inCheckMode(): bool
+    {
+        return $this->kind === self::DRY_RUN || $this->kind === self::DIAGNOSTIC;
     }
 
     /**
@@ -77,11 +109,15 @@ final class RunSpec
     }
 
     /**
-     * Is the run, found by this spec's token, a run of this change, kind and batch? A run of something else that holds the
-     * token is never taken for this one.
+     * Is the run, found by this spec's token, a run of this change, kind and batch (a diagnostic run, of no change, for a
+     * diagnostic run)? A run of something else that holds the token is never taken for this one.
      */
     public function belongs(?array $run): bool
     {
+        if ($run !== null && ! $this->ofChange()) {
+            return ($run['kind'] ?? null) === self::DIAGNOSTIC && empty($run['change_id']);
+        }
+
         return $run !== null && (int) ($run['change_id'] ?? 0) === $this->changeId && ($run['kind'] ?? null) === $this->kind
             && ($this->kind !== self::BATCH || (int) ($run['batch'] ?? 0) === $this->number);
     }

@@ -1,0 +1,38 @@
+Task Test: unproven diagnostic added to queue
+Started task #25 of template 'Test: unproven diagnostic'
+Preparing: 25
+Cloning Repository file:///var/lib/semaphore/playbooks.git
+Cloning into 'repository_1_template_4'...
+Get current commit hash
+Get current commit message
+cloning inventory repository
+Cloning Repository file:///var/lib/semaphore/playbooks.git
+Cloning into 'repository_1_template_4_inventory_1'...
+No /var/lib/semaphore/tmp/project_1/repository_1_template_4/collections/requirements.yml file found. Skip galaxy install process.
+No /var/lib/semaphore/tmp/project_1/repository_1_template_4/requirements.yml file found. Skip galaxy install process.
+No /var/lib/semaphore/tmp/project_1/repository_1_template_4/collections/requirements.yml file found. Skip galaxy install process.
+No /var/lib/semaphore/tmp/project_1/repository_1_template_4/requirements.yml file found. Skip galaxy install process.
+No /var/lib/semaphore/tmp/project_1/repository_1_template_4/roles/requirements.yml file found. Skip galaxy install process.
+No /var/lib/semaphore/tmp/project_1/repository_1_template_4/requirements.yml file found. Skip galaxy install process.
+No /var/lib/semaphore/tmp/project_1/repository_1_template_4/roles/requirements.yml file found. Skip galaxy install process.
+No /var/lib/semaphore/tmp/project_1/repository_1_template_4/requirements.yml file found. Skip galaxy install process.
+
+DRY RUN ************************************************************************
+
+PLAY [Unproven] [CHECK MODE] ***************************************************
+
+TASK [Outside check mode] ******************************************************
+[1;35m[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.[0m
+[0;35m[DEPRECATION WARNING]: Importing 'to_bytes' from 'ansible.module_utils._text' is deprecated. This feature will be removed from ansible-core version 2.24. Use ansible.module_utils.common.text.converters instead.[0m
+[0;35m[DEPRECATION WARNING]: Importing 'to_text' from 'ansible.module_utils._text' is deprecated. This feature will be removed from ansible-core version 2.24. Use ansible.module_utils.common.text.converters instead.[0m
+[0;35m[DEPRECATION WARNING]: The `ansible.module_utils.common._collections_compat` module is deprecated. This feature will be removed from ansible-core version 2.24. Use `collections.abc` from the Python standard library instead.[0m
+[0;35m[DEPRECATION WARNING]: The paramiko connection plugin is deprecated. This feature will be removed from ansible-core version 2.21.[0m
+[0;32mok: [inst-sw1] => {[0m
+[0;32m    "msg": "this task ran outside check mode"[0m
+[0;32m}[0m
+
+PLAY RECAP *********************************************************************
+[0;32minst-sw1[0m                   : [0;32mok=1   [0m changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+
+DRY RUN ************************************************************************

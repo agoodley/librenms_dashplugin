@@ -50,6 +50,17 @@ final class TemplateReader
     }
 
     /**
+     * Why a diagnostic run of the template cannot be proven to be a run in check mode; empty when it can. As a dry run,
+     * but the template's own CLI arguments may hold --check.
+     *
+     * @return string[]
+     */
+    public function diagnosticReasons(RunnerTemplate $template): array
+    {
+        return DryRunCheck::reasons($template, $this->groups($template), true);
+    }
+
+    /**
      * The template's snapshot with the LibreNMS inventory, or why it cannot be read (a variable group or the repository).
      *
      * @return array{parts: ?array, error: ?string}

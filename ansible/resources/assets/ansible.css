@@ -156,3 +156,16 @@ html.dark .ans-diff { background: #1b1d21; border-color: #3a3f45; color: #d8dade
 html.dark .ans-diff .ans-diff-add { color: #8ee6a8; background: rgba(46, 160, 67, 0.2); }
 html.dark .ans-diff .ans-diff-del { color: #ffaba3; background: rgba(248, 81, 73, 0.2); }
 html.dark .ans-diff .ans-diff-hunk { color: #8cc8ff; }
+
+/* diagnostic runs: each task's output per device, the devices that printed the same grouped, the groups side by side */
+.ans-output-task { margin: 0 0 12px; }
+.ans-output-title { margin: 0 0 4px; overflow-wrap: anywhere; }
+/* a column fits an 80-column show output on a wide screen (two side by side), one column on a phone */
+.ans-output-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(600px, 100%), 1fr)); gap: 8px; }
+.ans-output-group { min-width: 0; padding: 6px 8px; border: 1px solid rgba(128, 128, 128, 0.35); border-radius: 4px; }
+.ans-output-unattributed .ans-output-group { margin-top: 6px; }
+.ans-output-devices { margin-bottom: 4px; font-weight: 600; overflow-wrap: anywhere; }
+.ans-output-result { margin: 2px 0; }
+/* device output keeps its columns (a show command's tables): a long line scrolls in its block rather than wrapping */
+.ans-diff.ans-output-block { max-height: 420px; white-space: pre; overflow-wrap: normal; }
+.ans-output-line .ans-output-quiet-group { display: inline-block; margin: 0 12px 2px 0; }

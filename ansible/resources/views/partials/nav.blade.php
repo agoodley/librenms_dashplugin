@@ -1,4 +1,5 @@
-{{-- Tabs of every page of the plugin; "New change" and "Fixes" only for users holding the run permission. --}}
+{{-- Tabs of every page of the plugin; "New change" and "Fixes" only for users holding the run permission ("Diagnostics" lists
+     the latest diagnostic runs for every admin, its form is for them). --}}
 @php($navCanRun = \Agoodley\LibrenmsAnsible\Support\Access::canRun(auth()->user()))
 <div class="ans-nav">
     <ul class="nav nav-tabs">
@@ -12,6 +13,7 @@
         @if($navCanRun)
             <li class="{{ $active === 'fixes' ? 'active' : '' }}"><a href="{{ route('ansible.fixes') }}" id="ans-nav-fixes"><i class="fa fa-wrench fa-fw"></i> Fixes</a></li>
         @endif
+        <li class="{{ $active === 'diagnostics' ? 'active' : '' }}"><a href="{{ route('ansible.diagnostics') }}" id="ans-nav-diagnostics"><i class="fa fa-stethoscope fa-fw"></i> Diagnostics</a></li>
         <li class="{{ $active === 'runs' ? 'active' : '' }}"><a href="{{ route('ansible.runs') }}"><i class="fa fa-list fa-fw"></i> Runs</a></li>
         @if($active === 'run')
             <li class="active"><a href="#"><i class="fa fa-terminal fa-fw"></i> Run #{{ $runId }}</a></li>

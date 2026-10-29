@@ -273,6 +273,33 @@ class RunLifecycleTest extends TestCase
         $this->assertStringContainsString('finished: changed (ok=1 changed=1', $this->events->of(502)[0]['message']);
     }
 
+    public function testTheEndOfADiagnosticRunIsJudgedAsADryRunsIs(): void
+    {
+        $hosts = ['lab-sw1.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0', 'lab-sw2.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0',
+            'lab-sw3.netops.lab' => 'ok=1 changed=0 unreachable=0 failed=0'];
+        $marked = array_map(fn ($line) => preg_match('/^(PLAY|TASK) \[/', $line) ? str_replace('] ***', '] [CHECK MODE] ***', $line) : $line, self::recapLog($hosts));
+
+        // proven to run in check mode: in a dry run's words
+        $id = $this->running('success', ['kind' => 'diagnostic', 'context' => 'diagnostic run']);
+        $this->runner->logs['90'] = array_merge(['DRY RUN ****', ''], $marked);
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertSame(['success', 'verified'], [$run['status'], $run['proof']]);
+        $this->assertStringContainsString('Ansible run #' . $id . ' (diagnostic run) finished: no change (ok=1 changed=0', $this->events->of(501)[0]['message']);
+
+        // a task outside check mode: not proven, an error on every device
+        $this->events->entries = [];
+        $id = $this->running('success', ['kind' => 'diagnostic', 'context' => 'diagnostic run']);
+        $this->runner->logs['90'] = array_merge(['DRY RUN ****', ''], self::recapLog($hosts));
+        $this->lifecycle()->refresh($id, $this->t0 + 20);
+        $run = $this->lifecycle()->refresh($id, $this->t0 + 23);
+        $this->assertSame(['success', 'unverified'], [$run['status'], $run['proof']]);
+        foreach ([501, 502, 503] as $deviceId) {
+            $this->assertStringContainsString('(diagnostic run) finished: NOT PROVEN to be a dry run, it may have changed this device', $this->events->of($deviceId)[0]['message']);
+            $this->assertSame('error', $this->events->of($deviceId)[0]['severity']);
+        }
+    }
+
     public function testASuccessfulTaskWithTargetsThatDidNotRunIsIncompleteWithTheCause(): void
     {
         // the inventory script failed: Ansible found no host and still ended with success

@@ -8,6 +8,9 @@ installer (`install/rocky/install.sh` of the plugins' repository) made it and ke
   group "LibreNMS").
 * `fix_port_descriptions.yml`, `fix_stp_root_priority.yml`: the example fix playbooks (`ansible/contrib/playbooks/`,
   Cisco IOS) of the templates "Fix port descriptions" and "Fix spanning tree root priority". Review and adapt them.
+* `show_commands.yml`: the example playbook of the template "Show commands" (`ansible/contrib/playbooks/`, Cisco IOS):
+  the show commands of the plugin's diagnostic runs, one per line, which it runs in check mode and prints with a debug
+  task, so the run's page shows what each device answered.
 
 Both fix playbooks save the complete running configuration to startup after successful fixes on each targeted
 host, when the two configurations differ. This includes unrelated pending changes; review that scope before

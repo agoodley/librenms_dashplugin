@@ -16,8 +16,12 @@ ports, root bridges, OSPF and BGP, and the topology plugin's findings) is taken 
 LibreNMS' data is fresh, and compared; a batch that lost an uplink, moved a root bridge or made a new single point of
 failure holds the change until an admin accepts what it found. Its **Fixes** page turns the topology plugin's findings
 whose fix is clear (port descriptions, a spanning tree root that is not the intended one) into a change in one click,
-dry-run, approved, applied and verified like any other. Everything goes to an audit log and to each device's eventlog.
-This is phases 1 to 4 of [change automation with Ansible](../ROADMAP.md#change-automation-with-ansible).
+dry-run, approved, applied and verified like any other. Its **Diagnostics** page runs a template on the devices you
+choose **in check mode**, as no change (a *diagnostic run*: show commands, or what a template would change): no
+approval, batches, backups or windows, as its log must prove that every task ran in check mode, as a dry run's; its
+page shows what each device answered, the devices that answered the same grouped side by side. The topology plugin's
+maps launch it on a device or on the devices selected there. Everything goes to an audit log and to each device's
+eventlog. This is phases 1 to 5 of [change automation with Ansible](../ROADMAP.md#change-automation-with-ansible).
 
 * **Changes:** every change with its template, devices, reference, dry run and status, with filters.
 * **New change:** a template, the target devices and the first batch, the survey answers and a reference (a ticket
@@ -29,6 +33,8 @@ This is phases 1 to 4 of [change automation with Ansible](../ROADMAP.md#change-a
   changed* (or *Go on without the verification of batch N*), *Stop* and *Cancel*.
 * **Fixes:** the topology plugin's findings whose fix is clear, with what each fix changes; *Fix the selected* opens a
   new change made from them, its answers computed from the findings.
+* **Diagnostics:** a template, the devices and the answers, then *Run in check mode*: a diagnostic run, whose page shows
+  what each task printed per device; the latest diagnostic runs.
 * **Runs:** each run of a change (its dry run or a batch) with live status, per-device result and the Ansible log.
 * **Inventory:** what the runner gets from LibreNMS, the devices left out and why, the devices with a login of their
   own, and the setup steps.
@@ -59,6 +65,12 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
 | Fixes: the topology plugin's findings whose fix is clear | A change verified batch by batch |
 |---|---|
 | ![Fixes](docs/images/fixes.png) | ![A change verified](docs/images/change-verified.png) |
+
+| Diagnostics: show commands on two switches, in check mode | Its output per device, side by side |
+|---|---|
+| ![Diagnostics](docs/images/diagnostics.png) | ![A diagnostic run](docs/images/diagnostic-run.png) |
+
+![The topology plugin's L2 map: two devices selected, Diagnostics on them](docs/images/map-diagnostics.png)
 
 ![A change paused: its first batch's verification found an uplink lost](docs/images/change-verify-paused.png)
 
@@ -95,6 +107,7 @@ launches, follows and records; Oxidized takes the backups, LibreNMS keeps the ma
 * [Rollout plan and blast radius](#rollout-plan-and-blast-radius)
 * [Verification](#verification)
 * [Fixes](#fixes)
+* [Diagnostic runs](#diagnostic-runs)
 * [How runs work](#how-runs-work)
 * [Safety](#safety)
 * [Semaphore UI behaviour the plugin relies on](#semaphore-ui-behaviour-the-plugin-relies-on)
@@ -365,6 +378,11 @@ that could change Semaphore. Step by step (the names are suggestions):
     after all of that host's fixes succeed. This also persists unrelated pending configuration: review and approve
     that scope before applying. Dry runs and hosts without matching fix lines never save. Existing hand-edited
     copies of the playbooks must adopt this persistence policy explicitly.
+12. **Diagnostic templates** (for [diagnostic runs](#diagnostic-runs), optional): any template the plugin can dry-run
+    can be run as a diagnostic run (its CLI arguments may even hold `--check`). For show commands, copy
+    [`contrib/playbooks/show_commands.yml`](contrib/playbooks/show_commands.yml) (a Cisco IOS example: review and
+    adapt it) into the repository and make a template of it as in step 9, with the survey variable `commands`, of type
+    *Text*, required: one show command per line.
 
 Then, in the plugin's settings: the runner URL, the token and the project id, **Save connection**, and **Test
 connection**: it shows the Semaphore version, the token's role, the project's inventories with their ids (the one that
@@ -505,9 +523,9 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   Everyone else gets HTTP 403 on every route of the plugin and sees no menu entry, panel or button.
 * **Preparing and applying** changes (a new change, its dry run, *Apply*, *Continue* but for a batch whose blast
   radius cannot be computed (below), *Stop*, *Cancel*), the **Fixes** page and its list (they make changes from
-  fixes, and run the topology plugin's checks: one computation per admin at a time), stopping a run and releasing the
-  devices of a run the runner could not be asked about, or of a stopped run, also needs the plugin's **run
-  permission**, `ansible.run`.
+  fixes, and run the topology plugin's checks: one computation per admin at a time), launching a **diagnostic run**
+  (in check mode, as a change's dry run), stopping a run and releasing the devices of a run the runner could not be
+  asked about, or of a stopped run, also needs the plugin's **run permission**, `ansible.run`.
   **Approving and rejecting** changes needs its **approve permission**, `ansible.approve`. An admin grants them on the
   settings page. Admins do not get them automatically: an admin without them sees everything, but no buttons, and the
   plugin answers 403 to such requests.
@@ -595,6 +613,8 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   (`dry_run_state`, and `dry_run_label`: *NOT PROVEN* for a dry run not proven to be one, which may have changed its
   devices), and the outcome of its verification (`verification`, `verification_label`).
 * **Fixes:** the topology plugin's findings whose fix is clear, and *Fix the selected* (see [Fixes](#fixes)).
+* **Diagnostics** (*Ansible → Diagnostics*, *Diagnostics* in a device's Ansible panel, or on the topology plugin's
+  maps): a diagnostic run (see [Diagnostic runs](#diagnostic-runs)).
 * **Runs:** each run of a change, its dry run or a batch (and the runs of phase 1), with the change it belongs to;
   filter by device, user, template, status and dates. A run's page shows its status, each target's result with the
   PLAY RECAP counters, the answers and the log, live; **Stop** and **Release the devices** as in phase 1 (see [Run
@@ -1185,6 +1205,49 @@ configuration by its name or abbreviation (`Fa0/1` is `FastEthernet0/1`) and dif
 configuration, so the dry run shows a diff per port; the priority playbook sends `spanning-tree vlan <instances>
 priority <n>` (or `mst`; `-` is VLAN 1, the tree LibreNMS reads from a single-instance switch).
 
+## Diagnostic runs
+
+A **diagnostic run** runs a template on the devices you choose in check mode (`--check --diff`), as a change's dry run,
+but as no change: to read what the devices answer (show commands) or what a template would change on them (a
+compliance check), from LibreNMS, as NetBrain's runbooks run show commands on the devices of a map. It needs the run
+permission, as a change's dry run does, which also runs before any approval.
+
+* **Launch:** *Ansible → Diagnostics*: a template, the devices (filtered as on *New change*, those chosen by the link
+  you came from ticked and listed first), the answers to its survey (the secret ones too: the run starts at once, and
+  they reach the runner only), then **Run in check mode**. A device's Ansible panel opens it with that device, and the
+  topology plugin's maps (for an admin who holds the run permission, while this plugin is enabled) with a device
+  (*Diagnostics* in its details) or with the devices selected (ctrl-click, or hold on a touch screen: *Diagnostics on
+  these N devices*). **Run again** on a diagnostic run's page opens the form with its template, devices and answers
+  (not the secret ones).
+* **Checked as a dry run:** the template must pass the template checks and allow a provable dry run (its variable
+  groups set `ANSIBLE_CHECK_MODE_MARKERS=true`, see [The dry run and its proof](#the-dry-run-and-its-proof)); its own CLI
+  arguments may hold `--check`, which makes a template one that only ever runs in check mode, in Semaphore UI too.
+  Its targets are refused as a change's dry run's are: busy in another run (or held after a stop), or reserved by a
+  change being applied, whose batches must find them free. At most *Max targets per change*.
+* **Proven:** its log must prove that every task ran in check mode, as a dry run's (the plugin launches it with
+  `--check --diff`, and a task with `check_mode: false` runs for real even then). One that is not proven may have
+  changed its devices: its page says so in red, each target's result is *NOT PROVEN: may have changed this device*,
+  and each device's eventlog gets an error. A proven one changed nothing, so it does not void the dry run of a change
+  on the same devices (a run that may have changed them does).
+* **No change:** no approval, batches, Oxidized backups or maintenance windows, no reference; the results are said in
+  a dry run's words (*no change*, *would change*); it is a run of its own on the Runs page (*Kind: Diagnostic runs*),
+  with its eventlog entries ("Ansible run #57 (diagnostic run) finished: no change").
+* **Output per device:** once the run ended, its page shows each task with what it printed for each device: a debug
+  task's message or variable, a command module's `stdout_lines` (run with `-v`), a failure's message, the commands a
+  configuration module would send, and the diff printed before a result that would change (`--diff`); a map of text
+  (each command's answer by its command) as titled sections, in the order of their titles (Ansible prints a map's keys
+  sorted). The devices that printed the same are grouped, the
+  groups side by side, each line as the device printed it (a long one scrolls), a task that printed nothing in one
+  line (*tasks without output*). It is read from the run's whole log (the runner's, when the plugin kept only the
+  start and the end of a long one); device output is untrusted, so a result is shown under its device only when the
+  log cannot be read another way, as for a dry run's diffs ([The diff per device](#the-diff-per-device)): what Ansible
+  prints after a loop item, or that the PLAY RECAP contradicts, is listed apart, not attributed, with why.
+* **The example** [`contrib/playbooks/show_commands.yml`](contrib/playbooks/show_commands.yml) (Cisco IOS,
+  `cisco.ios.ios_command`, which in check mode sends nothing but show commands) takes one show command per line, with
+  one `| include`, `exclude`, `begin`, `section` or `count` at most, refuses any other line before it sends anything,
+  and prints each command's answer by one debug task. The [installer for Rocky Linux](../install/rocky/README.md) sets
+  it up as the template "Show commands".
+
 ## How runs work
 
 * **Inventory:** built from LibreNMS' devices by the plugin for the user of the API token: the devices that user may
@@ -1434,6 +1497,12 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
 * **Display settings in the repository:** the plugin reads the variable groups, not the repository's `ansible.cfg`; a
   config that hides ok results is caught by the PLAY RECAP comparison, one that changes the callback leaves the dry run
   not proven.
+* **A diagnostic run reads only what its tasks print:** a module's result is in the log only with `-v` or when a debug
+  task prints it, and the output per device attributes nothing a loop item prints to a device (an item label could
+  imitate Ansible's lines): print what you want to read with one debug task per result, outside a loop. A module
+  without check mode support is skipped in check mode (`command`, `shell` and `raw` too), and `cisco.ios.ios_command`
+  and the other `*_command` modules send only show commands in check mode. What a diagnostic run of a configuration
+  template says would change is as good as that module's check mode (see the first limitation).
 * **A repository with a local path** records no commit: a change is then applied with what the path holds at each
   batch, and the plugin cannot tell. Use a Git URL.
 * **Secret answers** are not part of what was dry-run and approved, and a batch that needs them waits for an admin when
@@ -1523,7 +1592,7 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
 ## Later phases
 
 Phase 4 completes [change automation with Ansible](../ROADMAP.md#change-automation-with-ansible) as the roadmap
-planned it; see the roadmap for what may follow.
+planned it, and phase 5 adds its diagnostic runs; see the roadmap for what may follow.
 
 Other LibreNMS inventory plugins for Ansible exist (e.g. `0uwl/librenms-inventory-plugin`); they do not map LibreNMS'
 os to `ansible_network_os` or clean the network data, which is why this plugin builds its own.

@@ -285,6 +285,8 @@ class ChangeRulesTest extends TestCase
         $this->assertStringContainsString('cannot be read: HTTP 500', DryRunCheck::reasons($template, [$group('4', ['ANSIBLE_CHECK_MODE_MARKERS' => 'true']), 'HTTP 500'])[0]);
         $this->assertStringContainsString('hold --check, so every run of it is a dry run', DryRunCheck::reasons(TemplateCheckTest::template(['arguments' => ['--check']]),
             [$group('4', ['ANSIBLE_CHECK_MODE_MARKERS' => 'true'])])[0]);
+        $this->assertSame([], DryRunCheck::reasons(TemplateCheckTest::template(['arguments' => ['--check']]), [$group('4', ['ANSIBLE_CHECK_MODE_MARKERS' => 'true'])], true),
+            'a diagnostic run\'s template may hold --check: it never applies anything');
         $this->assertStringContainsString('no variable group', DryRunCheck::reasons($template, [])[0]);
     }
 

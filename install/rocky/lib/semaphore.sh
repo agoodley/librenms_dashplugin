@@ -243,7 +243,8 @@ sem_service() {
 }
 
 # sem_playbook_repo: the Git repository of the project's playbooks (file:// on this server, so Semaphore UI records the
-# commit of each task): the plugin's inventory script and the example fix playbooks of ansible/contrib/. A file is
+# commit of each task): the plugin's inventory script, and the example fix and show commands playbooks of
+# ansible/contrib/. A file is
 # updated when the plugins bring a new version of it and nobody changed it in the repository since the installer put it.
 sem_playbook_repo() {
     local src=$PLUGIN_CLONE/ansible/contrib
@@ -258,7 +259,8 @@ sem_playbook_repo() {
     install -d -o semaphore -g semaphore "$work"
     run as semaphore git clone --quiet "file://$SEM_REPO" "$work/repo"
     local -A files=([inventory/librenms_inventory.py]=$src/librenms_inventory.py [fix_port_descriptions.yml]=$src/playbooks/fix_port_descriptions.yml
-        [fix_stp_root_priority.yml]=$src/playbooks/fix_stp_root_priority.yml [README.md]=$FILES_DIR/playbooks-README.md)
+        [fix_stp_root_priority.yml]=$src/playbooks/fix_stp_root_priority.yml [show_commands.yml]=$src/playbooks/show_commands.yml
+        [README.md]=$FILES_DIR/playbooks-README.md)
     local path changed=() kept=() shipped current last key
     for path in "${!files[@]}"; do
         key=repo_$(tr -c 'A-Za-z0-9' '_' <<<"$path")
@@ -487,6 +489,9 @@ print(json.dumps({
         {'kind': 'stp_root_priority', 'name': 'Fix spanning tree root priority', 'playbook': 'fix_stp_root_priority.yml', 'arguments': ['-v'],
          'description': 'LibreNMS Ansible plugin: the spanning tree root priority fixes of its Fixes page (an example for Cisco IOS: review it)',
          'survey': 'stp_priorities', 'survey_title': 'Spanning tree priorities', 'survey_description': 'one line per device and mode: <host> <mode> <instances> <priority>'},
+        {'kind': 'show_commands', 'name': 'Show commands', 'playbook': 'show_commands.yml', 'arguments': [],
+         'description': 'LibreNMS Ansible plugin: show commands for its diagnostic runs, in check mode (an example for Cisco IOS: review it)',
+         'survey': 'commands', 'survey_title': 'Show commands', 'survey_description': 'one show command per line (with one | include, exclude, begin, section or count at most)'},
     ],
     'runner': {'username': e['I_RUNNER'], 'name': 'LibreNMS (Ansible plugin)', 'email': e['I_RUNNER'] + '@' + e['I_SERVER'],
                'password': e['I_RUNNER_PASSWORD']},

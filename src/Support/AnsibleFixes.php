@@ -30,14 +30,24 @@ final class AnsibleFixes
      */
     public static function pageUrl(mixed $user): ?string
     {
+        return self::routeUrl($user, self::ROUTE);
+    }
+
+    /**
+     * The URL of a page of the Ansible plugin that needs its run permission (its Fixes page, its diagnostics page:
+     * AnsibleDiagnostics) for this user: only when that plugin is enabled and has the page, and the user is a LibreNMS
+     * admin who holds the permission; null otherwise.
+     */
+    public static function routeUrl(mixed $user, string $route): ?string
+    {
         try {
             if (! is_object($user) || ! method_exists($user, 'can') || ! $user->can('admin') || ! method_exists($user, 'hasDirectPermission')
-                || ! $user->hasDirectPermission(self::PERMISSION) || ! Route::has(self::ROUTE)
+                || ! $user->hasDirectPermission(self::PERMISSION) || ! Route::has($route)
                 || ! app(PluginManagerInterface::class)->pluginEnabled(self::PLUGIN)) {
                 return null;
             }
 
-            return route(self::ROUTE);
+            return route($route);
         } catch (\Throwable) {
             return null;
         }

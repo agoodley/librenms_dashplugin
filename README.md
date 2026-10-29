@@ -50,7 +50,10 @@ utilization / status, details panel for every device and link (speed, duplex, VL
 [export](#sharing--export) to draw.io (and from there Visio), yEd, PNG and CSV, full screen, and shareable URLs. On the
 L2 map, **Simulate failure** in the details of a device or link shows which devices would lose their path to the core
 (failures add up, so "what if both go down" works too), and the top-most down device of an outage is marked with the
-number of down devices behind it.
+number of down devices behind it. With the [Ansible plugin](ansible/README.md#diagnostic-runs) enabled, an admin who
+holds its run permission gets **Diagnostics** in a device's details, and **Diagnostics on these N devices** for the
+devices selected on a map (ctrl-click, or hold on a touch screen): a template run in check mode on them, show commands
+for example, whose page shows what each device answered.
 
 ![Layer 3 map](docs/images/l3-map.png)
 

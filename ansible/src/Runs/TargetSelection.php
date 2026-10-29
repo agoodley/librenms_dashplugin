@@ -23,6 +23,7 @@ final class TargetSelection
      * @param  array<int, true>|null  $runnerVisible  devices the inventory user may see (null: none chosen)
      * @param  string  $runnerUser  that user's name, for the reason
      * @param  array<int, int>  $reserved  device_id => the change being applied that reserves it (Data\ChangeRepository::reserved())
+     * @param  bool  $diagnostic  are the targets a diagnostic run's (which says so why a reserved device is refused)?
      */
     public function __construct(
         private readonly Inventory $inventory,
@@ -31,6 +32,7 @@ final class TargetSelection
         private readonly ?array $runnerVisible,
         private readonly string $runnerUser = '',
         private readonly array $reserved = [],
+        private readonly bool $diagnostic = false,
     ) {
     }
 
@@ -84,21 +86,21 @@ final class TargetSelection
             return self::busyRefusal($busy);
         }
         if (isset($this->reserved[$deviceId])) {
-            return self::reservedRefusal($this->reserved[$deviceId]);
+            return self::reservedRefusal($this->reserved[$deviceId], $this->diagnostic);
         }
 
         return null;
     }
 
     /**
-     * Why a device reserved by a change being applied cannot be a target.
+     * Why a device reserved by a change being applied cannot be a target (of a diagnostic run: $diagnostic).
      *
      * @return array{reason: string, text: string}
      */
-    public static function reservedRefusal(int $changeId): array
+    public static function reservedRefusal(int $changeId, bool $diagnostic = false): array
     {
-        return ['reason' => 'reserved', 'text' => "reserved by change #$changeId until it ends: that change is being applied (another run on its devices meanwhile "
-            . 'would void its dry run)'];
+        return ['reason' => 'reserved', 'text' => "reserved by change #$changeId until it ends: that change is being applied ("
+            . ($diagnostic ? 'its batches must find the device free' : 'another run on its devices meanwhile would void its dry run') . ')'];
     }
 
     /**
@@ -119,11 +121,15 @@ final class TargetSelection
     }
 
     /**
-     * What a run is, in words after its number: " (the dry run of change #61)", " (batch 2 of change #61)", " (template
-     * Show version)"; nothing when it is not known.
+     * What a run is, in words after its number: " (the dry run of change #61)", " (batch 2 of change #61)", " (a diagnostic
+     * run of template Show version)", " (template Show version)"; nothing when it is not known.
      */
     private static function runWhat(array $busy): string
     {
+        $template = UntrustedText::line((string) ($busy['template'] ?? ''), 80);
+        if (($busy['kind'] ?? null) === 'diagnostic') {
+            return ' (a diagnostic run' . ($template !== '' ? " of template $template" : '') . ')';
+        }
         $change = isset($busy['change_id']) ? (int) $busy['change_id'] : null;
         if ($change !== null && ($busy['kind'] ?? null) === 'dry_run') {
             return " (the dry run of change #$change)";
@@ -131,7 +137,6 @@ final class TargetSelection
         if ($change !== null && ($busy['kind'] ?? null) === 'batch') {
             return ' (batch ' . (int) ($busy['batch'] ?? 0) . " of change #$change)";
         }
-        $template = UntrustedText::line((string) ($busy['template'] ?? ''), 80);
 
         return $template !== '' ? " (template $template)" : '';
     }

@@ -1,0 +1,39 @@
+---
+# LibreNMS Ansible plugin: show commands for its diagnostic runs (Cisco IOS, cisco.ios.ios_command). An example: review it
+# and adapt it to your platforms. The plugin runs it in check mode (--check --diff) on the devices chosen on its
+# Diagnostics page (or on the topology plugin's map), and the run's page shows what each device answered, the devices
+# that answered the same grouped together.
+# Its survey variable commands (Text, required): one show command per line, optionally with one "| include", "| exclude",
+# "| begin", "| section" or "| count" ("show interfaces status", "show running-config | include hostname"). A line that is
+# not one fails the host before anything is sent (and in check mode cisco.ios.ios_command sends nothing but show
+# commands). The answers are printed by one debug task, outside a loop: the plugin attributes nothing a loop item prints
+# to a device (a loop item's label could imitate Ansible's lines).
+- name: Show commands
+  hosts: all
+  gather_facts: false
+  vars:
+    # a regular expression with a backslash is a variable (YAML single quotes keep it as it is), never a string in a template
+    lnms_command_re: '^show [A-Za-z0-9 ._/:-]+(?: \| (?:include|exclude|begin|section|count) [^|]+)?$'
+    lnms_commands: "{{ commands.splitlines() | map('trim') | reject('equalto', '') | list }}"
+  tasks:
+    - name: Only show commands
+      ansible.builtin.assert:
+        that:
+          - lnms_commands | length > 0
+          - lnms_commands | reject('match', lnms_command_re) | list | length == 0
+        fail_msg: >-
+          one show command per line, optionally with one | include, exclude, begin, section or count: nothing is sent
+          ({{ (lnms_commands | reject('match', lnms_command_re) | list | join('; ')) if lnms_commands else 'no command' }})
+        quiet: true
+    - name: Only Cisco IOS
+      ansible.builtin.assert:
+        that: ansible_network_os == 'cisco.ios.ios'
+        fail_msg: "this example playbook runs show commands on Cisco IOS only, and this host is {{ ansible_network_os | default('of no network OS') }}"
+        quiet: true
+    - name: Run the show commands
+      cisco.ios.ios_command:
+        commands: "{{ lnms_commands }}"
+      register: lnms_answers
+    - name: What the device answered
+      ansible.builtin.debug:
+        msg: "{{ dict(lnms_commands | zip(lnms_answers.stdout_lines)) }}"

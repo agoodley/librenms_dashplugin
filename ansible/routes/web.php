@@ -3,6 +3,7 @@
 use Agoodley\LibrenmsAnsible\AnsibleServiceProvider;
 use Agoodley\LibrenmsAnsible\Http\Controllers\AssetController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\ChangeController;
+use Agoodley\LibrenmsAnsible\Http\Controllers\DiagnosticController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\FixController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\InventoryController;
 use Agoodley\LibrenmsAnsible\Http\Controllers\TargetController;
@@ -14,8 +15,9 @@ use Illuminate\Support\Facades\Route;
 
 // Every URI has at least two segments after "plugin/" so it never collides with LibreNMS' own "plugin/{plugin}"
 // page route. Pages and their JSON are for LibreNMS admins; preparing, dry-running, applying and stopping changes
-// also need the run permission, approving and rejecting them the approve permission. Every run belongs to a change:
-// there is no launch of its own any more.
+// also need the run permission, approving and rejecting them the approve permission. Every run belongs to a change,
+// or is a diagnostic run (in check mode, as a change's dry run, which also needs the run permission): there is no
+// other launch any more.
 Route::middleware(['web', 'auth', RequireAdmin::class])
     ->prefix(AnsibleServiceProvider::URI_PREFIX)
     ->name('ansible.')
@@ -29,6 +31,10 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
         Route::get('api/runs', [RunController::class, 'list'])->name('api.runs');
         Route::get('runs/{id}', [RunController::class, 'show'])->whereNumber('id')->name('runs.show');
         Route::get('api/runs/{id}', [RunController::class, 'poll'])->whereNumber('id')->name('api.runs.show');
+        Route::get('api/runs/{id}/outputs', [DiagnosticController::class, 'outputs'])->whereNumber('id')->name('api.runs.outputs');
+
+        // the form for users with the run permission (the controller checks), the latest diagnostic runs for every admin
+        Route::get('diagnostics', [DiagnosticController::class, 'index'])->name('diagnostics');
 
         Route::get('inventory', [InventoryController::class, 'show'])->name('inventory');
         Route::get('inventory/download', [InventoryController::class, 'download'])->name('inventory.download');
@@ -51,6 +57,7 @@ Route::middleware(['web', 'auth', RequireAdmin::class])
             Route::get('api/targets', [TargetController::class, 'targets'])->name('api.targets');
             Route::post('api/changes/preview', [ChangeController::class, 'preview'])->name('api.changes.preview');
             Route::post('changes', [ChangeController::class, 'store'])->name('changes.store');
+            Route::post('diagnostics', [DiagnosticController::class, 'store'])->name('diagnostics.store');
             Route::post('changes/{id}/dry-run', [ChangeController::class, 'dryRun'])->whereNumber('id')->name('changes.dry-run');
             Route::post('changes/{id}/apply', [ChangeController::class, 'apply'])->whereNumber('id')->name('changes.apply');
             Route::post('changes/{id}/stop', [ChangeController::class, 'stop'])->whereNumber('id')->name('changes.stop');

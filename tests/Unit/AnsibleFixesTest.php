@@ -3,12 +3,14 @@
 namespace Agoodley\LibrenmsTopology\Tests\Unit;
 
 use Agoodley\LibrenmsTopology\History\FindingHistory;
+use Agoodley\LibrenmsTopology\Support\AnsibleDiagnostics;
 use Agoodley\LibrenmsTopology\Support\AnsibleFixes;
 use PHPUnit\Framework\TestCase;
 
 /**
  * A finding whose fix is clear links to the Ansible plugin's Fixes page, which marks the fix of that finding; other
- * findings, users who are no admins, and a LibreNMS without the Ansible plugin get no link.
+ * findings, users who are no admins, and a LibreNMS without the Ansible plugin get no link. So do the maps' links to its
+ * diagnostics page.
  */
 class AnsibleFixesTest extends TestCase
 {
@@ -55,5 +57,11 @@ class AnsibleFixesTest extends TestCase
             }
         };
         $this->assertNull(AnsibleFixes::pageUrl($admin));
+
+        // the maps' link to its diagnostics page (diagnostic runs) needs the same: neither has it
+        $this->assertNull(AnsibleDiagnostics::pageUrl($user));
+        $this->assertNull(AnsibleDiagnostics::pageUrl($admin));
+        $this->assertNull(AnsibleDiagnostics::pageUrl(null));
+        $this->assertSame('ansible.diagnostics', AnsibleDiagnostics::ROUTE);
     }
 }

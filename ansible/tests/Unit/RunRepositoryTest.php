@@ -173,6 +173,12 @@ class RunRepositoryTest extends TestCase
             [TargetSelection::busyRefusal($busy[501])['text'], TargetSelection::busyRefusal($busy[508])['text'], TargetSelection::busyRefusal($busy[509])['text']]);
         $this->assertStringStartsWith("held by run #$held (template Show version) until ", TargetSelection::busyRefusal($busy[504])['text']);
         $this->assertSame('busy in run #12, which has not finished', TargetSelection::busyRefusal(['run' => 12, 'held_until' => null])['text'], 'nothing known: no words');
+        $this->assertSame('busy in run #13 (a diagnostic run of template Show commands), which has not finished',
+            TargetSelection::busyRefusal(['run' => 13, 'held_until' => null, 'kind' => 'diagnostic', 'change_id' => null, 'template' => 'Show commands'])['text']);
+        // a device reserved by a change being applied: why, for a change and for a diagnostic run
+        $this->assertStringEndsWith('(another run on its devices meanwhile would void its dry run)', TargetSelection::reservedRefusal(61)['text']);
+        $this->assertSame('reserved by change #61 until it ends: that change is being applied (its batches must find the device free)',
+            TargetSelection::reservedRefusal(61, true)['text']);
     }
 
     public function testAHoldMeansTheSameInEveryPhpTimeZone(): void

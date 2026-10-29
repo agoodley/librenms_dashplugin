@@ -376,7 +376,10 @@
             'hostsPage' => route('topology.hosts'),
             'devicesPage' => url('devices'),
             'changesPage' => route('topology.changes'),
-        ] + ($views !== null ? [
+        ] + (($diagnostics = \Agoodley\LibrenmsTopology\Support\AnsibleDiagnostics::pageUrl(auth()->user())) !== null ? [
+            // the Ansible plugin's diagnostic runs on a device, or on the devices selected (that plugin enabled, the run permission)
+            'diagnostics' => $diagnostics,
+        ] : []) + ($views !== null ? [
             'views' => route('topology.api.views.store'),
             'view' => $savedView ? route('topology.api.views.save', ['id' => $savedView['id']]) : null,
         ] : []) + ($canExportCustomMap ? [

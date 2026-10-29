@@ -42,6 +42,14 @@
                 @endforeach
             </select>
         </label>
+        <label>Kind
+            <select name="kind" class="form-control">
+                <option value="">All</option>
+                @foreach($kinds as $value => $label)
+                    <option value="{{ $value }}" @selected($filters['kind'] === $value)>{{ $label }}</option>
+                @endforeach
+            </select>
+        </label>
         <label>Status
             <select name="status" class="form-control">
                 <option value="">All</option>
@@ -78,12 +86,12 @@
                     <td style="white-space: nowrap">{{ \Agoodley\LibrenmsAnsible\Support\Clock::local($run['started_at'] ?? $run['created_at']) }}</td>
                     <td>{{ $run['username'] }}</td>
                     <td style="white-space: nowrap">@if(! empty($run['change_id']))<a href="{{ route('ansible.changes.show', $run['change_id']) }}">#{{ $run['change_id'] }}</a>
-                        <br><span class="ans-muted">{{ $run['kind'] === 'dry_run' ? 'dry run' : 'batch ' . $run['batch'] }}</span>@else<span class="text-muted" title="a run of phase 1, before changes">-</span>@endif</td>
+                        <br><span class="ans-muted">{{ $run['kind'] === 'dry_run' ? 'dry run' : 'batch ' . $run['batch'] }}</span>@elseif(($run['kind'] ?? null) === 'diagnostic')<span class="ans-muted" title="in check mode, as no change"><i class="fa fa-stethoscope"></i> diagnostic</span>@else<span class="text-muted" title="a run of phase 1, before changes">-</span>@endif</td>
                     <td class="ans-wrap">{{ $run['template_name'] }}</td>
                     <td>
                         <span class="ans-wrap">{{ implode(', ', $run['target_names']) }}{{ $run['targets'] > count($run['target_names']) ? ' and ' . ($run['targets'] - count($run['target_names'])) . ' more' : '' }}</span>
                         @if($run['summary'] || \Agoodley\LibrenmsAnsible\Runs\RunResults::unproven($run))
-                            <br>@include('ansible::partials.results', ['resultSummary' => $run['summary'] ?? [], 'resultDryRun' => ($run['kind'] ?? null) === 'dry_run',
+                            <br>@include('ansible::partials.results', ['resultSummary' => $run['summary'] ?? [], 'resultDryRun' => \Agoodley\LibrenmsAnsible\Runs\RunResults::checkMode($run),
                                 'resultUnproven' => \Agoodley\LibrenmsAnsible\Runs\RunResults::unproven($run)])
                         @endif
                         @if($run['unexpected_hosts'])
