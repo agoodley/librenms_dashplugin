@@ -1,0 +1,111 @@
+/* LibreNMS compliance plugin */
+.cmp-page { padding-bottom: 12px; }
+.cmp-nav { margin-bottom: 12px; }
+.cmp-nav .nav-tabs > li > a { padding: 6px 14px; }
+.cmp-filterbar {
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 10px;
+    padding: 8px 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 4px; background: #f8f9fa;
+}
+.cmp-filterbar label { margin: 0; font-weight: normal; font-size: 12px; color: #555; }
+.cmp-filterbar .form-control { display: block; width: auto; max-width: 100%; height: 28px; padding: 2px 6px; font-size: 13px; }
+.cmp-filterbar .cmp-spacer { flex: 1 1 auto; }
+
+.cmp-cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 6px 0 14px; }
+.cmp-card { flex: 1 1 160px; min-width: 0; padding: 10px 14px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: inherit; }
+a.cmp-card:hover, a.cmp-card:focus { text-decoration: none; border-color: #9aa5b1; }
+.cmp-card h4 { margin: 0 0 4px; font-size: 13px; color: #555; }
+.cmp-card .cmp-card-value { font-size: 22px; font-weight: 600; }
+.cmp-card p { margin: 2px 0 0; color: #666; font-size: 12px; }
+.cmp-card.cmp-ok { border-left: 5px solid #2e9e44; }
+.cmp-card.cmp-warning { border-left: 5px solid #e67e22; }
+.cmp-card.cmp-critical { border-left: 5px solid #c0392b; }
+.cmp-card.cmp-info { border-left: 5px solid #1f6fb2; }
+.cmp-card.cmp-none { border-left: 5px solid #8a949e; }
+
+.cmp-table td, .cmp-table th { vertical-align: middle !important; }
+.cmp-table .cmp-num { text-align: right; white-space: nowrap; }
+.cmp-wrap { overflow-wrap: break-word; }
+.cmp-table td.cmp-device-cell { min-width: 110px; }
+.cmp-table td.cmp-rule-cell { min-width: 150px; }
+.cmp-nowrap { white-space: nowrap; }
+.cmp-muted { color: #6c757d; }
+.cmp-help { margin: 2px 0 0; font-size: 12px; }
+.cmp-help:not(.text-warning, .text-danger, .text-success) { color: #6c757d; }
+.cmp-code { font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.cmp-page .text-muted { color: #6c757d; }
+.cmp-severity { display: inline-block; min-width: 58px; text-align: center; }
+.label.cmp-sev-critical { background: #c0392b; }
+.label.cmp-sev-warning { background: #b35900; }
+.label.cmp-sev-info { background: #1f6fb2; }
+.label.cmp-st-pass { background: #2e7d32; }
+.label.cmp-st-fail { background: #c0392b; }
+.label.cmp-st-na { background: #6c757d; }
+.label.cmp-st-error { background: #8e44ad; }
+.cmp-pager { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 12px; font-size: 12px; }
+.cmp-export { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 8px; }
+
+/* a finding on the device page: its message, the lines of the backup (secrets hidden), how to fix it */
+.cmp-finding { margin: 0 0 12px; padding: 8px 10px; border: 1px solid #ddd; border-left-width: 5px; border-radius: 4px; }
+.cmp-finding.cmp-critical { border-left-color: #c0392b; }
+.cmp-finding.cmp-warning { border-left-color: #e67e22; }
+.cmp-finding.cmp-info { border-left-color: #1f6fb2; }
+.cmp-finding h4 { margin: 0 0 4px; font-size: 14px; overflow-wrap: anywhere; }
+.cmp-finding p { margin: 4px 0; overflow-wrap: anywhere; }
+.cmp-evidence {
+    margin: 4px 0; padding: 4px 6px; max-height: 360px; overflow: auto; font-size: 12px; line-height: 1.4;
+    background: #f7f7f9; border: 1px solid #e1e1e8; border-radius: 3px; white-space: pre; overflow-wrap: normal;
+}
+.cmp-evidence .cmp-lineno { display: inline-block; min-width: 4.5em; padding-right: 8px; color: #6c757d; text-align: right; user-select: none; }
+.cmp-page details > summary { display: list-item; cursor: pointer; }
+.cmp-device-head dl { margin-bottom: 6px; }
+.cmp-device-head dt { width: 150px; }
+.cmp-device-head dd { margin-left: 170px; overflow-wrap: anywhere; }
+.cmp-settings fieldset { margin-bottom: 20px; }
+.cmp-settings legend { font-size: 15px; }
+.cmp-settings textarea.cmp-code { min-height: 220px; }
+.cmp-settings form[id], .cmp-settings fieldset[id] { scroll-margin-top: 66px; }
+.cmp-settings .cmp-field-error { margin: 2px 0 0; font-size: 12px; color: #c0392b; }
+.cmp-settings .form-control.cmp-invalid { border-color: #c0392b; }
+.cmp-settings .cmp-rule-toggle { display: block; font-weight: normal; margin: 2px 0; }
+/* fields side by side where they fit (no Bootstrap row: its negative margins overflow LibreNMS' settings page on a phone) */
+.cmp-fields { display: flex; flex-wrap: wrap; gap: 0 16px; }
+.cmp-fields > .form-group { flex: 1 1 220px; min-width: 0; }
+.cmp-fields > .form-group.cmp-wide { flex: 2 1 320px; }
+.cmp-device-panel .panel-heading .pull-right .btn { margin-left: 4px; }
+.cmp-device-panel ul { margin: 0; padding-left: 18px; }
+.cmp-device-panel li { margin: 2px 0; overflow-wrap: anywhere; }
+
+/* inside an alert, help texts and links take the alert's colour */
+.cmp-page .alert .cmp-muted, .cmp-page .alert .cmp-help, .cmp-settings .alert .cmp-help { color: inherit; }
+.cmp-page .alert a:not(.btn), .cmp-settings .alert a:not(.btn), .cmp-device-panel .alert a:not(.btn) { color: inherit; text-decoration: underline; font-weight: 600; }
+
+/* phones: a wide table stacks each row, its cells one under the other with their column's name */
+@media (max-width: 600px) {
+    .cmp-stack > thead { display: none; }
+    .cmp-stack, .cmp-stack > tbody, .cmp-stack > tbody > tr, .cmp-stack > tbody > tr > td { display: block; width: auto !important; }
+    .cmp-stack > tbody > tr { border-top: 1px solid rgba(128, 128, 128, 0.35); padding: 4px 0; }
+    .cmp-stack > tbody > tr > td { border-top: none !important; padding: 2px 6px !important; white-space: normal !important; overflow-wrap: anywhere; text-align: left !important; }
+    .cmp-stack > tbody > tr > td[data-label]::before { content: attr(data-label) ": "; color: #6c757d; }
+    .cmp-stack > tbody > tr > td:empty { display: none; }
+    .table-responsive > .cmp-stack { margin-bottom: 0; }
+    .cmp-device-head dt { width: auto; float: none; text-align: left; }
+    .cmp-device-head dd { margin-left: 0; }
+}
+
+/* dark mode (LibreNMS toggles html.dark) */
+html.dark .cmp-filterbar { background: #24272c; border-color: #3a3f45; }
+html.dark .cmp-filterbar label, html.dark .cmp-card h4 { color: #b0b8be; }
+html.dark .cmp-card { background: #1d2024; border-color: #3a3f45; }
+html.dark .cmp-finding { border-color: #3a3f45; }
+html.dark .cmp-finding.cmp-critical { border-left-color: #e74c3c; }
+html.dark .cmp-finding.cmp-warning { border-left-color: #e67e22; }
+html.dark .cmp-finding.cmp-info { border-left-color: #4b9be0; }
+html.dark .cmp-card p, html.dark .cmp-muted, html.dark .cmp-help:not(.text-warning, .text-danger, .text-success), html.dark .cmp-page .text-muted,
+html.dark .cmp-settings .help-block, html.dark .cmp-device-panel .text-muted { color: #b0b8be; }
+html.dark .cmp-evidence { background: #1b1d21; border-color: #3a3f45; color: #d8dade; }
+html.dark .cmp-evidence .cmp-lineno { color: #8f979e; }
+html.dark .cmp-settings .cmp-field-error { color: #f08a80; }
+html.dark .cmp-page .alert-warning, html.dark .cmp-settings .alert-warning, html.dark .cmp-device-panel .alert-warning { color: #2b1a00; }
+html.dark .cmp-page .alert-success, html.dark .cmp-settings .alert-success { color: #0d2a0d; }
+html.dark .cmp-page .alert-info, html.dark .cmp-settings .alert-info, html.dark .cmp-device-panel .alert-info { color: #062733; }
+html.dark .cmp-page .alert-danger, html.dark .cmp-settings .alert-danger, html.dark .cmp-device-panel .alert-danger { color: #2b0606; }

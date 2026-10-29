@@ -111,6 +111,10 @@
                             @if($finding['recommendation'])
                                 <div class="topo-finding-rec"><i class="fa fa-lightbulb-o"></i> {{ $finding['recommendation'] }}</div>
                             @endif
+                            @if(! empty($finding['compliance']))
+                                {{-- what the configuration backups say of the finding's ports (Support\ComplianceFacts) --}}
+                                <div class="topo-finding-rec topo-finding-compliance"><i class="fa fa-check-square-o"></i> {{ $finding['compliance'] }}</div>
+                            @endif
                         </td>
                         <td class="topo-wrap">
                             @foreach(array_slice($finding['devices'], 0, 12) as $deviceId)

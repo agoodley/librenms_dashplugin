@@ -1,23 +1,24 @@
 # shellcheck shell=bash
-# install/rocky/lib/plugins.sh: part 2, the topology plugin (the repository's root) and the Ansible plugin (ansible/),
-# installed as their READMEs describe it from one clone: /opt/librenms-plugins/librenms_dashplugin, two Composer path
-# repositories in the librenms user's global Composer configuration, ./lnms plugin:add of each, ./lnms migrate, all as
-# the librenms user. A run updates the clone from its source; when it moved, the plugins are added again (Composer
+# install/rocky/lib/plugins.sh: part 2, the topology plugin (the repository's root), the Ansible plugin (ansible/) and
+# the compliance plugin (compliance/), installed as their READMEs describe it from one clone:
+# /opt/librenms-plugins/librenms_dashplugin, a Composer path repository for each in the librenms user's global Composer
+# configuration, ./lnms plugin:add of each, ./lnms migrate, all as the librenms user. A run updates the clone from its source; when it moved, the plugins are added again (Composer
 # takes the new version) and migrated.
 
 PLUGINS_DIR=/opt/librenms-plugins
 PLUGIN_CLONE=$PLUGINS_DIR/librenms_dashplugin
 TOPOLOGY_PKG=agoodley/librenms-topology-plugin
 ANSIBLE_PKG=agoodley/librenms-ansible-plugin
+COMPLIANCE_PKG=agoodley/librenms-compliance-plugin
 PLUGIN_COMMIT=''
 PLUGIN_UPDATED=0
 
 part_plugins() {
-    part_header plugins "The topology and Ansible plugins, from $PLUGIN_SOURCE"
+    part_header plugins "The topology, Ansible and compliance plugins, from $PLUGIN_SOURCE"
     librenms_require
     if [[ $CHECK == 1 && ! -f $LNMS_DIR/artisan ]]; then
-        would "clone $PLUGIN_SOURCE into $PLUGIN_CLONE, add both plugins with ./lnms plugin:add, run ./lnms migrate and enable them"
-        summary_add "both plugins: would be installed"
+        would "clone $PLUGIN_SOURCE into $PLUGIN_CLONE, add the three plugins with ./lnms plugin:add, run ./lnms migrate and enable them"
+        summary_add "the plugins: would be installed"
         return 0
     fi
     [[ ! -L $PLUGINS_DIR ]] || die "$PLUGINS_DIR is a symlink" "replace it with a root-owned directory before installing plugins"
@@ -30,7 +31,7 @@ part_plugins() {
     plugins_migrate
     plugins_enable
     plugins_routes
-    summary_add "topology + Ansible plugins from ${PLUGIN_SOURCE##*/} ($PLUGIN_BRANCH_USED${PLUGIN_COMMIT:+, $PLUGIN_COMMIT})$( [[ $PLUGIN_UPDATED == 1 ]] && echo ', installed/updated' ), enabled"
+    summary_add "topology + Ansible + compliance plugins from ${PLUGIN_SOURCE##*/} ($PLUGIN_BRANCH_USED${PLUGIN_COMMIT:+, $PLUGIN_COMMIT})$( [[ $PLUGIN_UPDATED == 1 ]] && echo ', installed/updated' ), enabled"
 }
 
 # Even read-only Git operations can run hooks/helpers configured in a checkout. Never run them as root in a
@@ -166,14 +167,15 @@ plugins_copy() {
 # composer_run ARGS...: Composer through LibreNMS' wrapper, as the librenms user.
 composer_run() { in_dir "$LNMS_DIR" as librenms env -u TERM php "$LNMS_DIR/scripts/composer_wrapper.php" --no-interaction "$@"; }
 
-# plugins_composer_repos: the two path repositories in the librenms user's global Composer configuration (so that
-# they survive LibreNMS' updates), as the plugins' READMEs set them.
+# plugins_composer_repos: the plugins' path repositories in the librenms user's global Composer configuration (so
+# that they survive LibreNMS' updates), as the plugins' READMEs set them.
 plugins_composer_repos() {
     if [[ ! -f $LNMS_DIR/composer.phar ]] && ! command -v composer >/dev/null; then composer_install /usr/local/bin/composer root:root; fi
     local name url current want
-    for name in librenms-topology librenms-ansible; do
+    for name in librenms-topology librenms-ansible librenms-compliance; do
         url=$PLUGIN_CLONE
         [[ $name == librenms-ansible ]] && url=$PLUGIN_CLONE/ansible
+        [[ $name == librenms-compliance ]] && url=$PLUGIN_CLONE/compliance
         want="{\"type\": \"path\", \"url\": \"$url\", \"options\": {\"symlink\": true}}"
         current=$(composer_global_repo "$name")
         if [[ $current == "path $url true" ]]; then detail "Composer knows the path repository $name"; continue; fi
@@ -200,9 +202,10 @@ plugin_installed() {
 
 plugins_add() {
     local pkg dir
-    for pkg in "$TOPOLOGY_PKG" "$ANSIBLE_PKG"; do
+    for pkg in "$TOPOLOGY_PKG" "$ANSIBLE_PKG" "$COMPLIANCE_PKG"; do
         dir=$PLUGIN_CLONE
         [[ $pkg == "$ANSIBLE_PKG" ]] && dir=$PLUGIN_CLONE/ansible
+        [[ $pkg == "$COMPLIANCE_PKG" ]] && dir=$PLUGIN_CLONE/compliance
         if [[ $PLUGIN_UPDATED == 0 ]] && plugin_installed "$pkg" "$dir"; then
             detail "LibreNMS has $pkg"
             continue
@@ -213,7 +216,7 @@ plugins_add() {
 }
 
 plugins_migrate() {
-    if [[ $CHECK == 1 && ! -L $LNMS_DIR/vendor/$ANSIBLE_PKG ]]; then would "create the plugins' tables (./lnms migrate)"; return 0; fi
+    if [[ $CHECK == 1 && ! -L $LNMS_DIR/vendor/$COMPLIANCE_PKG ]]; then would "create the plugins' tables (./lnms migrate)"; return 0; fi
     helper plugins-status '{}'
     local pending; pending=$(json_field "$HELPER_OUT" pending_migrations)
     if [[ $pending == '[]' ]]; then detail "the plugins' tables are up to date"; return 0; fi
@@ -224,10 +227,10 @@ plugins_migrate() {
 # plugins_enable: LibreNMS enables a plugin it sees for the first time; the installer makes sure of it once. A plugin
 # an admin disabled later stays disabled (the summary says so).
 plugins_enable() {
-    if [[ $CHECK == 1 && ! -L $LNMS_DIR/vendor/$ANSIBLE_PKG ]]; then would "enable both plugins in LibreNMS"; return 0; fi
+    if [[ $CHECK == 1 && ! -L $LNMS_DIR/vendor/$COMPLIANCE_PKG ]]; then would "enable the plugins in LibreNMS"; return 0; fi
     helper plugins-status '{}'
     local status=$HELPER_OUT name
-    for name in topology ansible; do
+    for name in topology ansible compliance; do
         local enabled; enabled=$(json_field "$status" "enabled.$name")
         if [[ $enabled == true ]]; then detail "the $name plugin is enabled"; continue; fi
         if [[ $(state_get "plugin_${name}_enabled" || true) == yes && $enabled == false ]]; then
@@ -238,7 +241,7 @@ plugins_enable() {
     done
     if [[ $CHECK == 0 ]]; then
         helper plugins-status '{}'
-        for name in topology ansible; do
+        for name in topology ansible compliance; do
             if [[ $(json_field "$HELPER_OUT" "enabled.$name") == true ]]; then state_set "plugin_${name}_enabled" yes; fi
         done
     fi
@@ -253,7 +256,7 @@ plugins_routes() {
     local cache
     cache=$(find "$LNMS_DIR/bootstrap/cache" -maxdepth 1 -name 'routes-v*.php' -print -quit 2>/dev/null)
     [[ -n $cache ]] || { detail "LibreNMS does not cache its routes"; return 0; }
-    if [[ $PLUGIN_UPDATED == 0 ]] && grep -q "'topology\.l2'" "$cache" && grep -q "'ansible\.changes'" "$cache"; then
+    if [[ $PLUGIN_UPDATED == 0 ]] && grep -q "'topology\.l2'" "$cache" && grep -q "'ansible\.changes'" "$cache" && grep -q "'compliance\.overview'" "$cache"; then
         detail "LibreNMS' route cache has the plugins' routes"
         return 0
     fi

@@ -9,6 +9,7 @@ use Agoodley\LibrenmsTopology\History\FindingBadges;
 use Agoodley\LibrenmsTopology\History\MapHistory;
 use Agoodley\LibrenmsTopology\Http\Controllers\Concerns\BuildsTopology;
 use Agoodley\LibrenmsTopology\Sharing\SavedView;
+use Agoodley\LibrenmsTopology\Support\ComplianceFacts;
 use Agoodley\LibrenmsTopology\Support\MapParams;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
@@ -70,8 +71,9 @@ class PageController extends Controller
      */
     private function diagnostics(Request $request, string $analysis, string $what): View
     {
-        return $this->page($request, $analysis, $what, fn (array $params, $settings) => FindingBadges::annotate($analysis,
-            $this->service($request, $settings)->$analysis($params), new HistoryRepository($request->user()), 120 * $settings->int('history_interval', 5, 1440)));
+        return $this->page($request, $analysis, $what, fn (array $params, $settings) => ComplianceFacts::annotate($analysis, FindingBadges::annotate($analysis,
+            $this->service($request, $settings)->$analysis($params), new HistoryRepository($request->user()), 120 * $settings->int('history_interval', 5, 1440)),
+            $request->user()));
     }
 
     /**
