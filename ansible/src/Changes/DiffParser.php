@@ -154,13 +154,13 @@ final class DiffParser
 
     /**
      * The result lines of the log, each with the block before it and its details, and per task whether it is a loop
-     * and why its log is ambiguous.
+     * and why its log is ambiguous. The output of a run per device (Runs\RunOutputs) reads the log so too.
      *
      * @param  string[]  $lines
      * @return array{0: array<int, array{section: int, task: string, kind: string, host: string, item: ?string, block: string[], details: string[], rest: string, cut: bool}>,
      *               1: array<int, array{loop: bool, ambiguous: ?string}>}
      */
-    private static function entries(array $lines): array
+    public static function entries(array $lines): array
     {
         $entries = [];
         $sections = [0 => ['loop' => false, 'ambiguous' => null]];

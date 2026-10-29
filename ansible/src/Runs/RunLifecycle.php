@@ -459,11 +459,11 @@ final class RunLifecycle
             $heldUntil = $runsOn ? ($task->ended ?? $now) + $this->holdSeconds : null;
         }
         $status = RunResults::status($task->status, $evaluation['results']);
-        // the dry run of a change: does its log prove it was one (Changes\DryRunProof)? Not judged without the whole log
-        // (the change asks the runner for it again), nor for a run stopped before the runner started it, nor for one Ansible
-        // stopped before the playbook, as the limit left it no host, when the inventory guard's record shows that it left
-        // every target out ($allLeftOut: nothing ran on a device, there is nothing to prove)
-        $dryRun = ($run['kind'] ?? null) === 'dry_run';
+        // the dry run of a change, or a diagnostic run (in check mode too): does its log prove it was one (Changes\DryRunProof)?
+        // Not judged without the whole log (the change asks the runner for it again), nor for a run stopped before the runner
+        // started it, nor for one Ansible stopped before the playbook, as the limit left it no host, when the inventory guard's
+        // record shows that it left every target out ($allLeftOut: nothing ran on a device, there is nothing to prove)
+        $dryRun = RunResults::checkMode($run);
         $proven = null;
         if ($dryRun && $complete && ($task->status !== RunStatus::STOPPED || $runsOn)) {
             $proof = DryRunProof::check($lines, RecapParser::parse($lines), $this->allLeftOut !== null && ($this->allLeftOut)($run));

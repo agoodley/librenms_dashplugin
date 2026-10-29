@@ -10,7 +10,8 @@ use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
  * variable groups (merged as Semaphore UI merges them, a later group over an earlier one, a secret over a variable)
  * must set the environment variable ANSIBLE_CHECK_MODE_MARKERS to true, and must not switch Ansible to another output
  * (ANSIBLE_STDOUT_CALLBACK) or hide results (ANSIBLE_DISPLAY_OK_HOSTS, ANSIBLE_DISPLAY_SKIPPED_HOSTS). And a template
- * whose own CLI arguments hold --check would apply nothing. Each reason says what to change in the runner.
+ * whose own CLI arguments hold --check would apply nothing (a diagnostic run's may: it never applies anything). Each
+ * reason says what to change in the runner.
  */
 final class DryRunCheck
 {
@@ -30,12 +31,13 @@ final class DryRunCheck
      * Why the plugin cannot prove a dry run of the template; empty when it can.
      *
      * @param  array<int, RunnerEnvironment|string>  $groups  the template's variable groups in its order, or why one cannot be read
+     * @param  bool  $checkAllowed  may its CLI arguments hold --check (a diagnostic run, which is never anything else)?
      * @return string[]
      */
-    public static function reasons(RunnerTemplate $template, array $groups): array
+    public static function reasons(RunnerTemplate $template, array $groups, bool $checkAllowed = false): array
     {
         $reasons = [];
-        foreach ($template->arguments ?? [] as $argument) {
+        foreach ($checkAllowed ? [] : ($template->arguments ?? []) as $argument) {
             if (in_array(trim($argument), ['-C', '--check'], true)) {
                 $reasons[] = 'its CLI arguments hold ' . trim($argument) . ', so every run of it is a dry run and an apply would change nothing: remove it (the plugin '
                     . 'launches the dry run itself)';

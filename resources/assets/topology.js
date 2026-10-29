@@ -719,12 +719,22 @@
             self.drawOverlays(ctx);
         });
         this.network.on('click', function (params) {
+            // several devices selected (ctrl-click): what can be done with them all
+            if (params.nodes.length > 1 && self.showSelection(params.nodes)) {
+                return;
+            }
             if (params.nodes.length) {
                 self.showNode(params.nodes[0]);
             } else if (params.edges.length) {
                 self.showEdge(params.edges[0]);
             } else {
                 self.showLegend();
+            }
+        });
+        // a long press adds a device to the selection on a touch screen (vis-network's multiselect), as ctrl-click does
+        this.network.on('hold', function (params) {
+            if (params.nodes.length > 1) {
+                self.showSelection(params.nodes);
             }
         });
         this.network.on('doubleClick', function (params) {
@@ -1912,6 +1922,11 @@
                 '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.stpPage + '?device=' + node.device_id) + '">STP</a> ' +
                 '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.redundancyPage + '?device=' + node.device_id) + '">Redundancy</a> ';
         }
+        if (node.device_id && this.config.urls.diagnostics) {
+            actions += '<a class="btn btn-xs btn-default" href="' + esc(this.config.urls.diagnostics + '?device=' + node.device_id) + '" title="'
+                + esc('Run a template in check mode on this device with the Ansible plugin (show commands, a compliance check); ctrl-click or hold other devices to select several') + '">'
+                + '<i class="fa fa-stethoscope"></i> Diagnostics</a> ';
+        }
         if (this.mode === 'l2' && node.type !== 'subnet' && node.type !== 'ghost' && !node.group) {
             var simNode = this.timeBlocks('simulate');
             actions += '<button class="btn btn-xs btn-danger" data-sim-node="' + esc(id) + '"' + (simNode ? ' disabled title="' + esc(simNode) + '"' : '') + '><i class="fa fa-bolt"></i> ' +
@@ -1974,6 +1989,48 @@
                 ' <small>' + esc(stp.transitions + ' fwd transitions') + '</small>');
         }
         return html;
+    };
+
+    /**
+     * Details panel of several selected nodes (ctrl-click, a long press on a touch screen): the monitored devices among
+     * them, and what can be done with them all: the Ansible plugin's diagnostic run on them (when the page has its link).
+     * False when fewer than two monitored devices are selected (the panel of the first node is shown instead).
+     */
+    TopologyMap.prototype.showSelection = function (ids) {
+        var self = this;
+        var devices = [];
+        var seen = {};
+        ids.forEach(function (id) {
+            var visNode = self.nodes.get(id);
+            var deviceId = visNode && visNode.data ? visNode.data.device_id : null;
+            if (deviceId && !seen[deviceId]) {
+                seen[deviceId] = true;
+                devices.push({id: deviceId, name: self.nodeName(id)});
+            }
+        });
+        if (devices.length < 2) {
+            return false;
+        }
+        var html = '<h4 class="topo-panel-title"><i class="fa fa-object-group"></i> ' + devices.length + ' devices selected</h4>' +
+            '<p class="text-muted topo-hint">Ctrl-click a device (or hold it on a touch screen) to add it to the selection or take it out.</p>' +
+            '<ul class="topo-selection">' + devices.map(function (device) {
+                return '<li>' + esc(device.name) + '</li>';
+            }).join('') + '</ul><div class="topo-actions">';
+        if (this.config.urls.diagnostics) {
+            html += '<a class="btn btn-xs btn-primary" id="topo-selection-diagnostics" href="' + esc(this.config.urls.diagnostics + '?devices=' + devices.map(function (device) {
+                return Number(device.id);
+            }).join(',')) + '" title="' + esc('Run a template in check mode on these devices with the Ansible plugin: show commands, a compliance check') + '">' +
+                '<i class="fa fa-stethoscope"></i> Diagnostics on these ' + devices.length + ' devices</a> ';
+        }
+        html += '<button class="btn btn-xs btn-default" data-clear-selection><i class="fa fa-times"></i> Clear the selection</button></div>';
+        this.panel.innerHTML = html;
+        this.panel.querySelectorAll('[data-clear-selection]').forEach(function (button) {
+            button.addEventListener('click', function () {
+                self.network.unselectAll();
+                self.showLegend();
+            });
+        });
+        return true;
     };
 
     /**
@@ -2107,7 +2164,8 @@
         }
         html += this.timeLegend();
         html += '</div><p class="text-muted topo-hint">Click a device or link for details. Double-click a device to center the map on it. Drag devices to arrange, then <i>Save layout</i>.' +
-            (this.mode === 'l2' ? ' <i>Simulate failure</i> in the details shows which devices would lose their path to the core.' : '') + '</p>';
+            (this.mode === 'l2' ? ' <i>Simulate failure</i> in the details shows which devices would lose their path to the core.' : '') +
+            (this.config.urls.diagnostics ? ' Ctrl-click (or hold) several devices to run <i>Diagnostics</i> on them all.' : '') + '</p>';
         this.panel.innerHTML = html;
     };
 

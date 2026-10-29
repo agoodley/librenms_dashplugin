@@ -18,11 +18,15 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 /**
- * The audit log: the runs list, a run with its targets and live log, and stopping a run.
+ * The audit log: the runs list, a run with its targets and live log (a diagnostic run's output per device:
+ * DiagnosticController), and stopping a run.
  */
 class RunController extends Controller
 {
     private const PER_PAGE = 50;
+
+    /** The runs list's kind filter: its values and labels. */
+    private const KINDS = ['diagnostic' => 'Diagnostic runs', 'change' => 'Runs of changes'];
 
     /**
      * plugin/ansible/runs: every run, newest first, with filters and paging.
@@ -32,7 +36,7 @@ class RunController extends Controller
         $runs = new RunRepository();
         $filters = self::filters($request);
         $page = max(1, (int) $request->query('page', '1'));
-        $data = ['filters' => $filters, 'page' => $page, 'perPage' => self::PER_PAGE, 'rows' => [], 'total' => 0,
+        $data = ['filters' => $filters, 'page' => $page, 'perPage' => self::PER_PAGE, 'rows' => [], 'total' => 0, 'kinds' => self::KINDS,
             'options' => ['users' => [], 'templates' => [], 'devices' => []], 'error' => null, 'canRun' => Access::canRun($request->user()),
             'assetVersion' => self::assetVersion()];
         try {
@@ -64,6 +68,7 @@ class RunController extends Controller
             'id' => (int) $run['id'], 'created_at' => Clock::local($run['created_at']), 'started_at' => Clock::local($run['started_at']),
             'finished_at' => Clock::local($run['finished_at']),
             'user' => $run['username'], 'template_id' => $run['template_id'], 'template' => $run['template_name'], 'status' => $run['status'],
+            'kind' => $run['kind'] ?? null, 'change_id' => isset($run['change_id']) ? (int) $run['change_id'] : null,
             'targets' => $run['targets'], 'target_names' => $run['target_names'], 'results' => (object) ($run['summary'] ?? []), 'unexpected_hosts' => $run['unexpected_hosts'] ?? [],
             'url' => route('ansible.runs.show', $run['id']),
         ], $result['rows'])]);
@@ -94,6 +99,8 @@ class RunController extends Controller
                 : Clock::show((int) Clock::unix((string) $run['created_at']) + $this->settings()->stopAfterSeconds(), 'Y-m-d H:i T'),
             'next' => OutputBuffer::since($run, 0)['next'],
             'canRun' => Access::canRun($request->user()),
+            'checkMode' => RunResults::checkMode($run),
+            'diagnostic' => ($run['kind'] ?? null) === 'diagnostic',
             'releasable' => RunLifecycle::releasable($run, time()),
             'assetVersion' => self::assetVersion(),
         ]);
@@ -115,7 +122,8 @@ class RunController extends Controller
         }
         $log = OutputBuffer::since($run, max(0, (int) $request->query('after', '0')));
         $rows = (new RunRepository())->targets($id);
-        $dryRun = ($run['kind'] ?? null) === 'dry_run';
+        // a change's dry run and a diagnostic run say what would change
+        $dryRun = RunResults::checkMode($run);
         $unproven = RunResults::unproven($run);
         $targets = [];
         foreach ($rows as $deviceId => $target) {
@@ -138,6 +146,7 @@ class RunController extends Controller
             'duration' => Format::duration(Format::runDuration($run)),
             'summary' => (object) ($run['summary'] ?? []),
             'dry_run' => $dryRun,
+            'diagnostic' => ($run['kind'] ?? null) === 'diagnostic',
             'proof' => $run['proof'] ?? null,
             'unexpected_hosts' => $run['unexpected_hosts'] ?? [],
             'error' => $run['error'] !== null ? Clock::localize($run['error']) : null,
@@ -197,7 +206,7 @@ class RunController extends Controller
     /**
      * The list's filters from the query string; values that do not fit are ignored.
      *
-     * @return array{device: ?int, user: string, template: string, status: string, from: string, to: string}
+     * @return array{device: ?int, user: string, template: string, status: string, kind: string, from: string, to: string}
      */
     private static function filters(Request $request): array
     {
@@ -205,12 +214,14 @@ class RunController extends Controller
         $date = fn (string $key) => preg_match('/^\d{4}-\d\d-\d\d$/D', $string($key, 10)) ? $string($key, 10) : '';
         $status = $string('status', 20);
         $device = $string('device', 10);
+        $kind = $string('kind', 20);
 
         return [
             'device' => ctype_digit($device) && (int) $device > 0 ? (int) $device : null,
             'user' => $string('user', 255),
             'template' => $string('template', 64),
             'status' => in_array($status, array_merge(RunStatus::FINAL, RunStatus::UNFINISHED, ['unfinished']), true) ? $status : '',
+            'kind' => isset(self::KINDS[$kind]) ? $kind : '',
             'from' => $date('from'),
             'to' => $date('to'),
         ];

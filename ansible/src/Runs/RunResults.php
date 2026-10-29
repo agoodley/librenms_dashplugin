@@ -26,8 +26,11 @@ final class RunResults
     public const DRY_LABELS = ['unreachable' => 'Unreachable', 'failed' => 'Failed', self::UNKNOWN => 'Unknown', self::NOT_RUN => 'Not run',
         'changed' => 'Would change', 'ok' => 'No change', 'skipped' => 'No change (skipped)'];
 
-    /** What a dry run not proven to be one shows instead of its results (Changes\DryRunProof): it may have changed its devices. */
+    /** What a run in check mode (a dry run, a diagnostic run) not proven to be one shows instead of its results (Changes\DryRunProof): it may have changed its devices. */
     public const NOT_PROVEN = 'NOT PROVEN: may have changed this device';
+
+    /** The kinds of run Ansible runs in check mode (--check --diff): a change's dry run, and a diagnostic run (of no change). */
+    public const CHECK_MODE = ['dry_run', 'diagnostic'];
 
     /**
      * The label of a result, in a dry run's words for a dry run.
@@ -38,11 +41,20 @@ final class RunResults
     }
 
     /**
-     * Is the run the dry run of a change that its log does not prove to be one (its proof, recorded at its end)?
+     * Does Ansible run it in check mode (a change's dry run, a diagnostic run)? Its results say what would change.
+     */
+    public static function checkMode(array $run): bool
+    {
+        return in_array($run['kind'] ?? null, self::CHECK_MODE, true);
+    }
+
+    /**
+     * Is the run in check mode (the dry run of a change, a diagnostic run) one that its log does not prove to be so (its
+     * proof, recorded at its end)?
      */
     public static function unproven(array $run): bool
     {
-        return ($run['kind'] ?? null) === 'dry_run' && ($run['proof'] ?? null) === 'unverified';
+        return self::checkMode($run) && ($run['proof'] ?? null) === 'unverified';
     }
 
     /** Eventlog severity of each result. */

@@ -168,4 +168,39 @@ class RunLauncherTest extends TestCase
         $result = $this->launch($spec);
         $this->assertSame([$own, true, []], [$result['run_id'], $result['existing'], $this->runner->launched]);
     }
+
+    public function testADiagnosticRunCarriesItsFormsTokenAndRunsInCheckMode(): void
+    {
+        $token = str_repeat('ab', 16);
+        $result = $this->launcher()->launch((object) ['user_id' => 1, 'username' => 'alice'], '11', [501], [], $token, RunSpec::diagnostic());
+        $this->assertSame([[], false], [$result['errors'], $result['existing']]);
+        $run = $this->runs->find((int) $result['run_id']);
+        $this->assertSame([null, 'diagnostic', null, 'diagnostic run', $token], [$run['change_id'], $run['kind'], $run['batch'], $run['context'], $run['request_token']],
+            'a run of no change, with the form\'s one-time token');
+        $request = $this->runner->launched[0];
+        $this->assertSame([true, true, null], [$request->check, $request->diff, $request->commit], 'in check mode with diffs, as a dry run, on the runner\'s latest commit');
+
+        // the same form submitted again: that run, nothing launched again
+        $again = $this->launcher()->launch((object) ['user_id' => 1, 'username' => 'alice'], '11', [501], [], $token, RunSpec::diagnostic());
+        $this->assertSame([(int) $result['run_id'], true], [$again['run_id'], $again['existing']]);
+        $this->assertCount(1, $this->runner->launched);
+
+        // a token that is no form's is refused before anything is recorded
+        $this->assertSame(['The launch form is out of date: reload the page.'],
+            $this->launcher()->launch((object) ['user_id' => 1, 'username' => 'alice'], '11', [501], [], 'x', RunSpec::diagnostic())['errors']);
+    }
+
+    public function testARunOfAChangeThatHoldsAFormsTokenIsNotADiagnosticRun(): void
+    {
+        $token = str_repeat('cd', 16);
+        $batch = $this->runs->create(['user_id' => 1, 'username' => 'alice', 'runner' => 'semaphore', 'runner_project' => 3, 'template_id' => '11',
+            'template_name' => 'Port description', 'playbook' => 'desc.yml', 'limit' => 'lab-sw1.netops.lab', 'variables' => [], 'request_token' => $token,
+            'launch_nonce' => 'abcdef123456', 'status' => RunStatus::PENDING, 'change_id' => 7, 'kind' => RunSpec::BATCH, 'batch' => 1, 'context' => 'x'],
+            [501 => ['inventory_name' => 'lab-sw1.netops.lab', 'hostname' => 'lab-sw1.netops.lab', 'display' => 'lab-sw1']]);
+
+        $result = $this->launcher()->launch((object) ['user_id' => 1, 'username' => 'alice'], '11', [501], [], $token, RunSpec::diagnostic());
+        $this->assertSame([null, ["Run #$batch, which is not a diagnostic run, holds this launch's one-time token: nothing was launched."]],
+            [$result['run_id'], $result['errors']]);
+        $this->assertSame([], $this->runner->launched);
+    }
 }

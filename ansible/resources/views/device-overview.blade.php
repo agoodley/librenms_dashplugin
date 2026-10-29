@@ -1,5 +1,5 @@
-{{-- Device overview panel (Hooks\DeviceOverview, admins only): the device's latest changes and runs, a link to a new
-     change on it, and its own-login marker. --}}
+{{-- Device overview panel (Hooks\DeviceOverview, admins only): the device's latest changes and runs, links to a new
+     change and a diagnostic run on it, and its own-login marker. --}}
 <link href="{{ route('ansible.asset', 'ansible.css') }}?v={{ \Agoodley\LibrenmsAnsible\Http\Controllers\Controller::assetVersion() }}" rel="stylesheet">
 <div class="panel panel-default panel-condensed ans-device-panel" id="ans-device-panel">
     <div class="panel-heading">
@@ -12,6 +12,7 @@
             @if($canRun && $refusal)
                 <span class="ans-muted" id="ans-device-cannot" style="font-size: 12px">cannot be a target: {{ $refusal['text'] }}</span>
             @elseif($canRun)
+                <a class="btn btn-xs btn-primary" href="{{ route('ansible.diagnostics', ['device' => $device->device_id]) }}" id="ans-device-diagnostic" title="a template in check mode, as no change"><i class="fa fa-stethoscope"></i> Diagnostics</a>
                 <a class="btn btn-xs btn-success" href="{{ route('ansible.changes.new', ['device' => $device->device_id]) }}" id="ans-device-change"><i class="fa fa-plus"></i> New change on this device</a>
             @endif
         </span>
@@ -70,7 +71,7 @@
             <tbody>
             @foreach($runs as $run)
                 <tr>
-                    <td><a href="{{ route('ansible.runs.show', $run['id']) }}">#{{ $run['id'] }}</a></td>
+                    <td><a href="{{ route('ansible.runs.show', $run['id']) }}">#{{ $run['id'] }}</a>@if(($run['kind'] ?? null) === 'diagnostic') <i class="fa fa-stethoscope ans-muted" title="a diagnostic run, in check mode"></i>@endif</td>
                     <td class="ans-wrap">{{ $run['template_name'] }}</td>
                     <td>@foreach(explode(' ', (string) \Agoodley\LibrenmsAnsible\Support\Clock::local($run['created_at'])) as $part)<span class="ans-nowrap">{{ $part }}</span> @endforeach</td>
                     <td class="ans-wrap">{{ $run['username'] }}</td>
@@ -78,7 +79,7 @@
                         @if($run['result'] && \Agoodley\LibrenmsAnsible\Runs\RunResults::unproven($run) && empty($run['unexpected']))
                             <span class="label label-danger ans-not-proven">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::NOT_PROVEN }}</span>
                         @elseif($run['result'])
-                            <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($run['result']) }}">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::label($run['result'], ($run['kind'] ?? null) === 'dry_run') }}</span>
+                            <span class="label label-{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::css($run['result']) }}">{{ \Agoodley\LibrenmsAnsible\Runs\RunResults::label($run['result'], \Agoodley\LibrenmsAnsible\Runs\RunResults::checkMode($run)) }}</span>
                         @endif
                         @if(! $run['result'] || ! in_array($run['status'], ['success', 'failed'], true))
                             {{-- how the run ended, when that says more than the device's result (incomplete, stopped, lost, released) --}}

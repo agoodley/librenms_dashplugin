@@ -223,3 +223,5 @@ html.dark .topo-time-zone { color: #aab; }
     .topo-canvas-wrap { height: 70vh; }
     .topo-panel { flex-basis: auto; max-height: 50vh; }
 }
+/* several devices selected on a map (ctrl-click, a long press): their names, in columns where there is room */
+.topo-selection { margin: 4px 0 0; padding-left: 18px; columns: 2 140px; overflow-wrap: anywhere; }

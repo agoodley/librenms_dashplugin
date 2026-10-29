@@ -272,8 +272,8 @@ final class RunRepository implements RunStore
      * The devices among $deviceIds that a run may have changed since $since (launched then or later, and not refused
      * by the runner), not counting the runs of change $changeId: a dry run from before such a run no longer tells what
      * an apply would do. Every run counts, also on a device it ran on without it being a target, except a run that
-     * never started (the runner refused it, or it was stopped in the runner's queue), a dry run proven to be one, and
-     * a dry run that has not ended (it holds its devices: it is judged when it ends).
+     * never started (the runner refused it, or it was stopped in the runner's queue), a run in check mode (a dry run, a
+     * diagnostic run) proven to be one, and one that has not ended (it holds its devices: it is judged when it ends).
      *
      * @param  int[]  $deviceIds
      * @return array<int, int> device_id => the latest such run
@@ -287,7 +287,8 @@ final class RunRepository implements RunStore
         foreach ($this->sql->select('SELECT t.`device_id`, r.`id` FROM ' . $this->sql->table('ansible_run_targets') . ' t JOIN ' . $this->sql->table('ansible_runs')
             . ' r ON r.`id` = t.`run_id` WHERE t.`device_id` IN (' . self::marks($deviceIds) . ') AND r.`created_at` >= ? AND r.`status` <> ?'
             . " AND NOT (r.`status` = 'stopped' AND r.`started_at` IS NULL)"
-            . " AND NOT (COALESCE(r.`kind`, '') = 'dry_run' AND (COALESCE(r.`proof`, '') = 'verified' OR r.`status` IN (" . self::marks(RunStatus::UNFINISHED) . ')))'
+            . " AND NOT (COALESCE(r.`kind`, '') IN ('dry_run', 'diagnostic') AND (COALESCE(r.`proof`, '') = 'verified' OR r.`status` IN ("
+            . self::marks(RunStatus::UNFINISHED) . ')))'
             . ' AND (r.`change_id` IS NULL OR r.`change_id` <> ?) ORDER BY r.`id`',
             array_merge(array_map('intval', $deviceIds), [Clock::store($since), RunStatus::NOT_LAUNCHED], RunStatus::UNFINISHED, [$changeId])) as $row) {
             $changed[(int) $row['device_id']] = (int) $row['id'];
@@ -328,9 +329,10 @@ final class RunRepository implements RunStore
     }
 
     /**
-     * A page of runs, newest first, with the number of targets and the names of the first three.
+     * A page of runs, newest first, with the number of targets and the names of the first three. The kind filter: the
+     * diagnostic runs ('diagnostic') or the runs of changes ('change').
      *
-     * @param  array{device?: ?int, user?: ?string, template?: ?string, status?: ?string, from?: ?string, to?: ?string}  $filters
+     * @param  array{device?: ?int, user?: ?string, template?: ?string, status?: ?string, kind?: ?string, from?: ?string, to?: ?string}  $filters
      * @return array{rows: array<int, array>, total: int}
      */
     public function page(array $filters, int $page, int $perPage): array
@@ -350,6 +352,11 @@ final class RunRepository implements RunStore
             $query->whereIn('r.status', RunStatus::UNFINISHED);
         } elseif (($filters['status'] ?? '') !== '') {
             $query->where('r.status', $filters['status']);
+        }
+        if (($filters['kind'] ?? '') === 'diagnostic') {
+            $query->where('r.kind', 'diagnostic');
+        } elseif (($filters['kind'] ?? '') === 'change') {
+            $query->whereNotNull('r.change_id');
         }
         // days in the time zone the pages show times in (the user's), the times kept in UTC
         if (! empty($filters['from'])) {

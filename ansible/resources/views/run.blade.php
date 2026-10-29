@@ -1,6 +1,7 @@
 {{-- One run (RunController::show): header, targets with their result, the answers, and the log, followed live
-     (resources/assets/ansible.js polls the plugin every 2 seconds while the run is unfinished). Device output can
-     hold anything: every value is escaped, the log through Runs\Ansi::html(). --}}
+     (resources/assets/ansible.js polls the plugin every 2 seconds while the run is unfinished); a diagnostic run's output
+     per device once it ended (DiagnosticController::outputs, inserted as text). Device output can hold anything: every
+     value is escaped, the log through Runs\Ansi::html(). --}}
 @extends('layouts.librenmsv1')
 
 @section('title', 'Ansible run #' . $run['id'])
@@ -16,8 +17,9 @@
     $final = \Agoodley\LibrenmsAnsible\Runs\RunStatus::isFinal($status);
     $counters = ['ok', 'changed', 'unreachable', 'failed', 'skipped'];
     $variables = $run['variables'] ?? [];
-    // a change's dry run says what would change; one its log does not prove to be a dry run may have changed its devices
-    $dryRun = ($run['kind'] ?? null) === 'dry_run';
+    // a change's dry run and a diagnostic run (in check mode) say what would change; one its log does not prove to be in check mode
+    // may have changed its devices
+    $dryRun = $checkMode;
     $unproven = \Agoodley\LibrenmsAnsible\Runs\RunResults::unproven($run);
 @endphp
 
@@ -51,8 +53,21 @@
 
     @if($dryRun)
         <div class="ans-warning-loud" id="ans-run-not-proven" @if(! $unproven) style="display: none" @endif><i class="fa fa-exclamation-triangle"></i>
-            This dry run is NOT PROVEN to be one: its log shows a task outside check mode (or no sign of --check). It may have changed its devices: check them.
-            Its change can be neither approved nor applied.</div>
+            @if($diagnostic)
+                This diagnostic run is NOT PROVEN to have run in check mode: its log shows a task outside check mode (or no sign of --check). It may have changed its
+                devices: check them, and the template's playbook (a task with check_mode: false runs for real).
+            @else
+                This dry run is NOT PROVEN to be one: its log shows a task outside check mode (or no sign of --check). It may have changed its devices: check them.
+                Its change can be neither approved nor applied.
+            @endif</div>
+    @endif
+    @if($diagnostic)
+        <div class="alert alert-info" id="ans-run-diagnostic" style="padding: 6px 10px"><i class="fa fa-stethoscope"></i>
+            A diagnostic run: the template in check mode (<span class="ans-code">--check --diff</span>), as no change.
+            <span id="ans-run-proof">{{ ($run['proof'] ?? null) === 'verified' ? 'Its log proves that every task ran in check mode: it changed nothing.'
+                : (($run['proof'] ?? null) === 'unverified' ? '' : ($final ? 'Its log was not judged (the run did not start, or its log is not whole).' : 'Its log is judged when it ends.')) }}</span>
+            @if($canRun)<a class="btn btn-xs btn-default" href="{{ route('ansible.diagnostics', ['from' => $run['id']]) }}" id="ans-run-again" style="margin-left: 6px"><i class="fa fa-repeat"></i> Run again</a>@endif
+        </div>
     @endif
     @if(! empty($run['change_id']))
         <div class="alert alert-info" id="ans-run-change" style="padding: 6px 10px"><i class="fa fa-random"></i>
@@ -164,6 +179,14 @@
         </div>
     </div>
 
+    @if($diagnostic)
+        <div class="panel panel-default" id="ans-outputs-panel">
+            <div class="panel-heading"><strong>Output per device</strong> <span class="text-muted" id="ans-outputs-state">{{ $final ? 'loading…' : '(once the run ended)' }}</span>
+                <label class="pull-right" style="font-weight: normal; margin: 0"><input type="checkbox" id="ans-outputs-quiet"> tasks without output</label></div>
+            <div class="panel-body" id="ans-outputs" style="padding: 8px"></div>
+        </div>
+    @endif
+
     <div class="panel panel-default">
         <div class="panel-heading"><strong>Log</strong> <span class="text-muted" id="ans-log-state">{{ $final ? '' : '(live: refreshed every 2 seconds)' }}</span></div>
         <div class="panel-body" style="padding: 6px">
@@ -186,6 +209,9 @@
         'release' => $canRun ? route('ansible.runs.release', $run['id']) : null,
         'final' => $final,
         'next' => $next,
+        // a diagnostic run's output per device, read once it ended
+        'outputs' => $diagnostic ? route('ansible.api.runs.outputs', $run['id']) : null,
+        'deviceUrl' => url('device'),
     ];
 @endphp
 {{-- @json() splits its argument on commas: it gets one variable --}}

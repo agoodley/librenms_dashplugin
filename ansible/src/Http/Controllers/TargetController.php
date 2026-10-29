@@ -7,17 +7,19 @@ use Agoodley\LibrenmsAnsible\Data\RunRepository;
 use Agoodley\LibrenmsAnsible\Runs\TargetSelection;
 use Agoodley\LibrenmsAnsible\Support\Clock;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 
 /**
- * The devices a new change can have as targets: every device with its inventory name, platform, LibreNMS status
- * and, when it cannot be a target, why (TargetSelection).
+ * The devices a new change (or a diagnostic run) can have as targets: every device with its inventory name, platform,
+ * LibreNMS status and, when it cannot be a target, why (TargetSelection).
  */
 class TargetController extends Controller
 {
     /**
-     * plugin/ansible/api/targets: every device with its inventory name, platform, LibreNMS status and refusal.
+     * plugin/ansible/api/targets[?for=diagnostic]: every device with its inventory name, platform, LibreNMS status and
+     * refusal (in a diagnostic run's words for one).
      */
-    public function targets(): JsonResponse
+    public function targets(Request $request): JsonResponse
     {
         $runs = new RunRepository();
         $changes = new ChangeRepository();
@@ -30,7 +32,7 @@ class TargetController extends Controller
             $devices = $service->devices();
             $inventoryUser = $service->inventoryUser();
             $selection = new TargetSelection($inventory, $devices->exists(), $runs->busy(), $inventoryUser['visible'] ?? null,
-                (string) ($inventoryUser['user']->username ?? ''), $changes->reserved());
+                (string) ($inventoryUser['user']->username ?? ''), $changes->reserved(), $request->query('for') === 'diagnostic');
             $memberships = $devices->memberships();
             $locations = $devices->locations();
             $map = $this->settings()->platformMap();
