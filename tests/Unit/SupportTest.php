@@ -266,7 +266,7 @@ class SupportTest extends TestCase
         // LibreNMS stores settings[history_checks][] as a list; the hidden empty entry keeps "none checked" apart from unset
         $this->assertSame('stp routing', (new PluginSettings(['history_checks' => ['', 'stp', 'routing']]))->all()['history_checks']);
         $this->assertSame('', (new PluginSettings(['history_checks' => ['']]))->all()['history_checks']);
-        $this->assertSame('stp links redundancy routing', (new PluginSettings())->all()['history_checks']);
+        $this->assertSame('stp links redundancy routing interfaces', (new PluginSettings())->all()['history_checks']);
     }
 
     public function testOneSharedPortThresholdForCoverageAndHostLocator(): void

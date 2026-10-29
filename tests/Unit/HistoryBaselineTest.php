@@ -286,8 +286,11 @@ class HistoryBaselineTest extends TestCase
         $this->assertSame('topology:routing:ip_duplicate', $entries[0]['reference']);
         $this->assertSame('Duplicate OSPF router ID', FindingHistory::label('ospf_duplicate_router_id'));
         $this->assertSame('BGP session down', FindingHistory::label('bgp_session_down'));
-        $this->assertSame(['stp', 'links', 'redundancy', 'routing'], HistoryService::ANALYSES, 'routing runs after the others');
-        $this->assertSame('stp links redundancy routing', (new PluginSettings([]))->all()['history_checks']);
+        $this->assertSame(['stp', 'links', 'redundancy', 'routing', 'interfaces'], HistoryService::ANALYSES, 'routing runs after the topology checks');
+        $this->assertSame('stp links redundancy routing interfaces', (new PluginSettings([]))->all()['history_checks']);
+        $this->assertSame(['interfaces'], HistoryService::WINDOW_ANALYSES, 'the verification of a change compares states');
+        $this->assertSame('Topology warning: Link flapping (interface health check), details: plugin/topology/interfaces?device=7',
+            FindingHistory::eventlog('interfaces', [], [$state('link_flapping', 'warning')], 'warning')[0]['message']);
     }
 
     public function testOneSeverityOfACheckCanBeKeptOutOfTheEventlog(): void

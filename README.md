@@ -8,6 +8,7 @@ IS-IS, MPLS and IPsec, forwarding, ARP and 802.1X tables, syslog, transceiver se
   [at a point in time](#maps-at-a-point-in-time) (as the history recorded them, or with the changes since), and
   [saved views and exports](#sharing--export) to draw.io / Visio, yEd, PNG, CSV and LibreNMS Custom Maps
 * **Diagnostics:** [spanning tree](#spanning-tree-diagnostics) with loop evidence, [link & VLAN](#link--vlan-diagnostics),
+  [interface health](#interface-health) (flapping links and speeds, half duplex, errors on every port),
   [routing & IP](#routing--ip-diagnostics), [redundancy & failure impact](#redundancy--failure-impact) and
   [monitoring coverage](#monitoring-coverage)
 * **Tools:** [host locator](#host-locator-and-port-tab) with a tab on every port page, [path trace](#path-trace),
@@ -231,8 +232,8 @@ The dialog previews what will be written (nodes, links, size) before anything is
 
 ## Diagnostics
 
-*Overview → Plugins → Topology diagnostics*: Spanning Tree Diagnostics, Link & VLAN Diagnostics, Routing & IP
-Diagnostics, Redundancy & Failure Impact and Monitoring Coverage.
+*Overview → Plugins → Topology diagnostics*: Spanning Tree Diagnostics, Link & VLAN Diagnostics, Interface Health,
+Routing & IP Diagnostics, Redundancy & Failure Impact and Monitoring Coverage.
 
 ### Spanning tree diagnostics
 
@@ -318,6 +319,32 @@ With the [Ansible plugin](ansible/README.md#fixes) enabled, a port description f
 admins: its Fixes page makes a change of it (the descriptions as data, dry-run, approved, applied and verified).
 
 ![Link & VLAN diagnostics](docs/images/link-diagnostics.png)
+
+### Interface health
+
+Every physical Ethernet port of the devices you can see, the ports toward desks, phones and access points too (the Link &
+VLAN page compares the links between monitored devices), over the last 24 hours (*Interface window*):
+
+| Check | Severity |
+|---|---|
+| **Link flapping**: the link went down this many times (3 on a port toward a switch, router, access point, phone or server, 10 on a desk port) | warning |
+| **Speed flapping**: the speed changed back and forth as often, between two polls that found the port up (1G and 100M: Gigabit Ethernet needs all four pairs of the cable, 100M two, so a damaged pair, patch cord or keystone makes it fall back and forth) | warning |
+| **Speed downgraded**: in the last 7 days the speed dropped (1G to 100M) and stayed | warning; info on a desk port |
+| **Half duplex** on a port up now, outside the links between monitored devices: a device on it with its speed and duplex set by hand while the port autonegotiates, the classic duplex mismatch | warning |
+| **Late collisions** in the window: the half-duplex end of a duplex mismatch (with LibreNMS' `enable_ports_etherlike` on) | warning |
+| **Interface errors**: 100 input and output errors or more in the window, with their share of the packets and how many of them are CRC (FCS) errors | warning |
+
+The changes come from LibreNMS' eventlog: its poller logs every change of a port's status, speed and duplex it sees from
+one poll to the next. A change counts as the port's when its device did not reboot then, a link going down not when the
+port was shut down in the same poll, and a speed change only between two polls that found the port up (a Cisco port
+reports 10M while down). A PC that sleeps or is switched off takes its link down, and Wake-on-LAN runs at 100M, a few
+times a day: so a port without an LLDP/CDP neighbor (or with a PC or printer as one) has the higher desk threshold, and a
+speed downgrade there is info. The error totals come from LibreNMS' RRD files over the window (one rrdtool run per batch
+of ports, only for ports whose error counters are not zero); without them (RRD disabled, or rrdtool cannot read them) the
+page says so and takes the last poll, leaving the links between monitored devices to the Link & VLAN page. The page lists
+every port with a change or a finding: its neighbor, status, speed and duplex now, link downs and speed changes in the
+window with the speeds seen, the last change and the errors. The [background checks](#topology-history-baseline-and-background-checks)
+run it too, so a device gets an eventlog entry when one of its ports starts flapping.
 
 ### Routing & IP diagnostics
 
@@ -612,8 +639,8 @@ reports counts as a down link, so a lost uplink is still reported after LibreNMS
 discovery (a port that now has another cable is a moved cable, not a lost path).
 
 After each snapshot the **background checks** run the spanning tree (one VLAN at a time, with the loop evidence of
-storms and syslog messages), link, redundancy and routing & IP checks over all devices, one after the other and each in
-its own process, and keep a findings history. A finding counts once two runs in a row report it, or when it takes the
+storms and syslog messages), link, redundancy, routing & IP and interface health checks over all devices, one after the
+other and each in its own process, and keep a findings history. A finding counts once two runs in a row report it, or when it takes the
 place of a finding of the same check and VLAN about the same devices that is gone (findings whose ports change from run
 to run go on). The devices a finding is about are those its title names, kept by id (a device renamed later is still the
 same), else all its devices; two findings are about the same devices when one is about all the devices of the other:
@@ -970,6 +997,12 @@ Custom maps the plugin made are LibreNMS' own: they stay either way.
 | Optical margin | 2 dB | receive power this close to the alarm threshold is reported (0 disables) |
 | Ignored VLANs | – | e.g. `999 1002-1005`: VLANs local to each switch by design |
 | Disabled link checks | – | check codes or categories (`mismatch`, `vlans`, `lags`, `counters`, `optics`, `neighbors`, `descriptions`), e.g. `mtu_mismatch description_missing` |
+| Interface window | 24 hours | link downs, speed changes and errors of the last hours the interface health checks count (1-168) |
+| Flaps toward a neighbor | 3 | link downs or speed changes in the window that make a port toward a switch, router, access point, phone or server flapping (0 disables) |
+| Flaps on a desk port | 10 | the same on a port without such an LLDP/CDP neighbor, where PCs sleep and wake (0 disables) |
+| Speed downgrades | 7 days | how far back a speed that dropped and stayed is reported (0 disables) |
+| Interface errors | 100 | errors in the window from which a port is reported (0 disables) |
+| Disabled interface checks | – | check codes or categories (`flaps`, `speed`, `duplex`, `errors`), e.g. `speed_downgraded port_errors` |
 | BGP reset window | 24 h | sessions that came up less than this ago are reported as reset (0 disables) |
 | Prefix limit warning | 80 % | share of a peer's maximum-prefix limit that warns (100 % is critical; 0 only reports peers at the limit) |
 | Ignored addresses | – | CIDRs or addresses left out of the IP checks (anycast, virtual gateway addresses) |
@@ -985,7 +1018,7 @@ Custom maps the plugin made are LibreNMS' own: they stay either way.
 | Record the topology history | on | every *History interval* through the LibreNMS scheduler |
 | History interval | 60 min | 5 to 1440 minutes, rounded down to 5, 10, 15, 20, 30, 60, 120, 180, 240, 360, 480, 720 or 1440 (whole hours run at 7 minutes past) |
 | Keep changes for | 90 days | facts and findings that ended earlier are deleted |
-| Background checks | all four | spanning tree, link & VLAN, redundancy and routing & IP, run every *History interval* one after the other; none checked switches them off |
+| Background checks | all five | spanning tree, link & VLAN, redundancy, routing & IP and interface health, run every *History interval* one after the other; none checked switches them off |
 | Eventlog from severity | warning | a device gets an eventlog entry when it gets or loses a background finding from this severity (`critical`, `warning`, `info` or `none`) |
 | Checks kept out of the eventlog | `link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent multicast_storm bgp_recent_reset ip_duplicate:info` | check codes that follow the counters of the last poll (`multicast_storm`: the multicast rate of the last poll, which routing protocols and video streams raise too) or a time window (`bgp_recent_reset`: a reset in the last *BGP reset window*); `code:severity` keeps the findings of a check with that severity out (`ip_duplicate:info`: duplicate addresses that are probably shared gateways, anycast or separate networks reusing the address). They stay on the pages; a warning that becomes such an info finding stays a warning (no "resolved"). The settings page warns about entries that are no check code |
 | Rollout batch size | 0 | default most devices per rollout batch (0: no limit); the planner page can change it |
@@ -1076,6 +1109,9 @@ not followed, and without `routing.view` every router is crossed by an estimate 
   (`SyslogPatterns` classifies the messages, `Data\LoopEvidenceRepository` reads the packet rates and the syslog).
 * `src/Links/LinkAnalyzer.php` – the link and VLAN checks (both ends of each link, port-channels, VLAN islands per
   L2 domain, descriptions and their configuration lines).
+* `src/Interfaces/InterfaceAnalyzer.php` – the interface health checks (each port's changes from the eventlog, poll by
+  poll); `RrdTotals` reads the error totals of a window from LibreNMS' RRD files, which `src/Data/RrdReader.php` runs
+  rrdtool for.
 * `src/Routing/RoutingAnalyzer.php` – the OSPF, BGP and IP checks (OSPF domains from the adjacencies, the interface
   facing each neighbor, BGP peers resolved to monitored devices); `BgpErrors` turns NOTIFICATION codes into text. The
   rows are streamed in and kept in small objects (2,000 routers with 50,000 addresses take about 50 MB and 0.6 s);
@@ -1200,6 +1236,18 @@ vendor/bin/phpunit
   VLANs. Beyond that, or above 150,000 STP port rows, it analyzes one VLAN at a time, VLAN 1 / CST until another is
   picked; the background check covers every VLAN.
 
+**Interface health**
+
+* It sees the changes LibreNMS' poller saw: a link that goes down and up again between two polls (5 minutes by default)
+  is not counted, unless it came back at another speed. Its window cannot reach further back than LibreNMS keeps its
+  eventlog (`eventlog_purge`, 30 days by default), and ports LibreNMS does not poll, or ignores, are left out.
+* It reads 50 devices at a time, up to 200,000 port changes of them (a week of an office whose PCs go off every night is
+  some 100,000 for 50 switches): 200,000 changes take 1.8 s and 120 MB. Beyond that the page says that the older changes
+  of those devices were left out.
+* A desk port has a higher threshold and a speed downgrade there is info, as PCs sleep and wake; a port with a PC that
+  speaks LLDP counts as a desk port too. The error totals are read from the RRD files only for ports whose error
+  counters are not zero, so the errors of a port whose counters started again (its device restarted) since are missed.
+
 **Link & VLAN, routing & IP**
 
 * LibreNMS refreshes VLAN memberships at discovery (every 6 hours by default) and counters at every poll, so a VLAN
@@ -1313,7 +1361,7 @@ vendor/bin/phpunit
   and 86 MB, redundancy check 0.8 s and 98 MB, the Changes page 0.4 s and 72 MB. For 2,000 routers with 50,000 addresses,
   8,000 OSPF adjacencies and 8,000 BGP sessions: snapshot 1.3 s and 80 MB, routing & IP check 1.3 s and 107 MB (with 1,800
   findings). A check that fails or takes more than an hour is logged in `topology-snapshot.log` and the eventlog, and the
-  others still run. A lock lasts as long as the longest run could (5 hours 10 minutes: the snapshot and four checks of
+  others still run. A lock lasts as long as the longest run could (6 hours 10 minutes: the snapshot and five checks of
   up to an hour) unless its run releases it, which it does when it ends, also on a fatal error such as running out of
   memory; `topology:snapshot` releases the lock of a check it stopped or that was killed. A run killed outright
   otherwise (`kill -9` of `topology:snapshot` or of a manual run) keeps its lock until it expires, as the scheduler's

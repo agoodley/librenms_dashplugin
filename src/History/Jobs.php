@@ -13,7 +13,7 @@ class Jobs
         {--baseline : then save the recorded topology as the baseline of every device}';
 
     public const CHECKS = 'topology:checks
-        {analysis?* : stp, links, redundancy or routing (default: those of the Background checks setting)}';
+        {analysis?* : stp, links, redundancy, routing or interfaces (default: those of the Background checks setting)}';
 
     /**
      * Run every History interval: command => parameters as Schedule::command() takes them. One
@@ -28,9 +28,9 @@ class Jobs
     /**
      * How long the locks of the history jobs last unless their run releases them (seconds), the
      * scheduler's overlap lock too: longer than the longest scheduled run, the snapshot (given the
-     * time of a check, it takes minutes) and the four checks one after the other.
+     * time of a check, it takes minutes) and the five checks one after the other.
      */
-    public const LOCK_SECONDS = 5 * self::CHECK_TIMEOUT + 600;
+    public const LOCK_SECONDS = 6 * self::CHECK_TIMEOUT + 600;
 
     /**
      * Read each kind of fact, skipping a kind whose reader fails (a read error is no empty kind:
