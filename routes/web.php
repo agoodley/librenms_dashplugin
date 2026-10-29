@@ -6,6 +6,7 @@ use Agoodley\LibrenmsTopology\Http\Controllers\CoverageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\ExportController;
 use Agoodley\LibrenmsTopology\Http\Controllers\HistoryController;
 use Agoodley\LibrenmsTopology\Http\Controllers\HostController;
+use Agoodley\LibrenmsTopology\Http\Controllers\InterfaceController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PathController;
 use Agoodley\LibrenmsTopology\Http\Controllers\PlanningController;
@@ -27,6 +28,7 @@ Route::middleware(['web', 'auth', RaiseMemoryLimit::class])
         Route::get('sites', [SiteController::class, 'show'])->name('sites');
         Route::get('stp', [PageController::class, 'stp'])->name('stp');
         Route::get('links', [PageController::class, 'links'])->name('links');
+        Route::get('interfaces', [InterfaceController::class, 'index'])->name('interfaces');
         Route::get('redundancy', [PageController::class, 'redundancy'])->name('redundancy');
         Route::get('routing', [RoutingController::class, 'index'])->name('routing');
         Route::get('changes', [HistoryController::class, 'changes'])->name('changes');
@@ -38,6 +40,7 @@ Route::middleware(['web', 'auth', RaiseMemoryLimit::class])
         Route::get('api/sites', [SiteController::class, 'api'])->name('api.sites');
         Route::get('api/stp', [ApiController::class, 'stp'])->name('api.stp');
         Route::get('api/links', [ApiController::class, 'links'])->name('api.links');
+        Route::get('api/interfaces', [InterfaceController::class, 'api'])->name('api.interfaces');
         Route::get('api/redundancy', [ApiController::class, 'redundancy'])->name('api.redundancy');
         Route::get('api/simulate', [ApiController::class, 'simulate'])->name('api.simulate');
         Route::get('api/routing', [RoutingController::class, 'api'])->name('api.routing');

@@ -46,6 +46,10 @@ class Navigation
             'route' => 'topology.links', 'group' => 'diagnostics', 'tab' => 'Link & VLAN', 'title' => 'Link & VLAN Diagnostics', 'icon' => 'fa-link',
             'description' => 'Both ends of every link compared: speed, duplex, MTU, trunk/native/allowed VLANs and port-channels, plus split VLANs, errors, optical levels and port descriptions.',
         ],
+        'interfaces' => [
+            'route' => 'topology.interfaces', 'group' => 'diagnostics', 'tab' => 'Interfaces', 'title' => 'Interface Health', 'icon' => 'fa-plug',
+            'description' => 'Every Ethernet port, desk ports too: links that keep going down, speeds flapping between 1G and 100M or stuck lower than they were, half duplex, late collisions and errors over the last hours.',
+        ],
         'routing' => [
             'route' => 'topology.routing', 'group' => 'diagnostics', 'tab' => 'Routing & IP', 'title' => 'Routing & IP Diagnostics', 'icon' => 'fa-route',
             'description' => 'OSPF router IDs, adjacencies, interface settings and area databases, BGP sessions with their last error as text and prefix limits, and IP problems: duplicate addresses, mask mismatches, subnets split between VRFs.',

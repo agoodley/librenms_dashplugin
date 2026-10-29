@@ -36,6 +36,7 @@ The plugin's conventions, which every tool follows and a new one should too:
 | 13 | [A→B path trace](README.md#path-trace) | **done** | – |
 | 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
 | 15 | [Maps at a point in time](README.md#maps-at-a-point-in-time) | **done** | – |
+| 16 | [Interface health](README.md#interface-health): flapping links and speeds, half duplex and errors on every port | **done** | – |
 
 Effort: S = new checks or an overlay on data the plugin already loads; M = new queries plus a page or tab;
 L = several new parts (tables, jobs, UI).

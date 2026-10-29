@@ -34,7 +34,8 @@ class FindingHistory
     public const EVENTLOG_DEVICES = 10;
 
     /** Analyses as named in eventlog entries. */
-    private const ANALYSIS_NAMES = ['stp' => 'spanning tree', 'links' => 'link & VLAN', 'redundancy' => 'redundancy', 'routing' => 'routing & IP'];
+    private const ANALYSIS_NAMES = ['stp' => 'spanning tree', 'links' => 'link & VLAN', 'redundancy' => 'redundancy', 'routing' => 'routing & IP',
+        'interfaces' => 'interface health'];
 
     /** Names of checks whose code does not read well; the others are their code in words. */
     private const LABELS = [
@@ -94,6 +95,10 @@ class FindingHistory
         'ip_duplicate' => 'Duplicate IP address',
         'ip_mask_mismatch' => 'Subnet mask mismatch',
         'ip_vrf_mismatch' => 'Subnet in two VRFs',
+        'speed_downgraded' => 'Port speed downgraded',
+        'port_half_duplex' => 'Port at half duplex',
+        'late_collisions' => 'Late collisions (duplex mismatch)',
+        'port_errors' => 'Interface errors',
     ];
 
     /** Words of check codes. */

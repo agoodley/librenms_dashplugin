@@ -3,9 +3,12 @@
 namespace Agoodley\LibrenmsTopology\History;
 
 use Agoodley\LibrenmsTopology\Data\HistoryRepository;
+use Agoodley\LibrenmsTopology\Data\InterfaceRepository;
 use Agoodley\LibrenmsTopology\Data\LoopEvidenceRepository;
 use Agoodley\LibrenmsTopology\Data\RoutingRepository;
 use Agoodley\LibrenmsTopology\Data\TopologyRepository;
+use Agoodley\LibrenmsTopology\Interfaces\InterfaceAnalyzer;
+use Agoodley\LibrenmsTopology\Interfaces\InterfaceService;
 use Agoodley\LibrenmsTopology\Links\LinkAnalyzer;
 use Agoodley\LibrenmsTopology\Redundancy\RedundancyAnalyzer;
 use Agoodley\LibrenmsTopology\Routing\RoutingAnalyzer;
@@ -27,7 +30,13 @@ use Illuminate\Support\Facades\Log;
 class HistoryService
 {
     /** Analyses the background checks can run, in the order they run (findings()). */
-    public const ANALYSES = ['stp', 'links', 'redundancy', 'routing'];
+    public const ANALYSES = ['stp', 'links', 'redundancy', 'routing', 'interfaces'];
+
+    /**
+     * Analyses of a time window rather than of the network's state (the interface checks count a port's changes of
+     * the last hours): the verification of a change, which compares two states, leaves them out.
+     */
+    public const WINDOW_ANALYSES = ['interfaces'];
 
     /** Port columns the facts need (interface names). */
     private const PORT_COLUMNS = ['port_id', 'device_id', 'ifName', 'ifDescr'];
@@ -177,13 +186,15 @@ class HistoryService
      */
     public static function checkCodes(): array
     {
-        return array_keys(StpAnalyzer::CHECKS + LoopEvidence::CHECKS + LinkAnalyzer::CHECKS + RedundancyAnalyzer::CHECKS + RoutingAnalyzer::CHECKS);
+        return array_keys(StpAnalyzer::CHECKS + LoopEvidence::CHECKS + LinkAnalyzer::CHECKS + RedundancyAnalyzer::CHECKS + RoutingAnalyzer::CHECKS
+            + InterfaceAnalyzer::CHECKS);
     }
 
     /**
      * Findings of one analysis over all devices (MapParams defaults: no device, group or location):
      * the spanning tree one VLAN at a time (a PVST network has an instance per VLAN), routing & IP
-     * from the routing service, the others from the topology service.
+     * from the routing service, interface health from the interface service, the others from the
+     * topology service.
      *
      * @return array<int, array>
      */
@@ -194,6 +205,9 @@ class HistoryService
             $routing = ($this->routing ?? $this->topology->sibling(RoutingRepository::class))->strict();
 
             return (new RoutingService($routing, $this->settings))->analyze($params)['findings'] ?? [];
+        }
+        if ($analysis === 'interfaces') {
+            return (new InterfaceService($this->topology->sibling(InterfaceRepository::class), $this->settings))->analyze($params)['findings'] ?? [];
         }
         $service = new TopologyService($this->topology, $this->settings, $this->history);
 
@@ -489,6 +503,7 @@ class HistoryService
             $analysis === 'links', $analysis === 'redundancy' => $this->history->allowsTable('links'),
             $analysis === 'routing' && str_starts_with($code, 'ospf_') => $this->history->allowsTable('ospf_nbrs'),
             $analysis === 'routing' && str_starts_with($code, 'bgp_') => $this->history->allowsTable('bgpPeers'),
+            $analysis === 'interfaces' => $this->history->allowsTable('ports'),
             default => true,
         };
     }
