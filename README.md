@@ -35,6 +35,11 @@ baselines, and rules of your own) is a third plugin in this repository: see [com
 With it enabled, the [spanning tree page](#spanning-tree-diagnostics) says what the backups configure on the ports it
 suspects of lacking portfast.
 
+Inventory reports (the models and software versions across the network, each member of a stack counted; device and
+module serial numbers; optics by type, vendor, model and wavelength, third-party ones included; a search of serial and
+part numbers; CSV exports and a device panel) are a fourth plugin in this repository: see
+[inventory/README.md](inventory/README.md).
+
 ![Layer 2 map](docs/images/l2-map.png)
 
 *(Screenshots use a simulated demo network.)*

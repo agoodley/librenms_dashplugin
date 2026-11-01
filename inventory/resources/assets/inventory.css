@@ -1,0 +1,75 @@
+/* LibreNMS inventory plugin */
+.inv-page { padding-bottom: 12px; }
+.inv-nav { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 12px; margin-bottom: 12px; border-bottom: 1px solid #ddd; }
+.inv-nav .nav-tabs { border-bottom: none; margin-bottom: -1px; }
+.inv-nav .nav-tabs > li > a { padding: 6px 14px; }
+.inv-nav .inv-search { display: flex; gap: 4px; margin: 0 0 4px auto; }
+.inv-nav .inv-search .form-control { height: 28px; padding: 2px 6px; font-size: 13px; width: 220px; max-width: 60vw; }
+.inv-filterbar {
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 10px;
+    padding: 8px 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 4px; background: #f8f9fa;
+}
+.inv-filterbar label { margin: 0; font-weight: normal; font-size: 12px; color: #555; }
+.inv-filterbar .form-control { display: block; width: auto; max-width: 100%; height: 28px; padding: 2px 6px; font-size: 13px; }
+.inv-filterbar .inv-spacer { flex: 1 1 auto; }
+
+.inv-cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 6px 0 14px; }
+.inv-card { flex: 1 1 160px; min-width: 0; padding: 10px 14px; border: 1px solid #ddd; border-left: 5px solid #1f6fb2; border-radius: 6px; background: #fff; color: inherit; }
+a.inv-card:hover, a.inv-card:focus { text-decoration: none; border-color: #9aa5b1; border-left-color: #1f6fb2; }
+.inv-card h4 { margin: 0 0 4px; font-size: 13px; color: #555; }
+.inv-card .inv-card-value { font-size: 22px; font-weight: 600; }
+.inv-card p { margin: 2px 0 0; color: #666; font-size: 12px; }
+.inv-card.inv-warning { border-left-color: #e67e22; }
+
+.inv-table td, .inv-table th { vertical-align: middle !important; }
+.inv-table .inv-num { text-align: right; white-space: nowrap; }
+.inv-wrap { overflow-wrap: anywhere; }
+.inv-nowrap { white-space: nowrap; }
+.inv-muted { color: #6c757d; }
+.inv-help { margin: 2px 0 8px; font-size: 12px; color: #6c757d; }
+.inv-code { font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.inv-page .text-muted { color: #6c757d; }
+.inv-pager { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 12px; font-size: 12px; }
+.inv-export { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.inv-section { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; margin: 14px 0 6px; }
+.inv-section h4 { margin: 0; }
+.inv-versions { margin: 0; padding: 0; list-style: none; }
+.inv-versions li { display: inline-block; margin: 0 8px 2px 0; white-space: nowrap; }
+.label.inv-origin-genuine { background: #2e7d32; }
+.label.inv-origin-third-party { background: #b35900; }
+.label.inv-origin-unknown { background: #6c757d; }
+.inv-device-panel ul { margin: 0; padding-left: 18px; }
+.inv-device-panel li { margin: 2px 0; overflow-wrap: anywhere; }
+.inv-device-panel dl { margin: 0; }
+.inv-device-panel dt { width: 140px; }
+.inv-device-panel dd { margin-left: 155px; overflow-wrap: anywhere; }
+
+/* inside an alert, help texts and links take the alert's colour */
+.inv-page .alert .inv-muted, .inv-page .alert .inv-help { color: inherit; }
+.inv-page .alert a:not(.btn) { color: inherit; text-decoration: underline; font-weight: 600; }
+
+/* phones: a wide table stacks each row, its cells one under the other with their column's name */
+@media (max-width: 600px) {
+    .inv-stack > thead { display: none; }
+    .inv-stack, .inv-stack > tbody, .inv-stack > tbody > tr, .inv-stack > tbody > tr > td { display: block; width: auto !important; }
+    .inv-stack > tbody > tr { border-top: 1px solid rgba(128, 128, 128, 0.35); padding: 4px 0; }
+    .inv-stack > tbody > tr > td { border-top: none !important; padding: 2px 6px !important; white-space: normal !important; overflow-wrap: anywhere; text-align: left !important; }
+    .inv-stack > tbody > tr > td[data-label]::before { content: attr(data-label) ": "; color: #6c757d; }
+    .inv-stack > tbody > tr > td:empty { display: none; }
+    .table-responsive > .inv-stack { margin-bottom: 0; }
+    .inv-nav .inv-search { margin-left: 0; width: 100%; }
+    .inv-nav .inv-search .form-control { flex: 1 1 auto; width: auto; }
+    .inv-device-panel dt { width: auto; float: none; text-align: left; }
+    .inv-device-panel dd { margin-left: 0; }
+}
+
+/* dark mode (LibreNMS toggles html.dark) */
+html.dark .inv-filterbar { background: #24272c; border-color: #3a3f45; }
+html.dark .inv-filterbar label, html.dark .inv-card h4 { color: #b0b8be; }
+html.dark .inv-card { background: #1d2024; border-color: #3a3f45; border-left-color: #4b9be0; }
+html.dark .inv-card.inv-warning { border-left-color: #e67e22; }
+html.dark .inv-nav { border-bottom-color: #3a3f45; }
+html.dark .inv-card p, html.dark .inv-muted, html.dark .inv-help, html.dark .inv-page .text-muted, html.dark .inv-device-panel .text-muted { color: #b0b8be; }
+html.dark .inv-page .alert-warning, html.dark .inv-device-panel .alert-warning { color: #2b1a00; }
+html.dark .inv-page .alert-info, html.dark .inv-device-panel .alert-info { color: #062733; }
+html.dark .inv-page .alert-danger, html.dark .inv-device-panel .alert-danger { color: #2b0606; }
