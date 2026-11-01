@@ -2,16 +2,18 @@
 
 namespace Agoodley\LibrenmsInventory\Reports;
 
+use Agoodley\LibrenmsInventory\Software\Status;
+use Agoodley\LibrenmsInventory\Support\Clock;
 use Agoodley\LibrenmsInventory\Support\Origin;
 
 /**
  * The rows of the CSV exports (Support\Csv), a header first: the devices, the modules (serial numbers), the optics, the
- * models and the software versions. Pure PHP.
+ * models, the software versions, the software compliance of the devices and their upgrades. Pure PHP.
  */
 final class Exports
 {
     /** What can be exported. */
-    public const KINDS = ['devices', 'modules', 'optics', 'models', 'versions'];
+    public const KINDS = ['devices', 'modules', 'optics', 'models', 'versions', 'software', 'upgrades'];
 
     /**
      * @param  array<int, array>  $devices  InventoryRepository::devices()
@@ -109,6 +111,42 @@ final class Exports
         }
 
         return $rows;
+    }
+
+    /**
+     * @param  list<array>  $rows  the software page's rows: a device's row of inventory_software with its name, location
+     * @param  array<string, string>  $osNames
+     * @return list<array>
+     */
+    public static function software(array $rows, array $osNames): array
+    {
+        $out = [['device', 'location', 'OS', 'model', 'software version', 'status', 'policy', 'why', 'status since (UTC)', 'version since (UTC)']];
+        foreach ($rows as $row) {
+            $out[] = [$row['name'], $row['location'], $osNames[(string) $row['os']] ?? $row['os'], $row['model'], $row['version'], Status::label((string) $row['status']),
+                $row['policy'] ?? '', $row['message'] ?? '', $row['status_since'], $row['version_since']];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  list<array>  $upgrades  SoftwareRepository::upgrades() rows
+     * @param  array<int, array{name: string, location: string}>  $names
+     * @param  array<string, string>  $osNames
+     * @return list<array>
+     */
+    public static function upgrades(array $upgrades, array $names, array $osNames): array
+    {
+        $out = [['seen (UTC)', 'device', 'location', 'OS', 'model', 'from version', 'to version', 'change', 'from version since (UTC)', 'days on the from version']];
+        foreach ($upgrades as $row) {
+            $from = Clock::unix($row['from_since'] ?? null);
+            $seen = Clock::unix($row['seen_at']);
+            $out[] = [$row['seen_at'], $names[$row['device_id']]['name'] ?? '#' . $row['device_id'], $names[$row['device_id']]['location'] ?? '',
+                $osNames[(string) $row['os']] ?? (string) $row['os'], (string) $row['model'], $row['from_version'], $row['to_version'], $row['direction'], (string) ($row['from_since'] ?? ''),
+                $from !== null && $seen !== null ? (int) floor(($seen - $from) / 86400) : ''];
+        }
+
+        return $out;
     }
 
     /**

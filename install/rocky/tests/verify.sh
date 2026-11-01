@@ -81,7 +81,8 @@ home=$(web -o /dev/null -w '%{http_code}' "$BASE/")
 check "the admin $ADMIN logs in (POST /login: $code, GET /: $home)" test "$home" = 200
 for page in plugin/topology plugin/topology/l2 plugin/topology/stp plugin/ansible/changes plugin/ansible/inventory plugin/settings/ansible plugin/settings/topology \
     plugin/compliance/overview plugin/compliance/devices plugin/compliance/rules plugin/settings/compliance \
-    plugin/inventory/overview plugin/inventory/devices plugin/inventory/modules plugin/inventory/optics; do
+    plugin/inventory/overview plugin/inventory/devices plugin/inventory/modules plugin/inventory/optics plugin/inventory/software plugin/inventory/upgrades \
+    plugin/settings/inventory; do
     body=$(web -w '\n%{http_code}' "$BASE/$page")
     code=${body##*$'\n'}
     if [[ $code == 200 ]] && ! grep -qiE 'whoops|exception|error 500' <<<"${body%$'\n'*}"; then pass "page $page (200)"; else fail "page $page ($code)"; fi

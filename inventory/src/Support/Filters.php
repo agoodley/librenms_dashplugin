@@ -2,10 +2,13 @@
 
 namespace Agoodley\LibrenmsInventory\Support;
 
+use Agoodley\LibrenmsInventory\Software\Status;
+
 /**
  * The filters of the plugin's pages and exports, from the query string: device, device group and location (ids), os,
- * model, version, class (of a module), type and vendor (of an optic), origin (genuine, third-party, unknown), a text
- * (q) and the page. Anything else, or of the wrong form, is left out. Pure PHP.
+ * model, version, class (of a module), type and vendor (of an optic), origin (genuine, third-party, unknown), status (of
+ * the software: Software\Status, or a group of them), a text (q) and the page. Anything else, or of the wrong form, is
+ * left out. Pure PHP.
  */
 final class Filters
 {
@@ -13,7 +16,7 @@ final class Filters
     public const IDS = ['device', 'group', 'location'];
 
     /** Filters that are texts. */
-    public const TEXTS = ['os', 'model', 'version', 'class', 'type', 'vendor', 'origin', 'q'];
+    public const TEXTS = ['os', 'model', 'version', 'class', 'type', 'vendor', 'origin', 'status', 'q'];
 
     /** Longest text filter. */
     public const MAX_LENGTH = 200;
@@ -23,7 +26,7 @@ final class Filters
 
     /**
      * @return array{device: ?int, group: ?int, location: ?int, os: string, model: string, version: string, class: string,
-     *     type: string, vendor: string, origin: string, q: string, page: int}
+     *     type: string, vendor: string, origin: string, status: string, q: string, page: int}
      */
     public static function parse(array $query): array
     {
@@ -38,6 +41,9 @@ final class Filters
         }
         if (! in_array($filters['origin'], self::ORIGINS, true)) {
             $filters['origin'] = '';
+        }
+        if (Status::filter($filters['status']) === []) {
+            $filters['status'] = '';
         }
         $page = $query['page'] ?? 1;
         $filters['page'] = is_scalar($page) && ctype_digit((string) $page) ? max(1, min(100000, (int) $page)) : 1;

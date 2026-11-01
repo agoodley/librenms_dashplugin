@@ -434,6 +434,14 @@ the last lines of the command's output, what to do, and the log.
   its host_vars file; a change on it through the Ansible plugin works with Oxidized's backups before and after, and
   still on the switch of the default login; its line removed (once confirmed), its login is gone everywhere; then it
   gets it back, which the installer's next run keeps.
+* `inventory-integration.sh`: the inventory plugin's software compliance, through its pages: five devices with known
+  software (ping-only, so nothing polls it away; a stack of two models in the hardware inventory), the policies saved
+  through its settings form (a version YAML reads as a number refused first), which checks them at once: each device's
+  status (blocked by the policy for its os, approved, below the minimum of a stack member's model, version unknown, no
+  policy), the eventlog entries and their severities, and the README's alert rule through LibreNMS' rule parser; the
+  pages, the device panel, the overview card and the CSV exports; upgrades seen by `inventory:check` (the history and
+  the eventlog), Check now; a user who may see one device: its rows only, no Check now, no settings (403). It removes
+  its devices and user at the end; the policies stay.
 * `diagnose.sh [--run-poller]`: crond and its journal, LibreNMS' cron file, pollers and log, the services; with
   `--run-poller` then the poller cron job as cron runs it. CI prints it into the job log when a step fails, and
   `verify.sh` when LibreNMS' poller check fails (it then waits for cron's next run and checks again).
@@ -455,7 +463,7 @@ The CI workflow `.github/workflows/installer.yml` runs shellcheck and `unit.sh`,
 and 10 containers (the online path: LibreNMS, its packages and Semaphore UI from GitHub), `verify.sh`, a run with the
 fake switch's host key (`--device-known-hosts`), `security-integration.sh`, `e2e.sh`, `device-keys-integration.sh`,
 `device-logins-integration.sh` with a second fake switch, a second run that must change nothing, the plugins from a checkout in `/root` and from the repository's URL with the
-workflow's token; on pull requests that change `install/` (its README aside) and on demand (*Run workflow*). After the
+workflow's token, then `inventory-integration.sh`; on pull requests that change `install/` (its README aside) and on demand (*Run workflow*). After the
 merge, `main` runs shellcheck and `unit.sh` alone: the installs take about 40 runner minutes.
 
 ## Undoing it

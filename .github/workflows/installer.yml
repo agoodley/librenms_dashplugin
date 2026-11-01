@@ -122,6 +122,8 @@ jobs:
           docker exec -e GITHUB_TOKEN inst /src/install/rocky/install.sh --yes --only plugins \
             --plugin-source "https://github.com/${{ github.repository }}" --plugin-branch "${{ github.head_ref || github.ref_name }}"
           docker exec inst /src/install/rocky/tests/verify.sh --no-cron-wait
+      - name: The inventory plugin's software compliance (devices with known software, policies, upgrades, the eventlog, a user's view)
+        run: docker exec inst /src/install/rocky/tests/inventory-integration.sh
       - name: Diagnostics (crond, LibreNMS' cron file and pollers, its log, the services; then the poller by hand)
         if: failure()
         run: docker exec inst /src/install/rocky/tests/diagnose.sh --run-poller || true

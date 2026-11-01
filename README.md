@@ -37,8 +37,9 @@ suspects of lacking portfast.
 
 Inventory reports (the models and software versions across the network, each member of a stack counted; device and
 module serial numbers; optics by type, vendor, model and wavelength, third-party ones included; a search of serial and
-part numbers; CSV exports and a device panel) are a fourth plugin in this repository: see
-[inventory/README.md](inventory/README.md).
+part numbers; CSV exports and a device panel) and software compliance (approved, minimum and blocked versions per model
+or OS, checked every hour, with eventlog entries and a history of the upgrades) are a fourth plugin in this repository:
+see [inventory/README.md](inventory/README.md).
 
 ![Layer 2 map](docs/images/l2-map.png)
 

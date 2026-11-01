@@ -2,8 +2,10 @@
 
 namespace Agoodley\LibrenmsInventory\Reports;
 
+use Agoodley\LibrenmsInventory\Software\Status;
+
 /**
- * The lists of the pages: the optics of the filters and the pages of a list. Pure PHP.
+ * The lists of the pages: the optics of the filters, the software of the devices and the pages of a list. Pure PHP.
  */
 final class Lists
 {
@@ -39,6 +41,31 @@ final class Lists
 
             return str_contains($text, $q);
         }));
+    }
+
+    /**
+     * The software page's rows: each device of the filters with its row of the last software check (a device the check
+     * has not seen is left out), with its name and location; the worst status first, then by name. Filtered by status (a
+     * status or a group of them, Software\Status::filter()).
+     *
+     * @param  array<int, array>  $devices  InventoryRepository::devices()
+     * @param  array<int, array>  $stored  SoftwareRepository::rows()
+     * @return list<array>
+     */
+    public static function software(array $devices, array $stored, string $status = ''): array
+    {
+        $statuses = $status !== '' ? Status::filter($status) : null;
+        $rows = [];
+        foreach ($devices as $id => $device) {
+            $row = $stored[(int) $id] ?? null;
+            if ($row === null || ($statuses !== null && ! in_array((string) $row['status'], $statuses, true))) {
+                continue;
+            }
+            $rows[] = ['device_id' => (int) $id, 'name' => (string) $device['name'], 'location' => (string) ($device['location'] ?? ''), 'url' => $device['url'] ?? null] + $row;
+        }
+        usort($rows, fn (array $a, array $b) => [Status::rank((string) $a['status']), mb_strtolower($a['name'])] <=> [Status::rank((string) $b['status']), mb_strtolower($b['name'])]);
+
+        return $rows;
     }
 
     /**

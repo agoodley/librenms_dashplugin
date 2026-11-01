@@ -2,7 +2,7 @@
 <div class="inv-nav">
     <ul class="nav nav-tabs">
         @foreach(['overview' => ['Overview', 'fa-cubes'], 'devices' => ['Devices', 'fa-server'], 'modules' => ['Modules & serial numbers', 'fa-barcode'],
-            'optics' => ['Optics', 'fa-dot-circle-o']] as $key => [$label, $icon])
+            'optics' => ['Optics', 'fa-dot-circle-o'], 'software' => ['Software compliance', 'fa-check-square-o'], 'upgrades' => ['Upgrades', 'fa-history']] as $key => [$label, $icon])
             <li class="{{ $active === $key ? 'active' : '' }}"><a href="{{ route('inventory.' . $key, array_intersect_key($query ?? [], array_flip(['group', 'location', 'os']))) }}"><i class="fa {{ $icon }} fa-fw"></i> {{ $label }}</a></li>
         @endforeach
     </ul>
