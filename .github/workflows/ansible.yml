@@ -1,0 +1,54 @@
+name: ansible
+
+# The Ansible plugin (ansible/). Its tests run on pull requests and on main, and only when the plugin changes (not for
+# its README and screenshots alone).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ansible/**'
+      - '!ansible/README.md'
+      - '!ansible/docs/**'
+      - '.github/workflows/ansible.yml'
+  pull_request:
+    paths:
+      - 'ansible/**'
+      - '!ansible/README.md'
+      - '!ansible/docs/**'
+      - '.github/workflows/ansible.yml'
+  workflow_dispatch:
+
+# a new push to a pull request cancels its run still in progress (main finishes each run)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ansible:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['8.2', '8.3', '8.4']
+    defaults:
+      run:
+        working-directory: ansible
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, mbstring, zip
+          coverage: none
+      - run: composer install --no-interaction --no-progress
+      - run: vendor/bin/phpunit
+      - name: Lint PHP
+        run: find src routes database tests -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: Check JavaScript syntax
+        run: node --check resources/assets/ansible.js
+      - name: Inventory script
+        run: |
+          python3 -m py_compile contrib/librenms_inventory.py
+          python3 -m unittest discover -s contrib/tests -v

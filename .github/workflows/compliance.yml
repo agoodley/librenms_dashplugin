@@ -1,0 +1,49 @@
+name: compliance
+
+# The compliance plugin (compliance/). Its tests run on pull requests and on main, and only when the plugin changes
+# (not for its README and screenshots alone).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'compliance/**'
+      - '!compliance/README.md'
+      - '!compliance/docs/**'
+      - '.github/workflows/compliance.yml'
+  pull_request:
+    paths:
+      - 'compliance/**'
+      - '!compliance/README.md'
+      - '!compliance/docs/**'
+      - '.github/workflows/compliance.yml'
+  workflow_dispatch:
+
+# a new push to a pull request cancels its run still in progress (main finishes each run)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  compliance:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 8.5 too: LibreNMS runs on it, and the tests fail on the plugin's deprecations (phpunit.xml.dist)
+        php: ['8.2', '8.3', '8.4', '8.5']
+    defaults:
+      run:
+        working-directory: compliance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring
+          coverage: none
+      - run: composer install --no-interaction --no-progress
+      - run: vendor/bin/phpunit
+      - name: Lint PHP
+        run: find src routes database tests -name '*.php' -print0 | xargs -0 -n1 php -l

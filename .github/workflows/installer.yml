@@ -4,16 +4,27 @@ name: installer
 # runners reach GitHub, so these runs take the online path: LibreNMS cloned from GitHub with its Composer packages,
 # Semaphore UI's release RPM, PyPI, RubyGems. The plugins come from this commit (a local directory), and once from
 # this repository's URL with the workflow's token (the path of a private repository).
+#
+# The two installs take about 40 runner minutes: they run on pull requests that change the installer and on demand
+# (Run workflow), not again on main after the merge, where shellcheck and unit.sh alone run. Its README is no change.
 on:
   push:
+    branches: [main]
     paths:
       - 'install/**'
+      - '!install/rocky/README.md'
       - '.github/workflows/installer.yml'
   pull_request:
     paths:
       - 'install/**'
+      - '!install/rocky/README.md'
       - '.github/workflows/installer.yml'
   workflow_dispatch:
+
+# a new push to a pull request cancels its run still in progress (main finishes each run)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -34,6 +45,7 @@ jobs:
 
   rocky:
     needs: shellcheck
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
