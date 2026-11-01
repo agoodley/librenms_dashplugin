@@ -1,12 +1,15 @@
 # Oxidized for LibreNMS (install/rocky/install.sh), from Oxidized's extra/oxidized.service. Its configuration is
 # ~oxidized/.config/oxidized/config. Oxidized does not start while LibreNMS has no device it can back up: the service
-# then tries again every minute (Oxidized's own unit waits 300 s).
+# then tries again every minute (Oxidized's own unit waits 300 s). Killed with SIGKILL, Oxidized never removes its pid
+# file, and refuses to start while the process of that pid runs: after a reboot or a crash another process can have it
+# (php-fpm, say), so the pid file goes before each start (systemd runs one Oxidized: any pid file left is stale).
 [Unit]
 Description=Oxidized - Network Device Configuration Backup Tool
 After=network-online.target multi-user.target
 Wants=network-online.target
 
 [Service]
+ExecStartPre=/usr/bin/rm -f @OXIDIZED_PID@
 ExecStart=@OXIDIZED_BIN@
 User=oxidized
 KillSignal=SIGKILL

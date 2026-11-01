@@ -28,6 +28,12 @@ through the planning API; it verifies each batch (the network around it before a
 of the findings whose fix is clear, through the verification API. The links and spanning tree pages link such a
 finding to its *Fixes* page (*Fix with Ansible*) for admins while that plugin is enabled.
 
+Config compliance (rule checks on the configuration backups LibreNMS shows on a device's Config tab: portfast and BPDU
+guard on edge ports, no portfast toward a switch, root guard toward the switches below, AAA, NTP, syslog, SNMP and SSH
+baselines, and rules of your own) is a third plugin in this repository: see [compliance/README.md](compliance/README.md).
+With it enabled, the [spanning tree page](#spanning-tree-diagnostics) says what the backups configure on the ports it
+suspects of lacking portfast.
+
 ![Layer 2 map](docs/images/l2-map.png)
 
 *(Screenshots use a simulated demo network.)*
@@ -290,6 +296,14 @@ With the [Ansible plugin](ansible/README.md#fixes) enabled, a root bridge that i
 with the default priority has a *Fix with Ansible* link for admins: the intended root (the first designated root bridge
 of its part of the network, else its first core device) to priority 4096, the next one to 8192, where no other switch
 has a priority as low.
+
+With the [compliance plugin](compliance/README.md#with-the-topology-plugin) enabled, the findings that suspect edge
+ports without portfast (ports with many transitions to forwarding, the likely sources of a high topology change rate)
+say what the configuration backups configure on those ports, for the users who may read the backups: no portfast on a
+port that faces a host confirms the guess, portfast already on it or a switch on the other side rules it out. The
+findings themselves, their history and the background checks stay as they are.
+
+![What the backups say on the spanning tree page](compliance/docs/images/stp-compliance.png)
 
 VLAN view with the STP overlay – pt-dist2 is the VLAN 120 root bridge, and pt-acc1 and pt-acc2 block their uplinks to
 pt-dist1 (`[ALT]`, dashed orange); pt-acc3 does not carry the VLAN and is faded:
@@ -829,7 +843,8 @@ if (class_exists(Verification::class) && (int) Verification::VERSION === 1) {   
 ## Installation
 
 **On a Rocky Linux 9 or 10 server, an installer sets up everything for a real-world test in one run:** LibreNMS (when
-the server has none), this plugin and the [Ansible plugin](ansible/README.md), Ansible with the network collections,
+the server has none), this plugin, the [Ansible plugin](ansible/README.md) and the [compliance plugin](compliance/README.md),
+Ansible with the network collections,
 Semaphore UI with its project for LibreNMS, and Oxidized; with an offline mode for servers that cannot reach GitHub. On
 a LibreNMS it did not install, it adds the plugins and leaves the web server, PHP, MariaDB and the configuration files
 (`.env`, `config.php`) as they are. See [install/rocky/README.md](install/rocky/README.md):

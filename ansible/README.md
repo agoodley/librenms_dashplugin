@@ -1644,7 +1644,8 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
 ## Later phases
 
 Phase 4 completes [change automation with Ansible](../ROADMAP.md#change-automation-with-ansible) as the roadmap
-planned it, and phase 5 adds its diagnostic runs; see the roadmap for what may follow.
+planned it; phase 5 adds its diagnostic runs, and phase 6 the reports of its runs and changes. See the roadmap for what
+may follow.
 
 Other LibreNMS inventory plugins for Ansible exist (e.g. `0uwl/librenms-inventory-plugin`); they do not map LibreNMS'
 os to `ansible_network_os` or clean the network data, which is why this plugin builds its own.

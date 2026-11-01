@@ -61,9 +61,12 @@ These are useful but are not about topology, or would change devices, so they fi
   runs and changes (HTML to print or save as PDF, Word, ZIP).
 * **Switch port capacity:** ports unused for N days (`ifLastChange` and uptime), err-disabled ports, free (PoE) ports
   per wiring closet or location.
-* **Config compliance via Oxidized:** rule checks on backed-up configurations (portfast and BPDU guard on edge ports,
-  root guard on downlinks, AAA / NTP / SNMPv3 baselines). It could also confirm the STP page's guess about edge ports
-  without portfast.
+* **Config compliance via Oxidized:** built, as [a plugin of its own](compliance/README.md) in this repository: rule
+  checks on the configuration backups LibreNMS shows on a device's Config tab (Oxidized, RANCID or Unimus): portfast and
+  BPDU guard on edge ports, no portfast toward a switch, root guard toward the switches below (what each port faces
+  from LibreNMS' LLDP/CDP and spanning tree data), AAA, NTP, syslog, SNMP and SSH baselines, and rules of your own in
+  YAML; hourly checks, the findings with the lines of the backups, the eventlog, a device panel, an API for other
+  plugins. It also confirms the STP page's guess about edge ports without portfast (or rules it out).
 * **Inventory & lifecycle:** approved software versions per model, end-of-life dates, serial numbers, optics
   inventory (`transceivers`); planned in phases [below](#inventory--lifecycle), not started.
 * **NetBox sync:** push LLDP-discovered cables, IP addresses and VLANs to NetBox, or compare NetBox's documented cabling

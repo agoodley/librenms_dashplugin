@@ -185,8 +185,8 @@ try {
 
             // no break
         case 'plugins-status':
-            $rows = Schema::hasTable('plugins') ? DB::table('plugins')->whereIn('plugin_name', ['topology', 'ansible'])->get(['plugin_name', 'plugin_active', 'version']) : collect();
-            $status = ['topology' => null, 'ansible' => null];
+            $rows = Schema::hasTable('plugins') ? DB::table('plugins')->whereIn('plugin_name', ['topology', 'ansible', 'compliance'])->get(['plugin_name', 'plugin_active', 'version']) : collect();
+            $status = ['topology' => null, 'ansible' => null, 'compliance' => null];
             foreach ($rows as $row) {
                 if ((int) $row->version === 2) {
                     $status[$row->plugin_name] = (bool) $row->plugin_active;

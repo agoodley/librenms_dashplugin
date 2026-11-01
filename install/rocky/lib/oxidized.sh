@@ -325,7 +325,7 @@ PY
 }
 
 ox_service() {
-    if put_text "$(render oxidized.service OXIDIZED_BIN="$(ox_bin)")" /etc/systemd/system/oxidized.service root:root 644 \
+    if put_text "$(render oxidized.service OXIDIZED_BIN="$(ox_bin)" OXIDIZED_PID="$OX_DIR/pid")" /etc/systemd/system/oxidized.service root:root 644 \
         "add the service oxidized (/etc/systemd/system/oxidized.service)"; then
         [[ $CHECK == 0 ]] && run systemctl daemon-reload
         state_set oxidized_restart 1

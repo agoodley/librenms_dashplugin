@@ -1,0 +1,50 @@
+{
+    "name": "agoodley/librenms-compliance-plugin",
+    "description": "LibreNMS plugin: config compliance on the backups LibreNMS shows (Oxidized): spanning tree edge ports and root guard, AAA, NTP, SNMPv3, syslog and SSH baselines, and rules of your own, checked every hour, with findings per device and in the eventlog",
+    "keywords": [
+        "librenms",
+        "plugin",
+        "oxidized",
+        "compliance",
+        "network-automation"
+    ],
+    "type": "library",
+    "license": "GPL-3.0-or-later",
+    "authors": [
+        {
+            "name": "agoodley"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Agoodley\\LibrenmsCompliance\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Agoodley\\LibrenmsCompliance\\Tests\\": "tests/"
+        }
+    },
+    "require": {
+        "php": "^8.2",
+        "ext-mbstring": "*",
+        "librenms/plugin-interfaces": "^1.0",
+        "symfony/yaml": "^6.4|^7.0|^8.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5|^11.0"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Agoodley\\LibrenmsCompliance\\ComplianceServiceProvider"
+            ]
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
