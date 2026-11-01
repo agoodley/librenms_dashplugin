@@ -174,6 +174,23 @@ class SyslogPatterns
     }
 
     /**
+     * The words of a message that may name a port of the device that sent it: typed names (Gi1/0/49,
+     * Ethernet1/1, ge-0/0/1.0) and bare ones after "port" or "interface" (ProCurve "port 5", "port A1"),
+     * as written; the caller looks them up among the device's ports (InterfaceName::normalize()). CDP
+     * names the neighbor and its port after ", with": those are left out (local()).
+     *
+     * @return string[]
+     */
+    public static function portCandidates(string $text): array
+    {
+        $text = self::local($text);
+        preg_match_all('~(?<![\w/.:-])([A-Za-z][A-Za-z-]*?\d+(?:[/:]\d+)*(?:\.\d+)?)~', $text, $typed);
+        preg_match_all('~\b(?:ports?|interface)\s+([A-Za-z]?\d+(?:/[A-Za-z]?\d+)*)~i', $text, $bare);
+
+        return array_merge($typed[1], $bare[1]);
+    }
+
+    /**
      * Note a message a pattern failed on (it compiled, so the cause is the message: backtracking limit,
      * invalid UTF-8 with the u flag); after a few the pattern is not used any more, as each failure can
      * take milliseconds.

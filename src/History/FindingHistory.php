@@ -35,7 +35,7 @@ class FindingHistory
 
     /** Analyses as named in eventlog entries. */
     private const ANALYSIS_NAMES = ['stp' => 'spanning tree', 'links' => 'link & VLAN', 'redundancy' => 'redundancy', 'routing' => 'routing & IP',
-        'interfaces' => 'interface health'];
+        'interfaces' => 'interface health', 'capacity' => 'port capacity'];
 
     /** Names of checks whose code does not read well; the others are their code in words. */
     private const LABELS = [
@@ -99,6 +99,9 @@ class FindingHistory
         'port_half_duplex' => 'Port at half duplex',
         'late_collisions' => 'Late collisions (duplex mismatch)',
         'port_errors' => 'Interface errors',
+        'capacity_low' => 'Few free access ports',
+        'poe_low' => 'Few free PoE ports',
+        'ports_err_disabled' => 'Err-disabled ports',
     ];
 
     /** Words of check codes. */

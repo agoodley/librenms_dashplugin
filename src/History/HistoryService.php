@@ -2,6 +2,9 @@
 
 namespace Agoodley\LibrenmsTopology\History;
 
+use Agoodley\LibrenmsTopology\Capacity\CapacityAnalyzer;
+use Agoodley\LibrenmsTopology\Capacity\CapacityService;
+use Agoodley\LibrenmsTopology\Data\CapacityRepository;
 use Agoodley\LibrenmsTopology\Data\HistoryRepository;
 use Agoodley\LibrenmsTopology\Data\InterfaceRepository;
 use Agoodley\LibrenmsTopology\Data\LoopEvidenceRepository;
@@ -30,13 +33,19 @@ use Illuminate\Support\Facades\Log;
 class HistoryService
 {
     /** Analyses the background checks can run, in the order they run (findings()). */
-    public const ANALYSES = ['stp', 'links', 'redundancy', 'routing', 'interfaces'];
+    public const ANALYSES = ['stp', 'links', 'redundancy', 'routing', 'interfaces', 'capacity'];
 
     /**
      * Analyses of a time window rather than of the network's state (the interface checks count a port's changes of
      * the last hours): the verification of a change, which compares two states, leaves them out.
      */
     public const WINDOW_ANALYSES = ['interfaces'];
+
+    /**
+     * Analyses the verification of a change leaves out: those of a time window, and the port capacity (how many ports are
+     * free is planning, not the health a change can break).
+     */
+    public const UNVERIFIED_ANALYSES = [...self::WINDOW_ANALYSES, 'capacity'];
 
     /** Port columns the facts need (interface names). */
     private const PORT_COLUMNS = ['port_id', 'device_id', 'ifName', 'ifDescr'];
@@ -108,6 +117,28 @@ class HistoryService
         $this->history->finishRun($run, $stats, Carbon::now());
 
         return $stats;
+    }
+
+    /**
+     * Keep the plugin's record of the switch ports (Capacity\PortUsage) with the snapshot: when each port was last
+     * up and its err-disable messages. A failure is logged and returned, the snapshot stands.
+     *
+     * @return array<string, int|float|string> counts, or ['error' => why]
+     */
+    public function recordPorts(): array
+    {
+        try {
+            $repo = $this->topology->sibling(CapacityRepository::class);
+            if (! $repo->recordAvailable()) {
+                return ['error' => 'the table topology_port_usage does not exist (./lnms migrate)'];
+            }
+
+            return (new CapacityService($repo, $this->settings, $this->history))->record($this->history);
+        } catch (\Throwable $e) {
+            Log::error('topology plugin: the record of the ports failed: ' . $e->getMessage());
+
+            return ['error' => $e->getMessage()];
+        }
     }
 
     /**
@@ -187,7 +218,7 @@ class HistoryService
     public static function checkCodes(): array
     {
         return array_keys(StpAnalyzer::CHECKS + LoopEvidence::CHECKS + LinkAnalyzer::CHECKS + RedundancyAnalyzer::CHECKS + RoutingAnalyzer::CHECKS
-            + InterfaceAnalyzer::CHECKS);
+            + InterfaceAnalyzer::CHECKS + CapacityAnalyzer::CHECKS);
     }
 
     /**
@@ -208,6 +239,9 @@ class HistoryService
         }
         if ($analysis === 'interfaces') {
             return (new InterfaceService($this->topology->sibling(InterfaceRepository::class), $this->settings))->analyze($params)['findings'] ?? [];
+        }
+        if ($analysis === 'capacity') {
+            return (new CapacityService($this->topology->sibling(CapacityRepository::class), $this->settings, $this->history))->analyze($params)['findings'] ?? [];
         }
         $service = new TopologyService($this->topology, $this->settings, $this->history);
 
@@ -503,7 +537,7 @@ class HistoryService
             $analysis === 'links', $analysis === 'redundancy' => $this->history->allowsTable('links'),
             $analysis === 'routing' && str_starts_with($code, 'ospf_') => $this->history->allowsTable('ospf_nbrs'),
             $analysis === 'routing' && str_starts_with($code, 'bgp_') => $this->history->allowsTable('bgpPeers'),
-            $analysis === 'interfaces' => $this->history->allowsTable('ports'),
+            $analysis === 'interfaces', $analysis === 'capacity' => $this->history->allowsTable('ports'),
             default => true,
         };
     }

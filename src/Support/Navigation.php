@@ -78,6 +78,10 @@ class Navigation
             'route' => 'topology.rollout', 'group' => 'tools', 'tab' => 'Rollout Planner', 'title' => 'Rollout Planner', 'icon' => 'fa-layer-group',
             'description' => 'Batches for a firmware upgrade, reboot or configuration change of many devices: farthest from the core first, never two devices that back each other up at once, and what each batch takes down.',
         ],
+        'capacity' => [
+            'route' => 'topology.capacity', 'group' => 'tools', 'tab' => 'Port Capacity', 'title' => 'Switch Port Capacity', 'icon' => 'fa-ethernet',
+            'description' => 'Access ports per switch and wiring closet: in use, free, shut down and err-disabled, ports unused for weeks (even across reboots), free PoE ports, and closets running out of ports.',
+        ],
         'dependencies' => [
             'route' => 'topology.dependencies', 'group' => 'tools', 'tab' => 'Dependencies', 'title' => 'Device Dependencies', 'icon' => 'fa-sort-amount-down',
             'description' => 'LibreNMS parent devices derived from the topology toward the core (both uplinks of dual-homed devices), compared with the current ones and checked against past outages.',

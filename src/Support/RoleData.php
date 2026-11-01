@@ -21,6 +21,7 @@ class RoleData
         'stp' => ['stp', 'ports_stp', 'links', 'eventlog', 'ports_fdb', 'ports', 'ports_stack', 'ports_statistics'],
         'links' => ['links', 'ports', 'ports_stack', 'ports_vlans', 'ports_statistics', 'transceivers', 'sensors'],
         'interfaces' => ['ports', 'eventlog', 'links'],
+        'capacity' => ['ports', 'links', 'ports_stack', 'eventlog', 'syslog'],
         'routing' => ['ospf_instances', 'ospf_areas', 'ospf_ports', 'ospf_nbrs', 'bgpPeers', 'links', 'ipv4_addresses', 'ipv6_addresses'],
         'redundancy' => ['links', 'device_outages', 'ports', 'ports_stack', 'entPhysical'],
         'coverage' => ['links', 'ports_fdb', 'ports', 'ports_stack', 'ports_vlans', 'ipv4_addresses', 'ipv6_addresses'],

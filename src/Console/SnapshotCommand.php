@@ -11,7 +11,8 @@ use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 
 /**
- * `lnms topology:snapshot`: record the topology history, then run the background checks, each in
+ * `lnms topology:snapshot`: record the topology history and the record of the switch ports (the port
+ * capacity page's: when each was last up), then run the background checks, each in
  * a process of its own and one after the other: they read the finished snapshot, a check that runs
  * out of memory does not stop the others, and only one process needs its memory at a time. The
  * plugin schedules it every *History interval* minutes.
@@ -35,6 +36,15 @@ class SnapshotCommand extends HistoryCommand
             $this->info(sprintf('Topology snapshot of %d devices: %d facts, %d new, %d gone, %d updated, %d old rows pruned%s (%.2f s).',
                 $stats['devices'], $stats['facts'], $stats['added'], $stats['removed'], $stats['updated'], $stats['pruned'],
                 isset($stats['dropped']) ? sprintf(', %d links to phones no longer recorded', $stats['dropped']) : '', $stats['seconds']));
+
+            // the port capacity page's record of when each switch port was last up
+            $ports = $service->recordPorts();
+            if (isset($ports['error'])) {
+                $this->warn('The record of the switch ports was not kept: ' . $ports['error'] . '.');
+            } else {
+                $this->info(sprintf('Port record of %d switches: %d ports, %d written, %d forgotten, %d err-disabled ports reported (%.2f s).',
+                    $ports['switches'], $ports['ports'], $ports['written'], $ports['removed'], $ports['err_disabled'], $ports['seconds']));
+            }
 
             if ($this->option('baseline')) {
                 $saved = $service->saveBaseline(['device' => null, 'group' => null, 'location' => null], 'lnms topology:snapshot');

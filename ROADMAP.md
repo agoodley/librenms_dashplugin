@@ -1,6 +1,6 @@
 # Roadmap
 
-The plugin's tools and what could come next. Items 1 to 15 are built and described in the [README](README.md). Ideas
+The plugin's tools and what could come next. Items 1 to 17 are built and described in the [README](README.md). Ideas
 that do not fit this plugin are listed as [separate plugins](#ideas-for-separate-plugins).
 
 The plugin's conventions, which every tool follows and a new one should too:
@@ -37,6 +37,7 @@ The plugin's conventions, which every tool follows and a new one should too:
 | 14 | [Rollout planner](README.md#rollout-planner) | **done** | – |
 | 15 | [Maps at a point in time](README.md#maps-at-a-point-in-time) | **done** | – |
 | 16 | [Interface health](README.md#interface-health): flapping links and speeds, half duplex and errors on every port | **done** | – |
+| 17 | [Switch port capacity](README.md#switch-port-capacity): free, unused, err-disabled and PoE ports per switch and wiring closet | **done** | – |
 
 Effort: S = new checks or an overlay on data the plugin already loads; M = new queries plus a page or tab;
 L = several new parts (tables, jobs, UI).
@@ -59,8 +60,9 @@ These are useful but are not about topology, or would change devices, so they fi
   [below](#change-automation-with-ansible); its four phases are built, as [a plugin of its own](ansible/README.md)
   in this repository, and its diagnostic runs (show commands in check mode, from the maps too) and the reports of its
   runs and changes (HTML to print or save as PDF, Word, ZIP).
-* **Switch port capacity:** ports unused for N days (`ifLastChange` and uptime), err-disabled ports, free (PoE) ports
-  per wiring closet or location.
+* **Switch port capacity:** built into this plugin after all ([item 17](README.md#switch-port-capacity)): it reads the
+  same port data as the interface health checks, by device group and location, and its record of the ports lives with
+  the topology history.
 * **Config compliance via Oxidized:** built, as [a plugin of its own](compliance/README.md) in this repository: rule
   checks on the configuration backups LibreNMS shows on a device's Config tab (Oxidized, RANCID or Unimus): portfast and
   BPDU guard on edge ports, no portfast toward a switch, root guard toward the switches below (what each port faces
