@@ -70,8 +70,8 @@ These are useful but are not about topology, or would change devices, so they fi
   YAML; hourly checks, the findings with the lines of the backups, the eventlog, a device panel, an API for other
   plugins. It also confirms the STP page's guess about edge ports without portfast (or rules it out).
 * **Inventory & lifecycle:** approved software versions per model, end-of-life dates, serial numbers, optics
-  inventory (`transceivers`); planned in phases [below](#inventory--lifecycle), of which phase 1 (the inventory reports)
-  is built, as [a plugin of its own](inventory/README.md) in this repository.
+  inventory (`transceivers`); planned in phases [below](#inventory--lifecycle), of which phases 1 (the inventory
+  reports) and 2 (software compliance) are built, as [a plugin of its own](inventory/README.md) in this repository.
 * **NetBox sync:** push LLDP-discovered cables, IP addresses and VLANs to NetBox, or compare NetBox's documented cabling
   with what LLDP sees. It could reuse this plugin's link de-duplication.
 
@@ -127,8 +127,8 @@ from the LibreNMS pages.
 ### Inventory & lifecycle
 
 Software versions, end-of-life dates, serial numbers and optics across the network, checked against what is approved.
-Phase 1 is built, as [a plugin of its own](inventory/README.md) in this repository (`inventory/`); the next phases wait
-for a real-world test of the plugins built so far.
+Phases 1 and 2 are built, as [a plugin of its own](inventory/README.md) in this repository (`inventory/`); the next
+phases wait for a real-world test of the plugins built so far.
 
 * **Why a separate plugin:** it is about the devices themselves, not the topology between them.
 * **Data:** LibreNMS already collects it. The plugin adds no polling: it reads each device's model, software version,
@@ -140,7 +140,7 @@ for a real-world test of the plugins built so far.
 | Phase | Scope | Effort |
 |---|---|---|
 | 1 | **Built.** Inventory reports: models and software versions across the network; device and module serial numbers; optics by type, vendor, model and wavelength, third-party optics included. Filtered by device group and location, exported as CSV, with a panel on each device page; and a search of serial and part numbers | S–M |
-| 2 | Software compliance: approved, minimum and blocked versions per model or OS; findings for the devices that do not comply; a scheduled check whose eventlog entries alert rules can match; a history of the upgrades it saw | M |
+| 2 | **Built.** [Software compliance](inventory/README.md#software-compliance): approved, minimum and blocked versions per model or OS (policies in YAML, the model's policy before the OS's, every policy's blocked versions counted); the devices that do not comply (blocked, below the minimum, not approved) on a page of their own and their device panel; an hourly check whose eventlog entries alert rules can match; a history of the upgrades and downgrades it saw | M |
 | 3 | Lifecycle: end-of-sale, end-of-software-maintenance and end-of-support dates per model or part number; contracts and warranties per serial number; reports such as "past end of support" or "ending within 12 months" per location; optics in ports unused for N days | M |
 | 4 | Changes and upgrades: hardware changes recorded (a module, optic or serial number swapped), as the topology history records links; optionally, upgrade campaigns through the [Ansible plugin](ansible/README.md): the devices that do not comply in one change, planned, dry-run, approved, applied in batches and verified | M–L |
 

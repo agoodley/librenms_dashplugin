@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsInventory\Tests\Unit;
 use Agoodley\LibrenmsInventory\Reports\Exports;
 use Agoodley\LibrenmsInventory\Reports\Lists;
 use Agoodley\LibrenmsInventory\Reports\Summaries;
+use Agoodley\LibrenmsInventory\Software\Status;
 use Agoodley\LibrenmsInventory\Support\Csv;
 use Agoodley\LibrenmsInventory\Support\Filters;
 use Agoodley\LibrenmsInventory\Support\Origin;
@@ -96,5 +97,37 @@ class ListsTest extends TestCase
         $this->assertSame(['Cisco IOS', '15.2(7)E8', 1, 'WS-C2960X-48FPS-L (1)'], $versions[1]);
 
         $this->assertSame("a,\"b,c\",'=HYPERLINK(1),yes\r\n", Csv::of([['a', 'b,c', '=HYPERLINK(1)', true]]));
+    }
+
+    public function testTheSoftwareOfTheDevices(): void
+    {
+        $devices = [1 => ['name' => 'core-sw1', 'location' => 'DC1', 'url' => '/d/1'], 2 => ['name' => 'Acc-sw2', 'location' => '', 'url' => '/d/2'],
+            3 => ['name' => 'acc-sw1', 'url' => '/d/3'], 4 => ['name' => 'new-sw', 'url' => '/d/4']];
+        $row = fn (string $status, string $version) => ['os' => 'iosxe', 'model' => 'C9300-48P', 'version' => $version, 'status' => $status, 'policy' => 'Catalyst 9300',
+            'message' => "$version is $status", 'status_since' => '2026-11-01 08:00:00', 'version_since' => '2026-10-01 08:00:00', 'updated_at' => '2026-11-01 08:00:00'];
+        $stored = [1 => $row(Status::APPROVED, '17.9.5'), 2 => $row(Status::NOT_APPROVED, '17.10.1'), 3 => $row(Status::NOT_APPROVED, '17.10.2'), 9 => $row(Status::BLOCKED, '16.1')];
+
+        $rows = Lists::software($devices, $stored);
+        $this->assertSame([3, 2, 1], array_column($rows, 'device_id'), 'the worst first, then by name; a device not checked and one not of the filters left out');
+        $this->assertSame(['acc-sw1', '', '/d/3', Status::NOT_APPROVED], [$rows[0]['name'], $rows[0]['location'], $rows[0]['url'], $rows[0]['status']]);
+        $this->assertSame([1], array_column(Lists::software($devices, $stored, 'compliant'), 'device_id'));
+        $this->assertSame([3, 2], array_column(Lists::software($devices, $stored, 'not_approved'), 'device_id'));
+
+        $this->assertSame('not_compliant', Filters::parse(['status' => 'not_compliant'])['status']);
+        $this->assertSame('', Filters::parse(['status' => 'broken'])['status'], 'a status there is not');
+
+        $csv = Exports::software($rows, ['iosxe' => 'Cisco IOS-XE']);
+        $this->assertSame(['device', 'location', 'OS', 'model', 'software version', 'status', 'policy', 'why', 'status since (UTC)', 'version since (UTC)'], $csv[0]);
+        $this->assertSame(['acc-sw1', '', 'Cisco IOS-XE', 'C9300-48P', '17.10.2', 'not approved', 'Catalyst 9300', '17.10.2 is not_approved', '2026-11-01 08:00:00',
+            '2026-10-01 08:00:00'], $csv[1]);
+
+        $upgrades = Exports::upgrades([
+            ['id' => 2, 'device_id' => 3, 'os' => 'iosxe', 'model' => 'C9300-48P', 'from_version' => '17.9.5', 'to_version' => '17.10.2', 'direction' => 'upgrade',
+                'from_since' => '2026-10-01 08:00:00', 'seen_at' => '2026-11-01 08:00:00'],
+            ['id' => 1, 'device_id' => 7, 'os' => 'ios', 'model' => '', 'from_version' => '15.2', 'to_version' => '15.0', 'direction' => 'downgrade', 'from_since' => null,
+                'seen_at' => '2026-10-02 08:00:00'],
+        ], [3 => ['name' => 'acc-sw1', 'location' => 'B2']], ['iosxe' => 'Cisco IOS-XE']);
+        $this->assertSame(['2026-11-01 08:00:00', 'acc-sw1', 'B2', 'Cisco IOS-XE', 'C9300-48P', '17.9.5', '17.10.2', 'upgrade', '2026-10-01 08:00:00', 31], $upgrades[1]);
+        $this->assertSame(['#7', '', 'ios', '', ''], [$upgrades[2][1], $upgrades[2][2], $upgrades[2][3], $upgrades[2][8], $upgrades[2][9]], 'a device LibreNMS no longer names');
     }
 }

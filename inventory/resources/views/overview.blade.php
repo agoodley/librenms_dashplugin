@@ -41,6 +41,13 @@
                 <h4>Optics</h4><div class="inv-card-value">{{ number_format($optics) }}</div>
                 <p>{{ number_format($origins['third-party']) }} third-party, {{ number_format($origins['genuine']) }} genuine, {{ number_format($origins['unknown']) }} unknown</p>
             </a>
+            @if($software !== null && $software['no_policy'] < array_sum(array_intersect_key($software, \Agoodley\LibrenmsInventory\Software\Status::ALL)))
+                <a class="inv-card {{ $software['not_compliant'] ? 'inv-danger' : 'inv-ok' }}" href="{{ route('inventory.software', ['status' => $software['not_compliant'] ? 'not_compliant' : 'compliant'] + $query) }}" id="inv-card-software">
+                    <h4>Software not compliant</h4><div class="inv-card-value">{{ number_format($software['not_compliant']) }}</div>
+                    <p>{{ number_format($software['blocked']) }} blocked, {{ number_format($software['below_minimum'] + $software['not_approved']) }} below the minimum or not approved;
+                        {{ number_format($software['compliant']) }} compliant</p>
+                </a>
+            @endif
         </div>
 
         <div class="inv-section"><h4 id="inv-models">Models</h4>

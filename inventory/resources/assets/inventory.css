@@ -20,6 +20,8 @@ a.inv-card:hover, a.inv-card:focus { text-decoration: none; border-color: #9aa5b
 .inv-card .inv-card-value { font-size: 22px; font-weight: 600; }
 .inv-card p { margin: 2px 0 0; color: #666; font-size: 12px; }
 .inv-card.inv-warning { border-left-color: #e67e22; }
+.inv-card.inv-danger { border-left-color: #c0392b; }
+.inv-card.inv-ok { border-left-color: #2e7d32; }
 
 .inv-table td, .inv-table th { vertical-align: middle !important; }
 .inv-table .inv-num { text-align: right; white-space: nowrap; }
@@ -38,6 +40,34 @@ a.inv-card:hover, a.inv-card:focus { text-decoration: none; border-color: #9aa5b
 .label.inv-origin-genuine { background: #2e7d32; }
 .label.inv-origin-third-party { background: #b35900; }
 .label.inv-origin-unknown { background: #6c757d; }
+/* software statuses (Software\Status) */
+.label.inv-status { display: inline-block; min-width: 64px; text-align: center; }
+.label.inv-status-blocked { background: #c0392b; }
+.label.inv-status-below_minimum, .label.inv-status-not_approved { background: #b35900; }
+.label.inv-status-approved { background: #2e7d32; }
+.label.inv-status-allowed { background: #4f8a3c; }
+.label.inv-status-unknown, .label.inv-status-no_policy { background: #6c757d; }
+.inv-why { font-size: 12px; max-width: 420px; }
+.inv-checked { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0 0 8px; }
+.inv-checked .inv-help { margin: 0; }
+.inv-inline { display: inline; margin: 0; }
+
+/* the settings page */
+.inv-settings fieldset { margin-bottom: 20px; }
+.inv-settings legend { font-size: 15px; }
+.inv-settings textarea.inv-code { min-height: 260px; }
+.inv-settings form[id], .inv-settings fieldset[id] { scroll-margin-top: 66px; }
+.inv-settings .inv-field-error { margin: 2px 0 0; font-size: 12px; color: #c0392b; }
+.inv-settings .form-control.inv-invalid { border-color: #c0392b; }
+.inv-settings .inv-help { font-size: 12px; color: #6c757d; }
+.inv-settings .inv-example { font-size: 12px; white-space: pre-wrap; }
+/* fields side by side where they fit (no Bootstrap row: its negative margins overflow LibreNMS' settings page on a phone) */
+.inv-fields { display: flex; flex-wrap: wrap; gap: 0 16px; }
+.inv-fields > .form-group { flex: 1 1 200px; min-width: 0; }
+.inv-fields > .form-group.inv-wide { flex: 2 1 320px; }
+.inv-settings .alert .inv-help { color: inherit; }
+.inv-settings .alert a:not(.btn) { color: inherit; text-decoration: underline; font-weight: 600; }
+
 .inv-device-panel ul { margin: 0; padding-left: 18px; }
 .inv-device-panel li { margin: 2px 0; overflow-wrap: anywhere; }
 .inv-device-panel dl { margin: 0; }
@@ -68,6 +98,14 @@ html.dark .inv-filterbar { background: #24272c; border-color: #3a3f45; }
 html.dark .inv-filterbar label, html.dark .inv-card h4 { color: #b0b8be; }
 html.dark .inv-card { background: #1d2024; border-color: #3a3f45; border-left-color: #4b9be0; }
 html.dark .inv-card.inv-warning { border-left-color: #e67e22; }
+html.dark .inv-card.inv-danger { border-left-color: #e74c3c; }
+html.dark .inv-card.inv-ok { border-left-color: #4caf50; }
+html.dark .inv-settings .help-block, html.dark .inv-settings .inv-help { color: #b0b8be; }
+html.dark .inv-settings .inv-field-error { color: #f08a80; }
+html.dark .inv-settings .alert-warning { color: #2b1a00; }
+html.dark .inv-settings .alert-info { color: #062733; }
+html.dark .inv-settings .alert-danger { color: #2b0606; }
+html.dark .inv-page .alert-success, html.dark .inv-settings .alert-success { color: #0d2a0d; }
 html.dark .inv-nav { border-bottom-color: #3a3f45; }
 html.dark .inv-card p, html.dark .inv-muted, html.dark .inv-help, html.dark .inv-page .text-muted, html.dark .inv-device-panel .text-muted { color: #b0b8be; }
 html.dark .inv-page .alert-warning, html.dark .inv-device-panel .alert-warning { color: #2b1a00; }

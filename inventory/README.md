@@ -13,9 +13,19 @@ each user may see:
 * a **search** for a serial number or part number: which device, module or optic has it, and where;
 
 filtered by device group, location and OS, each exported as CSV, and an **Inventory** panel on each device's page (its
-stack members with their serial numbers, how many serial numbers and optics it has). The plugin polls nothing and keeps
-no data: it reads LibreNMS' tables (`devices`, `entPhysical`, `transceivers`). It is phase 1 of the
-[inventory & lifecycle plan](../ROADMAP.md#inventory--lifecycle); software compliance and end-of-life dates come next.
+stack members with their serial numbers, its software's status, how many serial numbers and optics it has); and
+**software compliance**:
+
+* **policies** an admin writes: approved, minimum and blocked versions per model or OS;
+* a **check every hour** of each device's software version against them: blocked, below the minimum or not approved
+  (the findings), approved or allowed, with since when, on a page of its own and on each device's panel;
+* **eventlog** entries when a device's software stops being compliant or is compliant again, which alert rules can
+  match, and for each upgrade and downgrade;
+* a **history of the upgrades** (and downgrades) the check saw: from which version to which, when, after how long.
+
+The plugin polls nothing: it reads LibreNMS' tables (`devices`, `entPhysical`, `transceivers`) and keeps only its
+settings and what the software check saw in tables of its own. It is phases 1 and 2 of the
+[inventory & lifecycle plan](../ROADMAP.md#inventory--lifecycle); end-of-life dates come next.
 
 It is a plugin of its own in this repository, next to the [topology plugin](../README.md), the
 [Ansible plugin](../ansible/README.md) and the [compliance plugin](../compliance/README.md), and needs none of them.
@@ -31,6 +41,9 @@ switches.)*
 * [Installation](#installation)
 * [Pages](#pages)
 * [Optics: genuine or third-party](#optics-genuine-or-third-party)
+* [Software compliance](#software-compliance)
+* [Eventlog and alerts](#eventlog-and-alerts)
+* [Settings](#settings)
 * [Permissions](#permissions)
 * [Limitations](#limitations)
 
@@ -61,19 +74,39 @@ git clone https://github.com/agoodley/librenms_dashplugin /opt/librenms-plugins/
 #    LibreNMS updates)
 composer config --global repositories.librenms-inventory '{"type": "path", "url": "/opt/librenms-plugins/librenms_dashplugin/inventory", "options": {"symlink": true}}'
 
-# 3. install it with LibreNMS' plugin installer, then renew LibreNMS' route cache (plugin:add leaves it without the
-#    plugin's pages, which then answer 500: "Route [inventory.overview] not defined")
+# 3. install it with LibreNMS' plugin installer, renew LibreNMS' route cache (plugin:add leaves it without the
+#    plugin's pages, which then answer 500: "Route [inventory.overview] not defined"), and create its tables
 cd /opt/librenms
 ./lnms plugin:add agoodley/librenms-inventory-plugin @dev
 ./lnms route:cache
+./lnms migrate
+
+# 4. the first software check, now (else the next hourly run of the scheduler does it)
+./lnms inventory:check
 ```
 
 The plugin is enabled when it is installed (LibreNMS enables new plugins). Its pages: **Overview → Plugins →
-Inventory**. It has no tables and no settings.
+Inventory**; its settings (the software policies): **Overview → Plugins → Plugin Admin → inventory → Settings**.
 
-**Updating:** `git pull` in the clone, then `./lnms route:cache`.
+It keeps its settings and the software checks in tables of its own: its settings and its last check
+(`inventory_config`), each device's software as the last check saw it (`inventory_software`) and the version changes
+(`inventory_upgrades`). `./validate.php` then warns that the schema "has extra migrations
+(2026_11_20_000000_create_inventory_tables)": that is the plugin's migration, and the warning stays while the plugin is
+installed. Do not apply validate.php's offer to drop the `inventory_*` tables. The inventory pages need none of them:
+they work before `./lnms migrate`, and only software compliance says it waits for it.
 
-**Removing:** `./lnms plugin:remove agoodley/librenms-inventory-plugin`.
+**Updating:** `git pull` in the clone, then `./lnms route:cache` and `./lnms migrate`. A plugin installed before
+software compliance (phase 2) needs `./lnms migrate` once for it, and installs `symfony/yaml` with it (LibreNMS has
+it already).
+
+**Removing:**
+
+```bash
+./lnms migrate:reset --path=vendor/agoodley/librenms-inventory-plugin/database/migrations   # drops the inventory_* tables
+./lnms plugin:remove agoodley/librenms-inventory-plugin
+```
+
+`migrate:reset` prints "Migration not found" for each of LibreNMS' own migrations: it only rolls back the plugin's.
 
 ## Pages
 
@@ -117,14 +150,31 @@ its device, location and port.
 
 ![Search](docs/images/search.png)
 
+**Software compliance** (`plugin/inventory/software`): when the software was last checked (admins: *Check now*), how
+many devices are not compliant (blocked, below the minimum, not approved), compliant (approved, allowed), with a
+policy but no version, and without a policy; each device with its version (and since when the checks see it), its
+status, the policy that gave it, why, and since when; the worst first. Filtered by status (one, or each kind of not
+compliant or compliant), model, version and a text. Then the policies, each with whom it is for, its versions and how
+many devices of the filters it gave their status. See [Software compliance](#software-compliance).
+
+![Software compliance](docs/images/software.png)
+
+**Upgrades** (`plugin/inventory/upgrades`): each version change the hourly check saw, the newest first: when, the
+device, its OS and model, from which version to which, upgrade or downgrade, and how long the device ran the old
+version (as the checks saw it: the first upgrade after the plugin's first check counts from that check).
+
+![Upgrades](docs/images/upgrades.png)
+
 **Device page:** an **Inventory** panel with the device's chassis when it has several (a stack's members with their
-serial numbers and models), how many serial numbers its hardware inventory has and its optics, with links to them. A
-device with none of these gets no panel.
+serial numbers and models), its software's status against the policies (and why, when it is not compliant) and its
+last upgrade or downgrade, how many serial numbers its hardware inventory has and its optics, with links to them. A
+device with none of these (without a policy, never upgraded) gets no panel.
 
 ![The device panel](docs/images/device-panel.png)
 
-**Exports** (`plugin/inventory/export/devices|modules|optics|models|versions`, with the page's filters): CSV with a header
-row, quoted where needed; a cell a spreadsheet would read as a formula gets an apostrophe first.
+**Exports** (`plugin/inventory/export/devices|modules|optics|models|versions|software|upgrades`, with the page's
+filters): CSV with a header row, quoted where needed, the times UTC; a cell a spreadsheet would read as a formula gets an
+apostrophe first.
 
 ## Optics: genuine or third-party
 
@@ -135,17 +185,127 @@ model, such as `GLC-SX-MMD`, says more) or the device's maker is not one the plu
 HPE Aruba, Dell, Extreme, Huawei, MikroTik, Ubiquiti, Fortinet and Palo Alto Networks, by the device's LibreNMS OS.
 Optics coded for a switch report that switch's maker whoever made them: this tells the coding, not the factory.
 
+## Software compliance
+
+An admin writes the **policies** in the plugin's settings, in YAML: a list of policies, each for the devices of an
+`os` (LibreNMS os names, such as `ios`, `iosxe`, `nxos`, `junos`, `arista_eos`), of a `model` (the model LibreNMS has for
+the device, or the model of one of its chassis: any member of a stack) or both, with `approved` versions, a `minimum`
+version, `blocked` versions or several of them. A `name` (shown on the pages and in the eventlog) and a `note` (shown
+with its findings: an advisory, a change number) are optional. `os`, `model`, `approved` and `blocked` take one value or
+a list; models and versions take `*` for any text and `?` for one character, ignoring case, and must match the whole
+model or version.
+
+```yaml
+# blocked on every IOS and IOS-XE device, whatever its policy
+- name: IOS-XE advisories
+  os: [ios, iosxe]
+  blocked: ['16.*', '17.3.1']
+  note: cisco-sa-iosxe-webui-privesc-j22SaA4z
+
+# the Catalyst 9300 switches: approved versions and a minimum
+- name: Catalyst 9300
+  os: iosxe
+  model: C9300-*
+  approved: ['17.9.5', '17.12.*']
+  minimum: '17.9.4'
+
+# the stacks of 2960-X switches: a minimum only
+- name: Catalyst 2960-X
+  model: WS-C2960X-*
+  minimum: '15.2(7)E8'
+```
+
+Write versions in quotes: YAML reads `4.30` as the number 4.3, so the plugin refuses a version it reads as a number
+with a fraction. The settings are checked when they are saved: nothing is saved while a policy is wrong (an unknown key,
+a policy for no devices or with nothing to check, two policies of one name).
+
+**Which policy a device gets:** the first policy for its model; without one, the first policy for its os. Its
+version is checked against that policy's approved versions and minimum, and against the **blocked versions of every
+policy for it**: a policy for an os can block versions on every model, whatever their own policies approve.
+
+**Status** of each device, the worst first:
+
+| Status | | When |
+|---|---|---|
+| **blocked** | critical | its version is one a policy for it blocks |
+| **below the minimum** | warning | its version is older than its policy's minimum |
+| **not approved** | warning | its policy approves versions, and its version is none of them |
+| **approved** | compliant | its version is one of its policy's approved versions |
+| **allowed** | compliant | its policy approves no list, and its version is neither blocked nor below the minimum |
+| **version unknown** | | a policy applies, but LibreNMS has no software version for the device |
+| **no policy** | | no policy is for the device |
+
+Versions are compared number by number, the rest as text: `15.2(7)E10` is newer than `15.2(7)E8`, `17.12.1` than
+`17.9.4`, `21.4R3-S5` than `21.4R3`. That is no release train: `17.10.1` is above a minimum of `17.9.4` whether or not
+it is a train you run, so a list of approved versions says what a minimum cannot.
+
+**The check** (`./lnms inventory:check`, `-v` lists each device) runs every hour through LibreNMS' scheduler, at 23
+minutes past, while the plugin is enabled; its output goes to `inventory-check.log` in LibreNMS' log directory, and a
+failed run to the eventlog. It reads the version LibreNMS has for each enabled device (`devices.version`, which LibreNMS'
+`os` module refreshes) and the models of its chassis, and writes a device's row only when something of it changed: its status,
+version, policy or why. A version LibreNMS no longer has (a failed poll) leaves the last one in place, the status
+*version unknown*, so the version that comes back is compared with it. Saving the settings and *Check now* (admins, on
+the software compliance page) check every device at once; the checks run one at a time.
+
+**Upgrades:** a device whose version changed since the last check gets a row in the history: an upgrade when the new
+version is newer, else a downgrade. The history starts with the plugin's first check (the first version of a device is
+no change); a device the settings no longer cover keeps its history, a device deleted from LibreNMS loses it.
+
+## Eventlog and alerts
+
+Entries of type `inventory` on the device's eventlog. Each begins the same way, so an alert rule can match it:
+
+| Entry | Severity | When |
+|---|---|---|
+| `Inventory: software not compliant: 17.3.1 is blocked by the policy IOS-XE advisories. Note: …` | error (blocked), warning | a device becomes not compliant, or is not compliant another way (another status or version); at its first check too |
+| `Inventory: software compliant: 17.9.5 is approved by the policy Catalyst 9300.` | ok | a device that was not compliant is compliant |
+| `Inventory: software not checked any more: No policy applies to it.` | notice | a device that was not compliant has no policy or no version any more |
+| `Inventory: software upgraded from 17.6.5 to 17.9.5` | info | its version is newer than at the last check |
+| `Inventory: software downgraded from 17.9.5 to 17.6.5` | notice | its version is older |
+
+Also: each change of the settings (who changed them, no device), and a scheduled check that failed. The settings can
+switch the entries of the status off, and those of the upgrades.
+
+An alert rule can match the eventlog: for example, for a device that became not compliant in the last hour,
+`eventlog.type = "inventory" AND eventlog.message LIKE "Inventory: software not compliant%" AND eventlog.datetime >=
+macros.past_60m` (LibreNMS' time macros are `past_5m`, `past_10m`, `past_15m`, `past_30m` and `past_60m`). The entries are written once per change, not at every check: a
+rule without a time window would match them for as long as the eventlog keeps them.
+
+## Settings
+
+LibreNMS admins change them on the plugin's settings page; the plugin stores them itself. Saving them checks every
+device with them right away, and says what the check found.
+
+| Setting | Default | |
+|---|---|---|
+| Devices | every enabled device | or the enabled devices of a device group; the status of a device left out is forgotten (its upgrades stay) |
+| Eventlog | on | the entries of the status: not compliant, compliant, not checked any more |
+| Upgrades in the eventlog | on | an entry for each upgrade and downgrade |
+| Software policies | none | YAML, see [Software compliance](#software-compliance) |
+
+Without policies, every device is listed without a policy, and the check records the upgrades anyway.
+
+![Settings](docs/images/settings.png)
+
 ## Permissions
 
 Every LibreNMS user may open the pages, each for the devices LibreNMS lets them see, as on LibreNMS' own device and
 inventory pages; the search and the exports too. The hardware inventory, the optics and the ports have permissions of
 their own in LibreNMS (its policies for `EntPhysical`, `Transceiver` and `Port`, which custom roles can leave out):
-what a user's role may not view, the pages leave out and say so.
+what a user's role may not view, the pages leave out and say so. Software compliance and the upgrades are for every
+user too, for the devices they may see, and so are the policies (their names, versions and notes). The settings and
+*Check now* are for admins.
 
 ## Limitations
 
 * The data is what LibreNMS' discovery found at its last run (every 6 hours by default): a module swapped since shows
-  after the next discovery. The plugin keeps no history of it yet (phase 4 of the plan).
+  after the next discovery. The plugin keeps no history of the hardware yet (phase 4 of the plan); of the software
+  versions, only what its hourly check saw.
+* Software compliance reads the version LibreNMS has for the device: one per device, so a stack whose members run
+  different versions (LibreNMS shows one) is checked by that one. A version changed and changed back between two
+  checks is not seen, and a change shows at the first check after LibreNMS polled it.
+* An upgrade's *on the old version* counts from when the checks first saw that version: for the first upgrade after
+  the plugin's first check, from that check.
 * A device's serial number is the one LibreNMS shows for it, its first stack member's for a stack; each member's comes
   from the hardware inventory, which some OSes report only in part or not at all.
 * LibreNMS reads optics for the OSes it supports; a switch it reads none of shows none. Their vendor is often empty for

@@ -3,9 +3,11 @@
 namespace Agoodley\LibrenmsInventory\Http\Controllers;
 
 use Agoodley\LibrenmsInventory\Data\InventoryRepository;
+use Agoodley\LibrenmsInventory\Data\SoftwareRepository;
 use Agoodley\LibrenmsInventory\Reports\Exports;
 use Agoodley\LibrenmsInventory\Reports\Lists;
 use Agoodley\LibrenmsInventory\Reports\Summaries;
+use Agoodley\LibrenmsInventory\Software\Policies;
 use Agoodley\LibrenmsInventory\Support\Csv;
 use Agoodley\LibrenmsInventory\Support\Filters;
 use Illuminate\Contracts\View\View;
@@ -14,8 +16,9 @@ use Illuminate\Http\Response;
 
 /**
  * The inventory's pages: the overview (models and software versions across the network), the devices, the modules
- * with their serial numbers, the optics, a search of serial and part numbers, and the CSV exports. Every page reads the
- * devices of its filters the user may see (device, device group, location, os, model, version).
+ * with their serial numbers, the optics, a search of serial and part numbers, and the CSV exports (of the software
+ * compliance pages too: SoftwareController). Every page reads the devices of its filters the user may see (device,
+ * device group, location, os, model, version).
  */
 class InventoryController extends Controller
 {
@@ -23,7 +26,8 @@ class InventoryController extends Controller
     public const SEARCH_MIN = 3;
 
     /**
-     * plugin/inventory/overview: the cards, the models and the software versions.
+     * plugin/inventory/overview: the cards (the software compliance of the last check too), the models and the software
+     * versions.
      */
     public function overview(Request $request): View
     {
@@ -35,8 +39,10 @@ class InventoryController extends Controller
             $osNames = InventoryRepository::osNames(array_column($devices, 'os'));
             $counts = $repo->counts($ids);
             $optics = $repo->optics($ids, $devices);
+            $software = new SoftwareRepository();
 
             return [
+                'software' => $software->available() ? Policies::counts(Lists::software($devices, $software->rows($ids))) : null,
                 'devices' => count($devices),
                 'models' => Summaries::models($devices, $repo->chassis($ids)),
                 'versions' => Summaries::versions($devices, $osNames),
@@ -145,14 +151,15 @@ class InventoryController extends Controller
     }
 
     /**
-     * plugin/inventory/export/{kind}: CSV of the devices, modules, optics, models or software versions of the filters.
+     * plugin/inventory/export/{kind}: CSV of the devices, modules, optics, models, software versions, software compliance
+     * or upgrades of the filters.
      */
     public function export(Request $request, string $kind): Response
     {
         $filters = Filters::parse($request->query());
         try {
             $repo = new InventoryRepository($request->user());
-            $devices = $repo->devices(in_array($kind, ['devices', 'models', 'versions'], true) ? $filters : ['q' => ''] + $filters);
+            $devices = $repo->devices(in_array($kind, ['devices', 'models', 'versions', 'software', 'upgrades'], true) ? $filters : ['q' => ''] + $filters);
             $ids = array_keys($devices);
             $rows = match ($kind) {
                 'devices' => Exports::devices($devices, $repo->counts($ids), InventoryRepository::osNames(array_column($devices, 'os')), $repo->chassis($ids)),
@@ -167,6 +174,13 @@ class InventoryController extends Controller
                     return Exports::optics($optics, $repo->names(array_column($optics, 'device_id')));
                 })(),
                 'models' => Exports::models(Summaries::models($devices, $repo->chassis($ids)), InventoryRepository::osNames(array_column($devices, 'os'))),
+                'software' => Exports::software(Lists::software($devices, (new SoftwareRepository())->rows($ids), $filters['status']),
+                    InventoryRepository::osNames(array_column($devices, 'os'))),
+                'upgrades' => (function () use ($repo, $ids, $devices): array {
+                    $upgrades = (new SoftwareRepository())->upgrades($ids)['rows'];
+
+                    return Exports::upgrades($upgrades, $repo->names(array_column($upgrades, 'device_id')), InventoryRepository::osNames(array_column($devices, 'os')));
+                })(),
                 default => Exports::versions(Summaries::versions($devices, InventoryRepository::osNames(array_column($devices, 'os')))),
             };
         } catch (\Throwable $e) {
@@ -176,37 +190,6 @@ class InventoryController extends Controller
 
         return response(Csv::of($rows), 200, ['Content-Type' => 'text/csv; charset=utf-8', 'Content-Disposition' => "attachment; filename=\"$name.csv\"",
             'X-Content-Type-Options' => 'nosniff', 'Cache-Control' => 'private, no-store']);
-    }
-
-    /**
-     * A page of the plugin: the view with the filters, what $build returns (or the error it threw), the filters' choices
-     * and what the user's role may not view.
-     *
-     * @param  callable(InventoryRepository): array  $build
-     */
-    private function render(string $view, array $filters, callable $build): View
-    {
-        $repo = new InventoryRepository(request()->user());
-        $data = [];
-        $error = null;
-        try {
-            $data = $build($repo);
-            $options = $repo->options();
-        } catch (\Throwable $e) {
-            $error = $this->failure("inventory $view page", $e);
-            $options = ['groups' => [], 'locations' => [], 'os' => []];
-        }
-        $hidden = array_keys(array_filter(['the hardware inventory' => ! $repo->allowsModules(), 'optics' => ! $repo->allowsOptics()]));
-
-        return view("inventory::$view", $data + [
-            'filters' => $filters,
-            'query' => Filters::query($filters),
-            'options' => $options,
-            'error' => $error,
-            'hidden' => $hidden,
-            'ok' => $error === null,
-            'assetVersion' => self::assetVersion(),
-        ]);
     }
 
     /**
