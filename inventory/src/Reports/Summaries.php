@@ -2,6 +2,7 @@
 
 namespace Agoodley\LibrenmsInventory\Reports;
 
+use Agoodley\LibrenmsInventory\Software\Versions;
 use Agoodley\LibrenmsInventory\Support\Origin;
 
 /**
@@ -117,12 +118,12 @@ final class Summaries
     }
 
     /**
-     * Two software versions in order: their numbers compared as numbers (15.2(7)E8 after 15.2(4)E10, 17.12.1 after
-     * 17.9.4a), otherwise as text.
+     * Two software versions in order (Software\Versions): number by number, each number as a number, so 15.2(7)E10 after
+     * 15.2(4)E10, 17.12.1 after 17.9.4a, and 17.09.04a the same as 17.9.4a.
      */
     public static function compareVersions(string $a, string $b): int
     {
-        return strnatcasecmp($a, $b);
+        return Versions::compare($a, $b);
     }
 
     /**

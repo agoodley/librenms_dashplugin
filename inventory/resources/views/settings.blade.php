@@ -113,7 +113,7 @@
             <p class="inv-help">A device gets the policy for its model, else the one for its os (of several, the first): blocked versions are <strong>blocked</strong>
                 (critical), an older version than the minimum is <strong>below the minimum</strong> and one that is none of the approved versions <strong>not approved</strong>
                 (warnings); the blocked versions of every policy for the device count, so a policy for an os can block versions on every model. Versions are compared
-                number by number: 15.2(7)E10 is newer than 15.2(7)E8, 17.12.1 than 17.9.4.</p>
+                number by number, leading zeros ignored: 15.2(7)E10 is newer than 15.2(7)E8, 17.12.1 than 17.9.4, and 17.09.04a is 17.9.4a.</p>
             @if($c['policyErrors'] && ! isset($errors_['policies']))
                 <div class="alert alert-danger">{{ implode(' ', $c['policyErrors']) }}</div>
             @endif

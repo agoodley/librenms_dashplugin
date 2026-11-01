@@ -2,7 +2,6 @@
 
 namespace Agoodley\LibrenmsInventory\Software;
 
-use Agoodley\LibrenmsInventory\Reports\Summaries;
 use Symfony\Component\Yaml\Exception\ParseException;
 use Symfony\Component\Yaml\Yaml;
 
@@ -14,7 +13,8 @@ use Symfony\Component\Yaml\Yaml;
  * a minimum version, blocked versions or several of them. A device gets the policy for its model (its own, or one of
  * its chassis': a stack's members), else the policy for its os; of several such, the first. Its version is checked
  * against that policy's approved versions and minimum, and against the blocked versions of every policy for it, so a
- * policy for an os can block versions on every model.
+ * policy for an os can block versions on every model. Versions are compared and matched number by number, leading zeros
+ * ignored (Software\Versions).
  */
 final class Policies
 {
@@ -176,16 +176,16 @@ final class Policies
         }
         // a version the primary policy blocks is told by it, else by the first other policy that blocks it
         foreach ([$primary, ...array_filter($applying, fn (Policy $policy) => $policy !== $primary)] as $policy) {
-            if (Policy::any($policy->blocked, $version)) {
+            if (self::matches($policy->blocked, $version)) {
                 return ['status' => Status::BLOCKED, 'policy' => $policy->name, 'message' => self::note("$version is blocked by the policy {$policy->name}.", $policy)];
             }
         }
-        if ($primary->minimum !== null && Summaries::compareVersions($version, $primary->minimum) < 0) {
+        if ($primary->minimum !== null && Versions::compare($version, $primary->minimum) < 0) {
             return ['status' => Status::BELOW_MINIMUM, 'policy' => $primary->name,
                 'message' => self::note("$version is older than {$primary->minimum}, the minimum of the policy {$primary->name}.", $primary)];
         }
         if ($primary->approved !== []) {
-            if (Policy::any($primary->approved, $version)) {
+            if (self::matches($primary->approved, $version)) {
                 return ['status' => Status::APPROVED, 'policy' => $primary->name, 'message' => "$version is approved by the policy {$primary->name}."];
             }
 
@@ -217,6 +217,16 @@ final class Policies
         }
 
         return $counts;
+    }
+
+    /**
+     * Does a version match one of these patterns, the leading zeros of their numbers ignored (17.9.* matches 17.09.04a)?
+     *
+     * @param  string[]  $patterns
+     */
+    public static function matches(array $patterns, string $version): bool
+    {
+        return Policy::any(array_map([Versions::class, 'normalize'], $patterns), Versions::normalize($version));
     }
 
     /**

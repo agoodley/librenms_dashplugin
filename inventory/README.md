@@ -235,8 +235,10 @@ policy for it**: a policy for an os can block versions on every model, whatever 
 | **version unknown** | | a policy applies, but LibreNMS has no software version for the device |
 | **no policy** | | no policy is for the device |
 
-Versions are compared number by number, the rest as text: `15.2(7)E10` is newer than `15.2(7)E8`, `17.12.1` than
-`17.9.4`, `21.4R3-S5` than `21.4R3`. That is no release train: `17.10.1` is above a minimum of `17.9.4` whether or not
+Versions are compared number by number, the rest as text ignoring case: `15.2(7)E10` is newer than `15.2(7)E8`,
+`17.12.1` than `17.9.4`, `21.4R3-S5` than `21.4R3`. Leading zeros do not count, in comparisons and in patterns alike:
+`17.09.04a` (as Cisco pads IOS-XE versions in some outputs) is `17.9.4a`, newer than a minimum of `17.9.4` and matched
+by `17.9.*`. That is no release train: `17.10.1` is above a minimum of `17.9.4` whether or not
 it is a train you run, so a list of approved versions says what a minimum cannot.
 
 **The check** (`./lnms inventory:check`, `-v` lists each device) runs every hour through LibreNMS' scheduler, at 23
@@ -248,7 +250,7 @@ version, policy or why. A version LibreNMS no longer has (a failed poll) leaves 
 the software compliance page) check every device at once; the checks run one at a time.
 
 **Upgrades:** a device whose version changed since the last check gets a row in the history: an upgrade when the new
-version is newer, else a downgrade. The history starts with the plugin's first check (the first version of a device is
+version is newer, else a downgrade. A version only written another way (`17.9.4a`, then `17.09.04a`) is no change. The history starts with the plugin's first check (the first version of a device is
 no change); a device the settings no longer cover keeps its history, a device deleted from LibreNMS loses it.
 
 ## Eventlog and alerts

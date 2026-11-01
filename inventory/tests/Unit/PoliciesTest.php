@@ -5,6 +5,7 @@ namespace Agoodley\LibrenmsInventory\Tests\Unit;
 use Agoodley\LibrenmsInventory\Software\Policies;
 use Agoodley\LibrenmsInventory\Software\Policy;
 use Agoodley\LibrenmsInventory\Software\Status;
+use Agoodley\LibrenmsInventory\Software\Versions;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -119,5 +120,32 @@ class PoliciesTest extends TestCase
         $this->assertSame(['critical', 'warning', null], [Status::severity(Status::BLOCKED), Status::severity(Status::NOT_APPROVED), Status::severity(Status::APPROVED)]);
         $this->assertSame([[Status::APPROVED, Status::ALLOWED], [Status::BLOCKED], []], [Status::filter('compliant'), Status::filter('blocked'), Status::filter('nope')]);
         $this->assertSame('a, b and 1 more', Policies::names(['a', 'b', 'c'], 2));
+    }
+
+    public function testVersionsWithLeadingZeros(): void
+    {
+        $order = fn (string $a, string $b) => Versions::compare($a, $b) <=> 0;
+
+        $this->assertSame(0, $order('17.09.04a', '17.9.4a'), 'Cisco pads the numbers of IOS-XE versions in some outputs: the same release');
+        $this->assertSame(1, $order('17.09.04a', '17.9.4'), 'a version that goes on is newer');
+        $this->assertSame(-1, $order('17.09.04a', '17.12.1'));
+        $this->assertSame(-1, $order('17.06.05', '17.9.4'));
+        $this->assertSame(1, $order('17.10.01', '17.9.5'));
+        $this->assertSame(1, $order('21.4R3-S5.4', '21.4R3'));
+        $this->assertSame(-1, $order('15.2(7)E8', '15.2(7)e10'), 'letters ignoring case');
+        $this->assertSame(1, $order('9.3(10)', '9.3(9)'));
+        $this->assertSame(1, $order('123456789012345678901234567890', '99'), 'a number longer than PHP\'s integers');
+        $this->assertSame('17.9.4a', Versions::normalize(' 17.09.04a '));
+        $this->assertSame('17.0.*', Versions::normalize('17.00.*'));
+
+        $policies = Policies::parse(self::POLICIES)['policies'];
+        $status = fn (string $version) => Policies::evaluate($policies, 'iosxe', ['C9300-48P'], $version)['status'];
+        $this->assertSame(Status::APPROVED, $status('17.09.05'), 'an approved version written with zeros');
+        $this->assertSame(Status::APPROVED, $status('17.12.04'), 'and a pattern');
+        $this->assertSame(Status::NOT_APPROVED, $status('17.09.04a'), 'not below the minimum 17.9.4: newer than it');
+        $this->assertSame(Status::BELOW_MINIMUM, $status('17.06.05'));
+        $this->assertSame(Status::BLOCKED, $status('17.03.01'), 'a blocked version written with zeros');
+        $this->assertSame(Status::BLOCKED, $status('16.12.04'));
+        $this->assertTrue(Policies::matches(['17.09.*'], '17.9.4a'), 'and a pattern with zeros, a version without');
     }
 }

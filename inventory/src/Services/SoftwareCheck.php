@@ -7,10 +7,10 @@ use Agoodley\LibrenmsInventory\Data\LibrenmsNetwork;
 use Agoodley\LibrenmsInventory\Data\Network;
 use Agoodley\LibrenmsInventory\Data\SettingsRepository;
 use Agoodley\LibrenmsInventory\Data\SoftwareRepository;
-use Agoodley\LibrenmsInventory\Reports\Summaries;
 use Agoodley\LibrenmsInventory\Software\Policies;
 use Agoodley\LibrenmsInventory\Software\Policy;
 use Agoodley\LibrenmsInventory\Software\Status;
+use Agoodley\LibrenmsInventory\Software\Versions;
 use Agoodley\LibrenmsInventory\Support\Clock;
 use Agoodley\LibrenmsInventory\Support\ErrorText;
 use Agoodley\LibrenmsInventory\Support\Log;
@@ -214,16 +214,18 @@ final class SoftwareCheck
         $result = $verdict + ['failing' => false, 'resolved' => false, 'upgrade' => null];
         $old = $stored !== null ? (string) $stored['status'] : null;
         $statusChanged = $old !== $verdict['status'];
-        $versionChanged = $stored !== null && $before !== $version;
+        // a version written another way (17.9.4a, 17.09.04a) is the same release: its row takes the new text, nothing more
+        $versionChanged = $stored !== null && $before !== $version && ($before === '' || Versions::compare($version, $before) !== 0);
+        $textChanged = $stored !== null && $before !== $version;
         $row = ['os' => $device['os'], 'model' => $device['hardware'], 'version' => $version, 'status' => $verdict['status'], 'policy' => $verdict['policy'],
             'message' => $verdict['message'], 'status_since' => $statusChanged ? $now : (Clock::unix($stored['status_since'] ?? null) ?? $now),
             'version_since' => $stored === null || $versionChanged ? $now : (Clock::unix($stored['version_since'] ?? null) ?? $now), 'updated_at' => $now];
-        if ($stored !== null && ! $statusChanged && ! $versionChanged && (string) $stored['os'] === $row['os'] && (string) $stored['model'] === $row['model']
+        if ($stored !== null && ! $statusChanged && ! $textChanged && (string) $stored['os'] === $row['os'] && (string) $stored['model'] === $row['model']
             && ($stored['policy'] ?? null) === ($row['policy'] !== null ? mb_substr($row['policy'], 0, 100) : null)
             && (string) $stored['message'] === mb_substr($row['message'], 0, 2000)) {
             return $result;
         }
-        $upgrade = $versionChanged && $before !== '' ? (Summaries::compareVersions($version, $before) >= 0 ? 'upgrade' : 'downgrade') : null;
+        $upgrade = $versionChanged && $before !== '' ? (Versions::compare($version, $before) > 0 ? 'upgrade' : 'downgrade') : null;
         $this->software->transaction(function () use ($deviceId, $row, $stored, $upgrade, $before, $version, $device, $now): void {
             $this->software->put($deviceId, $row, $stored !== null);
             if ($upgrade !== null) {

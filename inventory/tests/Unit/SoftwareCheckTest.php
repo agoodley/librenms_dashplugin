@@ -162,6 +162,29 @@ class SoftwareCheckTest extends TestCase
         $this->assertSame([Status::APPROVED, '4.30.1F'], [$this->rows()[4]['status'], $this->rows()[4]['version']]);
     }
 
+    public function testAVersionWrittenAnotherWayIsNoUpgrade(): void
+    {
+        $this->check()->run();
+        $this->events->entries = [];
+        $this->now += 3600;
+        $this->network->devices[1]['version'] = '17.09.05'; // 17.9.5, as Cisco pads it in some outputs
+
+        $summary = $this->check()->run();
+
+        $this->assertSame([0, 0, []], [$summary['upgrades'], $summary['downgrades'], $this->events->entries], 'the same release: no upgrade, nothing in the eventlog');
+        $row = $this->rows()[1];
+        $this->assertSame([Status::APPROVED, '17.09.05', '2026-11-01 08:00:00'], [$row['status'], $row['version'], $row['version_since']],
+            'the row takes the new text, and keeps since when the device runs the release');
+
+        $this->now += 3600;
+        $this->network->devices[1]['version'] = '17.09.04a';
+        $summary = $this->check()->run();
+        $this->assertSame([0, 1], [$summary['upgrades'], $summary['downgrades']]);
+        $this->assertSame(['Inventory: software downgraded from 17.09.05 to 17.09.04a',
+            'Inventory: software not compliant: 17.09.04a is not approved by the policy Catalyst 9300 (approved: 17.9.5, 17.12.*).'], array_column($this->events->entries, 'message'),
+            'not below the minimum 17.9.4');
+    }
+
     public function testThePoliciesChangeTheStatus(): void
     {
         $this->check()->run();
