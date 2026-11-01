@@ -1,0 +1,54 @@
+name: topology
+
+# The topology plugin (the repository's root). Its tests run on pull requests and on main, and only when the plugin
+# changes: a change to another plugin, the installer or the documentation runs none of its jobs.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'resources/**'
+      - 'routes/**'
+      - 'database/**'
+      - 'composer.json'
+      - 'phpunit.xml.dist'
+      - '.github/workflows/topology.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'resources/**'
+      - 'routes/**'
+      - 'database/**'
+      - 'composer.json'
+      - 'phpunit.xml.dist'
+      - '.github/workflows/topology.yml'
+  workflow_dispatch:
+
+# a new push to a pull request cancels its run still in progress (main finishes each run)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  phpunit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['8.2', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+      - run: composer install --no-interaction --no-progress
+      - run: vendor/bin/phpunit
+      - name: Lint PHP
+        run: find src routes database -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: Check JavaScript syntax
+        run: node --check resources/assets/topology.js

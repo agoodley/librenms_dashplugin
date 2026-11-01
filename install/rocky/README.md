@@ -455,7 +455,8 @@ The CI workflow `.github/workflows/installer.yml` runs shellcheck and `unit.sh`,
 and 10 containers (the online path: LibreNMS, its packages and Semaphore UI from GitHub), `verify.sh`, a run with the
 fake switch's host key (`--device-known-hosts`), `security-integration.sh`, `e2e.sh`, `device-keys-integration.sh`,
 `device-logins-integration.sh` with a second fake switch, a second run that must change nothing, the plugins from a checkout in `/root` and from the repository's URL with the
-workflow's token; on changes to `install/` and on demand.
+workflow's token; on pull requests that change `install/` (its README aside) and on demand (*Run workflow*). After the
+merge, `main` runs shellcheck and `unit.sh` alone: the installs take about 40 runner minutes.
 
 ## Undoing it
 
