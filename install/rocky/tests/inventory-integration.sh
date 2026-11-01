@@ -4,7 +4,7 @@
 # install/rocky/tests/inventory-integration.sh: the inventory plugin's software compliance (phase 2) on a server
 # install.sh set up (a test container), through its own pages as an admin and a user would use them:
 #  1. devices with known software, as a poll leaves it (ping-only devices; a stack of two models in the hardware
-#     inventory);
+#     inventory; an IOS-XE version as LibreNMS writes it, the image's name first);
 #  2. its tables and its hourly schedule;
 #  3. policies saved through the settings form (a wrong one refused first), which checks the devices at once: each
 #     device's status, the eventlog entries and their severities, an alert rule on them (LibreNMS' rule parser);
@@ -60,7 +60,7 @@ for name in "${NAMES[@]}"; do
     [[ $exists == yes ]] || lnms device:add --ping-only --force --os "${OS[$name]}" "$name" >/dev/null 2>&1 || fail "lnms device:add $name"
 done
 php_lnms '
-$set = ["p2-core1" => ["C9300-48P", "17.9.5"], "p2-acc1" => ["C9300-24T", "17.3.1"], "p2-stack" => ["WS-C2960X-48FPS-L", "15.2(4)E10"],
+$set = ["p2-core1" => ["C9300-48P", "17.9.5"], "p2-acc1" => ["C9300-24T", "CAT9K_IOSXE 17.3.1"], "p2-stack" => ["WS-C2960X-48FPS-L", "15.2(4)E10"],
     "p2-leaf" => ["DCS-7050SX3-48YC8", ""], "p2-srv" => ["", "6.1"]];
 foreach ($set as $name => [$hardware, $version]) {
     DB::table("devices")->where("hostname", $name)->update(["hardware" => $hardware, "version" => $version, "display" => ""]);
@@ -115,14 +115,14 @@ check "the policies are saved and the devices checked at once (${saved:-no messa
 
 st=$(statuses)
 echo "      $st"
-check "p2-acc1 17.3.1 is blocked by the policy for its os" has "p2-acc1=blocked(IOS-XE advisories)" "$st"
+check "p2-acc1 CAT9K_IOSXE 17.3.1 (release 17.3.1) is blocked by the policy for its os" has "p2-acc1=blocked(IOS-XE advisories)" "$st"
 check "p2-core1 17.9.5 is approved by the policy for its model" has "p2-core1=approved(Catalyst 9300)" "$st"
 check "p2-stack gets the policy of a stack member's model, and is below its minimum" has "p2-stack=below_minimum(Catalyst 2960-X)" "$st"
 check "p2-leaf, without a version, is version unknown" has "p2-leaf=unknown(EOS)" "$st"
 check "p2-srv has no policy" has "p2-srv=no_policy()" "$st"
 
 ev=$(events)
-check "eventlog: p2-acc1 not compliant, an error (5)" has "^$(dev p2-acc1)|5|Inventory: software not compliant: 17.3.1 is blocked by the policy IOS-XE advisories. Note: cisco-sa-test" "$ev"
+check "eventlog: p2-acc1 not compliant, an error (5)" has "^$(dev p2-acc1)|5|Inventory: software not compliant: CAT9K_IOSXE 17.3.1 is blocked by the policy IOS-XE advisories. Note: cisco-sa-test" "$ev"
 check "eventlog: p2-stack not compliant, a warning (4)" has "^$(dev p2-stack)|4|Inventory: software not compliant: 15.2(4)E10 is older than 15.2(7)E8" "$ev"
 check "eventlog: nothing for a compliant device" test "$(count "^$(dev p2-core1)|" "$ev")" = 0
 changed=$(php_lnms 'echo DB::table("eventlog")->where("type", "inventory")->whereNull("device_id")->where("message", "like", "%changed the settings%")->count();')
@@ -149,14 +149,14 @@ check "software page: Check now, for an admin" has "Check now" "$sw"
 ov=$(web "$BASE/plugin/inventory/overview?q=p2-" | text)
 check "overview: the software card" has "Software not compliant 2 1 blocked, 1 below the minimum or not approved" "$ov"
 dp=$(web "$BASE/device/device=$(dev p2-acc1)/" | text)
-check "device page: the panel's software line" has "Software blocked 17.3.1 (IOS-XE advisories)" "$dp"
+check "device page: the panel's software line" has "Software blocked CAT9K_IOSXE 17.3.1 (IOS-XE advisories)" "$dp"
 csv=$(web "$BASE/plugin/inventory/export/software?status=not_compliant&q=p2-")
 check "software CSV: a header and the two devices not compliant" test "$(count $'\r$' "$csv")" = 3
 sp=$(web "$BASE/plugin/settings/inventory" | text)
 check "settings page: the last check" has "Last check: .* devices: " "$sp"
 
 # --- 5. upgrades, seen by the command the scheduler runs
-php_lnms 'DB::table("devices")->where("hostname", "p2-acc1")->update(["version" => "17.9.5"]);
+php_lnms 'DB::table("devices")->where("hostname", "p2-acc1")->update(["version" => "CAT9K_IOSXE 17.9.5"]);
 DB::table("devices")->where("hostname", "p2-core1")->update(["version" => "17.10.1"]);
 DB::table("devices")->where("hostname", "p2-stack")->update(["version" => "15.2(7)E10"]);
 DB::table("devices")->where("hostname", "p2-leaf")->update(["version" => "4.29.2F"]);'
@@ -164,10 +164,10 @@ out=$(lnms inventory:check -v 2>&1)
 check "inventory:check runs ($(tail -n 1 <<<"$out" | cut -c1-160))" has "inventory:check: .* devices: " "$out"
 up=$(php_lnms 'foreach (DB::table("inventory_upgrades")->whereIn("device_id", ['"$idlist"'])->orderBy("id")->get() as $u) echo "$u->device_id:$u->from_version>$u->to_version:$u->direction ";')
 echo "      $up"
-check "the upgrades are recorded, a first version is none" test "$(count ':upgrade' "$(tr ' ' '\n' <<<"$up")")" = 3
-check "p2-acc1's upgrade" has "$(dev p2-acc1):17.3.1>17.9.5:upgrade" "$up"
+check "the upgrades are recorded, a first version is none" test "$(grep -o ':upgrade ' <<<"$up" | wc -l)" = 3
+check "p2-acc1's upgrade" has "$(dev p2-acc1):CAT9K_IOSXE 17.3.1>CAT9K_IOSXE 17.9.5:upgrade" "$up"
 ev=$(events)
-check "eventlog: p2-acc1 compliant again (ok)" has "^$(dev p2-acc1)|1|Inventory: software compliant: 17.9.5 is approved" "$ev"
+check "eventlog: p2-acc1 compliant again (ok)" has "^$(dev p2-acc1)|1|Inventory: software compliant: CAT9K_IOSXE 17.9.5 is approved" "$ev"
 check "eventlog: p2-core1 upgraded to a version not approved" has "^$(dev p2-core1)|4|Inventory: software not compliant: 17.10.1 is not approved" "$ev"
 check "eventlog: an entry for each upgrade" test "$(count '|Inventory: software upgraded from' "$ev")" = 3
 check "eventlog: p2-leaf's first version, below the minimum" has "^$(dev p2-leaf)|4|Inventory: software not compliant: 4.29.2F is older than 4.30.1F" "$ev"
