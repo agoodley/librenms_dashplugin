@@ -158,6 +158,21 @@ class PoliciesTest extends TestCase
         $this->assertSame('W.15.08.0012', Versions::release('W.15.08.0012'), 'ProCurve\'s letters are its release train');
         $this->assertSame('ML.10.07.0005', Versions::release('ML.10.07.0005'));
         $this->assertSame('CAT9K_IOSXE', Versions::release('CAT9K_IOSXE'), 'no release: the whole version');
+        // as LibreNMS writes them for other platforms (its own test data)
+        $this->assertSame('6.4.8', Versions::release('v6.4.8,build1914,211117 (GA)'), 'FortiGate: up to the comma');
+        $this->assertSame('2.5.9.13', Versions::release('Software 2.5.9.13, Bootldr 3.5.7.13, Firmware 3.5.7.13'), 'Cisco SB');
+        $this->assertSame('1.1.1.9', Versions::release('SW: 1.1.1.9, FW: 1.0.0.5'), 'Linksys');
+        $this->assertSame('8.6.0.3-11sv', Versions::release('(Firmware 8.6.0.3-11sv / ROM 5.0.0.5)'), 'SonicWall');
+        $this->assertSame('5.9.2', Versions::release('Cumulus-linux 5.9.2 (Linux Kernel 6.1.94)'));
+        $this->assertSame('6.2', Versions::release('V6.2  build 20080519'), 'Moxa: a V before a dotted number is left out');
+        $this->assertSame('2.40(AAHN.0)', Versions::release('V2.40(AAHN.0)'), 'ZyNOS');
+        $this->assertSame('V600R024C00SPC100', Versions::release('V600R024C00SPC100'), 'Huawei\'s numbering keeps its V');
+        $this->assertSame('V100R001B01D001P004SP3', Versions::release('S3800-24F4S V100R001B01D001P004SP3'), 'FS: the model first');
+        $this->assertSame('5.170', Versions::release('5.170 (V200R010C00SPC600) [unlocked]'), 'Huawei VRP: the first number');
+        $this->assertSame('rel_saos8700_8.7.0_ga195', Versions::release('rel_saos8700_8.7.0_ga195'));
+        $this->assertSame(-1, Versions::compare('V600R024C00SPC100', 'V600R024C10'), 'Huawei releases in order');
+        $this->assertTrue(Policies::matches(['6.4.8'], 'v6.4.8,build1914,211117 (GA)'), 'an approved FortiGate version');
+        $this->assertTrue(Policies::matches(['*V200R010*'], '5.170 (V200R010C00SPC600) [unlocked]'), 'VRP: a pattern of the whole version');
 
         $order = fn (string $a, string $b) => Versions::compare($a, $b) <=> 0;
         $this->assertSame(-1, $order('CAT9K_IOSXE 16.6.7', '17.9.4'), 'not newer for the text before it');

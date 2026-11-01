@@ -235,10 +235,14 @@ policy for it**: a policy for an os can block versions on every model, whatever 
 | **version unknown** | | a policy applies, but LibreNMS has no software version for the device |
 | **no policy** | | no policy is for the device |
 
-Versions are compared by their release: LibreNMS writes most IOS-XE versions with the image's name first
-(`CAT9K_IOSXE 17.9.4`), and the plugin checks the release in it (`17.9.4`), the first word that is a number (a `v` before
-it left out). A pattern matches the release or the whole version as LibreNMS has it (`CAT9K_IOSXE 17.*` too); the pages
-and the eventlog show the whole version. Releases are compared number by number, the rest as text ignoring case: `15.2(7)E10` is newer than `15.2(7)E8`,
+Versions are compared by their release: LibreNMS writes many versions with other words around it, and the plugin checks
+the release in it, the first word that starts with a number (or a `v` before one), up to a comma. IOS-XE's
+`CAT9K_IOSXE 17.9.4` is `17.9.4`, FortiGate's `v6.4.8,build1914,211117 (GA)` is `6.4.8`, Cisco SB's
+`Software 2.5.9.13, Bootldr …` is `2.5.9.13`; a `v` before a dotted number is left out (`v6.4.8`, `V6.2`), Huawei's
+`V600R024C00SPC100` keeps its `V`, and a version without such a word is taken whole (ProCurve's `W.15.08.0012`, Aruba CX's
+`ML.10.07.0005`: their letters are their release train). A pattern matches the release or the whole version as LibreNMS
+has it (`CAT9K_IOSXE 17.*` too): Huawei VRP's `5.170 (V200R010C00SPC600)` is release `5.170`, and `*V200R010*` matches
+it. The pages and the eventlog show the whole version. Releases are compared number by number, the rest as text ignoring case: `15.2(7)E10` is newer than `15.2(7)E8`,
 `17.12.1` than `17.9.4`, `21.4R3-S5` than `21.4R3`. Leading zeros do not count, in comparisons and in patterns alike:
 `17.09.04a` (as Cisco pads IOS-XE versions in some outputs) is `17.9.4a`, newer than a minimum of `17.9.4` and matched
 by `17.9.*`. That is no release train: `17.10.1` is above a minimum of `17.9.4` whether or not
