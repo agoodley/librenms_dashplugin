@@ -13,8 +13,8 @@ use Symfony\Component\Yaml\Yaml;
  * a minimum version, blocked versions or several of them. A device gets the policy for its model (its own, or one of
  * its chassis': a stack's members), else the policy for its os; of several such, the first. Its version is checked
  * against that policy's approved versions and minimum, and against the blocked versions of every policy for it, so a
- * policy for an os can block versions on every model. Versions are compared and matched number by number, leading zeros
- * ignored (Software\Versions).
+ * policy for an os can block versions on every model. Versions are compared and matched by their release (IOS-XE's
+ * "CAT9K_IOSXE 17.9.4" is 17.9.4), number by number, leading zeros ignored (Software\Versions).
  */
 final class Policies
 {
@@ -220,13 +220,16 @@ final class Policies
     }
 
     /**
-     * Does a version match one of these patterns, the leading zeros of their numbers ignored (17.9.* matches 17.09.04a)?
+     * Does a version match one of these patterns: its release (17.* matches CAT9K_IOSXE 17.9.4), or the whole version as
+     * LibreNMS has it (CAT9K_IOSXE 17.*), the leading zeros of their numbers ignored (17.9.* matches 17.09.04a)?
      *
      * @param  string[]  $patterns
      */
     public static function matches(array $patterns, string $version): bool
     {
-        return Policy::any(array_map([Versions::class, 'normalize'], $patterns), Versions::normalize($version));
+        $patterns = array_map([Versions::class, 'normalize'], $patterns);
+
+        return Policy::any($patterns, Versions::normalize(Versions::release($version))) || Policy::any($patterns, Versions::normalize($version));
     }
 
     /**

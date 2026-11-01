@@ -148,4 +148,33 @@ class PoliciesTest extends TestCase
         $this->assertSame(Status::BLOCKED, $status('16.12.04'));
         $this->assertTrue(Policies::matches(['17.09.*'], '17.9.4a'), 'and a pattern with zeros, a version without');
     }
+
+    public function testVersionsAsLibrenmsWritesThem(): void
+    {
+        $this->assertSame('17.9.4', Versions::release('CAT9K_IOSXE 17.9.4'), 'IOS-XE: the image\'s name first (LibreNMS\' Cisco discovery)');
+        $this->assertSame('17.9.4a', Versions::release('17.9.4a (Build 123)'));
+        $this->assertSame('7.2.5', Versions::release('v7.2.5'));
+        $this->assertSame('15.0(2a)EX5', Versions::release('15.0(2a)EX5'));
+        $this->assertSame('W.15.08.0012', Versions::release('W.15.08.0012'), 'ProCurve\'s letters are its release train');
+        $this->assertSame('ML.10.07.0005', Versions::release('ML.10.07.0005'));
+        $this->assertSame('CAT9K_IOSXE', Versions::release('CAT9K_IOSXE'), 'no release: the whole version');
+
+        $order = fn (string $a, string $b) => Versions::compare($a, $b) <=> 0;
+        $this->assertSame(-1, $order('CAT9K_IOSXE 16.6.7', '17.9.4'), 'not newer for the text before it');
+        $this->assertSame(1, $order('CAT9K_IOSXE 17.15.1', '17.9.4'));
+        $this->assertSame(0, $order('CAT9K_IOSXE 17.09.04a', '17.9.4a'));
+        $this->assertSame(0, $order('CAT9K_IOSXE 17.9.4', 'CAT9K_LITE_IOSXE 17.9.4'), 'another image, the same release');
+        $this->assertSame(1, $order('v7.2.5', '7.2.4'));
+
+        $policies = Policies::parse(self::POLICIES)['policies'];
+        $status = fn (string $version) => Policies::evaluate($policies, 'iosxe', ['C9300-48P'], $version);
+        $this->assertSame([Status::BLOCKED, 'IOS-XE advisories'], array_slice(array_values($status('CAT9K_IOSXE 16.6.7')), 0, 2), 'blocked by 16.*');
+        $this->assertSame(Status::BLOCKED, $status('CAT9K_IOSXE 17.03.01')['status']);
+        $this->assertSame(Status::BELOW_MINIMUM, $status('CAT9K_IOSXE 17.6.5')['status']);
+        $this->assertSame(Status::APPROVED, $status('CAT9K_IOSXE 17.9.5')['status']);
+        $this->assertSame('CAT9K_IOSXE 17.12.4 is approved by the policy Catalyst 9300.', $status('CAT9K_IOSXE 17.12.4')['message'], 'the message names the version as LibreNMS has it');
+        $this->assertSame(Status::NOT_APPROVED, $status('CAT9K_IOSXE 17.10.1')['status']);
+        $this->assertTrue(Policies::matches(['CAT9K_IOSXE 17.12.*'], 'CAT9K_IOSXE 17.12.4'), 'a pattern of the whole version too');
+        $this->assertFalse(Policies::matches(['CAT9K_LITE*'], 'CAT9K_IOSXE 17.12.4'));
+    }
 }

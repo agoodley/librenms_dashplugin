@@ -185,6 +185,25 @@ class SoftwareCheckTest extends TestCase
             'not below the minimum 17.9.4');
     }
 
+    public function testAVersionWithTheImageFirstIsItsRelease(): void
+    {
+        $this->network->devices[1]['version'] = 'CAT9K_IOSXE 17.9.5';
+        $this->network->devices[2]['version'] = 'CAT9K_IOSXE 16.12.4';
+        $this->check()->run();
+        $this->assertSame([Status::APPROVED, Status::BLOCKED], [$this->rows()[1]['status'], $this->rows()[2]['status']]);
+        $this->events->entries = [];
+
+        $this->now += 3600;
+        $this->network->devices[1]['version'] = '17.9.5'; // the same release, written without the image
+        $this->network->devices[2]['version'] = 'CAT9K_IOSXE 17.12.4';
+        $summary = $this->check()->run();
+
+        $this->assertSame([1, 0], [$summary['upgrades'], $summary['downgrades']], 'only the real upgrade');
+        $this->assertSame(['Inventory: software upgraded from CAT9K_IOSXE 16.12.4 to CAT9K_IOSXE 17.12.4',
+            'Inventory: software compliant: CAT9K_IOSXE 17.12.4 is approved by the policy Catalyst 9300.'], array_column($this->events->entries, 'message'));
+        $this->assertSame(['17.9.5', '2026-11-01 08:00:00'], [$this->rows()[1]['version'], $this->rows()[1]['version_since']]);
+    }
+
     public function testThePoliciesChangeTheStatus(): void
     {
         $this->check()->run();
