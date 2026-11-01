@@ -26,7 +26,7 @@ FAILS=0
 pass() { printf 'PASS  %s\n' "$*"; }
 fail() { printf 'FAIL  %s\n' "$*"; FAILS=$((FAILS + 1)); }
 check() { local what=$1; shift; if "$@"; then pass "$what"; else fail "$what"; fi; }
-# shellcheck disable=SC2329 # called through check
+# shellcheck disable=SC2317,SC2329 # called through check
 has() { grep -q -- "$1" <<<"$2"; }
 count() { grep -c -- "$1" <<<"$2"; }
 JAR=$(mktemp)
@@ -41,7 +41,7 @@ php_lnms() { (cd /opt/librenms && runuser -u librenms -- php -r 'require "vendor
 lnms() { (cd /opt/librenms && runuser -u librenms -- ./lnms "$@"); }
 text() { python3 -I -c 'import html,re,sys; s=sys.stdin.read(); s=re.sub(r"(?s)<(script|style).*?</\1>","",s); print(re.sub(r"\s+"," ",html.unescape(re.sub(r"<[^>]+>"," ",s))))'; }
 NAMES=(p2-core1 p2-acc1 p2-stack p2-leaf p2-srv)
-# shellcheck disable=SC2329 # the EXIT trap's
+# shellcheck disable=SC2317,SC2329 # the EXIT trap's
 cleanup() {
     local name
     for name in "${NAMES[@]}"; do lnms device:remove "$name" >/dev/null 2>&1; done
