@@ -12,7 +12,8 @@ IS-IS, MPLS and IPsec, forwarding, ARP and 802.1X tables, syslog, transceiver se
   [routing & IP](#routing--ip-diagnostics), [redundancy & failure impact](#redundancy--failure-impact) and
   [monitoring coverage](#monitoring-coverage)
 * **Tools:** [host locator](#host-locator-and-port-tab) with a tab on every port page, [path trace](#path-trace),
-  [rollout planner](#rollout-planner) and [device dependencies](#device-dependencies)
+  [rollout planner](#rollout-planner), [switch port capacity](#switch-port-capacity) (free, unused, err-disabled and PoE
+  ports per wiring closet) and [device dependencies](#device-dependencies)
 * **History:** [topology changes, a baseline and background checks](#topology-history-baseline-and-background-checks)
   that write to the eventlog
 * a **Topology** panel on the [device pages](#device-page)
@@ -468,7 +469,7 @@ it failed). Each list stops at 500 rows (the most important first) and says how 
 
 ## Tools
 
-*Overview → Plugins → Topology tools*: Host Locator, Path Trace, Rollout Planner and Device Dependencies.
+*Overview → Plugins → Topology tools*: Host Locator, Path Trace, Rollout Planner, Switch Port Capacity and Device Dependencies.
 
 ### Host locator and port tab
 
@@ -594,6 +595,57 @@ is cabled like a second core switch, the page names it: add both to *Core device
 
 ![Rollout planner](docs/images/rollout.png)
 
+### Switch port capacity
+
+**Overview → Plugins → Topology tools → Switch Port Capacity**: how many access ports each switch and each LibreNMS
+location (wiring closet) has, how many are in use, free, shut down or err-disabled, which have been unused for weeks
+(also on a switch that rebooted since) and which free ones have PoE. The locations come first, the fullest first, then
+the switches, then a list of ports (not in use, unused, available PoE, err-disabled, shut down, in use, not counted, all),
+each with a CSV export; *Unused after* changes the days for one view.
+
+| Port | |
+|---|---|
+| **In use** | up (or dormant: a link waiting for 802.1X) |
+| **Free** | down, its admin status up |
+| **Shut down** | admin down. Free and shut down ports are **available** |
+| **Err-disabled** | the switch shut it down (BPDU guard, port security, link flap ...) and it was not up since: from the syslog LibreNMS receives (Cisco `%PM-4-ERR_DISABLE`, NX-OS `IF_DOWN_ERROR_DISABLED`, Arista `ERRDISABLE`) and the eventlog entries of its handler of Cisco's err-disable trap, matched with the *Err-disabled port* syslog pattern of the spanning tree settings. A recovery message (errdisable recovery: `ERR_RECOVER`) or a restart of the switch ends it |
+| **Unused** | available and down for *Unused after* days (30) or more |
+| **Not counted** | uplinks (an LLDP/CDP neighbor that is a switch, router or firewall, or a port-channel with such a member), trunks without an access point, phone or server on them (trunking now, or, on Cisco, no access VLAN while the switch's other ports have one: spare uplinks in trunk mode and routed management ports), ports without hardware (`notPresent`: an empty transceiver slot, a missing stack member) and those *Ports not counted* names |
+
+The switches are the devices the maps draw as switches. Every physical Ethernet port LibreNMS polls counts, ignored ones
+too (LibreNMS only stops alerting on them); ports whose polling is disabled in LibreNMS are left out.
+
+How long a port has been down comes from the latest time it is known up. Its last change (`ifLastChange`) and the
+switch's uptime give it exactly (the uptime minus the last change, as LibreNMS' ports list shows it; on a switch up
+longer than the 497 days after which its 32-bit uptime counter starts over, the change is counted on the counter as it
+runs now, where LibreNMS' list would place a recent change hundreds of days back); a change in the first 15 minutes
+after the switch started is the start itself. A switch that restarts starts its ports' last change over, so the plugin keeps a **record** of each port
+(`topology_port_usage`) with every topology snapshot: when it was last up, and its latest err-disable, which also outlast
+the purge of LibreNMS' eventlog and syslog (30 days by default). The eventlog's port changes (`ifOperStatus: up ->
+down`) and err-disable messages (the port had a link then) count as well. A port that none of them knows up has been down
+at least since the switch started, since the record began or since the eventlog holds the switch's changes, and is
+listed with *or earlier*: when that is fewer than *Unused after* days, whether it was used before is unknown (*down time
+unknown*), so ports down since last week's firmware upgrade count as unused once the record or the eventlog reaches back
+far enough. The page reads the err-disable messages since the record's last run (the record has the older ones; its first
+run reads a week), or those of the last day without the record.
+
+| Check | Severity |
+|---|---|
+| **Few free access ports**: fewer than *Few free ports below* (10 %) of a location's access ports are available (a switch without a location on its own; from 4 access ports) | warning |
+| **Few free PoE ports**: the same for the PoE ports | warning |
+| **Err-disabled ports** of a switch, with since when and the switch's message | info |
+
+PoE comes from LibreNMS' RRD files: it writes `port-id<id>-poe.rrd` for each port whose PoE it polls, with
+`enable_ports_poe` on (`lnms config:set enable_ports_poe true`), for Cisco IOS and IOS-XE, Huawei VRP, Brocade IronWare,
+TP-Link JetStream and Linksys switches; the ports of a switch without such files are unknown (`-`). The page says when
+the switches send no syslog (their err-disabled ports then count as free unless a trap reported them), when LibreNMS
+polls no PoE and when the record is not kept. The [background checks](#topology-history-baseline-and-background-checks)
+run the checks too, so a location running out of ports writes an eventlog entry. `api/capacity` returns the analysis
+as JSON (`device`, `group`, `location`, `days`, and `list` for the ports), `capacity/export?what=ports|switches|locations`
+as CSV.
+
+![Switch port capacity](docs/images/port-capacity.png)
+
 ### Device dependencies
 
 LibreNMS suppresses a device's alerts while **all** its parent devices are down, but the parents are set by hand.
@@ -655,9 +707,11 @@ The redundancy page, the rollout planner and the device dependencies use it too:
 reports counts as a down link, so a lost uplink is still reported after LibreNMS deleted its neighbor at the next
 discovery (a port that now has another cable is a moved cable, not a lost path).
 
-After each snapshot the **background checks** run the spanning tree (one VLAN at a time, with the loop evidence of
-storms and syslog messages), link, redundancy, routing & IP and interface health checks over all devices, one after the
-other and each in its own process, and keep a findings history. A finding counts once two runs in a row report it, or when it takes the
+With each snapshot the plugin also keeps its record of the switch ports for the
+[port capacity page](#switch-port-capacity) (when each was last up, its err-disable messages). After each snapshot the
+**background checks** run the spanning tree (one VLAN at a time, with the loop evidence of storms and syslog messages),
+link, redundancy, routing & IP, interface health and port capacity checks over all devices, one after the other and each
+in its own process, and keep a findings history. A finding counts once two runs in a row report it, or when it takes the
 place of a finding of the same check and VLAN about the same devices that is gone (findings whose ports change from run
 to run go on). The devices a finding is about are those its title names, kept by id (a device renamed later is still the
 same), else all its devices; two findings are about the same devices when one is about all the devices of the other:
@@ -873,7 +927,7 @@ cd /opt/librenms
 #    answer 500 ("Route [topology.l2] not defined")
 ./lnms route:cache
 
-# 4. create the plugin's tables (history, baseline, saved views, custom maps)
+# 4. create the plugin's tables (history, baseline, saved views, custom maps, port record)
 ./lnms migrate
 ```
 
@@ -895,12 +949,12 @@ listed under **Overview → Plugins** in four groups (maps, diagnostics, tools a
 Plugins → Plugin Admin → topology → Settings**.
 
 The plugin keeps its data in tables of its own: the topology history and the baseline (`topology_facts`,
-`topology_baseline`, `topology_runs`, `topology_findings`), the saved views (`topology_views`) and the custom maps it
-made (`topology_custom_maps`). Create them once with `./lnms migrate` (LibreNMS updates run it too, so later versions of
+`topology_baseline`, `topology_runs`, `topology_findings`), the saved views (`topology_views`), the custom maps it
+made (`topology_custom_maps`) and its record of the switch ports (`topology_port_usage`). Create them once with `./lnms migrate` (LibreNMS updates run it too, so later versions of
 the plugin update them). The history is recorded by the LibreNMS scheduler, which LibreNMS needs anyway
 (`librenms-scheduler` timer or cron, see `./validate.php`): `topology:snapshot` every *History interval*, which records
-the snapshot and then runs `topology:checks stp|links|redundancy|routing` one after the other, each in a process of its
-own; the output goes to `logs/topology-snapshot.log`, a failure to the eventlog. `./lnms topology:snapshot` does the
+the snapshot and the record of the switch ports and then runs `topology:checks stp|links|redundancy|routing|interfaces|capacity`
+one after the other, each in a process of its own; the output goes to `logs/topology-snapshot.log`, a failure to the eventlog. `./lnms topology:snapshot` does the
 same now. With several pollers (distributed polling) it runs on one of them at a time: the snapshot and each check
 take a lock in LibreNMS' cache (the database, unless `CACHE_STORE` or `CACHE_DRIVER` in `.env` names a store all
 pollers share, as distributed polling needs), so a run, scheduled or manual, skips while another one holds it.
@@ -908,8 +962,8 @@ pollers share, as distributed polling needs), so a run, scheduled or manual, ski
 `./validate.php` then warns that the database schema "has extra migrations
 (2026_10_20_000000_create_topology_history_tables, 2026_10_20_100000_create_topology_custom_maps_table,
 2026_10_20_100100_create_topology_views_table, 2026_10_21_000000_add_finding_subjects_to_topology_history,
-2026_10_22_000000_widen_topology_finding_devices, 2026_10_23_000000_index_topology_facts_by_time)" (in the order they
-were applied) and is "between releases": those
+2026_10_22_000000_widen_topology_finding_devices, 2026_10_23_000000_index_topology_facts_by_time,
+2026_11_01_000000_create_topology_port_usage_table)" (in the order they were applied) and is "between releases": those
 are the plugin's migrations, and the warning stays while the plugin is installed. While it warns, validate.php skips its
 checks of LibreNMS' own schema (structure and collation). **Do not delete the plugin's rows from the `migrations` table**
 to silence it: validate.php then lists the `topology_*` tables as extra tables and offers to drop them. **Never apply
@@ -1021,6 +1075,10 @@ Custom maps the plugin made are LibreNMS' own: they stay either way.
 | Speed downgrades | 7 days | how far back a speed that dropped and stayed is reported (0 disables) |
 | Interface errors | 100 | errors in the window from which a port is reported (0 disables) |
 | Disabled interface checks | – | check codes or categories (`flaps`, `speed`, `duplex`, `errors`), e.g. `speed_downgraded port_errors` |
+| Unused after | 30 days | a free or shut down port that has been down this long is unused (1-3650); the port capacity page can change it per view |
+| Few free ports below | 10 % | share of a location's access ports (a switch without a location: its own, from 4 access ports) below which too few are available; PoE ports too (0 disables) |
+| Ports not counted | – | a regular expression matched against each port's name (`ifName`, `ifDescr`, `Gi1/0/1`) and description, e.g. `^(Te\|Twe\|Fo\|Hu)` for uplink module ports or `reserved` |
+| Disabled capacity checks | – | check codes or categories (`capacity`, `ports`), e.g. `poe_low ports_err_disabled` |
 | BGP reset window | 24 h | sessions that came up less than this ago are reported as reset (0 disables) |
 | Prefix limit warning | 80 % | share of a peer's maximum-prefix limit that warns (100 % is critical; 0 only reports peers at the limit) |
 | Ignored addresses | – | CIDRs or addresses left out of the IP checks (anycast, virtual gateway addresses) |
@@ -1036,7 +1094,7 @@ Custom maps the plugin made are LibreNMS' own: they stay either way.
 | Record the topology history | on | every *History interval* through the LibreNMS scheduler |
 | History interval | 60 min | 5 to 1440 minutes, rounded down to 5, 10, 15, 20, 30, 60, 120, 180, 240, 360, 480, 720 or 1440 (whole hours run at 7 minutes past) |
 | Keep changes for | 90 days | facts and findings that ended earlier are deleted |
-| Background checks | all five | spanning tree, link & VLAN, redundancy, routing & IP and interface health, run every *History interval* one after the other; none checked switches them off |
+| Background checks | all six | spanning tree, link & VLAN, redundancy, routing & IP, interface health and port capacity, run every *History interval* one after the other; none checked switches them off |
 | Eventlog from severity | warning | a device gets an eventlog entry when it gets or loses a background finding from this severity (`critical`, `warning`, `info` or `none`) |
 | Checks kept out of the eventlog | `link_errors link_discards lag_imbalance optical_rx port_transitioning tc_rate tc_recent multicast_storm bgp_recent_reset ip_duplicate:info` | check codes that follow the counters of the last poll (`multicast_storm`: the multicast rate of the last poll, which routing protocols and video streams raise too) or a time window (`bgp_recent_reset`: a reset in the last *BGP reset window*); `code:severity` keeps the findings of a check with that severity out (`ip_duplicate:info`: duplicate addresses that are probably shared gateways, anycast or separate networks reusing the address). They stay on the pages; a warning that becomes such an info finding stays a warning (no "resolved"). The settings page warns about entries that are no check code |
 | Rollout batch size | 0 | default most devices per rollout batch (0: no limit); the planner page can change it |
@@ -1130,6 +1188,9 @@ not followed, and without `routing.view` every router is crossed by an estimate 
 * `src/Interfaces/InterfaceAnalyzer.php` – the interface health checks (each port's changes from the eventlog, poll by
   poll); `RrdTotals` reads the error totals of a window from LibreNMS' RRD files, which `src/Data/RrdReader.php` runs
   rrdtool for.
+* `src/Capacity/CapacityAnalyzer.php` – the port capacity counts and checks (each port's state and down time);
+  `PortClock` places `ifLastChange` on the clock, `PortUsage` keeps the record of the ports (`topology_port_usage`),
+  `ErrDisable` reads the err-disable and recovery messages; `src/Data/CapacityRepository.php` reads LibreNMS' data.
 * `src/Routing/RoutingAnalyzer.php` – the OSPF, BGP and IP checks (OSPF domains from the adjacencies, the interface
   facing each neighbor, BGP peers resolved to monitored devices); `BgpErrors` turns NOTIFICATION codes into text. The
   rows are streamed in and kept in small objects (2,000 routers with 50,000 addresses take about 50 MB and 0.6 s);
@@ -1265,6 +1326,25 @@ vendor/bin/phpunit
 * A desk port has a higher threshold and a speed downgrade there is info, as PCs sleep and wake; a port with a PC that
   speaks LLDP counts as a desk port too. The error totals are read from the RRD files only for ports whose error
   counters are not zero, so the errors of a port whose counters started again (its device restarted) since are missed.
+
+**Switch port capacity**
+
+* Which ports are uplinks comes from LLDP/CDP: a spare uplink port without a neighbor counts as a free access port unless
+  it is a Cisco port in trunk mode, so leave uplink module ports out with *Ports not counted* where that matters
+  (`^(Te|Twe|Fo|Hu)`, or a description). A trunk port without a neighbor is not counted, also one an access point
+  without LLDP/CDP uses.
+* Err-disabled ports are known only from the syslog LibreNMS receives and the traps it handles; a port err-disabled
+  before the plugin's record began and longer ago than its first run reads (a week) counts as free. A restart of the
+  switch ends an err-disable (it does not survive a reload).
+* How long a port has been down is as good as its sources: a switch that restarted forgets its ports' last change, and a
+  port down since then counts as unused only once the record or the eventlog reaches back the *Unused after* days; a
+  switch up longer than 497 days places a change on its counter as it runs now, which may be 497 days too late (never too
+  early). The record samples the ports with every snapshot, so a port that was up only between two snapshots and went
+  down in a restart is missed.
+* PoE is known only for the switches LibreNMS polls PoE of, and only on the server that holds the RRD files.
+* A switch that reports no `ifLastChange` (LibreNMS stores 0) looks as if its ports had not changed since it started:
+  the eventlog and the record still show the ports that were up since, but a port that went down before both counts as
+  down since the start.
 
 **Link & VLAN, routing & IP**
 

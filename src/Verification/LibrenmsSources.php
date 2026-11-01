@@ -104,9 +104,9 @@ final class LibrenmsSources implements Sources
 
     public function findings(array $ids, array $stpIds): array
     {
-        // the checks of the network's state: a state is no time window (HistoryService::WINDOW_ANALYSES)
+        // the checks of the network's health: a state is no time window, and free ports are planning (HistoryService::UNVERIFIED_ANALYSES)
         $enabled = array_values(array_diff((new HistoryService($this->history(), $this->repo, $this->settings))->enabledChecks(),
-            HistoryService::WINDOW_ANALYSES));
+            HistoryService::UNVERIFIED_ANALYSES));
         $result = ['findings' => [], 'failed' => [], 'enabled' => $enabled];
         // the redundancy check first, on the analysis the scope's dependents were found with, which is then let go: on a
         // large network it and the spanning tree check's links and ports are the most memory a state takes

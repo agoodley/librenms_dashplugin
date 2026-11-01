@@ -58,7 +58,7 @@ interface Sources
 
     /**
      * The findings of the background checks the settings enable (HistoryService::enabledChecks()) that check the network's
-     * state (not HistoryService::WINDOW_ANALYSES), as their pages find them: the link check of the devices $ids, the spanning tree check of the switches $stpIds (one VLAN at a time),
+     * state (not HistoryService::UNVERIFIED_ANALYSES), as their pages find them: the link check of the devices $ids, the spanning tree check of the switches $stpIds (one VLAN at a time),
      * the redundancy and routing checks over the whole network the scope sees.
      *
      * @param  int[]  $ids

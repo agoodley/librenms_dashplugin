@@ -225,3 +225,9 @@ html.dark .topo-time-zone { color: #aab; }
 }
 /* several devices selected on a map (ctrl-click, a long press): their names, in columns where there is room */
 .topo-selection { margin: 4px 0 0; padding-left: 18px; columns: 2 140px; overflow-wrap: anywhere; }
+
+/* switch port capacity: the share in use of a location or switch */
+.topo-capacity-use { display: flex; align-items: center; gap: 6px; min-width: 120px; }
+.topo-capacity-use .progress { flex: 1; height: 10px; margin: 0; }
+.topo-capacity-use span { font-size: 12px; min-width: 38px; text-align: right; }
+.topo-capacity-lists .badge { font-size: 11px; }

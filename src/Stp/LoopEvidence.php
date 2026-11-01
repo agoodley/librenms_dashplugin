@@ -635,13 +635,8 @@ class LoopEvidence
         if (! $index) {
             return [];
         }
-        $text = SyslogPatterns::local($text);
-
-        preg_match_all('~(?<![\w/.:-])([A-Za-z][A-Za-z-]*?\d+(?:[/:]\d+)*(?:\.\d+)?)~', $text, $typed);
-        preg_match_all('~\b(?:ports?|interface)\s+([A-Za-z]?\d+(?:/[A-Za-z]?\d+)*)~i', $text, $bare);
-
         $found = [];
-        foreach (array_merge($typed[1], $bare[1]) as $candidate) {
+        foreach (SyslogPatterns::portCandidates($text) as $candidate) {
             $name = InterfaceName::normalize($candidate);
             $portId = $index[$name] ?? $index[InterfaceName::parentName($name) ?? $name] ?? null;
             if ($portId !== null) {

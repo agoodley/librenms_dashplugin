@@ -2,6 +2,7 @@
 
 use Agoodley\LibrenmsTopology\Http\Controllers\ApiController;
 use Agoodley\LibrenmsTopology\Http\Controllers\AssetController;
+use Agoodley\LibrenmsTopology\Http\Controllers\CapacityController;
 use Agoodley\LibrenmsTopology\Http\Controllers\CoverageController;
 use Agoodley\LibrenmsTopology\Http\Controllers\ExportController;
 use Agoodley\LibrenmsTopology\Http\Controllers\HistoryController;
@@ -52,6 +53,11 @@ Route::middleware(['web', 'auth', RaiseMemoryLimit::class])
 
         Route::get('coverage', [CoverageController::class, 'index'])->name('coverage');
         Route::get('api/coverage', [CoverageController::class, 'api'])->name('api.coverage');
+
+        // switch port capacity
+        Route::get('capacity', [CapacityController::class, 'index'])->name('capacity');
+        Route::get('capacity/export', [CapacityController::class, 'export'])->name('capacity.export');
+        Route::get('api/capacity', [CapacityController::class, 'api'])->name('api.capacity');
 
         // rollout planner and device dependencies
         Route::get('rollout', [PlanningController::class, 'rollout'])->name('rollout');
