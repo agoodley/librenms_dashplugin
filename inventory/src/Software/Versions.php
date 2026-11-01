@@ -39,18 +39,24 @@ final class Versions
     }
 
     /**
-     * The release in a version as LibreNMS has it: its first word that is a number (or a v before one), the v left out;
-     * the whole version when no word is. "CAT9K_IOSXE 17.9.4" (IOS-XE, the image's name first) is 17.9.4,
-     * "17.9.4a (Build 123)" 17.9.4a, "v7.2.5" 7.2.5; "W.15.08.0012" (ProCurve) and "ML.10.07.0005" (Aruba CX) stay as they
-     * are: their letters are their release train.
+     * The release in a version as LibreNMS has it: its first word that starts with a number, or with a v or V before one,
+     * up to a comma; the whole version when no word does. A v before a dotted number is left out (v7.2.5, V6.2), a V
+     * before Huawei's release numbering stays (V600R024C00SPC100). "CAT9K_IOSXE 17.9.4" (IOS-XE, the image's name first) is
+     * 17.9.4, "17.9.4a (Build 123)" 17.9.4a, "v6.4.8,build1914,211117 (GA)" (FortiGate) 6.4.8, "Software 2.5.9.13, Bootldr
+     * ..." (Cisco SB) 2.5.9.13; "W.15.08.0012" (ProCurve) and "ML.10.07.0005" (Aruba CX) stay as they are: their letters
+     * are their release train. Huawei VRP's "5.170 (V200R010C00SPC600)" is 5.170: a pattern with * matches the rest.
      */
     public static function release(string $version): string
     {
         $version = trim($version);
         foreach (preg_split('~\s+~', $version) ?: [] as $word) {
-            if (preg_match('~^[vV]?(\d.*)$~', $word, $m) === 1) {
-                return $m[1];
+            if (preg_match('~^[vV](\d+\..*)$~', $word, $m) === 1) {
+                $word = $m[1];
+            } elseif (preg_match('~^[vV]?\d~', $word) !== 1) {
+                continue;
             }
+
+            return rtrim(explode(',', $word, 2)[0], '.;:') ?: $version;
         }
 
         return $version;

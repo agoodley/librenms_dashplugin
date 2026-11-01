@@ -116,7 +116,8 @@ final class InventoryRepository
     }
 
     /**
-     * The chassis of these devices' hardware inventory (the members of a stack each), in their order.
+     * The chassis of these devices' hardware inventory (the members of a stack each), in their order: those with a model or
+     * a serial number (a stack's empty slots left out).
      *
      * @param  int[]  $deviceIds
      * @return array<int, list<array{model: string, serial: string, name: string, revision: string}>>
@@ -128,7 +129,9 @@ final class InventoryRepository
         }
         $chassis = [];
         foreach (array_chunk($deviceIds, self::CHUNK) as $chunk) {
+            // a stack's empty slots are chassis without a model and a serial number (Cisco SB, Eltex): not members
             foreach (DB::table('entPhysical')->whereIntegerInRaw('device_id', $chunk)->where('entPhysicalClass', 'chassis')
+                ->where(fn ($q) => $q->where('entPhysicalModelName', '<>', '')->orWhere('entPhysicalSerialNum', '<>', ''))
                 ->orderBy('device_id')->orderBy('entPhysicalIndex')
                 ->get(['device_id', 'entPhysicalModelName', 'entPhysicalSerialNum', 'entPhysicalName', 'entPhysicalHardwareRev']) as $row) {
                 $chassis[(int) $row->device_id][] = ['model' => trim((string) $row->entPhysicalModelName), 'serial' => trim((string) $row->entPhysicalSerialNum),
