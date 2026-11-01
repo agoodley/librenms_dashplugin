@@ -80,14 +80,15 @@ code=$(web -o /dev/null -w '%{http_code}' --data-urlencode "_token=$token" --dat
 home=$(web -o /dev/null -w '%{http_code}' "$BASE/")
 check "the admin $ADMIN logs in (POST /login: $code, GET /: $home)" test "$home" = 200
 for page in plugin/topology plugin/topology/l2 plugin/topology/stp plugin/ansible/changes plugin/ansible/inventory plugin/settings/ansible plugin/settings/topology \
-    plugin/compliance/overview plugin/compliance/devices plugin/compliance/rules plugin/settings/compliance; do
+    plugin/compliance/overview plugin/compliance/devices plugin/compliance/rules plugin/settings/compliance \
+    plugin/inventory/overview plugin/inventory/devices plugin/inventory/modules plugin/inventory/optics; do
     body=$(web -w '\n%{http_code}' "$BASE/$page")
     code=${body##*$'\n'}
     if [[ $code == 200 ]] && ! grep -qiE 'whoops|exception|error 500' <<<"${body%$'\n'*}"; then pass "page $page (200)"; else fail "page $page ($code)"; fi
 done
 plugins=$(cd /opt/librenms && runuser -u librenms -- php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php"; $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
-foreach (DB::table("plugins")->whereIn("plugin_name", ["topology", "ansible", "compliance"])->orderBy("plugin_name")->get() as $p) { echo $p->plugin_name, "=", $p->plugin_active, " "; }')
-check "the three plugins enabled in LibreNMS ($plugins)" grep -q 'ansible=1 compliance=1 topology=1' <<<"$plugins"
+foreach (DB::table("plugins")->whereIn("plugin_name", ["topology", "ansible", "compliance", "inventory"])->orderBy("plugin_name")->get() as $p) { echo $p->plugin_name, "=", $p->plugin_active, " "; }')
+check "the four plugins enabled in LibreNMS ($plugins)" grep -q 'ansible=1 compliance=1 inventory=1 topology=1' <<<"$plugins"
 
 # --- Semaphore UI: its project, and the Ansible plugin's connection test (as its settings page runs it)
 code=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SEM_PORT/api/ping")
