@@ -202,7 +202,11 @@ offer to drop the `ansible_*` tables: they hold the audit log.
 bring new pages) and `./lnms migrate`; until then the plugin's pages say the tables are out of date and nothing is
 launched. When `contrib/librenms_inventory.py` changed (its `VERSION`), copy it into the playbook repository again, as
 in step 5 of [Semaphore UI setup](#semaphore-ui-setup), and commit and push it: the Inventory page says which version
-the runner's last fetch came from, and warns when it is older than the one the plugin ships.
+the runner's last fetch came from, and warns when it is older than the one the plugin ships. Since the plugin reads a
+template's own tags, skip tags and other options (Galaxy install, vaults, runner, image) into the fingerprint, a change
+dry-run before the update whose template sets any of them no longer matches it: dry-run it again (a batch of it being
+applied is refused, and the change stops). The changes there are when `./lnms migrate` adds the approval mode a
+change keeps get the approval setting of then.
 
 **From phase 1**, every run belongs to a change, and the defaults of phase 2 stop more than phase 1 did. After
 `./lnms migrate`:
@@ -552,7 +556,10 @@ not listed (Cisco ASA, ArubaOS-CX, Fortinet, ...) need their collection on the r
   counts only while its approver still is an admin with the approve permission, and a batch is launched only while the
   admin who launches it (who applied the change or continued it) still holds the run permission.
 * Any LibreNMS admin can grant either permission, also to themselves: it is an explicit, logged opt-in (each grant and
-  revoke goes to the eventlog, with who did it); the separation of duties is the second-admin approval. Each change of
+  revoke goes to the eventlog, with who did it); the separation of duties is the second-admin approval. A change keeps
+  the approval the settings asked for when it was created: raising the setting applies to every change, lowering it
+  (no approval, or an approval the requester may give) only to changes created after, so switching approval off does
+  not let a change that awaits an approval through (an admin can still lower it for the next changes: it is logged). Each change of
   the runner connection or of the other settings is logged the same way (never the token).
 * Both are **direct permissions of the user**, not of a role. LibreNMS' role editor (*Roles*) saves only the
   permissions of its own list (`resources/definitions/permissions.yaml`), so a plugin permission given to a role is
@@ -740,7 +747,9 @@ configuration: the running one with the change, as in this task (the lab's `lnms
 Or give the template `-v`: the dry run then shows the commands `ios_config` would send, except in a loop, where
 they are listed as *not attributed* (a loop item's label could imitate the next result line); the device's row then
 points to them. The plugin takes each block and gives it to the device whose result line follows it, only when
-nothing in the log contradicts that: the host is a target and the task names it once (once per loop item), the host
+nothing in the log contradicts that: the host is a target and the task names it once (once per loop item), no loop item
+label of the task or an earlier one is seen to run over several lines (the lines up to its end could be another host's
+diff, result line or task banner; see [Limitations](#limitations)), the host
 has no more *changed* results in the log than its PLAY RECAP counts, in a loop only unified diffs (whose every line
 starts with a prefix device text cannot avoid), and no raw text right after another result's details that a foreign
 line cut short (it may hold their rest). Ansible's warnings go to stderr, which Semaphore merges into the log line by
@@ -752,7 +761,7 @@ the devices as *not attributed*, with the reason. A block keeps at most 400 line
 
 When the dry run launches, the plugin takes a **fingerprint** of what it runs: the template as the runner has it
 (playbook, inventory, repository and its branch, variable groups with their values hashed, CLI arguments, survey, limit
-settings), the targets with their inventory names, **how the runner reaches each target** (the `ansible_*` variables
+settings, its own tags and skip tags when it has them), the targets with their inventory names, **how the runner reaches each target** (the `ansible_*` variables
 the inventory gives its host: `ansible_host`, the overwrite IP else the hostname, and `ansible_network_os`,
 `ansible_connection` and become from the platform mapping), the answers (not the secret ones) and the batch plan (with
 what each batch cuts off, when the topology plugin planned it). The change page shows the address each device was
@@ -832,7 +841,9 @@ change that is not over (and for the windows and backups of ended changes), so a
 except where it waits for an admin.
 
 **Secret answers** are never stored, so they are not part of the fingerprint or the approval, and the plugin cannot
-launch a batch that needs them on its own. They are asked at the dry run, at *Apply* and at each *Continue*, which
+launch a batch that needs them on its own. The approval therefore does not cover them: whoever applies may give other
+values than the dry run ran with, so a secret a template writes into a device's configuration is not what the approver
+saw. Use secret answers for what a playbook logs in or authenticates with, not for configuration it writes. They are asked at the dry run, at *Apply* and at each *Continue*, which
 are refused (changing nothing) while a secret answer the template requires is empty. A batch whose backups are fresh
 within that request launches with them at once; the change page keeps them in its memory (not in the browser's
 storage) and launches each later batch with them while it stays open, as soon as the batch is ready (after its window
@@ -1347,8 +1358,13 @@ What they hold:
   up to *Output size*; past it the new lines go to the end kept (the tail), which is cut to three quarters of its size
   when it is full.
 * **Results:** when the runner reports the task finished, the plugin reads the output once more (Semaphore reports
-  the end before the last lines are readable) and takes each target's result from the last `PLAY RECAP`: unreachable,
-  failed, changed, ok, skipped, or *not run* for a target the recap does not name. Without a recap (a stopped or
+  the end before the last lines are readable) and takes each target's result from the `PLAY RECAP` that ends the log:
+  unreachable, failed, changed, ok, skipped, or *not run* for a target the recap does not name. After a recap come only
+  blank lines, the closing `DRY RUN` banner, Semaphore's own end ("Failed to run task: exit status 2") and Ansible's
+  warnings; a recap imitated in a text Ansible prints as it is (a loop item's label, a task's name) is followed by the
+  rest of that text (a line ending in `)`, `] ****` or `retries left).`), and one with escape sequences other than
+  colours could hide it: neither counts (nor does a recap a warning ending in `)` follows: the results then come from
+  the task lines, and a dry run is not proven). Without a recap (a stopped or
   killed run) the result comes from Ansible's task result lines (`ok:`, `changed:`, `failed:`, `fatal:`,
   `skipping:` for the host): changed, failed or unreachable when a line says so, *unknown* when the host only had ok
   or skipped results before the run ended, *not run* when the log never names it. After a stop, a target whose step
@@ -1469,7 +1485,12 @@ released has stopped by then.
   comments of approvals are cleaned the same way.
 * **Answers** are checked on the server by type: a whole number, one of the choices, or text without control
   characters (new lines only in *Text*), without Jinja delimiters (`{{ }}`, `{% %}`, `{# #}`: Ansible renders every
-  string it is given), at most 1,000 characters (10,000 for *Text*); required ones must be given. Secret answers go
+  string it is given), at most 1,000 characters (10,000 for *Text*); required ones must be given. No line of *Text* may
+  start like a line of Ansible's own output, in the shapes the plugin reads (a task result such as `changed: [host]`, a
+  `PLAY RECAP` or `DRY RUN` banner, a recap's host line, a diff's `+++` header or `@@` hunk, in any letter case, as a
+  playbook may change it; a `PLAY`, `TASK` or `RUNNING HANDLER` banner as Ansible writes it): a loop item's label is
+  printed into the log as it is, where the plugin reads each device's result and diff. No answer may contain `[CHECK
+  MODE`: Ansible prints an answer in a task's name as it is, where it would read as a dry run's marker. Secret answers go
   to the runner only: never into the database, the eventlog, a log line (they are marked as sensitive parameters, so
   PHP leaves them out of stack traces), the task message, the browser's storage or a page.
 * **Output** is untrusted too: it is stored capped and shown escaped; ANSI colours become a fixed set of CSS classes,
@@ -1545,7 +1566,18 @@ Checked against Semaphore UI 2.19.17 and ansible-core 2.20:
   `check_mode` a literal in playbooks the plugin runs (review them for it).
 * **Diffs of device text in loops:** a module's raw "prepared" text in a loop, shaped like a whole unified diff with a
   forged loop item line, could be given to the wrong device. Unified diffs are safe, and a raw block is attributed only
-  outside loops; a callback plugin of the plugin's own (a later step) would remove this.
+  outside loops. A loop item's label is printed as it is too: survey answers cannot hold lines that read like Ansible's,
+  and a label whose first line does not end it makes its task and every later one *not attributed*, but a label made
+  of device text whose first line ends like a whole label (`(item=x)`) can still imitate another host's diff and result
+  line. Keep device output out of loop labels (`loop_control: label:` with a value of your own); a callback plugin of
+  the plugin's own (a later step) would remove this.
+* **The inventory script is not pinned:** the plugin pins the commit of the template's repository for every batch,
+  but Semaphore UI takes the LibreNMS inventory's script from the inventory's own *Repository* (the installer and the
+  setup above give it the playbook repository), which it pulls at its branch's latest commit for each run (Semaphore
+  UI 2.19.17). A push to that branch between the dry run and a batch changes the script the batch runs with, which
+  the fingerprint does not see; the plugin still serves only the hosts the dry run recorded, but the script decides
+  what Ansible gets. Keep who may push to that branch, and who may edit Semaphore UI's inventories, to those who may
+  change devices.
 * **Display settings in the repository:** the plugin reads the variable groups, not the repository's `ansible.cfg`; a
   config that hides ok results is caught by the PLAY RECAP comparison, one that changes the callback leaves the dry run
   not proven.

@@ -271,6 +271,52 @@ class ChangeLifecycleTest extends TestCase
         $this->assertSame($change['approval_fingerprint'], $this->changes->approvals[0]['fingerprint']);
     }
 
+    public function testLoweringTheApprovalSettingDoesNotLetAWaitingChangeThrough(): void
+    {
+        // created while the settings asked for a second admin
+        $id = $this->change(['approval_mode' => ApprovalRules::SECOND]);
+        $second = $this->lifecycle();
+        $this->assertNull($second->startDryRun($id, self::ALICE, [], $this->t0));
+        $this->endRun((int) $this->changes->find($id)['dry_run_id'], 'success', array_fill_keys(array_keys(self::TARGETS), 'changed'),
+            self::dryRunLog(array_fill_keys(array_values(self::TARGETS), 'changed')), $this->t0 + 30);
+        $second->advance($id, $this->t0 + 35);
+        $this->assertSame(ChangeStatus::AWAITING, $this->changes->find($id)['status']);
+
+        // an admin switches approval off: the change still awaits an approval by a second admin
+        $off = $this->lifecycle(['approval' => ApprovalRules::OFF]);
+        $off->advance($id, $this->t0 + 40);
+        $this->assertSame(ChangeStatus::AWAITING, $this->changes->find($id)['status']);
+        $this->assertSame('The change needs an approval from a second admin first.', $off->apply($id, self::ALICE, [], $this->t0 + 41));
+        $this->assertStringContainsString('second admin', (string) $off->approve($id, self::ALICE, true, '', $this->t0 + 42), 'not by its requester');
+        $this->assertNull($off->approve($id, self::BOB, true, 'ok', $this->t0 + 43));
+        $this->assertSame(ChangeStatus::READY, $this->changes->find($id)['status']);
+        $this->assertNull($off->apply($id, self::ALICE, [], $this->t0 + 44), 'approved: it is applied');
+    }
+
+    public function testARaisedApprovalSettingSticksToTheChange(): void
+    {
+        // created while approval was off: ready after its dry run
+        $id = $this->change(['approval_mode' => ApprovalRules::OFF]);
+        $off = $this->lifecycle(['approval' => ApprovalRules::OFF]);
+        $this->assertNull($off->startDryRun($id, self::ALICE, [], $this->t0));
+        $this->endRun((int) $this->changes->find($id)['dry_run_id'], 'success', array_fill_keys(array_keys(self::TARGETS), 'changed'),
+            self::dryRunLog(array_fill_keys(array_values(self::TARGETS), 'changed')), $this->t0 + 30);
+        $off->advance($id, $this->t0 + 35);
+        $this->assertSame(ChangeStatus::READY, $this->changes->find($id)['status']);
+
+        // raised to a second admin: the change awaits one, and keeps it when the setting is lowered again
+        $this->lifecycle()->advance($id, $this->t0 + 40);
+        $this->assertSame([ChangeStatus::AWAITING, ApprovalRules::SECOND], [$this->changes->find($id)['status'], $this->changes->find($id)['approval_mode']]);
+        $off->advance($id, $this->t0 + 45);
+        $this->assertSame(ChangeStatus::AWAITING, $this->changes->find($id)['status']);
+        $this->assertNotNull($off->apply($id, self::ALICE, [], $this->t0 + 46));
+
+        // a change made before the plugin kept the mode takes the setting it follows at its next step
+        $old = $this->change();
+        $this->lifecycle(['approval' => ApprovalRules::REQUIRED])->advance($old, $this->t0 + 50);
+        $this->assertSame(ApprovalRules::REQUIRED, $this->changes->find($old)['approval_mode']);
+    }
+
     public function testAnApprovalSwitchedOnIsRequestedNotVoided(): void
     {
         $id = $this->change();

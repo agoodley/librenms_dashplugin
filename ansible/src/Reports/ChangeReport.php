@@ -224,7 +224,8 @@ final class ChangeReport
             . ($change['dry_run_at'] ? ' · ' . ReportText::time($change['dry_run_at']) : '') . ($change['dry_run_commit'] ? ' · commit ' . substr((string) $change['dry_run_commit'], 0, 12) : '')
             . ((int) ($change['dry_runs'] ?? 0) > 1 ? "\n" . (int) $change['dry_runs'] . ' dry runs: the diffs below are the latest one\'s' : ''), $dry !== null ? ReportText::tone($dry[0]) : 'muted'];
         $approved = $change['approved_by'] ? 'approved by ' . $change['approved_by'] . ' at ' . ReportText::time($change['approved_at']) : null;
-        $facts[] = ['Approval', ($approved !== null ? ucfirst($approved) . "\n" : '') . 'the settings ask for ' . (ApprovalRules::LABELS[$settings->approval] ?? $settings->approval),
+        $mode = ApprovalRules::ofChange($change, $settings->approval);
+        $facts[] = ['Approval', ($approved !== null ? ucfirst($approved) . "\n" : '') . 'the change needs ' . (ApprovalRules::LABELS[$mode] ?? $mode),
             $approved !== null ? 'success' : ''];
         if ($change['apply_started_at']) {
             $facts[] = ['Applied', 'started by ' . ($change['applied_by'] ?: '?') . ' at ' . ReportText::time($change['apply_started_at'])];
@@ -270,10 +271,12 @@ final class ChangeReport
     {
         $settings = $this->data['settings'];
         $report->heading('Approval');
-        $report->paragraph('The settings ask for ' . (ApprovalRules::LABELS[$settings->approval] ?? $settings->approval)
-            . (ApprovalRules::needed($settings->approval) ? ', valid ' . intdiv($settings->approvalSeconds, 3600) . ' h' : '') . '.', 'muted');
+        $change = $this->data['change'];
+        $mode = ApprovalRules::ofChange($change, $settings->approval);
+        $report->paragraph('The change needs ' . (ApprovalRules::LABELS[$mode] ?? $mode)
+            . (ApprovalRules::needed($mode) ? ', valid ' . intdiv($settings->approvalSeconds, 3600) . ' h' : '') . '.', 'muted');
         if (! $this->data['approvals']) {
-            $report->paragraph(ApprovalRules::needed($settings->approval) ? 'None yet.' : 'None needed: the settings ask for no approval.', 'muted');
+            $report->paragraph(ApprovalRules::needed($mode) ? 'None yet.' : 'None needed: the change needs no approval.', 'muted');
 
             return;
         }

@@ -276,7 +276,7 @@ contacts GitHub:
 | `composer.phar` | Composer, only when the LibreNMS copy has none | <https://getcomposer.org/download/latest-stable/composer.phar> |
 | `wheels/` | Python wheels: Ansible, and LibreNMS' Python modules dnf has not | on a Rocky Linux of the same version: `python3.12 -m pip download -d wheels -r install/rocky/files/ansible-requirements.txt` and `python3 -m pip download -d wheels -r librenms/requirements.txt` |
 | `gems/` | Oxidized's gems with all they depend on | on a Rocky Linux of the same version, with Ruby 3.3 and Oxidized's build packages: `gem install --install-dir /tmp/gems --no-document oxidized:0.37.0 oxidized-web:0.18.1 && cp /tmp/gems/cache/*.gem gems/` |
-| `distro` | librenms-agent's distro script | <https://raw.githubusercontent.com/librenms/librenms-agent/master/snmp/distro> |
+| `distro` | librenms-agent's distro script, at the commit `install.sh` pins (`DISTRO_COMMIT`; the download is checked against `DISTRO_SHA256`, a copy given here or with `--distro-source` is installed as it is: take it from this address) | <https://raw.githubusercontent.com/librenms/librenms-agent/42b0a7c4062db0682d41e113ebb345cc33fd5fe4/snmp/distro> |
 
 A copy that is missing is downloaded as usual (wheels from PyPI, gems from RubyGems), except what comes from GitHub:
 then the run stops and says which copy it needs (without `distro`, snmpd's `extend distro` has nothing to run). dnf
@@ -308,7 +308,9 @@ with an API token each. In Semaphore UI: the admin and the Task Runner user `lib
 
 **Ports:** 80 (nginx: LibreNMS) and 161/udp (snmpd, community in the credentials file) on every address; 3000
 (Semaphore UI) and 8888 (Oxidized) on 127.0.0.1 only, unless `--semaphore-listen` or `--oxidized-listen` say
-otherwise; 3306 (MariaDB) on 127.0.0.1 only when the installer installed MariaDB (`bind-address` in
+otherwise (Oxidized's REST API has no login: it serves every device's configuration, with its communities, keys and
+password hashes, to whoever reaches it, the server's local users and the playbooks Semaphore UI runs included; another
+address than a loopback one opens it to the network, and the installer warns); 3306 (MariaDB) on 127.0.0.1 only when the installer installed MariaDB (`bind-address` in
 `/etc/my.cnf.d/90-librenms.cnf`), while a MariaDB the server had keeps listening where it did (Rocky's MariaDB listens
 on every address).
 
@@ -362,7 +364,9 @@ the last lines of the command's output, what to do, and the log.
 
 1. **Log in** to LibreNMS at `http://<server name>/` as the admin (the password of `--admin-password`, or
    `ADMIN_PASSWORD` in the credentials file). Do not connect it to the internet before you set up HTTPS: LibreNMS'
-   documentation does not do it, and neither does the installer.
+   documentation does not do it, and neither does the installer. Over plain HTTP the admins' passwords, session cookies
+   and API tokens cross the network as they are, also inside one: set up HTTPS (a certificate in nginx) before others
+   use it, as the Ansible plugin changes devices for whoever holds an admin's session.
 2. **Add the devices** (*Devices > Add Device*, or `lnms device:add`) with LLDP/CDP discovered (the topology plugin
    builds everything from it), and set the topology plugin's *Core devices* (*Overview > Plugins > Plugin Admin >
    topology > Settings*).

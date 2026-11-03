@@ -26,6 +26,9 @@ final class InventoryRepository
     /** @var int[]|null|false the devices the user may see (null: all), false before asked */
     private array|null|false $visible = false;
 
+    /** @var array<string, list<array{id: int, name: string}>> the device groups and locations the user may see, once asked */
+    private array $offers = [];
+
     public function __construct(private readonly mixed $user)
     {
     }
@@ -55,18 +58,23 @@ final class InventoryRepository
     }
 
     /**
-     * The devices of the filters (device, group, location, os, model, version, q) the user may see.
+     * The devices of the filters (device, group, location, os, model, version, q) the user may see. A device group or
+     * location the user may not see (not one the filters offer them) has none: its id says nothing of its devices,
+     * not even whether it exists.
      *
      * @return array<int, array> device_id => device_id, name, hostname, os, hardware, version, features, serial, type,
      *     status, disabled, location_id, location, last_discovered, url
      */
     public function devices(array $filters): array
     {
+        $visible = $this->visible();
+        if ($visible !== null && ! $this->offered($filters)) {
+            return [];
+        }
         $query = DB::table('devices')->leftJoin('locations', 'devices.location_id', '=', 'locations.id')
             ->select(['devices.device_id', 'devices.hostname', 'devices.sysName', 'devices.display', 'devices.os', 'devices.hardware', 'devices.version',
                 'devices.features', 'devices.serial', 'devices.type', 'devices.status', 'devices.disabled', 'devices.location_id',
                 'locations.location as location', 'devices.last_discovered']);
-        $visible = $this->visible();
         if ($visible !== null) {
             $query->whereIntegerInRaw('devices.device_id', $visible ?: [0]);
         }
@@ -358,20 +366,8 @@ final class InventoryRepository
      */
     public function options(): array
     {
-        $groups = [];
-        $locations = [];
-        try {
-            $groups = \App\Models\DeviceGroup::hasAccess($this->user)->orderBy('name')->get(['id', 'name'])
-                ->map(fn ($g) => ['id' => (int) $g->id, 'name' => (string) $g->name])->all();
-        } catch (\Throwable) {
-            // a LibreNMS without device groups for this user
-        }
-        try {
-            $locations = \App\Models\Location::hasAccess($this->user)->orderBy('location')->get(['id', 'location'])
-                ->map(fn ($l) => ['id' => (int) $l->id, 'name' => (string) $l->location])->all();
-        } catch (\Throwable) {
-            // as above
-        }
+        $groups = $this->groups();
+        $locations = $this->locations();
         $visible = $this->visible();
         $query = DB::table('devices')->distinct()->orderBy('os');
         if ($visible !== null) {
@@ -403,6 +399,56 @@ final class InventoryRepository
         asort($names, SORT_NATURAL | SORT_FLAG_CASE);
 
         return $names;
+    }
+
+    /**
+     * Are the filters' device group and location (when they have one) among those the user may see, as options() offers?
+     */
+    private function offered(array $filters): bool
+    {
+        $group = (int) ($filters['group'] ?? 0);
+        $location = (int) ($filters['location'] ?? 0);
+
+        return ($group === 0 || in_array($group, array_column($this->groups(), 'id'), true))
+            && ($location === 0 || in_array($location, array_column($this->locations(), 'id'), true));
+    }
+
+    /**
+     * The device groups the user may see.
+     *
+     * @return list<array{id: int, name: string}>
+     */
+    private function groups(): array
+    {
+        if (! isset($this->offers['groups'])) {
+            try {
+                $this->offers['groups'] = \App\Models\DeviceGroup::hasAccess($this->user)->orderBy('name')->get(['id', 'name'])
+                    ->map(fn ($g) => ['id' => (int) $g->id, 'name' => (string) $g->name])->all();
+            } catch (\Throwable) {
+                $this->offers['groups'] = []; // a LibreNMS without device groups for this user
+            }
+        }
+
+        return $this->offers['groups'];
+    }
+
+    /**
+     * The locations the user may see.
+     *
+     * @return list<array{id: int, name: string}>
+     */
+    private function locations(): array
+    {
+        if (! isset($this->offers['locations'])) {
+            try {
+                $this->offers['locations'] = \App\Models\Location::hasAccess($this->user)->orderBy('location')->get(['id', 'location'])
+                    ->map(fn ($l) => ['id' => (int) $l->id, 'name' => (string) $l->location])->all();
+            } catch (\Throwable) {
+                $this->offers['locations'] = []; // as above
+            }
+        }
+
+        return $this->offers['locations'];
     }
 
     /**

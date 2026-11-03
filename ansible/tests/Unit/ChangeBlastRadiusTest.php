@@ -293,6 +293,25 @@ class ChangeBlastRadiusTest extends TestCase
 
     // ------------------------------------------------------------------ grew: an approver accepts, or the batch is refused
 
+    public function testWhoAcceptsANewBlastRadiusFollowsTheChangesOwnApprovalMode(): void
+    {
+        // created and approved while the settings asked for a second admin; then approval is switched off, where the run
+        // permission accepts a new blast radius (as the change page checks it): this change still asks for an approver
+        $id = $this->approved(null, ['approval_mode' => ApprovalRules::SECOND]);
+        $off = $this->lifecycle(['approval' => ApprovalRules::OFF]);
+        $off->apply($id, self::ALICE, [], $this->t0 + 50);
+        $this->endBatch($id, 1, $this->t0 + 100);
+        $this->topology->cuts[502] = [512, 511];
+        $this->endBatch($id, 2, $this->t0 + 200);
+        $this->assertSame([ChangeStatus::PAUSED, 'blast'], [$this->changes->find($id)['status'], $this->changes->find($id)['waiting']]);
+
+        $this->runner->permissionProblems['3:approve'] = 'does not hold the approve permission (ansible.approve)';
+        $this->assertStringContainsString('approve permission', (string) $off->acceptBlast($id, ['user_id' => 3, 'username' => 'carol'], true, '', $this->t0 + 300,
+            $this->seen($id)), 'an admin with the run permission only');
+        $this->assertStringContainsString('you requested it', (string) $off->acceptBlast($id, self::ALICE, true, '', $this->t0 + 301, $this->seen($id)));
+        $this->assertNull($off->acceptBlast($id, self::BOB, true, 'ok', $this->t0 + 302, $this->seen($id)));
+    }
+
     public function testABatchWhoseBlastRadiusGrewWaitsForAnApproverToAcceptIt(): void
     {
         $id = $this->approved();
@@ -323,7 +342,7 @@ class ChangeBlastRadiusTest extends TestCase
         $this->assertSame([ChangeStatus::PAUSED, 2], [$this->changes->find($id)['status'], count($this->launched())]);
         $this->assertStringContainsString('accept its new blast radius', (string) $lifecycle->resume($id, self::ALICE, [], $this->t0 + 3001));
         $this->assertStringContainsString('approve permission', (string) $lifecycle->acceptBlast($id, ['user_id' => 3, 'username' => 'carol'], false, '', $this->t0 + 3002));
-        $this->assertStringContainsString('you requested this change', (string) $lifecycle->acceptBlast($id, self::ALICE, true, '', $this->t0 + 3003),
+        $this->assertStringContainsString('you requested it', (string) $lifecycle->acceptBlast($id, self::ALICE, true, '', $this->t0 + 3003),
             'not the requester, with a second admin');
         $this->assertSame([ChangeStatus::PAUSED, 2], [$this->changes->find($id)['status'], count($this->launched())]);
 
@@ -959,10 +978,10 @@ class ChangeBlastRadiusTest extends TestCase
         $this->endBatch($id, 1, $this->t0 + 100);
         $this->topology->error = 'the topology plugin is disabled in LibreNMS (Overview, Plugins, Plugin Admin)';
         $this->endBatch($id, 2, $this->t0 + 200);
-        $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
+        $this->assertSame('This change needs a second admin: you requested it, so another admin with the approve permission continues it without a blast radius.',
             $lifecycle->resume($id, self::ALICE, [], $this->t0 + 300, $this->seen($id)));
         $this->runner->permissionProblems['1:approve'] = 'does not hold the approve permission (ansible.approve)';
-        $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
+        $this->assertSame('This change needs a second admin: you requested it, so another admin with the approve permission continues it without a blast radius.',
             $lifecycle->resume($id, self::ALICE, [], $this->t0 + 305, $this->seen($id)), 'also without the approve permission: another admin continues it');
         $carol = ['user_id' => 3, 'username' => 'carol'];
         $this->runner->permissionProblems['3:approve'] = 'does not hold the approve permission (ansible.approve)';

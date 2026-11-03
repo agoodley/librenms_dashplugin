@@ -148,4 +148,23 @@ class InterfaceServiceTest extends TestCase
         $this->assertStringContainsString('the RRD files cannot be read (cannot run rrdtool: not found)', $result['notice']);
         $this->assertCount(1, array_filter($result['findings'], fn ($f) => $f['code'] === 'port_errors'));
     }
+
+    public function testAHostnameThatNamesNoDirectoryOfItsOwnIsNotRead(): void
+    {
+        // a hostname of ".." would read port-id5.rrd in the directory above rrd_dir, one of "." rrd_dir's own port-id6.rrd:
+        // their files exist, yet rrdtool is never run (running it would fail here: there is neither rrdtool nor Process)
+        $base = sys_get_temp_dir() . '/rrd-test-' . bin2hex(random_bytes(4));
+        mkdir($base . '/rrd', 0700, true);
+        touch($base . '/port-id5.rrd');
+        touch($base . '/rrd/port-id6.rrd');
+        try {
+            $reader = new RrdReader('/nonexistent/rrdtool', $base . '/rrd');
+            $this->assertSame([], $reader->totals([5 => '[..]', 6 => '.', 7 => '..', 8 => ''], 86400));
+        } finally {
+            @unlink($base . '/rrd/port-id6.rrd');
+            @unlink($base . '/port-id5.rrd');
+            @rmdir($base . '/rrd');
+            @rmdir($base);
+        }
+    }
 }

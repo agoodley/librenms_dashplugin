@@ -68,6 +68,14 @@ date.timezone = UTC' 'UTC ' '' Europe/Nowhere; do
     timezone refused "$tz"
 done
 
+# http_url_ok: the URLs that go into curl's config (LibreNMS' APP_URL comes from a file the librenms user owns)
+for url in http://localhost https://nms.example.net/librenms 'http://[2001:db8::1]:8080/x'; do
+    check "http_url_ok takes $url" "$(http_url_ok "$url" && echo ok || echo refused)" ok
+done
+for url in $'http://x"\noutput = "/etc/cron.d/x' 'http://a\\b' 'http://a b' $'http://a\tb' ftp://x 'http://x/?y' ''; do
+    check "http_url_ok refuses $(printf '%q' "$url")" "$(http_url_ok "$url" && echo ok || echo refused)" refused
+done
+
 python3 -m unittest discover -s "$ROCKY/tests" -p 'test_*.py' -v || FAILS=$((FAILS + 1))
 printf '%d failures\n' "$FAILS"
 exit "$FAILS"

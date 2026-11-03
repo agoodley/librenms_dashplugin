@@ -33,7 +33,7 @@ jobs:
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: shellcheck
         run: shellcheck -x install/rocky/install.sh install/rocky/device-keys.sh install/rocky/device-logins.sh install/rocky/tests/*.sh install/rocky/tests/stubs/[a-z]*
       - name: The installer's Python and PHP helpers
@@ -55,7 +55,7 @@ jobs:
     env:
       RUN: docker exec -e INSTALLER_DEVICE_PASSWORD=netops-pw inst /src/install/rocky/install.sh --yes --device-user netops --plugin-source /src
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: The commit as a local branch (the installer clones the plugins from it)
         run: git checkout -B ci-installer
       - name: A Rocky Linux ${{ matrix.rocky }} test system with systemd
@@ -118,9 +118,12 @@ jobs:
       - name: The plugins from this repository's URL (with the workflow's token, as for a private repository)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # through the environment, never into the script: a branch name of a pull request is anyone's text
+          PLUGIN_SOURCE: https://github.com/${{ github.repository }}
+          PLUGIN_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           docker exec -e GITHUB_TOKEN inst /src/install/rocky/install.sh --yes --only plugins \
-            --plugin-source "https://github.com/${{ github.repository }}" --plugin-branch "${{ github.head_ref || github.ref_name }}"
+            --plugin-source "$PLUGIN_SOURCE" --plugin-branch "$PLUGIN_BRANCH"
           docker exec inst /src/install/rocky/tests/verify.sh --no-cron-wait
       - name: The inventory plugin's software compliance (devices with known software, policies, upgrades, the eventlog, a user's view)
         run: docker exec inst /src/install/rocky/tests/inventory-integration.sh
@@ -132,7 +135,7 @@ jobs:
         run: |
           docker cp inst:/var/log/librenms-installer /tmp/installer-logs || true
           docker exec inst journalctl --no-pager -n 300 -u semaphore -u oxidized -u php-fpm -u nginx > /tmp/installer-logs/journal.txt || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: installer-logs-rocky${{ matrix.rocky }}

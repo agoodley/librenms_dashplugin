@@ -377,7 +377,7 @@ class ChangeController extends Controller
     public function acceptBlast(Request $request, int $id): JsonResponse
     {
         $user = self::user($request);
-        $mode = $this->settings()->changeSettings()->approval;
+        $mode = $this->changeMode($id);
         $holds = self::canAccept($request, $mode);
         if (! $holds) {
             return response()->json(['error' => ApprovalRules::acceptRefusal($mode, ['status' => ChangeStatus::PAUSED, 'waiting' => 'blast', 'user_id' => null], 0, false)], 403);
@@ -397,7 +397,7 @@ class ChangeController extends Controller
     public function acceptVerification(Request $request, int $id): JsonResponse
     {
         $user = self::user($request);
-        $mode = $this->settings()->changeSettings()->approval;
+        $mode = $this->changeMode($id);
         $holds = self::canAccept($request, $mode);
         if (! $holds) {
             return response()->json(['error' => ApprovalRules::acceptVerificationRefusal($mode, ['status' => ChangeStatus::PAUSED, 'waiting' => 'verification', 'user_id' => null], 0,
@@ -407,6 +407,21 @@ class ChangeController extends Controller
         $seen = is_string($seen) && preg_match('/^[0-9a-f]{32}$/D', $seen) ? $seen : '';
 
         return $this->act($id, fn (ChangeLifecycle $lifecycle) => $lifecycle->acceptVerification($id, $user, $holds, self::comment($request), time(), $seen));
+    }
+
+    /**
+     * The approval mode of the change (ApprovalRules::ofChange()); the settings' when the change cannot be read (act() says
+     * why). The lifecycle checks the permission again under the change's lock.
+     */
+    private function changeMode(int $id): string
+    {
+        try {
+            $change = self::tablesProblem() === null ? (new ChangeRepository())->find($id) : null;
+        } catch (\Throwable) {
+            $change = null;
+        }
+
+        return ApprovalRules::ofChange($change ?? [], $this->settings()->changeSettings()->approval);
     }
 
     /**
@@ -459,7 +474,7 @@ class ChangeController extends Controller
             $change = null;
         }
         if ($change !== null && $change['status'] === ChangeStatus::PAUSED && $change['waiting'] === 'blast_unknown') {
-            $mode = $this->settings()->changeSettings()->approval;
+            $mode = ApprovalRules::ofChange($change, $this->settings()->changeSettings()->approval);
 
             return self::canAccept($request, $mode) ? null : ApprovalRules::continueRefusal($mode, $change, (int) $request->user()->user_id, false);
         }
@@ -564,6 +579,7 @@ class ChangeController extends Controller
         }
         $dryRun = $change['dry_run_id'] !== null ? ['id' => (int) $change['dry_run_id']] : null;
         $settings = $this->settings()->changeSettings();
+        $mode = ApprovalRules::ofChange($change, $settings->approval);
         $status = $change['status'];
         $diffs = [];
         $unattributed = [];
@@ -616,12 +632,13 @@ class ChangeController extends Controller
                 ? (new \Agoodley\LibrenmsAnsible\Services\TopologyVerification())->unavailable() : null,
             'topologyPlanned' => \Agoodley\LibrenmsAnsible\Changes\BatchPlan::isTopology($change['plan'] ?? null),
             'remaining' => $remaining, 'passed' => $passed, 'stopped' => $stopped,
-            'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($settings->approval, $change) : null,
+            'approvalMode' => $mode,
+            'noApprover' => $status === ChangeStatus::AWAITING ? self::noApprover($mode, $change) : null,
             // a batch whose blast radius grew waits for an admin to accept it, one whose blast radius cannot be computed for an admin to continue
             // it (or for it to be computable): said when nobody can (while the settings ask for no approval: with one, the approver of an
             // approval that counts can)
             'noAccepter' => $status === ChangeStatus::PAUSED && in_array($change['waiting'], ['blast', 'blast_unknown', ...ChangeLifecycle::VERIFY_WAITS], true)
-                && $settings->approval === ApprovalRules::OFF ? self::noAccepter((string) $change['waiting']) : null,
+                && $mode === ApprovalRules::OFF ? self::noAccepter((string) $change['waiting']) : null,
             // before the apply: the targets Oxidized cannot back up (asked at the dry run), whose batches the setting would refuse
             'backupWarning' => $settings->backups && in_array($status, [ChangeStatus::DRAFT, ChangeStatus::AWAITING, ChangeStatus::READY], true)
                 ? BackupCheck::warning(BackupCheck::missing(array_map(fn ($t) => $t['backup_check'] ?? null, $targets), array_map(fn ($t) => NextChange::name($t), $targets)),
@@ -779,10 +796,11 @@ class ChangeController extends Controller
         $canRun = Access::canRun($user);
         $canApprove = Access::canApprove($user);
         $status = $change['status'];
-        $approvalRefusal = $canApprove ? ApprovalRules::refusal($this->settings()->changeSettings()->approval, $change, (int) $user->user_id, true) : null;
+        // the change's approval mode: the stricter of the one it was created with and the settings' now
+        $mode = ApprovalRules::ofChange($change, $this->settings()->changeSettings()->approval);
+        $approvalRefusal = $canApprove ? ApprovalRules::refusal($mode, $change, (int) $user->user_id, true) : null;
 
-        // who accepts a new blast radius follows the approval setting: an approver, or with no approval an admin who may continue
-        $mode = $this->settings()->changeSettings()->approval;
+        // who accepts a new blast radius follows the approval mode: an approver, or with no approval an admin who may continue
         $canAccept = self::canAccept($request, $mode);
         $acceptRefusal = $canAccept ? ApprovalRules::acceptRefusal($mode, $change, (int) $user->user_id, true) : null;
         // and who may continue a batch whose blast radius cannot be computed (a Continue goes without one while it cannot): the same admins

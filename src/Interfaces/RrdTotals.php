@@ -112,6 +112,18 @@ class RrdTotals
     }
 
     /**
+     * The name of a device's RRD directory, from its hostname as LibreNMS names it (Rrd::dirFromHost(): an IPv6
+     * address without its brackets, through safeName()); null when that name is no directory of its own: nothing,
+     * "." (rrd_dir itself) or ".." (the directory above it). safeName() leaves no "/", so no other name leaves rrd_dir.
+     */
+    public static function directory(string $hostname): ?string
+    {
+        $name = self::safeName(trim($hostname, '[]'));
+
+        return in_array($name, ['', '.', '..'], true) ? null : $name;
+    }
+
+    /**
      * The name LibreNMS gives a device's RRD directory and files (Rrd::safeName()).
      */
     public static function safeName(string $name): string

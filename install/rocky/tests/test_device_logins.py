@@ -72,6 +72,19 @@ class CsvTests(unittest.TestCase):
         self.assertNotIn('pa,ss', host_vars)
         self.assertEqual(sorted(result['host_vars']), ['srv1.yml', 'sw5.example.com.yml', 'sw9.yml'])
 
+    def test_what_the_helper_reports_cannot_name_a_file_elsewhere_or_add_lines(self):
+        # the helper runs as librenms: a name of its JSON that is a path, or a title with a new line, is not taken as it is
+        devices = [device(12, 'sw5.example.com\nansible_ssh_common_args: -oProxyCommand=x', 'SW5', ansible='sw5.example.com', oxidized='10.0.0.5',
+                          name='../../../etc/x'),
+                   device(15, 'sw9', 'core', ansible='10.0.0.9', oxidized='10.0.0.9', name='/etc/cron.d/y')]
+        (self.dir / 'devices.json').write_text(json.dumps({'devices': devices}))
+        rc, out, result = self.run_logins('device,username,password,enable\n12,localadmin,pw1,\n15,admin2,pw2,\n')
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(result['host_vars'], {}, 'no host_vars file for a name the plugin does not give')
+        self.assertEqual([p.name for p in (self.dir / 'host_vars').iterdir()], [])
+        self.assertFalse(Path('/etc/x.yml').exists() or Path('/etc/cron.d/y.yml').exists())
+        self.assertIn('sw5.example.com?ansible_ssh_common_args: -oProxyCommand=x (LibreNMS device 12', out, 'its new line shown as "?"')
+
     def test_problems_are_all_said_and_nothing_is_written(self):
         rc, out, result = self.run_logins('device,username,password\n'
                                           'sw77,a,b\n'                       # no such device

@@ -454,12 +454,12 @@ class CapacityRepository extends ScopedRepository
         }
         $poe = [];
         foreach ($byDevice as $deviceId => $portIds) {
-            $hostname = trim((string) ($devices[$deviceId]['hostname'] ?? ''), '[]');
-            if ($hostname === '') {
+            $name = RrdTotals::directory((string) ($devices[$deviceId]['hostname'] ?? ''));
+            if ($name === null) {
                 continue;
             }
             // one directory read per switch rather than a look-up per port
-            $files = glob($directory . '/' . RrdTotals::safeName($hostname) . '/port-id*-poe.rrd', GLOB_NOSORT) ?: [];
+            $files = glob($directory . '/' . $name . '/port-id*-poe.rrd', GLOB_NOSORT) ?: [];
             $found = [];
             foreach ($files as $file) {
                 if (preg_match('~/port-id(\d+)-poe\.rrd$~', $file, $match)) {

@@ -249,12 +249,12 @@
                 ({{ $heldWord }}: {{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText((array) ($waitBlast['held'] ?? []), $names) }}).
                 @if(! empty($waitBlast['unplanned']))<span id="ans-blast-grew-unplanned">Besides, {{ $waitBlast['error'] ?? '' }}: once the new blast radius is accepted, the batch waits for an admin to continue it without one.</span>@endif
                 @if(! empty($waitBlast['simulate']))<a href="{{ url($waitBlast['simulate']) }}" class="btn btn-xs btn-default" id="ans-blast-grew-simulate" target="_blank" rel="noopener"><i class="fa fa-bolt"></i> Simulate it on the L2 map</a>@endif
-                <div style="font-weight: normal; margin-top: 4px">{{ ucfirst(ApprovalRules::accepter($settings->approval)) }} accepts the new blast radius
+                <div style="font-weight: normal; margin-top: 4px">{{ ucfirst(ApprovalRules::accepter($approvalMode)) }} accepts the new blast radius
                     (recorded in the timeline and the eventlog), and the batch starts again; or stop the change. Computed {{ $local($waitBlast['at'] ?? null) }}, as {{ $waitBatch['username'] ?: 'the admin who starts the batch' }} sees the network.</div>
             </div>
             @if($noAccepter)
                 <div class="alert alert-warning" id="ans-no-accepter"><i class="fa fa-user-times"></i> {{ $noAccepter }} The change waits, its devices reserved for it,
-                    until an admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#{{ ApprovalRules::acceptPermission($settings->approval) === 'run' ? 'ans-permission' : 'ans-approve-permission' }}">settings page</a>,
+                    until an admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#{{ ApprovalRules::acceptPermission($approvalMode) === 'run' ? 'ans-permission' : 'ans-approve-permission' }}">settings page</a>,
                     or stops the change.</div>
             @endif
         @elseif($waitBatch !== null && $change['waiting'] === 'blast_unknown')
@@ -269,7 +269,7 @@
             <div class="ans-warning-loud" id="ans-blast-unknown"><i class="fa fa-question-circle"></i>
                 Batch {{ (int) $change['current_batch'] }} does not start: its blast radius cannot be computed now ({{ $waitBlast['error'] ?? 'no answer' }}).
                 <div style="font-weight: normal; margin-top: 4px">Fix that{{ $fix }}: the plugin checks again every minute (last {{ $local($waitBlast['at'] ?? null) }}) and starts
-                    the batch once its blast radius can be computed. Or {{ ApprovalRules::accepter($settings->approval) }} continues it: <em>Continue</em> computes it first;
+                    the batch once its blast radius can be computed. Or {{ ApprovalRules::accepter($approvalMode) }} continues it: <em>Continue</em> computes it first;
                     only if it still cannot be computed does the batch go without one, its maintenance window then covering its devices and the devices
                     {{ \Agoodley\LibrenmsAnsible\Changes\ChangeText::held($change, false)[1] }}{{ is_array($waitBatch['blast_accepted'] ?? null) ? ' or accepted' : '' }} as cut off
                     ({{ \Agoodley\LibrenmsAnsible\Changes\BlastRadius::listText(array_map('intval', $held), $names, 10, 'none') }}), the decision recorded in the timeline
@@ -286,14 +286,14 @@
                 @if($change['waiting'] === 'verification')
                     Batch {{ (int) $change['current_batch'] }} made {{ \Agoodley\LibrenmsAnsible\Support\Format::count((int) ($verifyWait['counts']['unexpected'] ?? 0), 'unexpected change') }}:
                     <ul style="margin: 4px 0 0; font-weight: normal" id="ans-verify-unexpected-list">@foreach(array_slice((array) ($verifyEval['unexpected'] ?? []), 0, 20) as $entry)<li data-type="{{ $entry['type'] }}">{{ $entry['text'] }}</li>@endforeach</ul>
-                    <div style="font-weight: normal; margin-top: 4px">Batch {{ (int) $change['current_batch'] + 1 }} does not start before {{ ApprovalRules::accepter($settings->approval) }} accepts them
+                    <div style="font-weight: normal; margin-top: 4px">Batch {{ (int) $change['current_batch'] + 1 }} does not start before {{ ApprovalRules::accepter($approvalMode) }} accepts them
                         (recorded in the timeline and the eventlog); or stop the change. Compared {{ Clock::show((int) ($verifyWait['after']['taken_at'] ?? 0), 'Y-m-d H:i T') }} on fresh data,
                         as {{ ($batches[(int) $change['current_batch']]['username'] ?? '') ?: 'the admin who started the batch' }} sees the network.</div>
                 @else
                     Batch {{ (int) $change['current_batch'] }} cannot be verified: {{ $verifyWait['error'] ?? 'unknown' }}.
                     <div style="font-weight: normal; margin-top: 4px">@if(($verifyWait['after']['status'] ?? null) === 'incomplete')The plugin takes a new state after it every 5 minutes
                         and goes on by itself once the topology plugin reads all of it. @elseif(($verifyWait['before']['status'] ?? null) === 'taken')The plugin checks again every minute and goes on by
-                        itself once the batch can be verified. @endif Or {{ ApprovalRules::accepter($settings->approval) }} accepts going on without its verification (recorded); or stop the change.</div>
+                        itself once the batch can be verified. @endif Or {{ ApprovalRules::accepter($approvalMode) }} accepts going on without its verification (recorded); or stop the change.</div>
                 @endif
             </div>
             @if($noAccepter)
@@ -376,7 +376,7 @@
                     <span class="ans-muted" id="ans-action-state"></span>
                 </div>
                 @if(in_array($change['waiting'], \Agoodley\LibrenmsAnsible\Changes\ChangeLifecycle::VERIFY_WAITS, true) && ! $actions['accept_verification'] && ! $final)
-                    <p class="ans-help" id="ans-accept-verification-waits" style="margin-top: 6px">{{ $canAccept && $verifyRefusal ? $verifyRefusal : ucfirst(ApprovalRules::accepter($settings->approval)) . ' accepts it.' }}</p>
+                    <p class="ans-help" id="ans-accept-verification-waits" style="margin-top: 6px">{{ $canAccept && $verifyRefusal ? $verifyRefusal : ucfirst(ApprovalRules::accepter($approvalMode)) . ' accepts it.' }}</p>
                 @endif
                 @if($actions['approve'] || $actions['reject'] || $actions['accept'] || $actions['accept_verification'])
                     <p class="ans-help" id="ans-comment-note" style="margin-top: 6px">The comment goes into the timeline and, as written, into the eventlog of each device of
@@ -385,10 +385,10 @@
                 @if($status === ChangeStatus::AWAITING && $canApprove && $approvalRefusal)
                     <p class="ans-help" id="ans-approval-refusal" style="margin-top: 6px">{{ $approvalRefusal }}</p>
                 @elseif($status === ChangeStatus::AWAITING && ! $actions['approve'])
-                    <p class="ans-help" id="ans-approval-waits" style="margin-top: 6px">{{ ApprovalRules::waitsFor($settings->approval) }}</p>
+                    <p class="ans-help" id="ans-approval-waits" style="margin-top: 6px">{{ ApprovalRules::waitsFor($approvalMode) }}</p>
                 @endif
                 @if($change['waiting'] === 'blast' && ! $actions['accept'] && ! $final)
-                    <p class="ans-help" id="ans-accept-waits" style="margin-top: 6px">{{ $canAccept && $acceptRefusal ? $acceptRefusal : ucfirst(ApprovalRules::accepter($settings->approval)) . ' accepts the new blast radius.' }}</p>
+                    <p class="ans-help" id="ans-accept-waits" style="margin-top: 6px">{{ $canAccept && $acceptRefusal ? $acceptRefusal : ucfirst(ApprovalRules::accepter($approvalMode)) . ' accepts the new blast radius.' }}</p>
                 @endif
                 @if($change['waiting'] === 'blast_unknown' && $continueRefusal !== null && ! $final)
                     <p class="ans-help" id="ans-continue-waits" style="margin-top: 6px">{{ $continueRefusal }}</p>
@@ -401,7 +401,7 @@
             </div>
         </div>
     @elseif($status === ChangeStatus::AWAITING)
-        <p class="ans-muted" id="ans-approval-waits">{{ ApprovalRules::waitsFor($settings->approval) }}</p>
+        <p class="ans-muted" id="ans-approval-waits">{{ ApprovalRules::waitsFor($approvalMode) }}</p>
         @if($noApprover)
             <div class="alert alert-warning" id="ans-no-approver"><i class="fa fa-user-times"></i> {{ $noApprover }}
                 An admin grants it on the plugin's <a href="{{ url('plugin/settings/ansible') }}#ans-approve-permission">settings page</a> (<em>Approve permission</em>),
@@ -539,7 +539,7 @@
                 </table>
             </div>
             <div class="panel panel-default">
-                <div class="panel-heading"><strong>Approval</strong> <span class="text-muted">(the settings ask for {{ ApprovalRules::LABELS[$settings->approval] ?? $settings->approval }}{{ ApprovalRules::needed($settings->approval) ? ', valid ' . intdiv($settings->approvalSeconds, 3600) . ' h' : '' }})</span></div>
+                <div class="panel-heading"><strong>Approval</strong> <span class="text-muted">(the change needs {{ ApprovalRules::LABELS[$approvalMode] ?? $approvalMode }}{{ ApprovalRules::needed($approvalMode) ? ', valid ' . intdiv($settings->approvalSeconds, 3600) . ' h' : '' }})</span></div>
                 <table class="table table-condensed ans-table" id="ans-approvals">
                     @forelse($approvals as $approval)
                         <tr class="{{ $approval['voided_at'] ? 'text-muted' : '' }}">
@@ -548,7 +548,7 @@
                             <td class="ans-wrap">{{ $approval['comment'] }}@if($approval['voided_at'])<div class="ans-help">no longer counts: {{ $approval['void_reason'] }}</div>@endif</td>
                         </tr>
                     @empty
-                        <tr><td class="text-muted" id="ans-approvals-none">{{ ApprovalRules::needed($settings->approval) ? 'None yet.' : 'None needed: the settings ask for no approval.' }}</td></tr>
+                        <tr><td class="text-muted" id="ans-approvals-none">{{ ApprovalRules::needed($approvalMode) ? 'None yet.' : 'None needed: the change needs no approval.' }}</td></tr>
                     @endforelse
                     @if($approvalExpires)
                         <tr><td colspan="3" class="ans-muted">The approval counts until {{ Clock::show($approvalExpires, 'Y-m-d H:i T') }}.</td></tr>

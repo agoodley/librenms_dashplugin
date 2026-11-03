@@ -56,6 +56,14 @@ detail() {
     log "    $*"
 }
 
+# http_url_ok URL: whether URL is an http(s) URL without spaces, control characters, quotes or backslashes. URLs go into
+# curl's config (on its stdin), where a quote or a backslash ends or escapes the value and a new line starts another
+# option; LibreNMS' APP_URL comes from .env, which the librenms user owns.
+http_url_ok() {
+    local re='^https?://[^/?#[:space:][:cntrl:]"\\]+(/[^?#[:space:][:cntrl:]"\\]*)?$'
+    [[ $1 =~ $re ]]
+}
+
 # warn TEXT: a warning, repeated in the summary.
 warn() {
     printf '    WARNING: %s\n' "$*" >&2
@@ -543,7 +551,7 @@ download() {
     [[ $url == https://* ]] || die "internal error: $url is not an HTTPS URL"
     log "+ curl $url -> $dest"
     local start; start=$(_log_size)
-    if ! curl -fsSL --retry 3 --connect-timeout 20 -o "$dest" "$url" 2>>"$LOG_FILE"; then
+    if ! curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 20 -o "$dest" "$url" 2>>"$LOG_FILE"; then
         FAIL_HINT="${DOWNLOAD_HINT:-check that this server reaches $url}" _fail_cmd "$start" curl "$url"
     fi
     if [[ -n $sum ]] && [[ $(sha256sum "$dest" | cut -d' ' -f1) != "$sum" ]]; then

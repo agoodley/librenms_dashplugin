@@ -241,7 +241,7 @@ final class ChangeLifecycle
         if ($change === null) {
             return 'There is no such change.';
         }
-        $refusal = ApprovalRules::refusal($this->settings->approval, $change, (int) $user['user_id'], $holds);
+        $refusal = ApprovalRules::refusal($this->mode($change), $change, (int) $user['user_id'], $holds);
         if ($refusal !== null) {
             return $refusal;
         }
@@ -284,7 +284,7 @@ final class ChangeLifecycle
         if ($change === null) {
             return 'There is no such change.';
         }
-        $refusal = ApprovalRules::refusal($this->settings->approval, $change, (int) $user['user_id'], $holds, true);
+        $refusal = ApprovalRules::refusal($this->mode($change), $change, (int) $user['user_id'], $holds, true);
         if ($refusal !== null) {
             return $refusal;
         }
@@ -319,7 +319,10 @@ final class ChangeLifecycle
         if ($change === null) {
             return 'There is no such change.';
         }
-        $refusal = ApprovalRules::acceptRefusal($this->settings->approval, $change, (int) $user['user_id'], $holds);
+        $mode = $this->mode($change);
+        // the permission the change's mode asks for, checked here as well: the request was checked with the settings' mode
+        $holds = $holds && $this->runner->userProblem((int) $user['user_id'], ApprovalRules::acceptPermission($mode)) === null;
+        $refusal = ApprovalRules::acceptRefusal($mode, $change, (int) $user['user_id'], $holds);
         if ($refusal !== null) {
             return $refusal;
         }
@@ -372,7 +375,7 @@ final class ChangeLifecycle
         }
         if ($change['status'] !== ChangeStatus::READY) {
             return match ($change['status']) {
-                ChangeStatus::AWAITING => 'The change needs ' . ApprovalRules::LABELS[$this->settings->approval] . ' first.',
+                ChangeStatus::AWAITING => 'The change needs ' . ApprovalRules::LABELS[$this->mode($change)] . ' first.',
                 ChangeStatus::DRAFT, ChangeStatus::DRY_RUN => 'The change needs a verified dry run without failures first.',
                 default => 'The change is ' . strtolower(ChangeStatus::label($change['status'])) . '.',
             };
@@ -389,7 +392,7 @@ final class ChangeLifecycle
         if ($dryRun === null) {
             $template = $this->templateCheck($change);
             if (isset($template['unreadable'])) {
-                return self::unreadableText($template['unreadable'], ApprovalRules::needed($this->settings->approval), $template['missing']);
+                return self::unreadableText($template['unreadable'], ApprovalRules::needed($this->mode($change)), $template['missing']);
             }
             $dryRun = $template['changed'] ?? null;
         }
@@ -399,7 +402,7 @@ final class ChangeLifecycle
             return 'The dry run no longer counts (' . $dryRun . '): launch it again.';
         }
         if ($this->approvalSwitchedOn($change, $now, $user['username'])) {
-            return 'The settings ask for ' . ApprovalRules::LABELS[$this->settings->approval] . ' now: the change awaits one.';
+            return 'The settings ask for ' . ApprovalRules::LABELS[$this->mode($change)] . ' now: the change awaits one.';
         }
         $approval = $this->approvalProblem($change, $now);
         if ($approval !== null) {
@@ -502,7 +505,7 @@ final class ChangeLifecycle
                 . 'before. Stop the change rather than run it with a blast radius nobody approved.';
         }
         if (in_array($change['waiting'], self::VERIFY_WAITS, true)) {
-            return 'The change waits for ' . ApprovalRules::accepter($this->settings->approval) . ' to accept ' . ($change['waiting'] === 'verification'
+            return 'The change waits for ' . ApprovalRules::accepter($this->mode($change)) . ' to accept ' . ($change['waiting'] === 'verification'
                 ? "the unexpected changes of batch $batch" : "going on without the verification of batch $batch") . ' (Accept): batch ' . ($batch + 1)
                 . ' does not start before. Stop the change rather than go on with changes nobody accepted.';
         }
@@ -511,7 +514,7 @@ final class ChangeLifecycle
         if ($unknown) {
             // a decision on a blast radius, as an acceptance: an approver while the settings ask for an approval (never the requester with
             // a second admin), an admin with the run permission while they ask for none
-            $mode = $this->settings->approval;
+            $mode = $this->mode($change);
             $refusal = ApprovalRules::continueRefusal($mode, $change, (int) $user['user_id'],
                 $this->runner->userProblem((int) $user['user_id'], ApprovalRules::acceptPermission($mode)) === null);
             if ($refusal !== null) {
@@ -725,6 +728,12 @@ final class ChangeLifecycle
         if ($change === null) {
             return null;
         }
+        // a setting stricter than what the change kept sticks to it (also for a change made before the plugin kept it): lowering
+        // the setting again does not let it through, nor change who may approve or accept for it
+        $mode = $this->mode($change);
+        if (! ChangeStatus::isFinal($change['status']) && ($change['approval_mode'] ?? null) !== $mode) {
+            $change = $this->update($change, ['approval_mode' => $mode]) ?? $change;
+        }
         match ($change['status']) {
             ChangeStatus::DRY_RUN => $this->dryRunEnd($change, $now),
             ChangeStatus::AWAITING, ChangeStatus::READY => $this->revalidate($change, $now),
@@ -844,7 +853,7 @@ final class ChangeLifecycle
         $ranClean = $run['status'] === RunStatus::SUCCESS && empty($run['unexpected_hosts']);
         $state = $proof['nothing_ran'] ? 'failed'
             : (! $proof['verified'] ? 'unverified' : ($ranClean && ! $served['left'] && ! $served['other'] ? 'verified' : 'failed'));
-        $next = $state === 'verified' ? (ApprovalRules::needed($this->settings->approval) ? ChangeStatus::AWAITING : ChangeStatus::READY) : ChangeStatus::DRAFT;
+        $next = $state === 'verified' ? (ApprovalRules::needed($this->mode($change)) ? ChangeStatus::AWAITING : ChangeStatus::READY) : ChangeStatus::DRAFT;
         $findings = $proof['findings'];
         if ($served['left'] || $served['other']) {
             $findings[] = 'The runner did not get every target as recorded when the dry run was launched (' . implode('; ', [...$served['left'], ...$served['other']])
@@ -893,7 +902,7 @@ final class ChangeLifecycle
                 ChangeText::reference($id), (string) $run['username']);
         }
         if ($next === ChangeStatus::AWAITING) {
-            $this->timeline($ended, 'approval', 'Approval requested (' . ApprovalRules::LABELS[$this->settings->approval] . ').', null, $now);
+            $this->timeline($ended, 'approval', 'Approval requested (' . ApprovalRules::LABELS[$this->mode($change)] . ').', null, $now);
             $this->eventAll($ended, ChangeText::approvalRequested($ended), 'info', (string) $run['username']);
         }
     }
@@ -917,7 +926,7 @@ final class ChangeLifecycle
             if ($approval !== null) {
                 $this->voidApproval($change, $approval, $now);
             }
-        } elseif (! ApprovalRules::needed($this->settings->approval) && $this->update($change, ['status' => ChangeStatus::READY]) !== null) {
+        } elseif (! ApprovalRules::needed($this->mode($change)) && $this->update($change, ['status' => ChangeStatus::READY]) !== null) {
             $this->timeline($change, 'approval', 'The settings need no approval any more: the change can be applied.', null, $now);
         }
     }
@@ -1796,13 +1805,22 @@ final class ChangeLifecycle
     }
 
     /**
+     * The approval mode of the change: the stricter of the one it was created with and the settings' now
+     * (ApprovalRules::effective()).
+     */
+    private function mode(array $change): string
+    {
+        return ApprovalRules::effective(isset($change['approval_mode']) ? (string) $change['approval_mode'] : null, $this->settings->approval);
+    }
+
+    /**
      * Why the change's approval does not count now; null when it does or none is needed.
      */
     private function approvalProblem(array $change, int $now): ?string
     {
         $approver = $change['approved_user_id'] !== null ? $this->runner->userProblem((int) $change['approved_user_id'], 'approve') : null;
-        $problem = ApprovalRules::problem($this->settings->approval, $change, $this->settings->approvalSeconds, $now, $approver);
-        if ($problem === null && ApprovalRules::needed($this->settings->approval)
+        $problem = ApprovalRules::problem($this->mode($change), $change, $this->settings->approvalSeconds, $now, $approver);
+        if ($problem === null && ApprovalRules::needed($this->mode($change))
             && $change['approval_fingerprint'] !== Fingerprint::approval((string) $change['plan_fingerprint'], (int) $change['dry_run_id'], $change['dry_run_commit'])) {
             return 'it approved another dry run';
         }
@@ -1920,12 +1938,12 @@ final class ChangeLifecycle
      */
     private function approvalSwitchedOn(array $change, int $now, ?string $user = null): bool
     {
-        if ($change['approved_at'] !== null || ! ApprovalRules::needed($this->settings->approval)) {
+        if ($change['approved_at'] !== null || ! ApprovalRules::needed($this->mode($change))) {
             return false;
         }
-        $awaiting = $this->update($change, ['status' => ChangeStatus::AWAITING]);
+        $awaiting = $this->update($change, ['status' => ChangeStatus::AWAITING, 'approval_mode' => $this->mode($change)]);
         if ($awaiting !== null) {
-            $this->timeline($awaiting, 'approval', 'The settings ask for ' . ApprovalRules::LABELS[$this->settings->approval] . ' now: approval requested.', null, $now);
+            $this->timeline($awaiting, 'approval', 'The settings ask for ' . ApprovalRules::LABELS[$this->mode($change)] . ' now: approval requested.', null, $now);
             $this->eventAll($awaiting, ChangeText::approvalRequested($awaiting), 'info', $user);
         }
 
@@ -2186,9 +2204,9 @@ final class ChangeLifecycle
             $why = "its blast radius grew since $since: " . ChangeText::grewText($added ? BlastRadius::listText($added, $names) : '', $coreLost);
             $eventWhy = "its blast radius grew since $since: " . ChangeText::grewCount(count($added), $coreLost, $word);
             $text = ChangeText::blastGrew($change, $number, $added ? BlastRadius::listText($added, $names) : '',
-                BlastRadius::listText((array) $record['held'], $names), $refuse, ! empty($record['accepted']), ApprovalRules::accepter($this->settings->approval), $coreLost);
+                BlastRadius::listText((array) $record['held'], $names), $refuse, ! empty($record['accepted']), ApprovalRules::accepter($this->mode($change)), $coreLost);
             $event = ChangeText::blastGrewEvent($change, $number, count($added), count((array) ($record['lost'] ?? [])), (int) ($record['unmanaged'] ?? 0), $refuse,
-                ! empty($record['accepted']), ApprovalRules::accepter($this->settings->approval), $coreLost);
+                ! empty($record['accepted']), ApprovalRules::accepter($this->mode($change)), $coreLost);
         } else {
             $why = 'its blast radius cannot be computed now (' . $record['error'] . ')';
             $eventWhy = 'its blast radius cannot be computed now (' . ($record['event_error'] ?? $record['error']) . ')';
@@ -2321,7 +2339,9 @@ final class ChangeLifecycle
         if ($change === null) {
             return 'There is no such change.';
         }
-        $refusal = ApprovalRules::acceptVerificationRefusal($this->settings->approval, $change, (int) $user['user_id'], $holds);
+        $mode = $this->mode($change);
+        $holds = $holds && $this->runner->userProblem((int) $user['user_id'], ApprovalRules::acceptPermission($mode)) === null; // as in acceptBlast()
+        $refusal = ApprovalRules::acceptVerificationRefusal($mode, $change, (int) $user['user_id'], $holds);
         if ($refusal !== null) {
             return $refusal;
         }
@@ -2945,11 +2965,11 @@ final class ChangeLifecycle
                 $this->eventAll($change, VerificationText::verifiedEvent($change, $number), 'info', $this->batchUser($change, $number));
             } elseif ($result === 'unexpected') {
                 $this->timeline($change, 'verify', VerificationText::unexpected($number, (array) ($evaluation['unexpected'] ?? []), (int) ($verify['counts']['unexpected'] ?? 0),
-                    $decision, ApprovalRules::accepter($this->settings->approval)) . '.', null, $now);
+                    $decision, ApprovalRules::accepter($this->mode($change))) . '.', null, $now);
                 $this->eventAll($change, VerificationText::unexpectedEvent($change, $number, (array) ($verify['by_what'] ?? []), $decision), 'warning', $this->batchUser($change, $number));
             } else {
                 $this->timeline($change, 'verify', VerificationText::unknown($number, (string) ($verify['error'] ?? 'unknown'), $decision,
-                    ApprovalRules::accepter($this->settings->approval), self::recheckOf($verify)) . '.', null, $now);
+                    ApprovalRules::accepter($this->mode($change)), self::recheckOf($verify)) . '.', null, $now);
                 $this->eventAll($change, VerificationText::unknownEvent($change, $number, (string) (($verify['event_error'] ?? '') ?: 'unknown')), 'warning',
                     $this->batchUser($change, $number));
             }

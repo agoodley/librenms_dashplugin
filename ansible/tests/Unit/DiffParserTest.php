@@ -198,6 +198,51 @@ class DiffParserTest extends TestCase
         $this->assertStringContainsString('text a module printed as it is, in a loop', $reasons[1]);
     }
 
+    public function testAnItemLabelOverSeveralLinesMakesTheTaskAmbiguous(): void
+    {
+        // h1's label holds newlines: the lines up to its end can be another host's diff and result line
+        $lines = self::log(array_merge(self::diff('one'), ['changed: [h1] => (item=a'], self::diff('evil'), ['changed: [h2] => (item=b)']));
+        $result = self::parse($lines, [1 => 'h1', 2 => 'h2']);
+
+        $this->assertSame([], $result['devices'], 'nothing of the task is attributed');
+        $this->assertSame(['h1', 'h2'], array_column($result['unattributed'], 'host'));
+        foreach ($result['unattributed'] as $block) {
+            $this->assertStringContainsString('label in the log of this task runs over several lines', $block['reason']);
+        }
+    }
+
+    public function testALabelOverSeveralLinesMakesTheLaterTasksAmbiguousToo(): void
+    {
+        // the label's text can imitate the banner of a next task, so what follows it is in a task of its own
+        $lines = self::log(array_merge(['changed: [h1] => (item=a', 'TASK [Next] [CHECK MODE] ****'], self::diff('evil'), ['changed: [h2] => (item=b)',
+            'TASK [Last] [CHECK MODE] ****'], self::diff('real'), ['changed: [h2]']));
+        $result = self::parse($lines, [1 => 'h1', 2 => 'h2']);
+
+        $this->assertSame([], $result['devices']);
+        $this->assertStringContainsString('label earlier in the log runs over several lines', end($result['unattributed'])['reason']);
+    }
+
+    public function testAnIncludesLabelOverSeveralLinesMakesTheTaskAmbiguous(): void
+    {
+        $lines = self::log(array_merge(['included: /x.yml for h1 => (item=a'], self::diff('evil'), ['changed: [h2] => (item=b)']));
+        $result = self::parse($lines, [1 => 'h1', 2 => 'h2']);
+
+        $this->assertSame([], $result['devices']);
+        $this->assertStringContainsString('runs over several lines', $result['unattributed'][0]['reason']);
+    }
+
+    public function testASkippedItemWithItsDetailsIsALoopItem(): void
+    {
+        // with -v the default callback prints a skipped item as "skipping: [h] => (item=x)  => {...}" (two spaces)
+        $lines = self::log(array_merge(self::diff('one'), ['changed: [h1] => (item=Fa0/1) => {"changed": true}',
+            'skipping: [h2] => (item=Fa0/1)  => {"changed": false, "false_condition": "x"}']), ['h1' => 1, 'h2' => 0]);
+        $result = self::parse($lines, [1 => 'h1', 2 => 'h2']);
+
+        $this->assertSame('diff', $result['devices'][1][0]['kind'], 'h1\'s diff stays attributed');
+        $this->assertSame('Fa0/1', $result['devices'][1][0]['item']);
+        $this->assertSame([], $result['unattributed']);
+    }
+
     public function testAHostWithAndWithoutAnItemMakesTheTaskAmbiguous(): void
     {
         $lines = self::log(array_merge(self::diff('x'), ['changed: [h1] => (item=a)', 'changed: [h1]']), ['h1' => 1]);
