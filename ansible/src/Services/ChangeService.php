@@ -519,7 +519,8 @@ final class ChangeService
         $change = ['user_id' => (int) $user->user_id, 'username' => (string) $user->username, 'template_id' => $plan->template->id,
             'template_name' => mb_substr($plan->template->name, 0, 255), 'playbook' => mb_substr($plan->template->playbook, 0, 255), 'reference' => $preview['reference'],
             'status' => ChangeStatus::DRAFT, 'variables' => $plan->variables(), 'has_secrets' => (bool) array_filter($plan->template->surveyVars, fn ($var) => $var->isSecret()),
-            'plan' => $batches->toArray(), 'target_count' => count($targets), 'batch_count' => $batches->count(), 'request_token' => $requestToken]
+            'plan' => $batches->toArray(), 'target_count' => count($targets), 'batch_count' => $batches->count(), 'request_token' => $requestToken,
+            'approval_mode' => $this->settings->changeSettings()->approval]
             + ($draft !== null ? ['fix' => FixAnswers::record($draft['kind'], $draft['fixes'], $draft['lines'])] : []);
         $id = $this->changes->create($change, $targets, $batches->count());
         $change['id'] = $id;

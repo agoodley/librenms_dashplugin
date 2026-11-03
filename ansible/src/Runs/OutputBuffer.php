@@ -13,6 +13,9 @@ namespace Agoodley\LibrenmsAnsible\Runs;
  */
 final class OutputBuffer
 {
+    /** What ends a line the plugin cut (longer than it keeps one): RecapParser knows it. */
+    public const LINE_CUT = ' … (line cut by the plugin)';
+
     /** Most bytes of the log sent to the database in one statement. */
     public const CHUNK = 524288;
 
@@ -148,7 +151,7 @@ final class OutputBuffer
         $line = mb_scrub($line, 'UTF-8');
         $max = min(self::LINE_MAX, max(64, $half));
 
-        return strlen($line) > $max ? mb_strcut($line, 0, $max - 32, 'UTF-8') . ' … (line cut by the plugin)' : $line;
+        return strlen($line) > $max ? mb_strcut($line, 0, $max - 32, 'UTF-8') . self::LINE_CUT : $line;
     }
 
     /**

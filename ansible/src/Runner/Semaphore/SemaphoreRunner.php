@@ -358,6 +358,18 @@ final class SemaphoreRunner implements Runner
             array_values(array_map(fn ($id) => (string) (int) $id, array_filter(is_array($t['environment_ids'] ?? null) ? $t['environment_ids'] : [],
                 fn ($id) => is_numeric($id) && (int) $id > 0))),
             is_string($t['git_branch'] ?? null) && trim($t['git_branch']) !== '' ? UntrustedText::line($t['git_branch'], 200) : null,
+            // the template's own tags and skip tags (Ansible options), which Semaphore gives every task of it: what they leave out of a dry run
+            // must not run at an apply, so they are part of the fingerprint
+            array_merge(self::list($params['tags'] ?? null), self::list($t['tags'] ?? null)),
+            array_merge(self::list($params['skip_tags'] ?? null), self::list($t['skip_tags'] ?? null)),
+            // and the others it gives every task: whether it installs the repository's Galaxy requirements (the collections the
+            // playbook runs), the vaults it opens, the runner and the container image it runs on
+            array_filter([
+                'skip_galaxy_install' => ! empty($params['skip_galaxy_install']),
+                'vaults' => array_values(array_map(fn (array $vault) => array_filter($vault, 'is_scalar'), array_filter(is_array($t['vaults'] ?? null) ? $t['vaults'] : [], 'is_array'))),
+                'runner_tag' => is_string($t['runner_tag'] ?? null) ? trim($t['runner_tag']) : '',
+                'executor_image' => is_string($t['executor_image'] ?? null) ? trim($t['executor_image']) : '',
+            ]),
         );
     }
 

@@ -2547,7 +2547,7 @@
         var self = this;
         var quote = function (value) {
             value = String(value === null || value === undefined ? '' : value);
-            if (/^[=+\-@]/.test(value)) {
+            if (/^[=+\-@\t\r]/.test(value)) {
                 value = "'" + value; // spreadsheet formula injection guard
             }
             return '"' + value.replace(/"/g, '""') + '"';

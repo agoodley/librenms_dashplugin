@@ -10,7 +10,7 @@ use Agoodley\LibrenmsAnsible\Runner\RunnerTemplate;
 /**
  * The template as the runner has it, as the parts of a change's fingerprint (Fingerprint): every field that decides
  * what a launch runs and on which hosts (the fields the template check reads, its playbook, repository and branch),
- * its variable groups (environment variables, extra variables and the names of the secrets; values as hashes, so the
+ * its own tags, skip tags and the other options its runner gives every task, its variable groups (environment variables, extra variables and the names of the secrets; values as hashes, so the
  * stored parts hold none), the LibreNMS inventory and the repository. A change of any of them between the dry run and
  * a batch voids the approval.
  */
@@ -43,7 +43,9 @@ final class TemplateSnapshot
             'template' => ['id' => $template->id, 'app' => $template->app, 'type' => $template->type, 'playbook' => $template->playbook,
                 'inventory_id' => $template->inventoryId, 'repository_id' => $template->repositoryId, 'environment_ids' => $template->variableGroups(),
                 'limit_override' => $template->limitOverride, 'fixed_limit' => $template->fixedLimit, 'arguments' => $template->argumentsRaw,
-                'task_overrides' => $template->taskOverrides, 'survey' => $survey, 'git_branch' => $template->gitBranch],
+                'task_overrides' => $template->taskOverrides, 'survey' => $survey, 'git_branch' => $template->gitBranch]
+                // only when the template has them: the fingerprint of a template without them is what it was before the plugin read them
+                + array_filter(['tags' => $template->tags, 'skip_tags' => $template->skipTags, 'options' => $template->options]),
             'environments' => $environments,
             'inventory' => ['id' => $inventory->id, 'type' => $inventory->type, 'source' => $inventory->source],
             'repository' => $repository === null ? null : ['id' => $repository->id, 'git_url' => $repository->gitUrl, 'git_branch' => $repository->gitBranch],

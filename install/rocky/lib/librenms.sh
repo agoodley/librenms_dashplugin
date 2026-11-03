@@ -571,7 +571,7 @@ lnms_snmpd() {
         elif [[ -n $OFFLINE_DIR ]]; then
             warn "no distro script in $OFFLINE_DIR: snmpd's 'extend distro' has none (LibreNMS then shows less about this server's OS)"
         elif ! would "install /usr/bin/distro (librenms-agent's distro script, from GitHub)"; then
-            download https://raw.githubusercontent.com/librenms/librenms-agent/master/snmp/distro "$WORK/distro"
+            download "https://raw.githubusercontent.com/librenms/librenms-agent/$DISTRO_COMMIT/snmp/distro" "$WORK/distro" "$DISTRO_SHA256"
             install -m 755 "$WORK/distro" /usr/bin/distro
         fi
     fi

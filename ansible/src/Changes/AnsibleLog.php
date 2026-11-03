@@ -70,7 +70,8 @@ final class AnsibleLog
         }
         $rest = $m[3];
         $item = null;
-        if (preg_match('/^(?: =>)? \(item=(.*?)\)(?: =>(.*))?\s*$/sD', $rest, $i)) {
+        // a skipped item reads "(item=x) " before its details with -v: "skipping: [host] => (item=x)  => {...}"
+        if (preg_match('/^(?: =>)? \(item=(.*?)\) ?(?: =>(.*))?\s*$/sD', $rest, $i)) {
             $item = mb_substr($i[1], 0, 255);
             $rest = isset($i[2]) ? ' =>' . $i[2] : '';
         }

@@ -69,6 +69,17 @@ def describe(key):
     return '%-7s %-5s %s' % (key_name(keytype), key_bits(keytype, blob) or '', fingerprint(blob))
 
 
+# an address the script scans and writes into known_hosts: as the Ansible plugin's inventory takes one (no space, comma
+# or new line, which ssh-keyscan's input and known_hosts read as separators; no leading "-")
+ADDRESS = re.compile(r'^[A-Za-z0-9_:][A-Za-z0-9._:-]{0,252}$')
+
+
+def printable(text):
+    """TEXT with its control and other non-printable characters as "?": LibreNMS' helper, run as librenms, reports it,
+    and it goes into known_hosts (as a comment) and onto the terminal."""
+    return ''.join(c if c.isprintable() else '?' for c in str(text))
+
+
 def host_name(addr, port):
     """The name a known_hosts file has for an address: [addr]:port for another port than 22."""
     return addr if port == 22 else '[%s]:%d' % (addr, port)
@@ -231,8 +242,8 @@ def keyscan(targets, timeout):
 class Device:
     def __init__(self, row):
         self.id = row['id']
-        self.hostname = row['hostname']
-        self.sysname = row.get('sysname') or ''
+        self.hostname = printable(row['hostname'])
+        self.sysname = printable(row.get('sysname') or '')
         self.row = row
         self.targets = []   # (who, address, port)
         self.notes = []
@@ -276,7 +287,11 @@ def load_devices(data):
     for row in data.get('devices', []):
         d = Device(row)
         if row.get('ansible'):
-            d.targets.append(('Ansible', row['ansible']['host'], int(row['ansible'].get('port') or 22)))
+            host = row['ansible'].get('host') or ''
+            if ADDRESS.fullmatch(str(host)):
+                d.targets.append(('Ansible', host, int(row['ansible'].get('port') or 22)))
+            else:
+                d.notes.append('Ansible connects to an address this script does not take (%s)' % printable(host))
         if row.get('oxidized'):
             port = int(row['oxidized'].get('port') or 22)
             ip = row['oxidized'].get('ip') or ''
@@ -284,7 +299,9 @@ def load_devices(data):
                 ip = resolve(d.hostname) or ''
                 d.notes.append('Oxidized resolves %s to %s: LibreNMS has no IP for it yet' % (d.hostname, ip) if ip else
                                'Oxidized cannot connect to it: LibreNMS has no IP for it, and %s does not resolve' % d.hostname)
-            if ip:
+            if ip and not ADDRESS.fullmatch(str(ip)):
+                d.notes.append('Oxidized connects to an address this script does not take (%s)' % printable(ip))
+            elif ip:
                 d.targets.append(('Oxidized', ip, port))
         devices.append(d)
     return devices

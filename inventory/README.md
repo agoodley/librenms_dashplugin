@@ -111,7 +111,8 @@ it already).
 ## Pages
 
 Every page has the filters device group, location and OS, its own filters and a CSV export of what it shows (all of
-it, not one page of it), and a search box for a serial number or part number.
+it, not one page of it), and a search box for a serial number or part number. The groups and locations are those the
+user may see; for a user who sees only some devices, another group's or location's id in the address shows no device.
 
 **Overview** (`plugin/inventory/overview`): the devices, how many models (units: each member of a stack counted),
 software versions, serial numbers and optics; then

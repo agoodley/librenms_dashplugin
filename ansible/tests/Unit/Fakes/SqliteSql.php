@@ -50,7 +50,7 @@ final class SqliteSql implements Sql
             `dry_run_commit` TEXT, `dry_run_findings` TEXT, `plan_fingerprint` TEXT, `fingerprint_parts` TEXT, `approval_fingerprint` TEXT, `approved_by` TEXT,
             `approved_user_id` INTEGER, `approved_at` TEXT, `applied_by` TEXT, `applied_user_id` INTEGER, `apply_started_at` TEXT, `waiting` TEXT, `resume_at` TEXT,
             `stop_requested_by` TEXT, `stop_requested_at` TEXT, `error` TEXT, `finished_at` TEXT, `request_token` TEXT UNIQUE, `created_at` TEXT, `updated_at` TEXT,
-            `fix` TEXT, `verification` TEXT, `verification_note` TEXT)');
+            `fix` TEXT, `verification` TEXT, `verification_note` TEXT, `approval_mode` TEXT)');
         $this->pdo->exec('CREATE TABLE `ansible_change_targets` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `change_id` INTEGER NOT NULL, `device_id` INTEGER NOT NULL,
             `inventory_name` TEXT NOT NULL, `hostname` TEXT NOT NULL DEFAULT \'\', `display` TEXT NOT NULL DEFAULT \'\', `batch` INTEGER NOT NULL, `position` INTEGER NOT NULL DEFAULT 0,
             `dry_result` TEXT, `dry_counts` TEXT, `result` TEXT, `counts` TEXT, `backup_node` TEXT, `backup_check` TEXT,

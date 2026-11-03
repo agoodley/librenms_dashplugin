@@ -428,6 +428,7 @@ INVENTORY_TOKEN_NEW=0
 # lnms_api_ok URL TOKEN: whether LibreNMS' API answers at URL with the token (HTTP 200 without a redirect).
 lnms_api_ok() {
     local code
+    if ! http_url_ok "$1"; then log "LibreNMS API at $1: not an http(s) URL curl can be given"; return 1; fi
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --noproxy '*' --config - <<<"url = \"$1/api/v0/system\"
 header = \"X-Auth-Token: $2\"" 2>/dev/null || true)
     log "LibreNMS API at $1: HTTP $code"
@@ -444,7 +445,11 @@ librenms_url() {
         candidates=("$LIBRENMS_URL")
     elif [[ $LNMS_MODE == existing ]]; then
         lnms_env_get APP_URL
-        [[ -n $ENV_VALUE ]] && candidates+=("${ENV_VALUE%/}")
+        if [[ -n $ENV_VALUE ]] && http_url_ok "${ENV_VALUE%/}"; then
+            candidates+=("${ENV_VALUE%/}")
+        elif [[ -n $ENV_VALUE ]]; then
+            warn "LibreNMS' APP_URL in $LNMS_DIR/.env is not an http(s) URL the installer can use: left out (give the address with --librenms-url)"
+        fi
         candidates+=(http://localhost https://localhost)
     else
         candidates=(http://localhost)

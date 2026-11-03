@@ -328,4 +328,15 @@ class InterfaceAnalyzerTest extends TestCase
         $this->assertNull(RrdTotals::parse("0x0\nERROR: oops\n1\n2\n3\n", array_slice($command['prints'], 0, 5)));
         $this->assertSame('_rrd_x__1', RrdTotals::safeName('/rrd x::1'));
     }
+
+    public function testTheRrdDirectoryOfAHostname(): void
+    {
+        $this->assertSame('sw1.example.net', RrdTotals::directory('sw1.example.net'));
+        $this->assertSame('2001_db8__1', RrdTotals::directory('[2001:db8::1]'));
+        $this->assertSame('_.._x', RrdTotals::directory('/../x'));
+        $this->assertSame('...', RrdTotals::directory('...'), 'a name of its own, inside rrd_dir');
+        foreach (['..', '[..]', '.', '[.]', '', '[]'] as $hostname) {
+            $this->assertNull(RrdTotals::directory($hostname), "'$hostname' names rrd_dir or the directory above it");
+        }
+    }
 }

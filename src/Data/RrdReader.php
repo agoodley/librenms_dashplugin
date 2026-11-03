@@ -55,7 +55,8 @@ class RrdReader
     /**
      * The totals of these ports over the last $seconds (RrdTotals::PORT, DOT3 when the port has
      * that file, and the seconds of data). Ports whose RRD file is missing, or that rrdtool cannot
-     * read, are left out.
+     * read, are left out, and so are those of a device whose hostname names no directory of its
+     * own in rrd_dir (RrdTotals::directory(): "..", for one).
      *
      * @param  array<int, string>  $hostnames  port_id => its device's hostname
      * @return array<int, array<string, int>>
@@ -67,7 +68,11 @@ class RrdReader
         $local = $this->directory !== '' && is_dir($this->directory);
         $files = [];
         foreach ($hostnames as $portId => $hostname) {
-            $relative = RrdTotals::safeName(trim($hostname, '[]')) . '/port-id' . $portId;
+            $directory = RrdTotals::directory($hostname);
+            if ($directory === null) {
+                continue;
+            }
+            $relative = $directory . '/port-id' . (int) $portId;
             if ($local && ! is_file($this->directory . '/' . $relative . '.rrd')) {
                 continue;
             }

@@ -32,6 +32,9 @@ FILES_DIR=$INSTALLER_DIR/files
 
 PARTS=(librenms plugins ansible semaphore oxidized)
 SEMAPHORE_VERSION=2.19.17
+# librenms-agent's distro script, which snmpd (root) runs: a commit of it and its checksum, never the branch as it is now
+DISTRO_COMMIT=42b0a7c4062db0682d41e113ebb345cc33fd5fe4
+DISTRO_SHA256=0f211c914cc3898966345d2a72051f3c60262b8c1922df518ca5b877a0588d4a
 OXIDIZED_VERSION=0.37.0
 OXIDIZED_WEB_VERSION=0.18.1
 LIBRENMS_MIN=26.10.0      # the plugins were developed and tested against LibreNMS 26.10
@@ -246,7 +249,7 @@ check_options() {
     fi
     if [[ -n $TIMEZONE ]] && ! valid_timezone "$TIMEZONE"; then bad_option "--timezone: '$TIMEZONE' is not a time zone (see timedatectl list-timezones)"; fi
     [[ $PHP_STREAM =~ ^(remi-)?8\.[2-9]$ ]] || bad_option "--php-stream: '$PHP_STREAM' is not a PHP 8.2+ stream (e.g. remi-8.5, remi-8.4, or 8.3 for Rocky's own)"
-    if [[ -n $LIBRENMS_URL && ! $LIBRENMS_URL =~ ^https?://[^/?#[:space:]]+(/[^?#[:space:]]*)?$ ]]; then
+    if [[ -n $LIBRENMS_URL ]] && ! http_url_ok "$LIBRENMS_URL"; then
         bad_option "--librenms-url: '$LIBRENMS_URL' is not an http(s) URL"
     fi
     LIBRENMS_URL=${LIBRENMS_URL%/}

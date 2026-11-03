@@ -109,6 +109,9 @@ class ChangeRulesTest extends TestCase
         $changed = [
             "the template's playbook" => $parts(self::snapshot(['playbook' => 'other.yml'])),
             "the template's survey variables" => $parts(self::snapshot(['surveyVars' => []])),
+            "the template's skip tags" => $parts(self::snapshot(['skipTags' => ['apply']])),
+            "the template's tags" => $parts(self::snapshot(['tags' => ['check']])),
+            "the template's other options (Galaxy install, vaults, runner, image)" => $parts(self::snapshot(['options' => ['skip_galaxy_install' => true]])),
             'its variable groups' => $parts(self::snapshot([], ['ANSIBLE_CHECK_MODE_MARKERS' => 'true', 'LIBRENMS_URL' => 'https://other'])),
             'its repository' => $parts(self::snapshot([], ['ANSIBLE_CHECK_MODE_MARKERS' => 'true', 'LIBRENMS_URL' => 'https://l'], new RunnerRepository('9', 'r', 'file:///repos/r.git', 'dev'))),
             'the targets' => $parts([], [501 => 'a']),
@@ -307,6 +310,18 @@ class ChangeRulesTest extends TestCase
         $this->assertSame('Waits for an approval by an admin with the approve permission.', ApprovalRules::waitsFor(ApprovalRules::REQUIRED));
     }
 
+    public function testAChangeKeepsTheApprovalModeItWasCreatedWith(): void
+    {
+        $this->assertSame(ApprovalRules::SECOND, ApprovalRules::effective(ApprovalRules::SECOND, ApprovalRules::OFF), 'lowered later: not for this change');
+        $this->assertSame(ApprovalRules::SECOND, ApprovalRules::effective(ApprovalRules::SECOND, ApprovalRules::REQUIRED));
+        $this->assertSame(ApprovalRules::REQUIRED, ApprovalRules::effective(ApprovalRules::REQUIRED, ApprovalRules::OFF));
+        $this->assertSame(ApprovalRules::SECOND, ApprovalRules::effective(ApprovalRules::OFF, ApprovalRules::SECOND), 'raised later: for every change');
+        $this->assertSame(ApprovalRules::REQUIRED, ApprovalRules::effective(ApprovalRules::OFF, ApprovalRules::REQUIRED));
+        $this->assertSame(ApprovalRules::OFF, ApprovalRules::effective(ApprovalRules::OFF, ApprovalRules::OFF));
+        $this->assertSame(ApprovalRules::OFF, ApprovalRules::effective(null, ApprovalRules::OFF), 'a change made before the plugin kept it: the settings');
+        $this->assertSame(ApprovalRules::REQUIRED, ApprovalRules::effective('whatever', ApprovalRules::REQUIRED));
+    }
+
     public function testWhoMayAcceptANewBlastRadiusFollowsTheApprovalSetting(): void
     {
         $change = ['status' => ChangeStatus::PAUSED, 'waiting' => 'blast', 'user_id' => 1];
@@ -315,7 +330,7 @@ class ChangeRulesTest extends TestCase
         $this->assertSame('approve', ApprovalRules::acceptPermission(ApprovalRules::REQUIRED));
         $this->assertSame('approve', ApprovalRules::acceptPermission(ApprovalRules::SECOND));
         $this->assertNull(ApprovalRules::acceptRefusal(ApprovalRules::REQUIRED, $change, 1, true), 'the requester may accept when no second admin is needed');
-        $this->assertStringContainsString('you requested this change', (string) ApprovalRules::acceptRefusal(ApprovalRules::SECOND, $change, 1, true));
+        $this->assertStringContainsString('you requested it', (string) ApprovalRules::acceptRefusal(ApprovalRules::SECOND, $change, 1, true));
         $this->assertNull(ApprovalRules::acceptRefusal(ApprovalRules::SECOND, $change, 2, true));
         $this->assertStringContainsString('approve permission (ansible.approve)', (string) ApprovalRules::acceptRefusal(ApprovalRules::SECOND, $change, 2, false));
         $this->assertSame('an admin with the approve permission (not the requester)', ApprovalRules::accepter(ApprovalRules::SECOND));
@@ -324,7 +339,7 @@ class ChangeRulesTest extends TestCase
         // without one: an admin who may continue the change (the run permission), the requester too, so that a team without approvers is not stuck
         $this->assertSame('run', ApprovalRules::acceptPermission(ApprovalRules::OFF));
         $this->assertNull(ApprovalRules::acceptRefusal(ApprovalRules::OFF, $change, 1, true));
-        $this->assertStringContainsString('run permission (ansible.run) while the settings ask for no approval', (string) ApprovalRules::acceptRefusal(ApprovalRules::OFF, $change, 1, false));
+        $this->assertStringContainsString('run permission (ansible.run) while the change needs no approval', (string) ApprovalRules::acceptRefusal(ApprovalRules::OFF, $change, 1, false));
         $this->assertSame('an admin with the run permission', ApprovalRules::accepter(ApprovalRules::OFF));
 
         $this->assertStringContainsString('Only a change whose batch waits because its blast radius grew',
@@ -336,9 +351,9 @@ class ChangeRulesTest extends TestCase
         // going on without a blast radius is a decision on it, as an acceptance is
         $change = ['status' => ChangeStatus::PAUSED, 'waiting' => 'blast_unknown', 'user_id' => 1];
         $this->assertNull(ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 2, true), 'an approver who is not the requester');
-        $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
+        $this->assertSame('This change needs a second admin: you requested it, so another admin with the approve permission continues it without a blast radius.',
             ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 1, true));
-        $this->assertSame('The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.',
+        $this->assertSame('This change needs a second admin: you requested it, so another admin with the approve permission continues it without a blast radius.',
             ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 1, false), 'the requester without the permission: not told to get it (it would not help)');
         $this->assertStringContainsString('needs the Ansible plugin\'s approve permission (ansible.approve), as accepting a new blast radius does',
             (string) ApprovalRules::continueRefusal(ApprovalRules::SECOND, $change, 2, false));

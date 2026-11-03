@@ -64,7 +64,7 @@ final class ChangeRepository implements ChangeStore
                 && SchemaCheck::hasColumns('ansible_change_targets', ['backup_check', 'served_hash', 'served_at', 'served_note'])
                 && SchemaCheck::hasColumns('ansible_change_batches', ['blast', 'blast_accepted', 'blast_override', 'verify'])
                 && SchemaCheck::hasColumns('ansible_change_windows', ['cut_off'])
-                && SchemaCheck::hasColumns('ansible_changes', ['fix', 'verification', 'verification_note']);
+                && SchemaCheck::hasColumns('ansible_changes', ['fix', 'verification', 'verification_note', 'approval_mode']);
         } catch (\Throwable) {
             return false;
         }

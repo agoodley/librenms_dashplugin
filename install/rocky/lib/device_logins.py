@@ -39,6 +39,16 @@ def secret_names(device_id):
     return SECRET_PREFIX + '%d_PASSWORD' % device_id, SECRET_PREFIX + '%d_ENABLE' % device_id
 
 
+# a host_vars file's name: the device's name in the Ansible plugin's inventory, as the plugin makes one (HostNames)
+INVENTORY_NAME = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9._-]{0,252}$')
+
+
+def printable(text):
+    """TEXT with its control and other non-printable characters as "?": LibreNMS' helper, run as librenms, reports it,
+    and it goes into the host_vars files (as a comment) and onto the terminal."""
+    return ''.join(c if c.isprintable() else '?' for c in str(text))
+
+
 def bad_text(value):
     """Control characters (a line break, a tab, NUL, DEL) do not belong in a login."""
     return any(ord(c) < 32 or ord(c) == 127 for c in value)
@@ -47,9 +57,11 @@ def bad_text(value):
 class Device:
     def __init__(self, row):
         self.id = int(row['id'])
-        self.hostname = row['hostname']
-        self.sysname = row.get('sysname') or ''
-        self.inventory_name = row.get('inventory_name') or ''
+        self.hostname = printable(row['hostname'])
+        self.sysname = printable(row.get('sysname') or '')
+        # the host_vars file root writes is named after it: anything else (a path, "..") is no name the plugin gives
+        name = row.get('inventory_name') or ''
+        self.inventory_name = name if isinstance(name, str) and INVENTORY_NAME.fullmatch(name) else ''
         self.in_ansible = bool(row.get('ansible'))
         self.in_oxidized = bool(row.get('oxidized'))
         self.left_out = row.get('ansible_left_out') or ''

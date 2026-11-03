@@ -33,7 +33,7 @@
     // the settings of changes: [key, label, help]; a key of CHOICES is a list, the others whole numbers
     $changeFields = [
         ['approval', 'Approval', 'after its verified dry run, before it can be applied: by an admin with the approve permission (the requester may approve their own change), '
-            . 'or by a second admin with it (never the requester). A new dry run, a change of the template, the targets, the answers or the plan voids an approval'],
+            . 'or by a second admin with it (never the requester). A new dry run, a change of the template, the targets, the answers or the plan voids an approval. A change keeps what this asked for when it was created: raising it applies to every change, lowering it only to changes created after'],
         ['approval_hours', 'Approval valid (hours)', 'a change not applied by then needs a new approval'],
         ['dry_run_hours', 'Dry run valid (hours)', 'a verified dry run counts this long for an approval and an apply; a run on its devices since then (of another change, or a run) voids it too'],
         ['canary_size', 'First batch (devices)', 'the first batch, the canary, when the new change does not choose its devices'],

@@ -2,16 +2,33 @@
 
 namespace Agoodley\LibrenmsAnsible\Runs;
 
+use Agoodley\LibrenmsAnsible\Changes\AnsibleLog;
+
 /**
  * Per-host results from the PLAY RECAP at the end of an Ansible run (the per-host summary of the runner's API is
  * a paid feature of Semaphore). Device output can contain anything, so only the last PLAY RECAP header that
  * starts a line counts, and only the host lines right after it (they start the line; device output is
- * indented by Ansible's callbacks).
+ * indented by Ansible's callbacks). Where Ansible prints text as it is (a loop item's label with a newline) it can
+ * imitate a whole recap at the start of lines, so the recap also has to end the log (Ansible prints it last), see
+ * parse().
  */
 final class RecapParser
 {
     /** Counters of a recap line, in Ansible's order. */
     public const COUNTERS = ['ok', 'changed', 'unreachable', 'failed', 'skipped', 'rescued', 'ignored'];
+
+    private const HEADER = '/^PLAY RECAP(?: \**)?$/D';
+
+    /**
+     * The end of a text Ansible's default callback prints as it is, which a text with newlines leaves on a line of its
+     * own: a loop item's label ("(item=<label>)", then the result's details after " => ", with -v and always for a
+     * failure), a play's, task's or handler's name in its banner ("[<name>] ****", "[<name>] [CHECK MODE] ****"), a task's
+     * name in a retry ("FAILED - RETRYING: [host]: <name> (3 retries left).", with -vv "Result was: ..." after it).
+     */
+    private const TEXT_END = '/\)\s*(?:=>.*)?$|\]\s*\*{3,}$|\(\d+ retries left\)\.(?:Result was:.*)?$/sD';
+
+    /** Colours: the only escape sequences Ansible itself writes into the lines of a recap. */
+    private const COLOUR = '/\x1b\[[0-9;]*m/';
 
     /**
      * Connection errors of paramiko, libssh and OpenSSH as network connections report them: the message starts with
@@ -26,7 +43,19 @@ final class RecapParser
     private const HOST_LINE = '/^(\S+)\s+:\s+ok=(\d+)\s+changed=(\d+)\s+unreachable=(\d+)\s+failed=(\d+)(?:\s+skipped=(\d+))?(?:\s+rescued=(\d+))?(?:\s+ignored=(\d+))?\s*$/D';
 
     /**
-     * The counters per host of the last PLAY RECAP, null when the output has none (the run did not get there).
+     * The counters per host of the PLAY RECAP that ends the log, null when the output has none (the run did not get
+     * there, or what reads like one does not end the log).
+     *
+     * Ansible prints the recap last: after its host lines come only blank lines and the closing DRY RUN banner of a dry
+     * run, then the runner's own lines ("Failed to run task: exit status 2"), and Ansible's warnings may land there too
+     * (stderr, merged line by line). A recap imitated in a text Ansible prints as it is (a loop item's label, a task's
+     * name) is followed by the rest of that text, whose last line ends like the text does (TEXT_END), or ends with the
+     * plugin's mark of a line it cut (OutputBuffer::LINE_CUT) when it was too long to keep. So the last header counts
+     * only when every line after its host lines is blank, or text that ends neither way and is not Ansible's structure
+     * (a banner other than DRY RUN, a task result, an include, a host line); and only when no line from the header on
+     * holds an escape sequence other than a colour, or a control character other than a tab: those are dropped before
+     * the lines are read, and could hide the end of the text. A warning that ends with ")" also makes the recap not
+     * count: the run's results then come from its task lines, and a dry run is not proven (the safe side).
      *
      * @param  string[]  $lines  output lines, ANSI codes allowed
      * @return array<string, array<string, int>>|null host => counter => count
@@ -36,12 +65,17 @@ final class RecapParser
         $lines = array_values($lines);
         $start = null;
         foreach ($lines as $index => $line) {
-            if (preg_match('/^PLAY RECAP(?: \**)?$/D', rtrim(Ansi::strip($line)))) {
+            if (preg_match(self::HEADER, rtrim(Ansi::strip($line)))) {
                 $start = $index;
             }
         }
         if ($start === null) {
             return null;
+        }
+        for ($i = $start; $i < count($lines); $i++) {
+            if (! self::clean($lines[$i])) {
+                return null;
+            }
         }
         $hosts = [];
         for ($i = $start + 1; $i < count($lines); $i++) {
@@ -62,8 +96,43 @@ final class RecapParser
             }
             $hosts[$m[1]] = $counts;
         }
+        for (; $i < count($lines); $i++) {
+            if (! self::after(rtrim(Ansi::strip($lines[$i])))) {
+                return null;
+            }
+        }
 
         return $hosts;
+    }
+
+    /**
+     * Is it a line that may follow a recap's host lines: blank, the DRY RUN banner, or text that neither ends a text
+     * Ansible prints as it is nor is Ansible's structure?
+     */
+    private static function after(string $plain): bool
+    {
+        if ($plain === '') {
+            return true;
+        }
+        $banner = AnsibleLog::banner($plain);
+        if ($banner !== null) {
+            return $banner['kind'] === 'dry_run';
+        }
+
+        return ! preg_match(self::TEXT_END, $plain) && ! str_ends_with($plain, OutputBuffer::LINE_CUT)
+            && AnsibleLog::result($plain) === null && AnsibleLog::included($plain) === null
+            && ! preg_match(self::HOST_LINE, $plain);
+    }
+
+    /**
+     * Does the line hold no escape sequence other than a colour, and no control character other than a tab (and a
+     * carriage return at its end)?
+     */
+    private static function clean(string $line): bool
+    {
+        $text = (string) preg_replace(self::COLOUR, '', mb_scrub(rtrim($line, "\r"), 'UTF-8'));
+
+        return preg_match('/[^\P{Cc}\t]/u', $text) === 0;
     }
 
     /**

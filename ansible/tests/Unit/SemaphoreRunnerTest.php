@@ -118,6 +118,22 @@ class SemaphoreRunnerTest extends TestCase
 
         $this->assertTrue($template->canRun);
         $this->assertSame('lnms_survey_check.yml', $template->playbook);
+        $this->assertSame([[], [], []], [$template->tags, $template->skipTags, $template->options], 'Semaphore leaves empty Ansible options out');
+    }
+
+    public function testATemplatesOwnTagsAndSkipTags(): void
+    {
+        // Semaphore gives every task of the template its own tags and skip tags (Ansible options of the template)
+        $template = json_decode(FakeTransport::fixture('template-survey.json'), true);
+        $template['task_params'] += ['tags' => ['config'], 'skip_tags' => 'apply, save', 'skip_galaxy_install' => true];
+        $template += ['vaults' => [['id' => 3, 'vault_key_id' => 9, 'name' => 'prod', 'type' => 'password', 'extra' => ['x']]], 'runner_tag' => ' lab ', 'executor_image' => ''];
+        $this->http->on('GET /api/project/2/templates/5', new HttpResponse(200, (string) json_encode($template)));
+        $read = $this->runner()->template('5');
+
+        $this->assertSame(['config'], $read->tags);
+        $this->assertSame(['apply', 'save'], $read->skipTags);
+        $this->assertSame(['skip_galaxy_install' => true, 'vaults' => [['id' => 3, 'vault_key_id' => 9, 'name' => 'prod', 'type' => 'password']], 'runner_tag' => 'lab'],
+            $read->options, 'the options set, and only those');
     }
 
     public function testInventory(): void

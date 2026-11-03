@@ -21,6 +21,10 @@ final class RunnerTemplate
      * @param  string|null  $repositoryId  the repository its playbook comes from
      * @param  string[]  $environmentIds  every variable group of the template, in the order the runner merges them (later ones win)
      * @param  string|null  $gitBranch  the template's own branch of the repository (null: the repository's)
+     * @param  string[]  $tags  the template's own tags: only the tasks with one of them run (Ansible's --tags)
+     * @param  string[]  $skipTags  the template's own skip tags: the tasks with one of them do not run (--skip-tags)
+     * @param  array<string, mixed>  $options  the other options the runner gives every task of the template, only those set
+     *                                         (Semaphore UI: skip_galaxy_install, vaults, runner_tag, executor_image)
      */
     public function __construct(
         public readonly string $id,
@@ -41,6 +45,9 @@ final class RunnerTemplate
         public readonly ?string $repositoryId = null,
         public readonly array $environmentIds = [],
         public readonly ?string $gitBranch = null,
+        public readonly array $tags = [],
+        public readonly array $skipTags = [],
+        public readonly array $options = [],
     ) {
     }
 

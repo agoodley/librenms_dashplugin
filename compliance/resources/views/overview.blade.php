@@ -32,15 +32,19 @@
     <p id="cmp-last-run" style="margin: 0 0 8px">
         @if($lastRun)
             <i class="fa fa-clock-o"></i> Last check of every device: {{ Clock::show((int) $lastRun['started']) }}
+            @if($lastRunDetails)
             <span class="cmp-muted">({{ Clock::ago(Clock::store((int) $lastRun['started'])) }}; {{ $lastRun['checked'] }} checked, {{ $lastRun['no_backup'] }} without a backup,
                 {{ $lastRun['errors'] }} not checked)</span>
+            @else
+            <span class="cmp-muted">({{ Clock::ago(Clock::store((int) $lastRun['started'])) }})</span>
+            @endif
             @if(! empty($lastRun['requested']))
                 <span class="cmp-muted">· the settings changed: the next scheduled check checks every device</span>
             @endif
-            @if($lastRun['error'])
+            @if($lastRunDetails && $lastRun['error'])
                 <span class="text-danger" id="cmp-last-run-error"><i class="fa fa-exclamation-triangle"></i> {{ $lastRun['error'] }}</span>
             @endif
-            @foreach($lastRun['unreachable'] ?? [] as $why)
+            @foreach($lastRunDetails ? $lastRun['unreachable'] ?? [] : [] as $why)
                 <span class="text-warning"><i class="fa fa-exclamation-triangle"></i> {{ $why }}</span>
             @endforeach
         @else

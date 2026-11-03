@@ -43,7 +43,7 @@ class ComplianceController extends Controller
     public function index(Request $request): View
     {
         $data = ['error' => null, 'cards' => null, 'rules' => [], 'findings' => ['rows' => [], 'total' => 0], 'names' => [], 'filters' => $this->filters($request),
-            'page' => 1, 'pages' => 1, 'lastRun' => null, 'settings' => null, 'titles' => [], 'assetVersion' => self::assetVersion()];
+            'page' => 1, 'pages' => 1, 'lastRun' => null, 'lastRunDetails' => false, 'settings' => null, 'titles' => [], 'assetVersion' => self::assetVersion()];
         try {
             $results = new ResultRepository();
             if (! $results->available()) {
@@ -59,6 +59,8 @@ class ComplianceController extends Controller
             $data['rules'] = Overview::rules($summaries, $settings->rules());
             $data['titles'] = self::titles($settings);
             $data['lastRun'] = CheckService::forLibrenms($settings)->lastRun();
+            // the last run's counts and errors are of every device: only for users who see every device (the others get its time)
+            $data['lastRunDetails'] = $scope === null;
             $data['page'] = max(1, min(100000, (int) $request->query('page', 1)));
             $data['findings'] = $results->page($this->matching($scope, $data['filters']['device'], array_keys($summaries)), self::findingFilters($data['filters']),
                 $data['page'], self::PER_PAGE);

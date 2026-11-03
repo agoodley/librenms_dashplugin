@@ -17,7 +17,9 @@ namespace Agoodley\LibrenmsAnsible\Changes;
  * device only when nothing in the log contradicts it:
  *
  * - its host is a target of the run, and the task's log names that host once (once per loop item, and not both with
- *   and without an item);
+ *   and without an item), and no item label of the task or an earlier one is seen to run over several lines (one whose
+ *   first line does not end it; a label whose first line ends like a whole label cannot be told from one, see the
+ *   README's known limitations);
  * - the host does not have more "changed" tasks in the log than the PLAY RECAP counts for it (a line imitated by
  *   device output adds one);
  * - in a loop, only unified diffs: an item label can hold a newline and imitate the next result line, which would take
@@ -171,6 +173,7 @@ final class DiffParser
         $json = false; // they are JSON, up to a "}"
         $cut = false; // the pending lines started where another line cut a result's details short
         $seen = []; // section => host => item key => true
+        $unclosed = null; // why every later task is ambiguous: a loop item's label ran over several lines (its text can imitate a banner too)
         foreach ($lines as $line) {
             $plain = AnsibleLog::plain($line);
             if ($details !== null) {
@@ -195,7 +198,7 @@ final class DiffParser
                 $cut = false;
                 if (in_array($banner['kind'], AnsibleLog::MARKED_KINDS, true)) {
                     $section++;
-                    $sections[$section] = ['loop' => false, 'ambiguous' => null];
+                    $sections[$section] = ['loop' => false, 'ambiguous' => $unclosed];
                     $task = $banner['kind'] === 'play' ? '' : $banner['name'];
                 }
 
@@ -207,6 +210,13 @@ final class DiffParser
                 $key = $result['item'] === null ? "\0" : 'i:' . $result['item'];
                 if ($result['item'] !== null) {
                     $sections[$section]['loop'] = true;
+                } elseif (preg_match('/^(?: =>)? \(item=/', $result['rest'])) {
+                    // a loop item's label that does not end on its line: the lines up to its end are its text, which can
+                    // imitate the result lines and diffs of any host, and the banner of a next task (so every later task too)
+                    $sections[$section]['loop'] = true;
+                    $sections[$section]['ambiguous'] ??= 'a loop item\'s label in the log of this task runs over several lines: device output may '
+                        . 'imitate Ansible\'s result lines';
+                    $unclosed ??= 'a loop item\'s label earlier in the log runs over several lines: device output may imitate Ansible\'s result lines';
                 }
                 $hostKeys = $seen[$section][$host] ?? [];
                 if (isset($hostKeys[$key])) {
@@ -229,6 +239,14 @@ final class DiffParser
                 continue;
             }
             if (AnsibleLog::message($plain) || AnsibleLog::ignoring($plain) || AnsibleLog::included($plain) !== null) {
+                if (preg_match('/^included: .+ => \(item=/', $plain) && ! str_ends_with($plain, ')')) {
+                    // an include's loop item label that does not end on its line, as for a result's
+                    $sections[$section]['loop'] = true;
+                    $sections[$section]['ambiguous'] ??= 'a loop item\'s label in the log of this task runs over several lines: device output may '
+                        . 'imitate Ansible\'s result lines';
+                    $unclosed ??= 'a loop item\'s label earlier in the log runs over several lines: device output may imitate Ansible\'s result lines';
+                }
+
                 continue;
             }
             $pending[] = $plain;

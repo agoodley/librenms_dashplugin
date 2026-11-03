@@ -154,6 +154,15 @@ class RunOutputsTest extends TestCase
         $this->assertStringContainsString('printed after a loop item', $result['unattributed'][0]['reason']);
     }
 
+    public function testAnItemLabelOverSeveralLinesIsNotAttributed(): void
+    {
+        $result = self::parse(self::log(['ok: [h1] => (item=show version', 'ok: [h2] => (item=show version)']));
+
+        $this->assertSame([], $result['tasks']);
+        $this->assertSame(['h1', 'h2'], array_column($result['unattributed'], 'host'));
+        $this->assertStringContainsString('runs over several lines', $result['unattributed'][1]['reason']);
+    }
+
     public function testDeviceOutputThatImitatesAResultIsNotAttributed(): void
     {
         // a module's raw text before h1's changed line names h2, which the log names again: the task is ambiguous

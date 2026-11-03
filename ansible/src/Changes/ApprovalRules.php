@@ -31,6 +31,38 @@ final class ApprovalRules
     }
 
     /**
+     * The approval mode a change follows: the stricter of the one it was created with (approval_mode; null for a change
+     * made before the plugin kept it) and the settings' now. Raising the setting applies to every change; lowering it
+     * (no approval, or an approval the requester may give) applies only to changes created after it, so an admin cannot
+     * switch approval off to let a change that awaits an approval through.
+     */
+    public static function effective(?string $created, string $setting): string
+    {
+        $rank = array_flip(self::MODES);
+        if ($created === null || ! isset($rank[$created])) {
+            return $setting;
+        }
+
+        return ($rank[$setting] ?? 0) >= $rank[$created] ? $setting : $created;
+    }
+
+    /**
+     * The approval mode of a change as its pages and reports show it: for a change that is over, the one it kept (the
+     * strictest it followed while it was open); else effective().
+     *
+     * @param  array{status?: string, approval_mode?: ?string}  $change
+     */
+    public static function ofChange(array $change, string $setting): string
+    {
+        $kept = isset($change['approval_mode']) ? (string) $change['approval_mode'] : null;
+        if ($kept !== null && in_array($kept, self::MODES, true) && ChangeStatus::isFinal((string) ($change['status'] ?? ''))) {
+            return $kept;
+        }
+
+        return self::effective($kept, $setting);
+    }
+
+    /**
      * Does a change need an approval before it is applied?
      */
     public static function needed(string $mode): bool
@@ -52,12 +84,12 @@ final class ApprovalRules
         if ($change['status'] !== ChangeStatus::AWAITING) {
             return match ($change['status']) {
                 ChangeStatus::DRAFT, ChangeStatus::DRY_RUN => 'Only a change whose dry run was verified without failures can be approved or rejected.',
-                ChangeStatus::READY => self::needed($mode) ? 'The change is approved already.' : 'The settings need no approval: the change can be applied as it is.',
+                ChangeStatus::READY => self::needed($mode) ? 'The change is approved already.' : 'This change needs no approval: it can be applied as it is.',
                 default => 'The change is ' . strtolower(ChangeStatus::label($change['status'])) . ': it can no longer be approved or rejected.',
             };
         }
         if (! $reject && $mode === self::SECOND && $change['user_id'] !== null && (int) $change['user_id'] === $userId) {
-            return 'The settings need the approval of a second admin: you requested this change, so another admin with the approve permission approves it.';
+            return 'This change needs the approval of a second admin: you requested it, so another admin with the approve permission approves it.';
         }
 
         return null;
@@ -98,14 +130,14 @@ final class ApprovalRules
     {
         if (! $holds) {
             return self::acceptPermission($mode) === 'run'
-                ? 'Accepting a new blast radius needs the Ansible plugin\'s run permission (ansible.run) while the settings ask for no approval: an admin grants it on the plugin\'s settings page.'
+                ? 'Accepting a new blast radius needs the Ansible plugin\'s run permission (ansible.run) while the change needs no approval: an admin grants it on the plugin\'s settings page.'
                 : 'Accepting a new blast radius needs the Ansible plugin\'s approve permission (ansible.approve): an admin grants it on the plugin\'s settings page.';
         }
         if ($change['status'] !== ChangeStatus::PAUSED || ($change['waiting'] ?? null) !== 'blast') {
             return 'Only a change whose batch waits because its blast radius grew can have the new blast radius accepted.';
         }
         if ($mode === self::SECOND && $change['user_id'] !== null && (int) $change['user_id'] === $userId) {
-            return 'The settings need a second admin: you requested this change, so another admin with the approve permission accepts its new blast radius.';
+            return 'This change needs a second admin: you requested it, so another admin with the approve permission accepts its new blast radius.';
         }
 
         return null;
@@ -122,11 +154,11 @@ final class ApprovalRules
     public static function acceptVerificationRefusal(string $mode, array $change, int $userId, bool $holds): ?string
     {
         if ($mode === self::SECOND && $change['user_id'] !== null && (int) $change['user_id'] === $userId) {
-            return 'The settings need a second admin: you requested this change, so another admin with the approve permission accepts what its batch changed.';
+            return 'This change needs a second admin: you requested it, so another admin with the approve permission accepts what its batch changed.';
         }
         if (! $holds) {
             return self::acceptPermission($mode) === 'run'
-                ? 'Accepting what a batch changed needs the Ansible plugin\'s run permission (ansible.run) while the settings ask for no approval: an admin grants it on the plugin\'s settings page.'
+                ? 'Accepting what a batch changed needs the Ansible plugin\'s run permission (ansible.run) while the change needs no approval: an admin grants it on the plugin\'s settings page.'
                 : 'Accepting what a batch changed needs the Ansible plugin\'s approve permission (ansible.approve), as an approval does: an admin grants it on the plugin\'s settings page.';
         }
         if ($change['status'] !== ChangeStatus::PAUSED || ! in_array($change['waiting'] ?? null, ['verification', 'verify_unknown'], true)) {
@@ -151,12 +183,12 @@ final class ApprovalRules
         // the requester never may while the settings ask for a second admin, whatever they hold: said first (a permission granted
         // would not let them)
         if ($mode === self::SECOND && $change['user_id'] !== null && (int) $change['user_id'] === $userId) {
-            return 'The settings need a second admin: you requested this change, so another admin with the approve permission continues it without a blast radius.';
+            return 'This change needs a second admin: you requested it, so another admin with the approve permission continues it without a blast radius.';
         }
         if (! $holds) {
             return self::acceptPermission($mode) === 'run'
                 ? 'Continuing a batch whose blast radius cannot be computed needs the Ansible plugin\'s run permission (ansible.run): an admin grants it on the plugin\'s settings page.'
-                : 'While the settings ask for an approval, continuing a batch whose blast radius cannot be computed needs the Ansible plugin\'s approve permission '
+                : 'While the change needs an approval, continuing a batch whose blast radius cannot be computed needs the Ansible plugin\'s approve permission '
                     . '(ansible.approve), as accepting a new blast radius does: an admin grants it on the plugin\'s settings page.';
         }
 

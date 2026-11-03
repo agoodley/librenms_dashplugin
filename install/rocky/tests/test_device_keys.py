@@ -109,6 +109,20 @@ class DeviceKeysTests(unittest.TestCase):
         calls = (self.dir / 'answers.json.calls').read_text().splitlines()
         self.assertEqual(calls[-1], '-T 5 -p 22 -t rsa,ecdsa,ed25519 -f -')
 
+    def test_what_the_helper_reports_cannot_add_lines_or_hosts(self):
+        # the helper runs as librenms: a title with a new line, or an address with a space or a new line, is not written as it is
+        key = ' '.join(ed25519(9))
+        devices = [device(1, 'sw1\n10.6.6.6 ' + key, ansible='10.0.0.1', oxidized='10.0.0.1'),
+                   device(2, 'sw2', ansible='10.0.0.2 ' + key, oxidized='10.0.0.2\n10.6.6.7')]
+        answers = {'10.0.0.1:22': {'keys': [SW1_ED], 'banner': 'SSH-2.0-Cisco-1.25'}}
+        rc, out = self.run_keys(devices, answers, stdin='y\n')
+        self.assertEqual(rc, 0, out)
+        text = self.file.read_text()
+        self.assertEqual([x.split()[0] for x in self.keys()], ['10.0.0.1'], 'only the address of sw1, with the key it answers with')
+        self.assertNotIn('10.6.6.6', '\n'.join(self.keys()))
+        self.assertIn('sw1?10.6.6.6', text, 'the new line of its title shown as "?" in its comment')
+        self.assertIn('LibreNMS has 2 devices, 1 that Ansible or Oxidized connect to', out, 'sw2 has no address the script takes')
+
     def test_a_device_not_confirmed_is_not_added(self):
         devices = [device(1, 'sw1', ansible='10.0.0.1', oxidized='10.0.0.1'), device(2, 'sw2', oxidized='10.0.0.2')]
         answers = {'10.0.0.1:22': {'keys': [SW1_ED]}, '10.0.0.2:22': {'keys': [OTHER_ED]}}

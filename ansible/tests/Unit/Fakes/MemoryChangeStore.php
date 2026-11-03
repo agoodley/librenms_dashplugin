@@ -61,7 +61,7 @@ final class MemoryChangeStore implements ChangeStore
             'dry_run_findings' => null, 'plan_fingerprint' => null, 'fingerprint_parts' => null, 'approval_fingerprint' => null, 'approved_by' => null,
             'approved_user_id' => null, 'approved_at' => null, 'applied_by' => null, 'applied_user_id' => null, 'apply_started_at' => null, 'waiting' => null,
             'resume_at' => null, 'stop_requested_by' => null, 'stop_requested_at' => null, 'error' => null, 'finished_at' => null,
-            'created_at' => '2026-10-22 10:00:00', 'fix' => null, 'verification' => null, 'verification_note' => null];
+            'created_at' => '2026-10-22 10:00:00', 'fix' => null, 'verification' => null, 'verification_note' => null, 'approval_mode' => null];
         $position = 0;
         foreach ($targets as $deviceId => $name) {
             $this->targets[$id][$deviceId] = ['change_id' => $id, 'device_id' => $deviceId, 'inventory_name' => $name, 'hostname' => $name, 'display' => strtok($name, '.'),

@@ -56,7 +56,8 @@ final class TaskLines
      * result yet (no line, or only loop items or retries). Semaphore UI's stop ends only Ansible's main process: the
      * step each such host was in runs on in a process of its own, with all its loop items, so what it did is
      * unknown. A host the play never named before that task (the runner did not find it) has no step in progress,
-     * unless the task is the first of its play. A log that has a PLAY RECAP, or ends between two tasks, has none.
+     * unless the task is the first of its play. A log that has a PLAY RECAP, or ends between two tasks, has none: a
+     * recap as RecapParser counts one (it ends the log), not a header a loop item's label imitated before the stop.
      *
      * @param  string[]  $lines  output lines, ANSI codes allowed
      * @param  string[]  $hosts  the hosts to look at (the run's targets)
@@ -64,6 +65,9 @@ final class TaskLines
      */
     public static function inProgress(array $lines, array $hosts): array
     {
+        if (RecapParser::parse($lines) !== null) {
+            return ['task' => null, 'hosts' => []];
+        }
         $task = null;
         $tasks = 0; // tasks of the current play so far
         $seen = []; // hosts named by the earlier tasks of the play
@@ -75,7 +79,7 @@ final class TaskLines
                 [$task, $seen, $named, $done] = [$m[1], $seen + $named, [], []];
                 $tasks++;
             } elseif (preg_match('/^PLAY RECAP(?: \**)?$/D', $line)) {
-                return ['task' => null, 'hosts' => []];
+                continue; // not the end of the run: RecapParser did not count it
             } elseif (str_starts_with($line, 'PLAY [')) {
                 [$task, $tasks, $seen, $named, $done] = [null, 0, [], [], []]; // the next play: nothing in progress until its first task
             } elseif ($task !== null && preg_match(self::LINE, $line, $m)) {

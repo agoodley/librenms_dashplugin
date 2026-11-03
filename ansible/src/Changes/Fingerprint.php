@@ -32,7 +32,7 @@ final class Fingerprint
     private const TEMPLATE_FIELDS = [
         'app' => 'kind', 'type' => 'type', 'playbook' => 'playbook', 'inventory_id' => 'inventory', 'repository_id' => 'repository',
         'environment_ids' => 'variable groups', 'limit_override' => 'limit override', 'fixed_limit' => 'own limit', 'arguments' => 'CLI arguments',
-        'task_overrides' => 'task overrides', 'survey' => 'survey variables', 'git_branch' => 'Git branch',
+        'task_overrides' => 'task overrides', 'survey' => 'survey variables', 'git_branch' => 'Git branch', 'tags' => 'tags', 'skip_tags' => 'skip tags', 'options' => 'other options (Galaxy install, vaults, runner, image)',
     ];
 
     /**

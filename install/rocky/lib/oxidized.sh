@@ -44,7 +44,11 @@ part_oxidized() {
     ox_librenms_settings
     state_set oxidized_url "$OX_URL"
     selinux_boolean_on httpd_can_network_connect "LibreNMS' PHP reaches Oxidized, as LibreNMS' Oxidized documentation says"
-    if [[ $OXIDIZED_LISTEN != 127.* && $OXIDIZED_LISTEN != ::1 ]]; then firewall_open "$OXIDIZED_PORT/tcp"; fi
+    if [[ $OXIDIZED_LISTEN != 127.* && $OXIDIZED_LISTEN != ::1 ]]; then
+        firewall_open "$OXIDIZED_PORT/tcp"
+        # oxidized-web has no login: whoever reaches the port reads every device configuration (communities, keys, password hashes)
+        warn "Oxidized's REST API on $OXIDIZED_LISTEN:$OXIDIZED_PORT has no login and serves every device's configuration to whoever reaches it: keep it on 127.0.0.1 unless a firewall in front limits who does"
+    fi
     ox_verify
     summary_add "Oxidized $OXIDIZED_VERSION on http://$OXIDIZED_LISTEN:$OXIDIZED_PORT: $OX_STATUS"
 }
